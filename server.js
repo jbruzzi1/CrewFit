@@ -112,7 +112,7 @@ app.post('/api/friends/add', auth, (req, res) => {
   res.json({ friends: me.friends.map(publicUser) });
 });
 app.get('/api/friends', auth, (req, res) => {
-  res.json(DB.users[req.userId].friends.map(publicUser));
+  res.json(DB.users[req.userId].friends.map(id => ({ ...publicUser(id), streak: currentStreak(id) })));
 });
 
 // ---- Activity feed (Friend's Activity) ----

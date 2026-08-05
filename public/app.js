@@ -329,13 +329,34 @@ async function useTpl(id){
 
 async function friends(){
   const f = await H.get('/api/friends');
-  $('app').innerHTML = `<div class="wrap"><h1>Friends</h1>
-    <div class="card"><input id="fu" placeholder="friend username">
-    <button class="sm" onclick="addFriend()">Add friend</button></div>
-    ${f.map(x=>`<div class="lib-item"><div class="row"><div class="avatar">${esc(x.displayName[0]||'?')}</div><div>${esc(x.displayName)}<div class="tag">@${esc(x.username)}</div></div></div></div>`).join('')||'<div class="muted">No friends yet.</div>'}
-    </div>`;
+  const flame = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>';
+  const rows = f.length ? f.map(x=>`
+    <div class="friend-row">
+      <div class="avatar" style="background:${avatarColor(x.username)};color:#fff">${esc((x.displayName||x.username||'?')[0]||'?')}</div>
+      <div class="meta">
+        <div class="name">${esc(x.displayName||x.username)}</div>
+        <div class="handle">@${esc(x.username)}</div>
+        ${x.streak>1?`<div class="streak-pill">${flame}${x.streak} day streak</div>`:''}
+      </div>
+    </div>`).join('')
+    : '<div class="card muted" style="text-align:center">No friends yet.<br>Add a friend below to start training together.</div>';
+  $('app').innerHTML = `<div class="wrap">
+    <h1>Friends</h1>
+    ${f.length?`<div class="muted" style="margin:-2px 0 8px">${f.length} ${f.length===1?'friend':'friends'}</div>`:''}
+    <div class="card">
+      <div class="add-row">
+        <input id="fu" placeholder="friend username">
+        <button class="sm" onclick="addFriend()">Add</button>
+      </div>
+    </div>
+    <div class="card" style="padding:6px 12px">${rows}</div>
+  </div>`;
 }
-async function addFriend(){ const r=await H.post('/api/friends/add',{username:$('fu').value}); if(r.error)alert(r.error); else friends(); }
+function avatarColor(seed){
+  const colors=['#16a34a','#2563eb','#dc2626','#9333ea','#ea580c','#0891b2','#db2777','#65a30d'];
+  let h=0; for(const c of seed) h=(h*31+c.charCodeAt(0))>>>0; return colors[h%colors.length];
+}
+async function addFriend(){ const v=$('fu').value.trim(); if(!v)return; const r=await H.post('/api/friends/add',{username:v}); if(r.error)alert(r.error); else friends(); }
 
 // ---- Me ----
 function meScreen(){
