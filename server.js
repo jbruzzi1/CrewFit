@@ -137,12 +137,12 @@ function buildActivityFor(userId) {
   return items;
 }
 
+app.get('/api/profile/me', auth, (req, res) => res.json(profileOf(req.userId)));
 app.get('/api/profile/:id', auth, (req, res) => {
   const p = profileOf(req.params.id);
   if (!p) return res.status(404).json({ error: 'user not found' });
   res.json(p);
 });
-app.get('/api/profile/me', auth, (req, res) => res.json(profileOf(req.userId)));
 app.post('/api/me/avatar', auth, (req, res) => {
   const { data, type } = req.body || {};
   if (!data || !/^data:image\/(png|jpeg|jpg|webp);base64,/.test(data)) return res.status(400).json({ error: 'image data required' });
