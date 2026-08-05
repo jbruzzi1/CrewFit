@@ -100,6 +100,9 @@ function publicUser(id) {
   return { id: u.id, username: u.username, displayName: u.displayName, bio: u.bio || '', avatar: u.avatar || '', followers: (u.followers || []).length, following: (u.friends || []).length };
 }
 
+// ---- Exercise library (136 exercises) ----
+app.get('/api/exercises', (req, res) => res.json(EX_LIB));
+
 // ---- Profile (per-user, viewable by anyone logged in) ----
 function profileOf(id) {
   const u = DB.users[id];

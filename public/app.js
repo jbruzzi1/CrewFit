@@ -454,9 +454,11 @@ async function vapidKey(){ const r=await (await fetch('/api/vapid')).json(); ret
 
 // ---- Boot ----
 (async ()=>{
-  if(TOKEN){ try{ ME = await H.get('/api/profile/me'); }catch(e){} }
-  if(TOKEN && ME){ $('nav').classList.remove('hidden'); home(); }
-  else authScreen();
+  if(TOKEN){
+    try{ ME = await H.get('/api/profile/me'); }catch(e){ ME=null; }
+  }
+  if(TOKEN && ME && ME.id){ $('nav').classList.remove('hidden'); home(); }
+  else { TOKEN=''; localStorage.removeItem('crewfit_token'); authScreen(); }
   if('serviceWorker' in navigator) setupPush();
   document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
 })();
