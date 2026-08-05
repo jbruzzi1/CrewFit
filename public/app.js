@@ -225,41 +225,67 @@ function toggleInvite(cb){ const u=cb.value; if(cb.checked){ if(!DRAFT.inviteUse
 function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item"><div>${esc(e.name)} <span class="tag">${e.defaultSets}×${e.defaultReps}</span></div><button class="sm red" onclick="rmEx(${i})">✕</button></div>`).join('') : '<div class="muted">None added.</div>'; }
 function rmEx(i){ DRAFT.exercises.splice(i,1); renderDraft(); }
 async function pickExercise(){
-  // stash any details typed so far (the create form is about to be replaced)
+  // stash any details typed so far
   if($('loc')) DRAFT.location = $('loc').value;
   if($('len')) DRAFT.lengthMin = $('len').value;
   if($('note')) DRAFT.creatorNote = $('note').value;
   if($('wname')) DRAFT.name = $('wname').value;
-  window._PFILTER = { pat: '', mg: '', q: '' };
   const lib = await H.get('/api/exercises');
   window._LIB = lib;
-  const pats = ['push','pull','legs','core','cardio'];
-  const mgs = ['chest','back','shoulders','biceps','triceps','quads','hamstrings','glutes','calves','abs','core','traps','forearms'];
-  $('app').innerHTML = `<div class="wrap"><button class="sec sm" onclick="createFlow()">← Done</button><h1>Add exercise</h1>
-    <input id="search" placeholder="search" oninput="filterLib()">
-    <div class="chips"><span class="lbl">Pattern</span>${pats.map(p=>`<span class="chip" data-k="pat" data-v="${p}" onclick="chip(this)">${p}</span>`).join('')}</div>
-    <div class="chips"><span class="lbl">Muscle</span>${mgs.map(m=>`<span class="chip" data-k="mg" data-v="${m}" onclick="chip(this)">${m}</span>`).join('')}</div>
-    <div class="scrolllist" id="libList"></div></div>`;
+  const cats = [...new Set(lib.flatMap(e=>(e.muscle_groups||[])))];
+  window._CATS = cats;
+  window._PFILTER = { cat: '', q: '' };
+  $('app').innerHTML = `<div class="pick">
+    <div class="pick-head">
+      <button class="sec sm" onclick="createFlow()">Done</button>
+      <h1>Add exercises</h1>
+      <span class="pick-count" id="pickCount">${DRAFT.exercises.length} added</span>
+    </div>
+    <div class="pick-search"><input id="search" placeholder="Search exercises" oninput="filterLib()"></div>
+    <div class="cat-pills" id="catPills">
+      <span class="cat-pill on" data-cat="" onclick="pickCat(this)">All</span>
+      ${cats.map(c=>`<span class="cat-pill" data-cat="${esc(c)}" onclick="pickCat(this)">${esc(c)}</span>`).join('')}
+    </div>
+    <div class="pick-list" id="libList"></div>
+  </div>`;
   filterLib();
 }
-function chip(el){ const k=el.dataset.k, v=el.dataset.v; const cur=window._PFILTER[k]; if(cur===v){ window._PFILTER[k]=''; el.classList.remove('on'); } else { window._PFILTER[k]=v; document.querySelectorAll(`.chip[data-k="${k}"]`).forEach(c=>c.classList.remove('on')); el.classList.add('on'); } filterLib(); }
+function pickCat(el){
+  window._PFILTER.cat = el.dataset.cat;
+  document.querySelectorAll('.cat-pill').forEach(p=>p.classList.toggle('on', p===el));
+  filterLib();
+}
 function filterLib(){
   const q=(window._PFILTER.q=($('search').value||'').toLowerCase());
-  const {pat,mg}=window._PFILTER;
+  const cat=window._PFILTER.cat;
   const list = window._LIB.filter(e=>
-    (!pat || e.pattern===pat) &&
-    (!mg || (e.muscle_groups||[]).includes(mg)) &&
-    (!q || e.name.toLowerCase().includes(q) || (e.muscle_groups||[]).join(',').includes(q))
+    (!cat || (e.muscle_groups||[]).includes(cat)) &&
+    (!q || e.name.toLowerCase().includes(q) || (e.muscle_groups||[]).join(' ').includes(q))
   );
-  $('libList').innerHTML = list.length ? list.map(e=>`<div class="lib-item" onclick="addEx('${esc(e.name)}')"><div>${esc(e.name)}</div><span class="badge">${esc(e.pattern)}</span><span class="tag">${(e.muscle_groups||[]).join(', ')}</span></div>`).join('') : '<div class="muted">No matches.</div>';
+  // group by first muscle group for clean sections
+  const groups={};
+  list.forEach(e=>{ const g=(e.muscle_groups&&e.muscle_groups[0])||'Other'; (groups[g]=groups[g]||[]).push(e); });
+  const added=Object.fromEntries(DRAFT.exercises.map(e=>[e.name,true]));
+  const html = Object.keys(groups).sort().map(g=>`
+    <div class="pick-group">${esc(g)}</div>
+    ${groups[g].sort((a,b)=>a.name.localeCompare(b.name)).map(e=>`
+      <div class="ex-row ${added[e.name]?'ex-on':''}" onclick="addEx('${esc(e.name)}', this)">
+        <div class="ex-name">${esc(e.name)}</div>
+        <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}</div>
+        <div class="ex-add">${added[e.name]?'✓':'+'}</div>
+      </div>`).join('')}
+  `).join('');
+  $('libList').innerHTML = list.length ? html : '<div class="muted" style="padding:20px;text-align:center">No matches.</div>';
 }
-function addEx(name){
-  // preserve any draft details the user already typed
+function addEx(name, el){
   if($('loc')) DRAFT.location = $('loc').value;
   if($('len')) DRAFT.lengthMin = $('len').value;
   if($('note')) DRAFT.creatorNote = $('note').value;
-  DRAFT.exercises.push({name,defaultSets:3,defaultReps:10});
-  createFlow();
+  const exists = DRAFT.exercises.find(e=>e.name===name);
+  if(exists){ DRAFT.exercises = DRAFT.exercises.filter(e=>e.name!==name); }
+  else DRAFT.exercises.push({name,defaultSets:3,defaultReps:10});
+  const pc=$('pickCount'); if(pc) pc.textContent=DRAFT.exercises.length+' added';
+  if(el){ const on=DRAFT.exercises.find(e=>e.name===name); el.classList.toggle('ex-on', !!on); el.querySelector('.ex-add').textContent = on?'✓':'+'; }
 }
 function closePick(){ createFlow(); }
 async function submitSession(){
