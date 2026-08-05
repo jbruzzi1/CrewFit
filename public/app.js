@@ -304,30 +304,62 @@ async function submitSession(){
 
 // ---- Library ----
 async function library(){
-  window._PFILTER2 = { pat:'', mg:'', q:'' };
   const lib = await H.get('/api/exercises');
   window._LIB2 = lib;
-  const pats = ['push','pull','legs','core','cardio'];
-  const mgs = ['chest','back','shoulders','biceps','triceps','quads','hamstrings','glutes','calves','abs','core','traps','forearms'];
-  const cats = {}; lib.forEach(e=>{cats[e.pattern]=(cats[e.pattern]||0)+1;});
-  $('app').innerHTML = `<div class="wrap"><h1>Exercises</h1>
-    <div>${Object.keys(cats).map(c=>`<span class="pill">${esc(c)} ${cats[c]}</span>`).join('')}</div>
-    <input id="ls" placeholder="search" oninput="filterLib2()">
-    <div class="chips"><span class="lbl">Pattern</span>${pats.map(p=>`<span class="chip" data-k="pat" data-v="${p}" onclick="chip2(this)">${p}</span>`).join('')}</div>
-    <div class="chips"><span class="lbl">Muscle</span>${mgs.map(m=>`<span class="chip" data-k="mg" data-v="${m}" onclick="chip2(this)">${m}</span>`).join('')}</div>
-    <div class="scrolllist" id="lib2"></div></div>`;
+  const cats = [...new Set(lib.flatMap(e=>(e.muscle_groups||[])))];
+  window._CATS2 = cats;
+  window._PFILTER2 = { cat:'', q:'' };
+  $('app').innerHTML = `<div class="pick">
+    <div class="pick-head"><h1 style="flex:1">Exercises</h1></div>
+    <div class="pick-search"><input id="ls" placeholder="Search exercises" oninput="filterLib2()"></div>
+    <div class="cat-pills" id="catPills2">
+      <span class="cat-pill on" data-cat="" onclick="pickCat2(this)">All</span>
+      ${cats.map(c=>`<span class="cat-pill" data-cat="${esc(c)}" onclick="pickCat2(this)">${esc(c)}</span>`).join('')}
+    </div>
+    <div class="pick-list" id="lib2"></div>
+  </div>`;
   filterLib2();
 }
-function chip2(el){ const k=el.dataset.k, v=el.dataset.v; const cur=window._PFILTER2[k]; if(cur===v){ window._PFILTER2[k]=''; el.classList.remove('on'); } else { window._PFILTER2[k]=v; document.querySelectorAll(`.chip[data-k="${k}"]`).forEach(c=>c.classList.remove('on')); el.classList.add('on'); } filterLib2(); }
+function pickCat2(el){
+  window._PFILTER2.cat = el.dataset.cat;
+  document.querySelectorAll('#catPills2 .cat-pill').forEach(p=>p.classList.toggle('on', p===el));
+  filterLib2();
+}
 function filterLib2(){
   const q=(window._PFILTER2.q=($('ls').value||'').toLowerCase());
-  const {pat,mg}=window._PFILTER2;
-  $('lib2').innerHTML = window._LIB2.filter(e=>
-    (!pat || e.pattern===pat) &&
-    (!mg || (e.muscle_groups||[]).includes(mg)) &&
-    (!q || e.name.toLowerCase().includes(q) || (e.muscle_groups||[]).join(',').includes(q))
-  ).map(e=>`<div class="lib-item"><div>${esc(e.name)}</div><span class="tag">${e.pattern} · ${(e.muscle_groups||[]).join(', ')}</span><span class="badge">${e.level||''}</span></div>`).join('');
+  const cat=window._PFILTER2.cat;
+  const list = window._LIB2.filter(e=>
+    (!cat || (e.muscle_groups||[]).includes(cat)) &&
+    (!q || e.name.toLowerCase().includes(q) || (e.muscle_groups||[]).join(' ').includes(q))
+  );
+  const groups={};
+  list.forEach(e=>{ const g=(e.muscle_groups&&e.muscle_groups[0])||'Other'; (groups[g]=groups[g]||[]).push(e); });
+  const html = Object.keys(groups).sort().map(g=>`
+    <div class="pick-group">${esc(g)}</div>
+    ${groups[g].sort((a,b)=>a.name.localeCompare(b.name)).map(e=>`
+      <div class="ex-row" onclick="exDetail('${esc(e.name)}')">
+        <div class="ex-name">${esc(e.name)}</div>
+        <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}</div>
+        <div class="ex-add">›</div>
+      </div>`).join('')}
+  `).join('');
+  $('lib2').innerHTML = list.length ? html : '<div class="muted" style="padding:20px;text-align:center">No matches.</div>';
 }
+function exDetail(name){
+  const e = window._LIB2.find(x=>x.name===name); if(!e) return;
+  const sets = e.defaultSets||3, reps=e.defaultReps||10;
+  const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="sheet-head"><h2>${esc(e.name)}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <div class="sheet-mg">${(e.muscle_groups||[]).join(' · ')}</div>
+      <div class="sheet-row"><span>Pattern</span><b>${esc(e.pattern||'—')}</b></div>
+      <div class="sheet-row"><span>Level</span><b>${esc(e.level||'—')}</b></div>
+      <div class="sheet-row"><span>Suggested</span><b>${sets} × ${reps}</b></div>
+    </div>`;
+  sheet.onclick=closeSheet; document.body.appendChild(sheet);
+  requestAnimationFrame(()=>sheet.classList.add('show'));
+}
+function closeSheet(){ const s=document.querySelector('.sheet-back'); if(s){ s.classList.remove('show'); setTimeout(()=>s.remove(),200); } }
 
 // ---- Templates ----
 async function templates(){
