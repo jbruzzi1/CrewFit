@@ -224,6 +224,29 @@ async function useTemplate(){
 function toggleInvite(cb){ const u=cb.value; if(cb.checked){ if(!DRAFT.inviteUsernames.includes(u)) DRAFT.inviteUsernames.push(u);} else { DRAFT.inviteUsernames=DRAFT.inviteUsernames.filter(x=>x!==u);} }
 function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item"><div>${esc(e.name)} <span class="tag">${e.defaultSets}×${e.defaultReps}</span></div><button class="sm red" onclick="rmEx(${i})">✕</button></div>`).join('') : '<div class="muted">None added.</div>'; }
 function rmEx(i){ DRAFT.exercises.splice(i,1); renderDraft(); }
+// ---- Shared exercise helpers (picker + library) ----
+const EQ_FAMILY = [
+  { key:'bodyweight', label:'Bodyweight', match:['bodyweight','band','weighted vest','box','ab wheel','battle ropes','jump rope','parallel bars','pull-up bar'] },
+  { key:'dumbbell', label:'Dumbbell', match:['dumbbell','dumbbells'] },
+  { key:'barbell', label:'Barbell', match:['barbell','bar','ez bar','trap bar','plate','landmine','squat rack','smith machine'] },
+  { key:'kettlebell', label:'Kettlebell', match:['kettlebell'] },
+  { key:'cable', label:'Cable', match:['cable'] },
+  { key:'machine', label:'Machine', match:['machine','bench','incline bench','decline bench','preacher bench','leg press','hack squat','pec deck','leg curl','leg extension','calf raise','ghr','sissy squat','chest press','incline press','shoulder press','rear delt','triceps extension','t-bar','chest-supported','row machine','lat pulldown','dip station'] },
+  { key:'cardio', label:'Cardio', match:['treadmill','bike','rower','assault bike','stair climber','elliptical','skierg','jacobs ladder','sled'] },
+];
+function eqFamilies(e){
+  const eq=(e.equipment||[]).map(x=>x.toLowerCase());
+  const fams=new Set();
+  for(const f of EQ_FAMILY){ if(eq.some(x=>f.match.some(m=>x.includes(m)))) fams.add(f.key); }
+  return [...fams];
+}
+function eqLabel(key){ const f=EQ_FAMILY.find(x=>x.key===key); return f?f.label:key; }
+function exBadges(e){
+  const b=[];
+  if(e.level) b.push(`<span class="ex-badge lv-${esc(e.level)}">${esc(e.level)}</span>`);
+  b.push(`<span class="ex-badge">${e.is_compound?'Compound':'Isolation'}</span>`);
+  return b.join('');
+}
 async function pickExercise(){
   // stash any details typed so far
   if($('loc')) DRAFT.location = $('loc').value;
@@ -233,8 +256,8 @@ async function pickExercise(){
   const lib = await H.get('/api/exercises');
   window._LIB = lib;
   const cats = [...new Set(lib.flatMap(e=>(e.muscle_groups||[])))];
-  window._CATS = cats;
-  window._PFILTER = { cat: '', q: '' };
+  const eqs = [...new Set(lib.flatMap(eqFamilies))];
+  window._PFILTER = { cat:'', eq:'', q:'' };
   $('app').innerHTML = `<div class="pick">
     <div class="pick-head">
       <button class="sec sm" onclick="createFlow()">Done</button>
@@ -246,20 +269,30 @@ async function pickExercise(){
       <span class="cat-pill on" data-cat="" onclick="pickCat(this)">All</span>
       ${cats.map(c=>`<span class="cat-pill" data-cat="${esc(c)}" onclick="pickCat(this)">${esc(c)}</span>`).join('')}
     </div>
+    <div class="cat-pills eq-pills" id="eqPills">
+      <span class="cat-pill on" data-eq="" onclick="pickEq(this)">Any</span>
+      ${eqs.map(k=>`<span class="cat-pill" data-eq="${k}" onclick="pickEq(this)">${eqLabel(k)}</span>`).join('')}
+    </div>
     <div class="pick-list" id="libList"></div>
   </div>`;
   filterLib();
 }
 function pickCat(el){
   window._PFILTER.cat = el.dataset.cat;
-  document.querySelectorAll('.cat-pill').forEach(p=>p.classList.toggle('on', p===el));
+  document.querySelectorAll('#catPills .cat-pill').forEach(p=>p.classList.toggle('on', p===el));
+  filterLib();
+}
+function pickEq(el){
+  window._PFILTER.eq = el.dataset.eq;
+  document.querySelectorAll('#eqPills .cat-pill').forEach(p=>p.classList.toggle('on', p===el));
   filterLib();
 }
 function filterLib(){
   const q=(window._PFILTER.q=($('search').value||'').toLowerCase());
-  const cat=window._PFILTER.cat;
+  const {cat,eq}=window._PFILTER;
   const list = window._LIB.filter(e=>
     (!cat || (e.muscle_groups||[]).includes(cat)) &&
+    (!eq || eqFamilies(e).includes(eq)) &&
     (!q || e.name.toLowerCase().includes(q) || (e.muscle_groups||[]).join(' ').includes(q))
   );
   // group by first muscle group for clean sections
@@ -270,8 +303,11 @@ function filterLib(){
     <div class="pick-group">${esc(g)}</div>
     ${groups[g].sort((a,b)=>a.name.localeCompare(b.name)).map(e=>`
       <div class="ex-row ${added[e.name]?'ex-on':''}" onclick="addEx('${esc(e.name)}', this)">
-        <div class="ex-name">${esc(e.name)}</div>
-        <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}</div>
+        <div class="ex-main">
+          <div class="ex-name">${esc(e.name)}</div>
+          <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}</div>
+        </div>
+        <div class="ex-badges">${exBadges(e)}</div>
         <div class="ex-add">${added[e.name]?'✓':'+'}</div>
       </div>`).join('')}
   `).join('');
@@ -307,14 +343,18 @@ async function library(){
   const lib = await H.get('/api/exercises');
   window._LIB2 = lib;
   const cats = [...new Set(lib.flatMap(e=>(e.muscle_groups||[])))];
-  window._CATS2 = cats;
-  window._PFILTER2 = { cat:'', q:'' };
+  const eqs = [...new Set(lib.flatMap(eqFamilies))];
+  window._PFILTER2 = { cat:'', eq:'', q:'' };
   $('app').innerHTML = `<div class="pick">
     <div class="pick-head"><h1 style="flex:1">Exercises</h1></div>
     <div class="pick-search"><input id="ls" placeholder="Search exercises" oninput="filterLib2()"></div>
     <div class="cat-pills" id="catPills2">
       <span class="cat-pill on" data-cat="" onclick="pickCat2(this)">All</span>
       ${cats.map(c=>`<span class="cat-pill" data-cat="${esc(c)}" onclick="pickCat2(this)">${esc(c)}</span>`).join('')}
+    </div>
+    <div class="cat-pills eq-pills" id="eqPills2">
+      <span class="cat-pill on" data-eq="" onclick="pickEq2(this)">Any</span>
+      ${eqs.map(k=>`<span class="cat-pill" data-eq="${k}" onclick="pickEq2(this)">${eqLabel(k)}</span>`).join('')}
     </div>
     <div class="pick-list" id="lib2"></div>
   </div>`;
@@ -325,11 +365,17 @@ function pickCat2(el){
   document.querySelectorAll('#catPills2 .cat-pill').forEach(p=>p.classList.toggle('on', p===el));
   filterLib2();
 }
+function pickEq2(el){
+  window._PFILTER2.eq = el.dataset.eq;
+  document.querySelectorAll('#eqPills2 .cat-pill').forEach(p=>p.classList.toggle('on', p===el));
+  filterLib2();
+}
 function filterLib2(){
   const q=(window._PFILTER2.q=($('ls').value||'').toLowerCase());
-  const cat=window._PFILTER2.cat;
+  const {cat,eq}=window._PFILTER2;
   const list = window._LIB2.filter(e=>
     (!cat || (e.muscle_groups||[]).includes(cat)) &&
+    (!eq || eqFamilies(e).includes(eq)) &&
     (!q || e.name.toLowerCase().includes(q) || (e.muscle_groups||[]).join(' ').includes(q))
   );
   const groups={};
@@ -338,8 +384,11 @@ function filterLib2(){
     <div class="pick-group">${esc(g)}</div>
     ${groups[g].sort((a,b)=>a.name.localeCompare(b.name)).map(e=>`
       <div class="ex-row" onclick="exDetail('${esc(e.name)}')">
-        <div class="ex-name">${esc(e.name)}</div>
-        <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}</div>
+        <div class="ex-main">
+          <div class="ex-name">${esc(e.name)}</div>
+          <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}</div>
+        </div>
+        <div class="ex-badges">${exBadges(e)}</div>
         <div class="ex-add">›</div>
       </div>`).join('')}
   `).join('');
@@ -348,12 +397,14 @@ function filterLib2(){
 function exDetail(name){
   const e = window._LIB2.find(x=>x.name===name); if(!e) return;
   const sets = e.defaultSets||3, reps=e.defaultReps||10;
+  const eqs = (e.equipment||[]).map(x=>esc(x)).join(', ')||'—';
   const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>${esc(e.name)}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
       <div class="sheet-mg">${(e.muscle_groups||[]).join(' · ')}</div>
+      <div class="ex-badges" style="margin:8px 0">${exBadges(e)}</div>
+      <div class="sheet-row"><span>Equipment</span><b>${eqs}</b></div>
       <div class="sheet-row"><span>Pattern</span><b>${esc(e.pattern||'—')}</b></div>
-      <div class="sheet-row"><span>Level</span><b>${esc(e.level||'—')}</b></div>
       <div class="sheet-row"><span>Suggested</span><b>${sets} × ${reps}</b></div>
     </div>`;
   sheet.onclick=closeSheet; document.body.appendChild(sheet);
