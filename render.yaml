@@ -1,0 +1,25 @@
+# Render deploy config for CrewFit (social fitness app)
+# Deploy: push this repo to GitHub, then Render -> New -> Blueprint -> connect repo.
+# Free tier works for testing; upgrade for always-on + persistent disk.
+services:
+  - type: web
+    name: crewfit
+    runtime: node
+    plan: free
+    branch: main
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /data
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+    disk:
+      name: crewfit-data
+      mountPath: /data
+      sizeGB: 1
