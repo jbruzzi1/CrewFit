@@ -34,8 +34,12 @@ const EX_LIB = JSON.parse(fs.readFileSync(LIB_FILE, 'utf8')).exercises;
 // ---- Auth (simple username + pin, no password hashing for MVP demo) ----
 function uid() { return Math.random().toString(36).slice(2, 10); }
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '12mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+// User-uploaded avatars live in the persistent volume so they survive redeploys.
+const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+app.use('/uploads', express.static(UPLOAD_DIR));
 
 // token -> userId  (in-memory for MVP; good enough for demo, survives while server runs)
 const SESSIONS_TOKEN = {}; // token -> userId
@@ -93,11 +97,86 @@ app.post('/api/reset', (req, res) => {
 
 function publicUser(id) {
   const u = DB.users[id];
-  return { id: u.id, username: u.username, displayName: u.displayName };
+  return { id: u.id, username: u.username, displayName: u.displayName, bio: u.bio || '', avatar: u.avatar || '', followers: (u.followers || []).length, following: (u.friends || []).length };
 }
 
-// ---- Exercise library ----
-app.get('/api/exercises', (req, res) => res.json(EX_LIB));
+// ---- Profile (per-user, viewable by anyone logged in) ----
+function profileOf(id) {
+  const u = DB.users[id];
+  if (!u) return null;
+  // workouts completed (distinct sessions with a history entry by this user)
+  const completed = new Set();
+  for (const s of Object.values(DB.sessions)) {
+    if ((s.history || []).some(h => h.userId === id)) completed.add(s.id);
+  }
+  const prs = (DB.prs && DB.prs[id]) ? Object.values(DB.prs[id]) : [];
+  return {
+    ...publicUser(id),
+    workoutsCompleted: completed.size,
+    prCount: prs.length,
+    streak: currentStreak(id),
+    recentActivity: buildActivityFor(id)
+  };
+}
+// Recent activity for a single user: PRs, weekly completions, streaks (most recent first)
+function buildActivityFor(userId) {
+  const items = [];
+  const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
+  const prs = (DB.prs && DB.prs[userId]) ? Object.values(DB.prs[userId]) : [];
+  for (const p of prs) items.push({ type: 'pr', at: p.at, text: `hit a new PR on ${p.exercise} (${p.weight}×${p.reps})` });
+  let count = 0;
+  for (const s of Object.values(DB.sessions)) {
+    for (const h of (s.history || [])) {
+      if (h.userId === userId && new Date(h.date).getTime() >= weekAgo) count++;
+    }
+  }
+  if (count > 0) items.push({ type: 'completed', at: new Date().toISOString(), text: `completed ${count} workout${count > 1 ? 's' : ''} this week` });
+  const streak = currentStreak(userId);
+  if (streak >= 2) items.push({ type: 'streak', at: new Date().toISOString(), text: `hit a ${streak} day workout streak` });
+  items.sort((a, b) => new Date(b.at) - new Date(a.at));
+  return items;
+}
+
+app.get('/api/profile/:id', auth, (req, res) => {
+  const p = profileOf(req.params.id);
+  if (!p) return res.status(404).json({ error: 'user not found' });
+  res.json(p);
+});
+app.get('/api/profile/me', auth, (req, res) => res.json(profileOf(req.userId)));
+app.post('/api/me/avatar', auth, (req, res) => {
+  const { data, type } = req.body || {};
+  if (!data || !/^data:image\/(png|jpeg|jpg|webp);base64,/.test(data)) return res.status(400).json({ error: 'image data required' });
+  const ext = (type === 'image/png' ? 'png' : 'jpg');
+  const b64 = data.split(',')[1];
+  const fname = `avatar_${req.userId}.${ext}`;
+  fs.writeFileSync(path.join(UPLOAD_DIR, fname), Buffer.from(b64, 'base64'));
+  const u = DB.users[req.userId];
+  u.avatar = `/uploads/${fname}`;
+  save(DB);
+  res.json({ avatar: u.avatar });
+});
+app.post('/api/me/bio', auth, (req, res) => {
+  const { bio } = req.body || {};
+  DB.users[req.userId].bio = String(bio || '').slice(0, 280);
+  save(DB);
+  res.json({ bio: DB.users[req.userId].bio });
+});
+app.post('/api/follow/:id', auth, (req, res) => {
+  const target = DB.users[req.params.id];
+  if (!target) return res.status(404).json({ error: 'user not found' });
+  if (req.params.id === req.userId) return res.status(400).json({ error: 'cannot follow self' });
+  if (!target.followers) target.followers = [];
+  if (!target.followers.includes(req.userId)) target.followers.push(req.userId);
+  save(DB);
+  res.json({ followers: target.followers.length });
+});
+app.post('/api/unfollow/:id', auth, (req, res) => {
+  const target = DB.users[req.params.id];
+  if (!target || !target.followers) return res.json({ followers: 0 });
+  target.followers = target.followers.filter(x => x !== req.userId);
+  save(DB);
+  res.json({ followers: target.followers.length });
+});
 
 // ---- Friends ----
 app.post('/api/friends/add', auth, (req, res) => {

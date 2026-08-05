@@ -331,7 +331,7 @@ async function friends(){
   const f = await H.get('/api/friends');
   const flame = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>';
   const rows = f.length ? f.map(x=>`
-    <div class="friend-row">
+    <div class="friend-row" onclick="profileView('${x.id}')" style="cursor:pointer">
       <div class="avatar" style="background:${avatarColor(x.username)};color:#fff">${esc((x.displayName||x.username||'?')[0]||'?')}</div>
       <div class="meta">
         <div class="name">${esc(x.displayName||x.username)}</div>
@@ -358,14 +358,87 @@ function avatarColor(seed){
 }
 async function addFriend(){ const v=$('fu').value.trim(); if(!v)return; const r=await H.post('/api/friends/add',{username:v}); if(r.error)alert(r.error); else friends(); }
 
-// ---- Me ----
-function meScreen(){
-  $('app').innerHTML = `<div class="wrap"><h1>${esc(ME.displayName)}</h1>
-    <div class="muted">@${esc(ME.username)}</div>
-    <div class="card"><div class="muted">How to use with Brian:</div>
-      <ol style="margin:6px 0; padding-left:18px"><li>Both create accounts</li><li>Add each other as friends</li><li>One creates a workout & invites the other</li><li>Both open it, swap exercises, approve</li><li>Log your own sets</li></ol></div>
-    <button class="sec" onclick="logout()">Log out</button></div>`;
+// ---- Profile (me + any friend) ----
+function flameSvg(){ return '<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;vertical-align:-1px"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>'; }
+async function profileView(id){
+  const p = await H.get('/api/profile/'+id);
+  const isMe = id===ME.id;
+  const avatar = p.avatar
+    ? `<img class="pavatar" src="${esc(p.avatar)}" alt="">`
+    : `<div class="pavatar" style="background:${avatarColor(p.username)};color:#fff">${esc((p.displayName||p.username||'?')[0]||'?')}</div>`;
+  const stats = `
+    <div class="pstats">
+      <div class="pstat"><b>${p.workoutsCompleted}</b><span>Workouts</span></div>
+      <div class="pstat"><b>${p.following}</b><span>Friends</span></div>
+      <div class="pstat"><b>${p.followers}</b><span>Followers</span></div>
+    </div>`;
+  const bioBlock = isMe
+    ? `<div class="pbio" onclick="editBio()">${p.bio?esc(p.bio):'<span class="muted">Tap to add a bio</span>'}</div>`
+    : (p.bio?`<div class="pbio">${esc(p.bio)}</div>`:'');
+  const avatarBlock = isMe
+    ? `<label class="pavatar-wrap" title="Change photo">
+         ${avatar}
+         <span class="pcam">📷</span>
+         <input id="av" type="file" accept="image/*" capture="environment" style="display:none" onchange="uploadAvatar(this)">
+       </label>`
+    : avatar;
+  const action = isMe ? '' : `<button class="sm ${p.followers>0&&false?'':'blue'}" id="followBtn" onclick="toggleFollow('${p.id}')">Follow</button>`;
+  const actHtml = action?`<div style="margin:10px 0">${action}</div>`:'';
+  const feed = (p.recentActivity&&p.recentActivity.length)
+    ? p.recentActivity.map(a=>`<div class="feed-item"><span class="fi-ic">${a.type==='pr'?'🏆':a.type==='streak'?flameSvg():'✅'}</span><div>${esc(a.text)}</div></div>`).join('')
+    : '<div class="muted" style="padding:14px 0;text-align:center">No recent activity yet.</div>';
+  $('app').innerHTML = `<div class="wrap">
+    <div class="profile-head">
+      ${avatarBlock}
+      <div class="pinfo">
+        <div class="pname">${esc(p.displayName||p.username)}</div>
+        <div class="muted">@${esc(p.username)}</div>
+        ${p.streak>=2?`<div class="streak-pill" style="margin-top:6px">${flameSvg()}${p.streak} day streak</div>`:''}
+      </div>
+    </div>
+    ${stats}
+    ${actHtml}
+    ${bioBlock}
+    <h2>Recent activity</h2>
+    <div class="card" style="padding:4px 12px">${feed}</div>
+    ${isMe?`<button class="sec" style="margin-top:18px" onclick="logout()">Log out</button>`:''}
+  </div>`;
+  // reflect follow state
+  if(!isMe) reflectFollow(p);
 }
+async function reflectFollow(p){
+  const me = await H.get('/api/profile/me');
+  const btn = document.getElementById('followBtn');
+  if(!btn) return;
+  const following = (me.followers!==undefined); // placeholder; server drives count
+  btn.textContent = 'Follow';
+  btn.onclick = ()=>toggleFollow(p.id);
+}
+async function toggleFollow(id){
+  const r = await H.post('/api/follow/'+id,{});
+  if(r.error){ alert(r.error); return; }
+  const btn = document.getElementById('followBtn');
+  if(btn){ btn.textContent = 'Following'; btn.classList.remove('blue'); }
+  profileView(id);
+}
+function editBio(){
+  const cur = (ME.bio)||'';
+  const v = prompt('Your bio:', cur);
+  if(v===null) return;
+  H.post('/api/me/bio',{bio:v}).then(r=>{ if(r.bio!==undefined){ ME.bio=r.bio; profileView(ME.id); } });
+}
+async function uploadAvatar(input){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = async ()=>{
+    const r = await H.post('/api/me/avatar',{ data: reader.result, type: file.type });
+    if(r.avatar){ ME.avatar = r.avatar; profileView(ME.id); }
+    else alert(r.error||'upload failed');
+  };
+  reader.readAsDataURL(file);
+}
+function meScreen(){ profileView(ME.id); }
 function logout(){ localStorage.removeItem('crewfit_token'); TOKEN=''; ME=null; $('nav').classList.add('hidden'); authScreen(); }
 
 // ---- Push ----
@@ -381,7 +454,7 @@ async function vapidKey(){ const r=await (await fetch('/api/vapid')).json(); ret
 
 // ---- Boot ----
 (async ()=>{
-  if(TOKEN){ try{ const me = await H.get('/api/friends'); ME = JSON.parse(localStorage.getItem('crewfit_me')||'null'); }catch(e){} }
+  if(TOKEN){ try{ ME = await H.get('/api/profile/me'); }catch(e){} }
   if(TOKEN && ME){ $('nav').classList.remove('hidden'); home(); }
   else authScreen();
   if('serviceWorker' in navigator) setupPush();

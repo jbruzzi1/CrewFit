@@ -3,3 +3,4 @@ data.json
 vapid.json
 *.log
 .DS_Store
+uploads/
