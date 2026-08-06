@@ -259,7 +259,7 @@ const MG_IMG = {
   chest:'chest', lats:'lats', traps:'traps', biceps:'biceps', triceps:'triceps',
   core:'core', quads:'quads', hamstrings:'hamstrings', calves:'calves',
   shoulders:'shoulders', forearms:'forearms', glutes:'glutes', cardio:'cardio',
-  back:'lats', abs:'core'
+  abs:'core'
 };
 function exThumb(e){
   const mg = (e.muscle_groups&&e.muscle_groups[0]) || 'core';
@@ -357,7 +357,7 @@ async function submitSession(){
 }
 
 // ---- Library (two views: muscle groups -> exercises) ----
-const LIB_MUSCLES = ['chest','lats','traps','biceps','triceps','forearms','shoulders','core','quads','hamstrings','glutes','calves','cardio','back','abs'];
+const LIB_MUSCLES = ['chest','lats','traps','biceps','triceps','forearms','shoulders','core','quads','hamstrings','glutes','calves','cardio','abs'];
 let LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
 async function library(){
   LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
