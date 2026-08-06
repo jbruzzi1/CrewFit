@@ -368,10 +368,29 @@ async function library(){
   LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
   const lib = await H.get('/api/exercises');
   window._LIB2 = lib;
+  $('app').innerHTML = `<div class="pick">
+    <div class="pick-head lib-head">
+      <h1 style="flex:1">Exercises</h1>
+      <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
+    </div>
+    <div class="pick-search"><input id="ls" placeholder="Search exercises" oninput="libSearch(this.value)"></div>
+    <div class="pick-list" id="lib2"></div>
+  </div>`;
   renderLibGroups();
 }
 function renderLibGroups(){
   const lib = window._LIB2;
+  const q = LIB_STATE.q;
+  if(q){
+    const matches = lib.filter(e =>
+      e.name.toLowerCase().includes(q) ||
+      (e.muscle_groups||[]).join(' ').toLowerCase().includes(q) ||
+      (e.equipment||[]).join(' ').toLowerCase().includes(q)
+    ).sort((a,b)=>a.name.localeCompare(b.name));
+    $('lib2').innerHTML = matches.length ? matches.map(exRowHtml).join('')
+      : '<div class="muted" style="padding:20px;text-align:center">No exercises found.</div>';
+    return;
+  }
   const counts = {}; LIB_CATS.forEach(c=>c.muscles.forEach(m=>counts[m]=0));
   lib.forEach(e=>{ (e.muscle_groups||[]).forEach(m=>{ if(m in counts) counts[m]++; }); });
   const blocks = LIB_CATS.map(cat=>{
@@ -383,15 +402,7 @@ function renderLibGroups(){
       </div>`).join('');
     return `<div class="lib-cat">${esc(cat.name)}</div>${rows}`;
   }).join('');
-  $('app').innerHTML = `<div class="pick">
-    <div class="pick-head lib-head">
-      <h1 style="flex:1">Exercises</h1>
-      <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
-    </div>
-    <div class="pick-search"><input id="ls" placeholder="Search exercises" oninput="libSearch(this.value)"></div>
-    <div class="pick-list" id="lib2">${blocks}</div>
-  </div>`;
-  if(LIB_STATE.q) applyLibSearch();
+  $('lib2').innerHTML = blocks;
 }
 function libOpenMuscle(m){
   LIB_STATE.view='muscle'; LIB_STATE.muscle=m; LIB_STATE.eq=''; LIB_STATE.q='';
@@ -419,13 +430,17 @@ function pickEq2(el){
 function libSearch(v){ LIB_STATE.q=(v||'').toLowerCase(); applyLibSearch(); }
 function applyLibSearch(){
   if(LIB_STATE.view==='muscle') renderLibExercises();
-  else {
-    const q=LIB_STATE.q;
-    document.querySelectorAll('#lib2 .mg-card').forEach(c=>{
-      const name=c.querySelector('.mg-card-name').textContent.toLowerCase();
-      c.style.display = (!q || name.includes(q)) ? '' : 'none';
-    });
-  }
+  else renderLibGroups();
+}
+function exRowHtml(e){
+  return `<div class="ex-row" onclick="exDetail('${esc(e.name)}')">
+      <div class="ex-main">
+        <div class="ex-name">${esc(e.name)}</div>
+        <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}${e.custom?' · your exercise':''}</div>
+      </div>
+      <div class="ex-badges">${exBadges(e)}</div>
+      <div class="mg-chev">›</div>
+    </div>`;
 }
 function renderLibExercises(){
   const {muscle,eq,q}=LIB_STATE;
@@ -434,15 +449,8 @@ function renderLibExercises(){
     (!eq || eqFamilies(e).includes(eq)) &&
     (!q || e.name.toLowerCase().includes(q) || (e.muscle_groups||[]).join(' ').includes(q))
   ).sort((a,b)=>a.name.localeCompare(b.name));
-  $('lib2').innerHTML = list.length ? list.map(e=>`
-    <div class="ex-row" onclick="exDetail('${esc(e.name)}')">
-      <div class="ex-main">
-        <div class="ex-name">${esc(e.name)}</div>
-        <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}${e.custom?' · your exercise':''}</div>
-      </div>
-      <div class="ex-badges">${exBadges(e)}</div>
-      <div class="mg-chev">›</div>
-    </div>`).join('') : '<div class="muted" style="padding:20px;text-align:center">No exercises here.</div>';
+  $('lib2').innerHTML = list.length ? list.map(exRowHtml).join('')
+    : '<div class="muted" style="padding:20px;text-align:center">No exercises here.</div>';
 }
 function openCreateEx(presetMuscle){
   const msel = LIB_MUSCLES.map(m=>`<option value="${m}" ${presetMuscle===m?'selected':''}>${m}</option>`).join('');
