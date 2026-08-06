@@ -380,7 +380,7 @@ function renderLibGroups(){
     <div class="mg-card" onclick="libOpenMuscle('${m}')">
       <div class="mg-ico">${mgIcon(m)}</div>
       <div class="mg-card-body"><div class="mg-card-name">${esc(m)}</div><div class="mg-card-count">${counts[m]} exercises</div></div>
-      <div class="ex-add">›</div>
+      <div class="mg-chev">›</div>
     </div>`).join('');
   $('app').innerHTML = `<div class="pick">
     <div class="pick-head lib-head">
@@ -397,7 +397,7 @@ function libOpenMuscle(m){
   const eqs = [...new Set(window._LIB2.filter(e=>(e.muscle_groups||[]).includes(m)).flatMap(eqFamilies))];
   $('app').innerHTML = `<div class="pick">
     <div class="pick-head lib-head">
-      <button class="sec sm" onclick="library()">‹ Muscles</button>
+      <button class="sec sm" onclick="library()">‹ All muscles</button>
       <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
       <button class="icon-btn" onclick="openCreateEx('${m}')" title="Create exercise">＋</button>
     </div>
@@ -440,7 +440,7 @@ function renderLibExercises(){
         <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}${e.custom?' · your exercise':''}</div>
       </div>
       <div class="ex-badges">${exBadges(e)}</div>
-      <div class="ex-add">›</div>
+      <div class="mg-chev">›</div>
     </div>`).join('') : '<div class="muted" style="padding:20px;text-align:center">No exercises here.</div>';
 }
 function openCreateEx(presetMuscle){
