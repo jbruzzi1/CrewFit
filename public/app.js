@@ -259,7 +259,7 @@ const MG_IMG = {
   chest:'chest', lats:'lats', traps:'traps', biceps:'biceps', triceps:'triceps',
   core:'core', quads:'quads', hamstrings:'hamstrings', calves:'calves',
   shoulders:'shoulders', forearms:'forearms', glutes:'glutes', cardio:'cardio',
-  abs:'core', abdominals:'core'
+  abdominals:'core'
 };
 function exThumb(e){
   const mg = (e.muscle_groups&&e.muscle_groups[0]) || 'abdominals';
@@ -357,7 +357,12 @@ async function submitSession(){
 }
 
 // ---- Library (two views: muscle groups -> exercises) ----
-const LIB_MUSCLES = ['chest','lats','traps','biceps','triceps','forearms','shoulders','abdominals','quads','hamstrings','glutes','calves','cardio','abs'];
+const LIB_MUSCLES = ['chest','lats','traps','biceps','triceps','forearms','shoulders','abdominals','quads','hamstrings','glutes','calves','cardio'];
+const LIB_CATS = [
+  { name:'Upper Body', muscles:['chest','lats','traps','biceps','triceps','forearms','shoulders'] },
+  { name:'Lower Body', muscles:['quads','hamstrings','glutes','calves'] },
+  { name:'Other', muscles:['abdominals','cardio'] },
+];
 let LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
 async function library(){
   LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
@@ -367,21 +372,24 @@ async function library(){
 }
 function renderLibGroups(){
   const lib = window._LIB2;
-  const counts = {}; LIB_MUSCLES.forEach(m=>counts[m]=0);
+  const counts = {}; LIB_CATS.forEach(c=>c.muscles.forEach(m=>counts[m]=0));
   lib.forEach(e=>{ (e.muscle_groups||[]).forEach(m=>{ if(m in counts) counts[m]++; }); });
-  const rows = LIB_MUSCLES.map(m=>`
-    <div class="mg-card" onclick="libOpenMuscle('${m}')">
-      <div class="mg-ico">${mgIcon(m)}</div>
-      <div class="mg-card-body"><div class="mg-card-name">${esc(m)}</div><div class="mg-card-count">${counts[m]} exercises</div></div>
-      <div class="mg-chev">›</div>
-    </div>`).join('');
+  const blocks = LIB_CATS.map(cat=>{
+    const rows = cat.muscles.map(m=>`
+      <div class="mg-card" onclick="libOpenMuscle('${m}')">
+        <div class="mg-ico">${mgIcon(m)}</div>
+        <div class="mg-card-body"><div class="mg-card-name">${esc(m)}</div><div class="mg-card-count">${counts[m]} exercises</div></div>
+        <div class="mg-chev">›</div>
+      </div>`).join('');
+    return `<div class="lib-cat">${esc(cat.name)}</div>${rows}`;
+  }).join('');
   $('app').innerHTML = `<div class="pick">
     <div class="pick-head lib-head">
       <h1 style="flex:1">Exercises</h1>
       <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
     </div>
     <div class="pick-search"><input id="ls" placeholder="Search exercises" oninput="libSearch(this.value)"></div>
-    <div class="pick-list" id="lib2">${rows}</div>
+    <div class="pick-list" id="lib2">${blocks}</div>
   </div>`;
   if(LIB_STATE.q) applyLibSearch();
 }
