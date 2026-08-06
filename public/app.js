@@ -363,61 +363,109 @@ async function submitSession(){
   }
 }
 
-// ---- Library ----
+// ---- Library (two views: muscle groups -> exercises) ----
+const LIB_MUSCLES = ['chest','back','shoulders','biceps','triceps','forearms','traps','quads','hamstrings','glutes','calves','abs','core','cardio'];
+let LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
 async function library(){
+  LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
   const lib = await H.get('/api/exercises');
   window._LIB2 = lib;
-  const cats = [...new Set(lib.flatMap(e=>(e.muscle_groups||[])))];
-  const eqs = [...new Set(lib.flatMap(eqFamilies))];
-  window._PFILTER2 = { cat:'', eq:'', q:'' };
+  renderLibGroups();
+}
+function renderLibGroups(){
+  const lib = window._LIB2;
+  const counts = {}; LIB_MUSCLES.forEach(m=>counts[m]=0);
+  lib.forEach(e=>{ (e.muscle_groups||[]).forEach(m=>{ if(m in counts) counts[m]++; }); });
+  const rows = LIB_MUSCLES.map(m=>`
+    <div class="mg-card" onclick="libOpenMuscle('${m}')">
+      <div class="mg-ico">${mgIcon(m)}</div>
+      <div class="mg-card-body"><div class="mg-card-name">${esc(m)}</div><div class="mg-card-count">${counts[m]} exercises</div></div>
+      <div class="ex-add">›</div>
+    </div>`).join('');
   $('app').innerHTML = `<div class="pick">
-    <div class="pick-head"><h1 style="flex:1">Exercises</h1></div>
-    <div class="pick-search"><input id="ls" placeholder="Search exercises" oninput="filterLib2()"></div>
-    <div class="cat-pills" id="catPills2">
-      <span class="cat-pill on" data-cat="" onclick="pickCat2(this)">All</span>
-      ${cats.map(c=>`<span class="cat-pill" data-cat="${esc(c)}" onclick="pickCat2(this)">${esc(c)}</span>`).join('')}
+    <div class="pick-head lib-head">
+      <h1 style="flex:1">Exercises</h1>
+      <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
     </div>
+    <div class="pick-search"><input id="ls" placeholder="Search exercises" oninput="libSearch(this.value)"></div>
+    <div class="pick-list" id="lib2">${rows}</div>
+  </div>`;
+  if(LIB_STATE.q) applyLibSearch();
+}
+function libOpenMuscle(m){
+  LIB_STATE.view='muscle'; LIB_STATE.muscle=m; LIB_STATE.eq=''; LIB_STATE.q='';
+  const eqs = [...new Set(window._LIB2.filter(e=>(e.muscle_groups||[]).includes(m)).flatMap(eqFamilies))];
+  $('app').innerHTML = `<div class="pick">
+    <div class="pick-head lib-head">
+      <button class="sec sm" onclick="library()">‹ Muscles</button>
+      <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
+      <button class="icon-btn" onclick="openCreateEx('${m}')" title="Create exercise">＋</button>
+    </div>
+    <div class="pick-search"><input id="ls" placeholder="Search ${esc(m)}" oninput="libSearch(this.value)"></div>
     <div class="cat-pills eq-pills" id="eqPills2">
       <span class="cat-pill on" data-eq="" onclick="pickEq2(this)">Any</span>
       ${eqs.map(k=>`<span class="cat-pill" data-eq="${k}" onclick="pickEq2(this)">${eqLabel(k)}</span>`).join('')}
     </div>
     <div class="pick-list" id="lib2"></div>
   </div>`;
-  filterLib2();
-}
-function pickCat2(el){
-  window._PFILTER2.cat = el.dataset.cat;
-  document.querySelectorAll('#catPills2 .cat-pill').forEach(p=>p.classList.toggle('on', p===el));
-  filterLib2();
+  renderLibExercises();
 }
 function pickEq2(el){
-  window._PFILTER2.eq = el.dataset.eq;
+  LIB_STATE.eq = el.dataset.eq;
   document.querySelectorAll('#eqPills2 .cat-pill').forEach(p=>p.classList.toggle('on', p===el));
-  filterLib2();
+  renderLibExercises();
 }
-function filterLib2(){
-  const q=(window._PFILTER2.q=($('ls').value||'').toLowerCase());
-  const {cat,eq}=window._PFILTER2;
+function libSearch(v){ LIB_STATE.q=(v||'').toLowerCase(); applyLibSearch(); }
+function applyLibSearch(){
+  if(LIB_STATE.view==='muscle') renderLibExercises();
+  else {
+    const q=LIB_STATE.q;
+    document.querySelectorAll('#lib2 .mg-card').forEach(c=>{
+      const name=c.querySelector('.mg-card-name').textContent.toLowerCase();
+      c.style.display = (!q || name.includes(q)) ? '' : 'none';
+    });
+  }
+}
+function renderLibExercises(){
+  const {muscle,eq,q}=LIB_STATE;
   const list = window._LIB2.filter(e=>
-    (!cat || (e.muscle_groups||[]).includes(cat)) &&
+    (e.muscle_groups||[]).includes(muscle) &&
     (!eq || eqFamilies(e).includes(eq)) &&
     (!q || e.name.toLowerCase().includes(q) || (e.muscle_groups||[]).join(' ').includes(q))
-  );
-  const groups={};
-  list.forEach(e=>{ const g=(e.muscle_groups&&e.muscle_groups[0])||'Other'; (groups[g]=groups[g]||[]).push(e); });
-  const html = Object.keys(groups).sort().map(g=>`
-    <div class="pick-group">${esc(g)}</div>
-    ${groups[g].sort((a,b)=>a.name.localeCompare(b.name)).map(e=>`
-      <div class="ex-row" onclick="exDetail('${esc(e.name)}')">
-        <div class="ex-main">
-          <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}</div>
-        </div>
-        <div class="ex-badges">${exBadges(e)}</div>
-        <div class="ex-add">›</div>
-      </div>`).join('')}
-  `).join('');
-  $('lib2').innerHTML = list.length ? html : '<div class="muted" style="padding:20px;text-align:center">No matches.</div>';
+  ).sort((a,b)=>a.name.localeCompare(b.name));
+  $('lib2').innerHTML = list.length ? list.map(e=>`
+    <div class="ex-row" onclick="exDetail('${esc(e.name)}')">
+      <div class="ex-main">
+        <div class="ex-name">${esc(e.name)}</div>
+        <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}${e.custom?' · your exercise':''}</div>
+      </div>
+      <div class="ex-badges">${exBadges(e)}</div>
+      <div class="ex-add">›</div>
+    </div>`).join('') : '<div class="muted" style="padding:20px;text-align:center">No exercises here.</div>';
+}
+function openCreateEx(presetMuscle){
+  const msel = LIB_MUSCLES.map(m=>`<option value="${m}" ${presetMuscle===m?'selected':''}>${m}</option>`).join('');
+  const eqOpts = EQ_FAMILY.map(f=>`<option value="${f.key}">${f.label}</option>`).join('');
+  const sheet = document.createElement('div'); sheet.className='sheet-back';
+  sheet.innerHTML=`
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="sheet-head"><h2>Create exercise</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <label class="muted">Name</label><input id="ceName" placeholder="e.g. Cable Crossover">
+      <label class="muted">Primary muscle</label><select id="ceMg">${msel}</select>
+      <label class="muted">Equipment</label><select id="ceEq">${eqOpts}</select>
+      <label class="muted">Level</label><select id="ceLv"><option>beginner</option><option>intermediate</option><option>advanced</option></select>
+      <label class="muted">Type</label><select id="ceType"><option value="0">Isolation</option><option value="1">Compound</option></select>
+      <button class="blue" style="margin-top:14px;width:100%" onclick="submitCreateEx()">Save exercise</button>
+    </div>`;
+  sheet.onclick=closeSheet; document.body.appendChild(sheet);
+  requestAnimationFrame(()=>sheet.classList.add('show'));
+}
+async function submitCreateEx(){
+  const name=($('ceName').value||'').trim(); if(!name) return alert('Enter a name');
+  const muscle=$('ceMg').value;
+  const payload={ name, muscle_groups:[muscle], equipment:[eqLabel($('ceEq').value).toLowerCase()], level:$('ceLv').value, is_compound:$('ceType').value==='1' };
+  const r = await H.post('/api/exercises/custom', payload);
+  if(r.error) alert(r.error); else { closeSheet(); if(LIB_STATE.view==='muscle') libOpenMuscle(LIB_STATE.muscle); else library(); }
 }
 function exDetail(name){
   const e = window._LIB2.find(x=>x.name===name); if(!e) return;

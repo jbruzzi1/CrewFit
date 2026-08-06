@@ -23,9 +23,9 @@ webpush.setVapidDetails('mailto:jeff@example.com', vapid.publicKey, vapid.privat
 
 // ---- Store ----
 function load() {
-  if (!fs.existsSync(DATA_FILE)) return { users: {}, sessions: {}, friendships: {}, pushSubs: {} };
-  try { return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); }
-  catch (e) { return { users: {}, sessions: {}, friendships: {}, pushSubs: {} }; }
+  if (!fs.existsSync(DATA_FILE)) return { users: {}, sessions: {}, friendships: {}, pushSubs: {}, customExercises: {} };
+  try { const d = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); d.customExercises = d.customExercises || {}; return d; }
+  catch (e) { return { users: {}, sessions: {}, friendships: {}, pushSubs: {}, customExercises: {} }; }
 }
 function save(d) { fs.writeFileSync(DATA_FILE, JSON.stringify(d, null, 2)); }
 let DB = load();
@@ -100,8 +100,30 @@ function publicUser(id) {
   return { id: u.id, username: u.username, displayName: u.displayName, bio: u.bio || '', avatar: u.avatar || '', followers: (u.followers || []).length, following: (u.friends || []).length };
 }
 
-// ---- Exercise library (136 exercises) ----
-app.get('/api/exercises', (req, res) => res.json(EX_LIB));
+// ---- Exercise library (136 base + user-created) ----
+app.get('/api/exercises', (req, res) => {
+  const custom = Object.values(DB.customExercises || {}).flat();
+  res.json(EX_LIB.concat(custom));
+});
+app.post('/api/exercises/custom', auth, (req, res) => {
+  const { name, muscle_groups, equipment, level, is_compound, pattern } = req.body || {};
+  if (!name || !Array.isArray(muscle_groups) || !muscle_groups.length) return res.status(400).json({ error: 'name + muscle_groups required' });
+  const ex = {
+    name: String(name).slice(0, 80),
+    pattern: pattern || (muscle_groups[0] || 'other'),
+    category: muscle_groups[0] || 'other',
+    muscle_groups,
+    equipment: Array.isArray(equipment) ? equipment : [],
+    is_compound: !!is_compound,
+    level: level || 'beginner',
+    defaultSets: 3, defaultReps: 10,
+    custom: true, ownerId: req.userId
+  };
+  DB.customExercises[req.userId] = DB.customExercises[req.userId] || [];
+  DB.customExercises[req.userId].push(ex);
+  save(DB);
+  res.json(ex);
+});
 
 // ---- Profile (per-user, viewable by anyone logged in) ----
 function profileOf(id) {
