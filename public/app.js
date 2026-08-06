@@ -259,10 +259,10 @@ const MG_IMG = {
   chest:'chest', lats:'lats', traps:'traps', biceps:'biceps', triceps:'triceps',
   core:'core', quads:'quads', hamstrings:'hamstrings', calves:'calves',
   shoulders:'shoulders', forearms:'forearms', glutes:'glutes', cardio:'cardio',
-  abs:'core'
+  abs:'core', abdominals:'core'
 };
 function exThumb(e){
-  const mg = (e.muscle_groups&&e.muscle_groups[0]) || 'core';
+  const mg = (e.muscle_groups&&e.muscle_groups[0]) || 'abdominals';
   return mgIcon(mg);
 }
 async function pickExercise(){
@@ -357,7 +357,7 @@ async function submitSession(){
 }
 
 // ---- Library (two views: muscle groups -> exercises) ----
-const LIB_MUSCLES = ['chest','lats','traps','biceps','triceps','forearms','shoulders','core','quads','hamstrings','glutes','calves','cardio','abs'];
+const LIB_MUSCLES = ['chest','lats','traps','biceps','triceps','forearms','shoulders','abdominals','quads','hamstrings','glutes','calves','cardio','abs'];
 let LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
 async function library(){
   LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
@@ -467,7 +467,7 @@ function exDetail(name){
   const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>${esc(e.name)}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
-      <div class="sheet-thumb">${exThumb(e)}<span class="sheet-thumb-cap">${(e.muscle_groups||[])[0]||'core'}</span></div>
+      <div class="sheet-thumb">${exThumb(e)}<span class="sheet-thumb-cap">${(e.muscle_groups||[])[0]||'abdominals'}</span></div>
       <div class="sheet-mg">${(e.muscle_groups||[]).join(' · ')}</div>
       <div class="ex-badges" style="margin:8px 0">${exBadges(e)}</div>
       <div class="sheet-row"><span>Equipment</span><b>${eqs}</b></div>
