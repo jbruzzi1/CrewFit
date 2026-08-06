@@ -248,25 +248,26 @@ function exBadges(e){
   return b.join('');
 }
 // ---- Exercise thumbnail (SVG, shown in detail sheet only) ----
+// ---- Muscle-group icons (clean stroke-outline anatomy glyphs) ----
 const MG_ICON = {
-  chest:'<path d="M4 7c2-1 4-1 8 1 4-2 6-2 8-1 1 3 0 6-2 8-2 2-4 3-6 4-2-1-4-2-6-4-2-2-3-5-2-8Z"/>',
-  back:'<path d="M8 4c-2 2-2 5-1 8s1 5 1 8h2c0-3 0-6 1-9 1 3 1 6 1 9h2c0-3 0-6-1-9 1 3 1 6 1 9 0-3 0-6-1-8s-1-5-1-8c-2-1-4-1-6 0Z"/>',
-  shoulders:'<path d="M5 8c1-3 4-4 7-4s6 1 7 4c1 2 0 4-2 4-2 0-3-1-4-1-2 0-3 1-5 1-2 0-3-2-2-4Z"/>',
-  biceps:'<path d="M9 20c-1-5 0-9 3-12 2-2 5-2 6 0 1 2-1 4-3 4-1 3-1 7-1 10Z"/><circle cx="16" cy="8" r="2.2"/>',
-  triceps:'<path d="M14 20c1-6 1-10 0-13-1-2-4-3-6-1-1 2 1 4 3 4 1 4 1 8 1 11Z"/><circle cx="8" cy="9" r="2.2"/>',
-  forearms:'<path d="M12 20V8c0-3 3-4 4-2 1 2-1 4-1 6M12 12c0-2 2-3 3-2"/>',
-  abs:'<path d="M7 7h10M7 11h10M7 15h10M10 5h4v14h-4z" fill="none" stroke-width="1.6"/><rect x="9" y="9" width="2.4" height="2.4"/><rect x="12.6" y="9" width="2.4" height="2.4"/><rect x="9" y="12.6" width="2.4" height="2.4"/><rect x="12.6" y="12.6" width="2.4" height="2.4"/>',
-  core:'<circle cx="12" cy="12" r="7" fill="none" stroke-width="1.8"/><path d="M12 5v14M5 12h14" stroke-width="1.4" fill="none"/>',
-  quads:'<path d="M10 4h4l1 5 2 5-2 6H9l-2-6 2-5z"/><path d="M9 15h6" fill="none" stroke-width="1.4"/>',
-  hamstrings:'<path d="M9 4h6l1 4 2 7-2 5H8l-2-5 2-7z"/><path d="M8 11h8" fill="none" stroke-width="1.4"/>',
-  glutes:'<path d="M6 8c2-2 4-2 6-1 2-1 4-1 6 1 1 4 0 8-2 9-2 1-4 1-4-1-1 2-3 2-4 1-2-1-3-5-2-9Z"/>',
-  calves:'<path d="M10 4h4l1 6 2 4-2 6H9l-2-6 2-4z"/><path d="M10 13h4" fill="none" stroke-width="1.4"/>',
-  traps:'<path d="M6 6h12l2 4-4 4H8L4 10z"/><path d="M12 6v8" fill="none" stroke-width="1.4"/>',
+  chest:'<path d="M12 7v10"/><path d="M9 7c-2-1-4 0-4 3 0 3 2 6 4 6"/><path d="M15 7c2-1 4 0 4 3 0 3-2 6-4 6"/>',
+  back:'<path d="M12 5v14"/><path d="M12 6c-3 0-5 2-5 5 0 4 2 7 5 7"/><path d="M12 6c3 0 5 2 5 5 0 4-2 7-5 7"/><path d="M7 10h10"/>',
+  shoulders:'<path d="M4 11c0-3 3-5 8-5s8 2 8 5"/><path d="M6 11a2.6 2.6 0 1 0 0 .1"/><path d="M18 11a2.6 2.6 0 1 0 0 .1"/>',
+  biceps:'<path d="M8 19v-6c0-3 2-5 4-5s4 2 4 5v6"/><path d="M14 12a2.3 2.3 0 1 0 0 .1"/>',
+  triceps:'<path d="M16 19v-7c0-3-2-5-4-5s-4 2-4 5v7"/><path d="M12 7v10"/>',
+  forearms:'<path d="M12 19V7c0-2 2-3 3-2 1 1 1 3 0 4"/><path d="M15 7v7"/>',
+  abs:'<path d="M9 6h6v12h-6z"/><path d="M12 6v12M9 10h6M9 14h6"/>',
+  core:'<path d="M8 5h8v14h-8z"/><path d="M12 5v14"/>',
+  quads:'<path d="M9 5h6l1 6 2 5-2 5h-8l-2-5 2-5z"/><path d="M9 15h6"/>',
+  hamstrings:'<path d="M9 5h6l1 4 2 7-2 5h-8l-2-5 2-7z"/><path d="M8 11h8"/>',
+  glutes:'<path d="M12 6c-2 0-3 2-3 5s1 7 3 7 3-2 3-5-1-7-3-7z"/><path d="M9 11c-1 2-1 5 0 7M15 11c1 2 1 5 0 7"/>',
+  calves:'<path d="M9 4h6l1 9 2 3-2 5h-8l-2-5 2-3z"/><path d="M9 15h6"/>',
+  traps:'<path d="M6 6h12l3 5-6 5h-6l-6-5z"/><path d="M12 6v10"/>',
   cardio:'<path d="M12 20S4 14 4 9a4 4 0 0 1 8-1 4 4 0 0 1 8 1c0 5-8 11-8 11Z"/>'
 };
 function mgIcon(mg){
   const p = MG_ICON[mg] || MG_ICON.core;
-  return `<svg class="mg-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${p}</svg>`;
+  return `<svg class="mg-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
 }
 function exThumb(e){
   const mg = (e.muscle_groups&&e.muscle_groups[0]) || 'core';
