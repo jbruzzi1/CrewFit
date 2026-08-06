@@ -248,27 +248,19 @@ function exBadges(e){
   return b.join('');
 }
 // ---- Exercise thumbnail (SVG, shown in detail sheet only) ----
-// ---- Muscle-group icons (clean stroke-outline anatomy glyphs) ----
-const MG_ICON = {
-  chest:'<path d="M12 7v10"/><path d="M9 7c-2-1-4 0-4 3 0 3 2 6 4 6"/><path d="M15 7c2-1 4 0 4 3 0 3-2 6-4 6"/>',
-  back:'<path d="M12 5v14"/><path d="M12 6c-3 0-5 2-5 5 0 4 2 7 5 7"/><path d="M12 6c3 0 5 2 5 5 0 4-2 7-5 7"/><path d="M7 10h10"/>',
-  shoulders:'<path d="M4 11c0-3 3-5 8-5s8 2 8 5"/><path d="M6 11a2.6 2.6 0 1 0 0 .1"/><path d="M18 11a2.6 2.6 0 1 0 0 .1"/>',
-  biceps:'<path d="M8 19v-6c0-3 2-5 4-5s4 2 4 5v6"/><path d="M14 12a2.3 2.3 0 1 0 0 .1"/>',
-  triceps:'<path d="M16 19v-7c0-3-2-5-4-5s-4 2-4 5v7"/><path d="M12 7v10"/>',
-  forearms:'<path d="M12 19V7c0-2 2-3 3-2 1 1 1 3 0 4"/><path d="M15 7v7"/>',
-  abs:'<path d="M9 6h6v12h-6z"/><path d="M12 6v12M9 10h6M9 14h6"/>',
-  core:'<path d="M8 5h8v14h-8z"/><path d="M12 5v14"/>',
-  quads:'<path d="M9 5h6l1 6 2 5-2 5h-8l-2-5 2-5z"/><path d="M9 15h6"/>',
-  hamstrings:'<path d="M9 5h6l1 4 2 7-2 5h-8l-2-5 2-7z"/><path d="M8 11h8"/>',
-  glutes:'<path d="M12 6c-2 0-3 2-3 5s1 7 3 7 3-2 3-5-1-7-3-7z"/><path d="M9 11c-1 2-1 5 0 7M15 11c1 2 1 5 0 7"/>',
-  calves:'<path d="M9 4h6l1 9 2 3-2 5h-8l-2-5 2-3z"/><path d="M9 15h6"/>',
-  traps:'<path d="M6 6h12l3 5-6 5h-6l-6-5z"/><path d="M12 6v10"/>',
-  cardio:'<path d="M12 20S4 14 4 9a4 4 0 0 1 8-1 4 4 0 0 1 8 1c0 5-8 11-8 11Z"/>'
-};
+// ---- Muscle-group icons (real mannequin crops w/ red highlight, from user reference images) ----
+// Map muscle-group key -> png in public/muscle-icons/. Old SVG glyphs replaced.
 function mgIcon(mg){
-  const p = MG_ICON[mg] || MG_ICON.core;
-  return `<svg class="mg-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+  const key = MG_IMG[mg] || mg;
+  return `<img class="mg-ico" src="muscle-icons/${key}.png" alt="${esc(mg)}" loading="lazy">`;
 }
+// keys that have a dedicated icon png; legacy data tags mapped to closest available icon
+const MG_IMG = {
+  chest:'chest', lats:'lats', traps:'traps', biceps:'biceps', triceps:'triceps',
+  core:'core', quads:'quads', hamstrings:'hamstrings', calves:'calves',
+  shoulders:'shoulders', forearms:'forearms', glutes:'glutes', cardio:'cardio',
+  back:'lats', abs:'core'
+};
 function exThumb(e){
   const mg = (e.muscle_groups&&e.muscle_groups[0]) || 'core';
   return mgIcon(mg);
@@ -365,7 +357,7 @@ async function submitSession(){
 }
 
 // ---- Library (two views: muscle groups -> exercises) ----
-const LIB_MUSCLES = ['chest','back','shoulders','biceps','triceps','forearms','traps','quads','hamstrings','glutes','calves','abs','core','cardio'];
+const LIB_MUSCLES = ['chest','lats','traps','biceps','triceps','forearms','shoulders','core','quads','hamstrings','glutes','calves','cardio','back','abs'];
 let LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
 async function library(){
   LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };

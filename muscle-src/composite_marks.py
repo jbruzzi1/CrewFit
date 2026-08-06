@@ -1,11 +1,15 @@
 import json, os
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 import numpy as np
 from collections import deque
 
 BASE='/Users/jeffbruzzi/fitness-app'
 MARKS=json.load(open(BASE+'/muscle-src/muscle-marks.json'))
 GREEN=np.array([22,163,74],np.float32)
+
+# ---- Use the FULL-BODY masters (same framing paint.html displays) ----
+FRONT_MASTER=BASE+'/muscle-icons/master-front-full.png'
+BACK_MASTER =BASE+'/muscle-icons/master-back-full.png'
 
 def body_mask(src):
     H,W,_=src.shape
@@ -30,29 +34,24 @@ def body_mask(src):
     return body, ero
 
 def paint_mask(points, H, W, feather=18):
-    # build a filled polygon mask from the user's stroke outline
     img=Image.new('L',(W,H),0)
     d=ImageDraw.Draw(img)
     pts=[(int(x),int(y)) for x,y in points]
     if len(pts)>=3:
-        # close the loop
         d.polygon(pts, fill=255)
     mask=np.array(img)>0
-    # dilate a bit to cover interior gaps (user traced outline)
     for _ in range(6):
         p=np.pad(mask.astype(np.uint8),1,mode='constant',constant_values=0)
         mask=np.minimum(np.minimum(p[:-2,:-2],p[:-2,1:-1]),np.minimum(np.minimum(p[:-2,2:],p[1:-1,:-2]),np.minimum(np.minimum(p[1:-1,2:],p[2:,:-2]),np.minimum(p[2:,1:-1],p[2:,2:]))))>0
-    # blur for soft edge
-    from PIL import ImageFilter
     soft=Image.fromarray((mask*255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(feather))
     return (np.array(soft)/255.0)
 
-front_src=np.array(Image.open(BASE+'/muscle-src/master-shoulders.png').convert('RGBA')).astype(np.float32)
-back_src=np.array(Image.open(BASE+'/muscle-src/master-back.png').convert('RGBA')).astype(np.float32)
+front_src=np.array(Image.open(FRONT_MASTER).convert('RGBA')).astype(np.float32)
+back_src =np.array(Image.open(BACK_MASTER ).convert('RGBA')).astype(np.float32)
 bf,bfe=body_mask(front_src); bb,bbe=body_mask(back_src)
 H,W=bf.shape
 
-def apply(src, ero, name, points):
+def apply(src, ero, points):
     work=src.copy()
     if points and len(points)>=3:
         m=paint_mask(points,H,W)*ero.astype(np.float32)
@@ -62,20 +61,26 @@ def apply(src, ero, name, points):
     work[:,:,:3]=work[:,:,:3]*(1-m3*0.85)+GREEN[None,None,:]*(m3*0.85)
     return Image.fromarray(np.clip(work,0,255).astype(np.uint8),'RGBA').convert('RGB')
 
+# ---- Lower-body crop for LEG muscles so the highlight reads clearly ----
+# Masters are 1024x1024; legs occupy roughly the lower ~44% (y>=570).
+LEG_CROP=(0,570,W,1024)
+def crop_lower(im):
+    return im.crop(LEG_CROP)
+
+# Every muscle is driven ONLY by muscle-marks.json (no hardcoded fallbacks).
+front_muscles=['chest','shoulders','biceps','forearms','abs','core','quads','cardio']
+back_muscles =['triceps','hamstrings','calves','back','traps','glutes']
+LEG_MUSCLES={'quads','hamstrings','calves','glutes'}
+
 out={}
-for n in ['chest','shoulders','biceps','forearms','abs','core']:
-    out[n]=apply(front_src,bfe,n,MARKS['front'].get(n,[]))
-for n in ['triceps']:
-    out[n]=apply(back_src,bbe,n,MARKS['back'].get(n,[]))
-# quads + cardio not painted -> gentle default ellipses on body
-def ellipse(src,ero,cx,cy,rx,ry):
-    work=src.copy(); yy,xx=np.mgrid[0:H,0:W]
-    d=np.sqrt(((xx-cx)/rx)**2+((yy-cy)/ry)**2); m=(1.0-np.clip((d-0.5)/0.5,0,1))*ero.astype(np.float32)
-    m3=m[:,:,None]; work[:,:,:3]=work[:,:,:3]*(1-m3*0.85)+GREEN[None,None,:]*(m3*0.85)
-    return Image.fromarray(np.clip(work,0,255).astype(np.uint8),'RGBA').convert('RGB')
-out['quads']=ellipse(front_src,bfe,512,820,170,120)
-out['cardio']=ellipse(front_src,bfe,512,470,80,80)
+for n in front_muscles:
+    im=apply(front_src,bfe,MARKS['front'].get(n,[]))
+    out[n]=(crop_lower(im) if n in LEG_MUSCLES else im)
+for n in back_muscles:
+    im=apply(back_src,bbe,MARKS['back'].get(n,[]))
+    out[n]=(crop_lower(im) if n in LEG_MUSCLES else im)
+
 os.makedirs(BASE+'/muscle-icons',exist_ok=True)
 for n,im in out.items():
-    im.save(BASE+f'/muscle-icons/{n}.png'); print('wrote',n)
+    im.save(BASE+f'/muscle-icons/{n}.png'); print('wrote',n, im.size)
 print('DONE')

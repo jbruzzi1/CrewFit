@@ -4,3 +4,5 @@ vapid.json
 *.log
 .DS_Store
 uploads/
+.hermes/
+__pycache__/
