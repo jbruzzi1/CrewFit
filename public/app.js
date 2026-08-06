@@ -252,7 +252,7 @@ function exBadges(e){
 // Map muscle-group key -> png in public/muscle-icons/. Old SVG glyphs replaced.
 function mgIcon(mg){
   const key = MG_IMG[mg] || mg;
-  return `<img class="mg-ico" src="muscle-icons/${key}.png" alt="${esc(mg)}" loading="lazy">`;
+  return `<img class="mg-img" src="muscle-icons/${key}.png" alt="${esc(mg)}" loading="lazy">`;
 }
 // keys that have a dedicated icon png; legacy data tags mapped to closest available icon
 const MG_IMG = {
