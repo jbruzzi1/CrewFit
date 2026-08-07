@@ -57,10 +57,13 @@ async function home(){
   const feed = await H.get('/api/feed');
   const friendName = async (id)=> (await H.get('/api/friends')).find(f=>f.id===id)?.displayName || 'friend';
   const initial = ((ME&&(ME.displayName||ME.username))||'?')[0]||'?';
+  const homeAvatarHtml = ME && ME.avatar
+    ? `<img class="home-avatar" src="${esc(ME.avatar)}" alt="" onclick="showTab('me')">`
+    : `<div class="home-avatar" onclick="showTab('me')">${esc(initial.toUpperCase())}</div>`;
   let html = `<div class="wrap home-head">
     <div class="home-top">
       <div class="home-brand">CrewFit</div>
-      <div class="home-avatar" onclick="showTab('me')">${esc(initial.toUpperCase())}</div>
+      ${homeAvatarHtml}
     </div>
     <button class="blue btn-hero" onclick="createFlow()">+ New workout</button>`;
 
