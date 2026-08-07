@@ -231,8 +231,41 @@ async function useTemplate(){
   renderDraft();
 }
 function toggleInvite(cb){ const u=cb.value; if(cb.checked){ if(!DRAFT.inviteUsernames.includes(u)) DRAFT.inviteUsernames.push(u);} else { DRAFT.inviteUsernames=DRAFT.inviteUsernames.filter(x=>x!==u);} }
-function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item"><div>${esc(e.name)} <span class="tag">${e.defaultSets}×${e.defaultReps}</span></div><button class="sm red" onclick="rmEx(${i})">✕</button></div>`).join('') : '<div class="muted">None added.</div>'; }
-function rmEx(i){ DRAFT.exercises.splice(i,1); renderDraft(); }
+function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item draft-ex" onclick="editDraftEx(${i})">
+      <div><div style="font-weight:600">${esc(e.name)}</div><div class="muted" style="font-size:12px">${e.defaultSets} sets × ${e.defaultReps} reps</div></div>
+      <button class="sm red" onclick="event.stopPropagation(); rmEx(${i})">✕</button>
+    </div>`).join('') : '<div class="muted">None added.</div>'; }
+function editDraftEx(i){
+  const e = DRAFT.exercises[i]; if(!e) return;
+  const sheet = document.createElement('div'); sheet.className='sheet-back';
+  sheet.innerHTML=`
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="sheet-head"><h2>Edit exercise</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <div class="sheet-thumb-cap" style="font-size:16px;font-weight:700;color:var(--fg);text-transform:none;margin-bottom:10px">${esc(e.name)}</div>
+      <div class="sheet-row"><span>Sets</span><div class="stepper">
+        <button class="stp" onclick="stepDraft(${i},'sets',-1)">−</button>
+        <b id="dSets">${e.defaultSets}</b>
+        <button class="stp" onclick="stepDraft(${i},'sets',1)">+</button>
+      </div></div>
+      <div class="sheet-row"><span>Reps</span><div class="stepper">
+        <button class="stp" onclick="stepDraft(${i},'reps',-1)">−</button>
+        <b id="dReps">${e.defaultReps}</b>
+        <button class="stp" onclick="stepDraft(${i},'reps',1)">+</button>
+      </div></div>
+      <button class="red" style="margin-top:14px;width:100%" onclick="rmEx(${i}); closeSheet();">Remove exercise</button>
+    </div>`;
+  sheet.onclick=closeSheet; document.body.appendChild(sheet);
+  requestAnimationFrame(()=>sheet.classList.add('show'));
+}
+function stepDraft(i, field, delta){
+  const e = DRAFT.exercises[i]; if(!e) return;
+  const key = field==='sets' ? 'defaultSets' : 'defaultReps';
+  let v = (e[key]||0) + delta; if(v<1) v=1; if(v>99) v=99;
+  e[key] = v;
+  const lbl = field==='sets' ? 'dSets' : 'dReps';
+  const el = document.getElementById(lbl); if(el) el.textContent = v;
+  renderDraft();
+}
 // ---- Shared exercise helpers (picker + library) ----
 const EQ_FAMILY = [
   { key:'bodyweight', label:'Bodyweight', match:['bodyweight','band','weighted vest','box','ab wheel','battle ropes','jump rope','parallel bars','pull-up bar'] },
