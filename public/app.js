@@ -321,16 +321,15 @@ async function library(){
   window._LIB2 = lib;
   const head = LIB_ADDMODE
     ? `<div class="pick-head lib-head">
-         <button class="sec sm" onclick="libDone()">‹ Workout</button>
-         <h1 style="flex:1">Add exercises</h1>
+         <h1 style="flex:1">Exercises</h1>
+         <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
          <button class="blue sm" onclick="libDone()">Done (${DRAFT.exercises.length})</button>
        </div>`
     : `<div class="pick-head lib-head">
          <h1 style="flex:1">Exercises</h1>
          <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
        </div>`;
-  const hint = LIB_ADDMODE ? `<div class="muted" style="padding:2px 0 6px">Tap exercises to add them to your workout.</div>` : '';
-  $('app').innerHTML = `<div class="pick">${head}${hint}
+  $('app').innerHTML = `<div class="pick">${head}
     <div class="pick-search"><input id="ls" placeholder="Search exercises" oninput="libSearch(this.value)"></div>
     <div class="pick-list" id="lib2"></div>
   </div>`;
@@ -367,9 +366,10 @@ function libOpenMuscle(m){
   const eqs = [...new Set(window._LIB2.filter(e=>(e.muscle_groups||[]).includes(m)).flatMap(eqFamilies))];
   const head = LIB_ADDMODE
     ? `<div class="pick-head lib-head">
-         <button class="sec sm" onclick="library()">‹ Muscles</button>
+         <button class="sec sm" onclick="library()">‹ All muscles</button>
          <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
-         <button class="blue sm" id="libDoneBtn" onclick="libDone()">Done (<span id="libDoneCount">${DRAFT.exercises.length}</span>)</button>
+         <button class="icon-btn" onclick="openCreateEx('${m}')" title="Create exercise">＋</button>
+         <button class="blue sm" onclick="libDone()">Done (${DRAFT.exercises.length})</button>
        </div>`
     : `<div class="pick-head lib-head">
          <button class="sec sm" onclick="library()">‹ All muscles</button>
