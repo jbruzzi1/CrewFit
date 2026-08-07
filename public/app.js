@@ -638,11 +638,10 @@ function openCropper(dataUrl, type){
   ov.className = 'crop-overlay';
   ov.id = 'cropper';
   ov.innerHTML = `
-    <div class="crop-hint">Move & zoom to center your photo</div>
+    <div class="crop-hint">Pinch to zoom · drag to move</div>
     <div class="crop-stage" id="cropStage"><img class="crop-img" id="cropImg" src="${dataUrl}"><div class="crop-ring"></div></div>
-    <input class="crop-slider" id="cropZoom" type="range" min="1" max="4" step="0.01" value="1">
     <div class="crop-preview-wrap">
-      <div class="crop-preview-label">Preview (84px)</div>
+      <div class="crop-preview-label">This is how it will look</div>
       <div class="crop-preview"><img id="cropPrev" src="${dataUrl}"></div>
     </div>
     <div class="crop-actions">
@@ -652,22 +651,28 @@ function openCropper(dataUrl, type){
   document.body.appendChild(ov);
   const img = document.getElementById('cropImg');
   const stage = document.getElementById('cropStage');
-  const zoom = document.getElementById('cropZoom');
-  _crop = { scale:1, x:0, y:0, img, stage, zoom };
+  _crop = { scale:1, x:0, y:0, img, stage };
   const fit = ()=>{
     const s = Math.min(stage.clientWidth/img.naturalWidth, stage.clientHeight/img.naturalHeight);
     _crop.base = s;
     centerImage();
   };
   if(img.complete) fit(); else img.onload = fit;
-  // drag to pan
+  // one-finger drag to pan
   let dragging=false, sx=0, sy=0, ox=0, oy=0;
-  const down = e=>{ dragging=true; const p=e.touches?e.touches[0]:e; sx=p.clientX; sy=p.clientY; ox=_crop.x; oy=_crop.y; };
+  const down = e=>{ if(e.touches && e.touches.length>1) return; dragging=true; const p=e.touches?e.touches[0]:e; sx=p.clientX; sy=p.clientY; ox=_crop.x; oy=_crop.y; };
   const move = e=>{ if(!dragging) return; e.preventDefault(); const p=e.touches?e.touches[0]:e; _crop.x=ox+(p.clientX-sx); _crop.y=oy+(p.clientY-sy); renderCrop(); };
   const up = ()=> dragging=false;
   stage.addEventListener('mousedown',down); stage.addEventListener('mousemove',move); window.addEventListener('mouseup',up);
   stage.addEventListener('touchstart',down,{passive:false}); stage.addEventListener('touchmove',move,{passive:false}); stage.addEventListener('touchend',up);
-  zoom.addEventListener('input', ()=>{ _crop.scale = parseFloat(zoom.value); renderCrop(); });
+  // pinch-to-zoom (two fingers) on touch
+  let pinch0=0, scale0=1;
+  const pinchDist = t=>{ const dx=t[0].clientX-t[1].clientX, dy=t[0].clientY-t[1].clientY; return Math.hypot(dx,dy); };
+  const tstart = e=>{ if(e.touches.length===2){ pinch0=pinchDist(e.touches); scale0=_crop.scale; e.preventDefault(); } };
+  const tmove = e=>{ if(e.touches.length===2){ e.preventDefault(); const d=pinchDist(e.touches); _crop.scale=Math.max(1,Math.min(6, scale0*(d/pinch0))); renderCrop(); } };
+  stage.addEventListener('touchstart',tstart,{passive:false}); stage.addEventListener('touchmove',tmove,{passive:false});
+  // mouse wheel / trackpad zoom (desktop testing)
+  stage.addEventListener('wheel', e=>{ e.preventDefault(); _crop.scale=Math.max(1,Math.min(6, _crop.scale*(e.deltaY<0?1.08:0.92))); renderCrop(); }, {passive:false});
 }
 function centerImage(){
   const {img, stage, base, scale} = {..._crop, scale:_crop.scale||1};
