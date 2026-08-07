@@ -243,8 +243,8 @@ function eqFamilies(e){
 function eqLabel(key){ const f=EQ_FAMILY.find(x=>x.key===key); return f?f.label:key; }
 function exBadges(e){
   const b=[];
-  if(e.level) b.push(`<span class="ex-badge lv-${esc(e.level)}">${esc(e.level)}</span>`);
-  b.push(`<span class="ex-badge">${e.is_compound?'Compound':'Isolation'}</span>`);
+  if(e.level) b.push(`<span class="ex-badge lv-${esc(e.level)}"><span class="dot"></span>${esc(e.level)}</span>`);
+  b.push(`<span class="ex-badge ex-type">${e.is_compound?'Compound':'Isolation'}</span>`);
   return b.join('');
 }
 // ---- Exercise thumbnail (SVG, shown in detail sheet only) ----
