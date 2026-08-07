@@ -213,7 +213,7 @@ async function createFlow(){
     <label class="muted">Visibility</label>
     <select id="vis"><option value="private">Private (invite only)</option><option value="friends">Friends-only (joinable)</option></select>
     <h2>Exercises</h2><div id="draftList" class="card"></div>
-    <button class="sec" onclick="pickExercise()">+ Add exercise</button>
+    <button class="sec" onclick="openAddExercises()">+ Add exercise</button>
     <button class="sec sm" onclick="useTemplate()">⚡ Use a template</button>
     <h2>Invite friends</h2><div id="invList">${friends.map(f=>`<label class="lib-item"><input type="checkbox" value="${esc(f.username)}" onchange="toggleInvite(this)"> ${esc(f.displayName)}</label>`).join('')||'<div class="muted">No friends yet — add some in Friends tab.</div>'}</div>
     <button class="blue" onclick="submitSession()">Create workout</button></div>`;
@@ -271,81 +271,6 @@ function exThumb(e){
   const mg = (e.muscle_groups&&e.muscle_groups[0]) || 'abdominals';
   return mgIcon(mg);
 }
-async function pickExercise(){
-  // stash any details typed so far
-  if($('loc')) DRAFT.location = $('loc').value;
-  if($('len')) DRAFT.lengthMin = $('len').value;
-  if($('note')) DRAFT.creatorNote = $('note').value;
-  if($('wname')) DRAFT.name = $('wname').value;
-  const lib = await H.get('/api/exercises');
-  window._LIB = lib;
-  const cats = [...new Set(lib.flatMap(e=>(e.muscle_groups||[])))];
-  const eqs = [...new Set(lib.flatMap(eqFamilies))];
-  window._PFILTER = { cat:'', eq:'', q:'' };
-  $('app').innerHTML = `<div class="pick">
-    <div class="pick-head">
-      <button class="sec sm" onclick="createFlow()">Done</button>
-      <h1>Add exercises</h1>
-      <span class="pick-count" id="pickCount">${DRAFT.exercises.length} added</span>
-    </div>
-    <div class="pick-search"><input id="search" placeholder="Search exercises" oninput="filterLib()"></div>
-    <div class="cat-pills" id="catPills">
-      <span class="cat-pill on" data-cat="" onclick="pickCat(this)">All</span>
-      ${cats.map(c=>`<span class="cat-pill" data-cat="${esc(c)}" onclick="pickCat(this)">${esc(c)}</span>`).join('')}
-    </div>
-    <div class="cat-pills eq-pills" id="eqPills">
-      <span class="cat-pill on" data-eq="" onclick="pickEq(this)">Any</span>
-      ${eqs.map(k=>`<span class="cat-pill" data-eq="${k}" onclick="pickEq(this)">${eqLabel(k)}</span>`).join('')}
-    </div>
-    <div class="pick-list" id="libList"></div>
-    <div class="added-strip" id="addedStrip"></div>
-  </div>`;
-  filterLib();
-  renderAddedStrip();
-}
-function pickCat(el){
-  window._PFILTER.cat = el.dataset.cat;
-  document.querySelectorAll('#catPills .cat-pill').forEach(p=>p.classList.toggle('on', p===el));
-  filterLib();
-}
-function pickEq(el){
-  window._PFILTER.eq = el.dataset.eq;
-  document.querySelectorAll('#eqPills .cat-pill').forEach(p=>p.classList.toggle('on', p===el));
-  filterLib();
-}
-function filterLib(){
-  const q=(window._PFILTER.q=($('search').value||'').toLowerCase());
-  const {cat,eq}=window._PFILTER;
-  const list = window._LIB.filter(e=>
-    (!cat || (e.muscle_groups||[]).includes(cat)) &&
-    (!eq || eqFamilies(e).includes(eq)) &&
-    (!q || e.name.toLowerCase().includes(q) || (e.muscle_groups||[]).join(' ').includes(q))
-  );
-  // group by first muscle group for clean sections
-  const groups={};
-  list.forEach(e=>{ const g=(e.muscle_groups&&e.muscle_groups[0])||'Other'; (groups[g]=groups[g]||[]).push(e); });
-  const added=Object.fromEntries(DRAFT.exercises.map(e=>[e.name,true]));
-  const html = Object.keys(groups).sort().map(g=>`
-    <div class="pick-group">${esc(g)}</div>
-    ${groups[g].sort((a,b)=>a.name.localeCompare(b.name)).map(e=>`
-      <div class="ex-row ${added[e.name]?'ex-on':''}" onclick="addEx('${esc(e.name)}', this)">
-        <div class="ex-main">
-          <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}</div>
-        </div>
-        <div class="ex-badges">${exBadges(e)}</div>
-        <div class="ex-add">${added[e.name]?'✓':'+'}</div>
-      </div>`).join('')}
-  `).join('');
-  $('libList').innerHTML = list.length ? html : '<div class="muted" style="padding:20px;text-align:center">No matches.</div>';
-}
-function renderAddedStrip(){
-  const el = $('addedStrip'); if(!el) return;
-  if(!DRAFT.exercises.length){ el.innerHTML=''; el.classList.remove('on'); return; }
-  el.classList.add('on');
-  el.innerHTML = `<div class="added-title">In this workout (${DRAFT.exercises.length})</div>` +
-    DRAFT.exercises.map((e,i)=>`<span class="added-chip" onclick="rmEx(${i}); renderAddedStrip();">${esc(e.name)} <b>✕</b></span>`).join('');
-}
 function addEx(name, el){
   if($('loc')) DRAFT.location = $('loc').value;
   if($('len')) DRAFT.lengthMin = $('len').value;
@@ -353,9 +278,7 @@ function addEx(name, el){
   const exists = DRAFT.exercises.find(e=>e.name===name);
   if(exists){ DRAFT.exercises = DRAFT.exercises.filter(e=>e.name!==name); }
   else DRAFT.exercises.push({name,defaultSets:3,defaultReps:10});
-  const pc=$('pickCount'); if(pc) pc.textContent=DRAFT.exercises.length+' added';
   if(el){ const on=DRAFT.exercises.find(e=>e.name===name); el.classList.toggle('ex-on', !!on); el.querySelector('.ex-add').textContent = on?'✓':'+'; }
-  renderAddedStrip();
 }
 function closePick(){ createFlow(); }
 async function submitSession(){
@@ -380,15 +303,34 @@ const LIB_CATS = [
   { name:'Other', muscles:['abdominals','cardio'] },
 ];
 let LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
+// ---- Add-exercise mode: open the Library so the user picks from there ----
+let LIB_ADDMODE = false;
+function openAddExercises(){
+  // stash details typed so far on the workout form
+  if($('loc')) DRAFT.location = $('loc').value;
+  if($('len')) DRAFT.lengthMin = $('len').value;
+  if($('note')) DRAFT.creatorNote = $('note').value;
+  if($('wname')) DRAFT.name = $('wname').value;
+  LIB_ADDMODE = true;
+  library();
+}
+function libDone(){ LIB_ADDMODE = false; createFlow(); }
 async function library(){
   LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
   const lib = await H.get('/api/exercises');
   window._LIB2 = lib;
-  $('app').innerHTML = `<div class="pick">
-    <div class="pick-head lib-head">
-      <h1 style="flex:1">Exercises</h1>
-      <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
-    </div>
+  const head = LIB_ADDMODE
+    ? `<div class="pick-head lib-head">
+         <button class="sec sm" onclick="libDone()">‹ Workout</button>
+         <h1 style="flex:1">Add exercises</h1>
+         <button class="blue sm" onclick="libDone()">Done (${DRAFT.exercises.length})</button>
+       </div>`
+    : `<div class="pick-head lib-head">
+         <h1 style="flex:1">Exercises</h1>
+         <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
+       </div>`;
+  const hint = LIB_ADDMODE ? `<div class="muted" style="padding:2px 0 6px">Tap exercises to add them to your workout.</div>` : '';
+  $('app').innerHTML = `<div class="pick">${head}${hint}
     <div class="pick-search"><input id="ls" placeholder="Search exercises" oninput="libSearch(this.value)"></div>
     <div class="pick-list" id="lib2"></div>
   </div>`;
@@ -423,12 +365,18 @@ function renderLibGroups(){
 function libOpenMuscle(m){
   LIB_STATE.view='muscle'; LIB_STATE.muscle=m; LIB_STATE.eq=''; LIB_STATE.q='';
   const eqs = [...new Set(window._LIB2.filter(e=>(e.muscle_groups||[]).includes(m)).flatMap(eqFamilies))];
-  $('app').innerHTML = `<div class="pick">
-    <div class="pick-head lib-head">
-      <button class="sec sm" onclick="library()">‹ All muscles</button>
-      <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
-      <button class="icon-btn" onclick="openCreateEx('${m}')" title="Create exercise">＋</button>
-    </div>
+  const head = LIB_ADDMODE
+    ? `<div class="pick-head lib-head">
+         <button class="sec sm" onclick="library()">‹ Muscles</button>
+         <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
+         <button class="blue sm" id="libDoneBtn" onclick="libDone()">Done (<span id="libDoneCount">${DRAFT.exercises.length}</span>)</button>
+       </div>`
+    : `<div class="pick-head lib-head">
+         <button class="sec sm" onclick="library()">‹ All muscles</button>
+         <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
+         <button class="icon-btn" onclick="openCreateEx('${m}')" title="Create exercise">＋</button>
+       </div>`;
+  $('app').innerHTML = `<div class="pick">${head}
     <div class="pick-search"><input id="ls" placeholder="Search ${esc(m)}" oninput="libSearch(this.value)"></div>
     <div class="cat-pills eq-pills" id="eqPills2">
       <span class="cat-pill on" data-eq="" onclick="pickEq2(this)">Any</span>
@@ -449,6 +397,17 @@ function applyLibSearch(){
   else renderLibGroups();
 }
 function exRowHtml(e){
+  const added = DRAFT.exercises.find(x=>x.name===e.name);
+  if(LIB_ADDMODE){
+    return `<div class="ex-row ${added?'ex-on':''}" onclick="libToggle('${esc(e.name)}', this)">
+        <div class="ex-main">
+          <div class="ex-name">${esc(e.name)}</div>
+          <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}${e.custom?' · your exercise':''}</div>
+        </div>
+        <div class="ex-badges">${exBadges(e)}</div>
+        <div class="ex-add">${added?'✓':'+'}</div>
+      </div>`;
+  }
   return `<div class="ex-row" onclick="exDetail('${esc(e.name)}')">
       <div class="ex-main">
         <div class="ex-name">${esc(e.name)}</div>
@@ -457,6 +416,10 @@ function exRowHtml(e){
       <div class="ex-badges">${exBadges(e)}</div>
       <div class="mg-chev">›</div>
     </div>`;
+}
+function libToggle(name, el){
+  addEx(name, el);
+  const n=$('libDoneCount'); if(n) n.textContent=DRAFT.exercises.length;
 }
 function renderLibExercises(){
   const {muscle,eq,q}=LIB_STATE;

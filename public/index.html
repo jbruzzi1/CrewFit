@@ -92,7 +92,6 @@
     .pick { display:flex; flex-direction:column; height:100%; padding:0 16px; padding-left:calc(16px + env(safe-area-inset-left)); padding-right:calc(16px + env(safe-area-inset-right)); }
     .pick-head { display:flex; align-items:center; gap:10px; padding:6px 0 8px; }
     .pick-head h1 { margin:0; flex:1; font-size:19px; }
-    .pick-count { font-size:12px; color:var(--muted); white-space:nowrap; }
     .pick-search { padding:2px 0 8px; }
     .pick-search input { margin:0; }
     .cat-pills { display:flex; gap:6px; overflow-x:auto; padding:4px 0 10px; -webkit-overflow-scrolling:touch; }
@@ -100,7 +99,6 @@
     .cat-pill { flex:0 0 auto; background:var(--card); border:1px solid var(--line); color:var(--fg); border-radius:999px; padding:6px 13px; font-size:13px; cursor:pointer; }
     .cat-pill.on { background:var(--green); color:#fff; border-color:var(--green); }
     .pick-list { flex:1; overflow-y:auto; padding-bottom:20px; }
-    .pick-group { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin:14px 0 6px; }
     .ex-row { display:flex; align-items:center; gap:12px; padding:14px 0; border-bottom:1px solid var(--line); cursor:pointer; }
     .ex-row:last-child { border-bottom:none; }
     .ex-row:active { background:#f1f3f6; }
@@ -108,11 +106,6 @@
     .ex-mg { font-size:12px; color:var(--muted); margin-top:2px; }
     .ex-add { flex:0 0 auto; width:26px; height:26px; border-radius:50%; background:#eef1f5; color:var(--green); display:flex; align-items:center; justify-content:center; font-size:17px; font-weight:700; }
     .ex-row.ex-on .ex-add { background:var(--green); color:#fff; }
-    .added-strip { display:none; flex-wrap:wrap; gap:8px; padding:12px; margin:10px 0 14px; background:var(--card); border:1px solid var(--line); border-radius:12px; }
-    .added-strip.on { display:flex; }
-    .added-title { width:100%; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin-bottom:2px; }
-    .added-chip { background:var(--green); color:#fff; border-radius:999px; padding:6px 12px; font-size:13px; font-weight:600; cursor:pointer; }
-    .added-chip b { opacity:.8; font-weight:700; margin-left:2px; }
     .eq-pills { padding-top:0; border-bottom:1px solid var(--line); padding-bottom:10px; margin-bottom:4px; }
     .ex-main { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
     .ex-badges { display:flex; flex-direction:column; align-items:flex-end; gap:3px; flex:0 0 auto; max-width:42%; justify-content:flex-end; }
@@ -157,6 +150,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="/app.js?v=36"></script>
+  <script src="/app.js?v=37"></script>
 </body>
 </html>
