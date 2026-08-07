@@ -324,7 +324,7 @@ async function library(){
     ? `<div class="pick-head lib-head">
          <h1 style="flex:1">Workouts</h1>
          <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
-         <button class="blue sm" onclick="libDone()">Done (${DRAFT.exercises.length})</button>
+         <button class="blue sm" onclick="libDone()">Done (<span id="libDoneCount">${DRAFT.exercises.length}</span>)</button>
        </div>`
     : `<div class="pick-head lib-head">
          <h1 style="flex:1">Workouts</h1>
@@ -370,7 +370,7 @@ function libOpenMuscle(m){
          <button class="sec sm" onclick="library()">‹ All muscles</button>
          <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
          <button class="icon-btn" onclick="openCreateEx('${m}')" title="Create exercise">＋</button>
-         <button class="blue sm" onclick="libDone()">Done (${DRAFT.exercises.length})</button>
+         <button class="blue sm" onclick="libDone()">Done (<span id="libDoneCount">${DRAFT.exercises.length}</span>)</button>
        </div>`
     : `<div class="pick-head lib-head">
          <button class="sec sm" onclick="library()">‹ All muscles</button>
