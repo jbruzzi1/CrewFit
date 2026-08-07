@@ -646,12 +646,12 @@ function openCropper(dataUrl, type){
     </div>
     <div class="crop-actions">
       <button class="cancel" onclick="closeCropper()">Cancel</button>
-      <button class="blue" onclick="applyCrop('${type}')">Use Photo</button>
+      <button class="blue" onclick="applyCrop('${type}')">Save Photo</button>
     </div>`;
   document.body.appendChild(ov);
   const img = document.getElementById('cropImg');
   const stage = document.getElementById('cropStage');
-  _crop = { scale:1, x:0, y:0, img, stage };
+  _crop = { scale:1, x:0, y:0, img, stage, type };
   const fit = ()=>{
     const s = Math.min(stage.clientWidth/img.naturalWidth, stage.clientHeight/img.naturalHeight);
     _crop.base = s;
@@ -677,28 +677,47 @@ function openCropper(dataUrl, type){
 function centerImage(){
   const {img, stage, base, scale} = {..._crop, scale:_crop.scale||1};
   const w = img.naturalWidth*base*scale, h = img.naturalHeight*base*scale;
-  _crop.x = (stage.clientWidth - w)/2;
-  _crop.y = (stage.clientHeight - h)/2;
+  // center, but clamp so the image always covers the whole circle
+  const sw = stage.clientWidth, sh = stage.clientHeight;
+  _crop.x = (sw - w)/2;
+  _crop.y = (sh - h)/2;
   renderCrop();
+}
+function clampCrop(){
+  const {img, stage, base, scale, x, y} = {..._crop, scale:_crop.scale||1};
+  const w = img.naturalWidth*base*scale, h = img.naturalHeight*base*scale;
+  const sw = stage.clientWidth, sh = stage.clientHeight;
+  // image must always fully cover the circle: x in [sw-w, 0], y in [sh-h, 0]
+  _crop.x = Math.min(0, Math.max(sw - w, x));
+  _crop.y = Math.min(0, Math.max(sh - h, y));
 }
 function renderCrop(){
   const {img, base, scale, x, y} = _crop;
   const s = base*(scale||1);
   const w = img.naturalWidth*s, h = img.naturalHeight*s;
+  clampCrop();
   img.style.width = w+'px';
   img.style.height = h+'px';
-  img.style.transform = `translate(${x}px, ${y}px)`;
-  // live 84px thumbnail preview (stage is 240px, so scale transform by 84/240)
+  img.style.transform = `translate(${_crop.x}px, ${_crop.y}px)`;
+  // live 84px thumbnail preview (stage is 300px, so scale transform by 84/300)
   const prev = document.getElementById('cropPrev');
   if(prev){
-    const f = 84/240;
+    const f = 84/300;
     prev.style.width = (w*f)+'px';
     prev.style.height = (h*f)+'px';
-    prev.style.transform = `translate(${x*f}px, ${y*f}px)`;
+    prev.style.transform = `translate(${_crop.x*f}px, ${_crop.y*f}px)`;
+  }
+  // auto-save shortly after the user stops adjusting (no checkmark needed)
+  if(_crop && !_crop.done){
+    clearTimeout(_crop.autoT);
+    _crop.autoT = setTimeout(()=>{ if(_crop && !_crop.done) applyCrop(_crop.type); }, 1500);
   }
 }
 function closeCropper(){ const c=document.getElementById('cropper'); if(c) c.remove(); _crop=null; }
 async function applyCrop(type){
+  if(!_crop || _crop.done) return;
+  _crop.done = true;
+  clearTimeout(_crop.autoT);
   const {img, stage, base, scale} = {..._crop, scale:_crop.scale||1};
   const s = base*(scale||1);
   const w = stage.clientWidth, h = stage.clientHeight;
