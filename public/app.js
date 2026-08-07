@@ -204,7 +204,7 @@ async function createFlow(){
   if(!DRAFT.inviteUsernames) DRAFT.inviteUsernames=[];
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
   const friends = await H.get('/api/friends');
-  $('app').innerHTML = `<div class="wrap"><button class="sec sm" onclick="showTab('home')">← Cancel</button>
+  $('app').innerHTML = `<div class="wrap create-flow"><button class="sec sm" onclick="showTab('home')">← Cancel</button>
     <h1>New workout</h1>
     <label class="muted">Workout name</label><input id="wname" placeholder="e.g. Chest & Back" value="${esc(DRAFT.name||'')}">
     <label class="muted">When</label><input id="dt" type="datetime-local">
