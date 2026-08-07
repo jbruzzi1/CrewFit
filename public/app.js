@@ -655,6 +655,7 @@ function openCropper(dataUrl, type){
   const fit = ()=>{
     const s = Math.min(stage.clientWidth/img.naturalWidth, stage.clientHeight/img.naturalHeight);
     _crop.base = s;
+    _crop.scale = 1.2; // start a touch zoomed-in so both axes are pannable right away
     centerImage();
   };
   if(img.complete) fit(); else img.onload = fit;
@@ -669,10 +670,10 @@ function openCropper(dataUrl, type){
   let pinch0=0, scale0=1;
   const pinchDist = t=>{ const dx=t[0].clientX-t[1].clientX, dy=t[0].clientY-t[1].clientY; return Math.hypot(dx,dy); };
   const tstart = e=>{ if(e.touches.length===2){ pinch0=pinchDist(e.touches); scale0=_crop.scale; e.preventDefault(); } };
-  const tmove = e=>{ if(e.touches.length===2){ e.preventDefault(); const d=pinchDist(e.touches); _crop.scale=Math.max(1,Math.min(6, scale0*(d/pinch0))); renderCrop(); } };
+  const tmove = e=>{ if(e.touches.length===2){ e.preventDefault(); const d=pinchDist(e.touches); _crop.scale=Math.max(0.5,Math.min(6, scale0*(1+(d/pinch0-1)*0.6))); renderCrop(); } };
   ov.addEventListener('touchstart',tstart,{passive:false}); ov.addEventListener('touchmove',tmove,{passive:false});
-  // mouse wheel / trackpad zoom anywhere (desktop testing)
-  ov.addEventListener('wheel', e=>{ e.preventDefault(); _crop.scale=Math.max(1,Math.min(6, _crop.scale*(e.deltaY<0?1.08:0.92))); renderCrop(); }, {passive:false});
+  // mouse wheel / trackpad zoom anywhere (desktop testing) — damped
+  ov.addEventListener('wheel', e=>{ e.preventDefault(); _crop.scale=Math.max(0.5,Math.min(6, _crop.scale*(e.deltaY<0?1.04:0.96))); renderCrop(); }, {passive:false});
 }
 function centerImage(){
   const {img, stage, base, scale} = {..._crop, scale:_crop.scale||1};
