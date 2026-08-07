@@ -640,10 +640,6 @@ function openCropper(dataUrl, type){
   ov.innerHTML = `
     <div class="crop-hint">Pinch to zoom · drag to move</div>
     <div class="crop-stage" id="cropStage"><img class="crop-img" id="cropImg" src="${dataUrl}"><div class="crop-ring"></div></div>
-    <div class="crop-preview-wrap">
-      <div class="crop-preview-label">This is how it will look</div>
-      <div class="crop-preview"><img id="cropPrev" src="${dataUrl}"></div>
-    </div>
     <div class="crop-actions">
       <button class="cancel" onclick="closeCropper()">Cancel</button>
       <button class="blue" onclick="applyCrop('${type}')">Save Photo</button>
@@ -664,15 +660,15 @@ function openCropper(dataUrl, type){
   const move = e=>{ if(!dragging) return; e.preventDefault(); const p=e.touches?e.touches[0]:e; _crop.x=ox+(p.clientX-sx); _crop.y=oy+(p.clientY-sy); renderCrop(); };
   const up = ()=> dragging=false;
   stage.addEventListener('mousedown',down); stage.addEventListener('mousemove',move); window.addEventListener('mouseup',up);
-  stage.addEventListener('touchstart',down,{passive:false}); stage.addEventListener('touchmove',move,{passive:false}); stage.addEventListener('touchend',up);
-  // pinch-to-zoom (two fingers) on touch
+  ov.addEventListener('touchstart',down,{passive:false}); ov.addEventListener('touchmove',move,{passive:false}); ov.addEventListener('touchend',up);
+  // pinch-to-zoom (two fingers) anywhere on screen
   let pinch0=0, scale0=1;
   const pinchDist = t=>{ const dx=t[0].clientX-t[1].clientX, dy=t[0].clientY-t[1].clientY; return Math.hypot(dx,dy); };
   const tstart = e=>{ if(e.touches.length===2){ pinch0=pinchDist(e.touches); scale0=_crop.scale; e.preventDefault(); } };
   const tmove = e=>{ if(e.touches.length===2){ e.preventDefault(); const d=pinchDist(e.touches); _crop.scale=Math.max(1,Math.min(6, scale0*(d/pinch0))); renderCrop(); } };
-  stage.addEventListener('touchstart',tstart,{passive:false}); stage.addEventListener('touchmove',tmove,{passive:false});
-  // mouse wheel / trackpad zoom (desktop testing)
-  stage.addEventListener('wheel', e=>{ e.preventDefault(); _crop.scale=Math.max(1,Math.min(6, _crop.scale*(e.deltaY<0?1.08:0.92))); renderCrop(); }, {passive:false});
+  ov.addEventListener('touchstart',tstart,{passive:false}); ov.addEventListener('touchmove',tmove,{passive:false});
+  // mouse wheel / trackpad zoom anywhere (desktop testing)
+  ov.addEventListener('wheel', e=>{ e.preventDefault(); _crop.scale=Math.max(1,Math.min(6, _crop.scale*(e.deltaY<0?1.08:0.92))); renderCrop(); }, {passive:false});
 }
 function centerImage(){
   const {img, stage, base, scale} = {..._crop, scale:_crop.scale||1};
@@ -699,14 +695,6 @@ function renderCrop(){
   img.style.width = w+'px';
   img.style.height = h+'px';
   img.style.transform = `translate(${_crop.x}px, ${_crop.y}px)`;
-  // live 84px thumbnail preview (stage is 300px, so scale transform by 84/300)
-  const prev = document.getElementById('cropPrev');
-  if(prev){
-    const f = 84/300;
-    prev.style.width = (w*f)+'px';
-    prev.style.height = (h*f)+'px';
-    prev.style.transform = `translate(${_crop.x*f}px, ${_crop.y*f}px)`;
-  }
   // auto-save shortly after the user stops adjusting (no checkmark needed)
   if(_crop && !_crop.done){
     clearTimeout(_crop.autoT);
