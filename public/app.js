@@ -638,12 +638,13 @@ function openCropper(dataUrl, type){
   ov.className = 'crop-overlay';
   ov.id = 'cropper';
   ov.innerHTML = `
-    <div class="crop-hint">Pinch to zoom · drag to move</div>
+    <div class="crop-topbar">
+      <button class="crop-x" onclick="closeCropper()">✕</button>
+      <div class="crop-title">Move & scale</div>
+      <button class="crop-done" onclick="applyCrop('${type}')">Save</button>
+    </div>
     <div class="crop-stage" id="cropStage"><img class="crop-img" id="cropImg" src="${dataUrl}"><div class="crop-ring"></div></div>
-    <div class="crop-actions">
-      <button class="cancel" onclick="closeCropper()">Cancel</button>
-      <button class="blue" onclick="applyCrop('${type}')">Save Photo</button>
-    </div>`;
+    <div class="crop-hint">Pinch to zoom · drag to move</div>`;
   document.body.appendChild(ov);
   const img = document.getElementById('cropImg');
   const stage = document.getElementById('cropStage');
@@ -695,17 +696,11 @@ function renderCrop(){
   img.style.width = w+'px';
   img.style.height = h+'px';
   img.style.transform = `translate(${_crop.x}px, ${_crop.y}px)`;
-  // auto-save shortly after the user stops adjusting (no checkmark needed)
-  if(_crop && !_crop.done){
-    clearTimeout(_crop.autoT);
-    _crop.autoT = setTimeout(()=>{ if(_crop && !_crop.done) applyCrop(_crop.type); }, 1500);
-  }
 }
 function closeCropper(){ const c=document.getElementById('cropper'); if(c) c.remove(); _crop=null; }
 async function applyCrop(type){
   if(!_crop || _crop.done) return;
   _crop.done = true;
-  clearTimeout(_crop.autoT);
   const {img, stage, base, scale} = {..._crop, scale:_crop.scale||1};
   const s = base*(scale||1);
   const w = stage.clientWidth, h = stage.clientHeight;
