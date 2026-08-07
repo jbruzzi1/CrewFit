@@ -202,6 +202,7 @@ async function createFlow(){
   DRAFT = DRAFT || { exercises:[], inviteUsernames:[] };
   if(!DRAFT.exercises) DRAFT.exercises=[];
   if(!DRAFT.inviteUsernames) DRAFT.inviteUsernames=[];
+  document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
   const friends = await H.get('/api/friends');
   $('app').innerHTML = `<div class="wrap"><button class="sec sm" onclick="showTab('home')">← Cancel</button>
     <h1>New workout</h1>
@@ -312,7 +313,7 @@ function openAddExercises(){
   if($('note')) DRAFT.creatorNote = $('note').value;
   if($('wname')) DRAFT.name = $('wname').value;
   LIB_ADDMODE = true;
-  library();
+  showTab('lib');   // identical to tapping the bottom Workouts tab
 }
 function libDone(){ LIB_ADDMODE = false; createFlow(); }
 async function library(){
@@ -321,12 +322,12 @@ async function library(){
   window._LIB2 = lib;
   const head = LIB_ADDMODE
     ? `<div class="pick-head lib-head">
-         <h1 style="flex:1">Exercises</h1>
+         <h1 style="flex:1">Workouts</h1>
          <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
          <button class="blue sm" onclick="libDone()">Done (${DRAFT.exercises.length})</button>
        </div>`
     : `<div class="pick-head lib-head">
-         <h1 style="flex:1">Exercises</h1>
+         <h1 style="flex:1">Workouts</h1>
          <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
        </div>`;
   $('app').innerHTML = `<div class="pick">${head}
