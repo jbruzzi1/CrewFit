@@ -79,6 +79,10 @@
     .crop-actions { display:flex; gap:12px; }
     .crop-actions button { width:auto; padding:11px 22px; border-radius:12px; margin:0; }
     .crop-actions .cancel { background:#444; color:#fff; }
+    .crop-preview-wrap { display:flex; flex-direction:column; align-items:center; margin-top:10px; }
+    .crop-preview { width:84px; height:84px; border-radius:50%; overflow:hidden; border:2px solid #fff; background:#222; position:relative; }
+    .crop-preview img { position:absolute; top:0; left:0; transform-origin:0 0; }
+    .crop-preview-label { color:#fff; opacity:.7; font-size:11px; margin-bottom:4px; }
     .pinfo { flex:1; min-width:0; }
     .pname { font-size:20px; font-weight:700; }
     .pstats { display:flex; justify-content:space-around; text-align:center; padding:12px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
@@ -154,6 +158,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="/app.js?v=26"></script>
+  <script src="/app.js?v=27"></script>
 </body>
 </html>

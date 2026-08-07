@@ -641,6 +641,10 @@ function openCropper(dataUrl, type){
     <div class="crop-hint">Move & zoom to center your photo</div>
     <div class="crop-stage" id="cropStage"><img class="crop-img" id="cropImg" src="${dataUrl}"><div class="crop-ring"></div></div>
     <input class="crop-slider" id="cropZoom" type="range" min="1" max="4" step="0.01" value="1">
+    <div class="crop-preview-wrap">
+      <div class="crop-preview-label">Preview (84px)</div>
+      <div class="crop-preview"><img id="cropPrev" src="${dataUrl}"></div>
+    </div>
     <div class="crop-actions">
       <button class="cancel" onclick="closeCropper()">Cancel</button>
       <button class="blue" onclick="applyCrop('${type}')">Use Photo</button>
@@ -675,9 +679,18 @@ function centerImage(){
 function renderCrop(){
   const {img, base, scale, x, y} = _crop;
   const s = base*(scale||1);
-  img.style.width = (img.naturalWidth*s)+'px';
-  img.style.height = (img.naturalHeight*s)+'px';
+  const w = img.naturalWidth*s, h = img.naturalHeight*s;
+  img.style.width = w+'px';
+  img.style.height = h+'px';
   img.style.transform = `translate(${x}px, ${y}px)`;
+  // live 84px thumbnail preview (stage is 240px, so scale transform by 84/240)
+  const prev = document.getElementById('cropPrev');
+  if(prev){
+    const f = 84/240;
+    prev.style.width = (w*f)+'px';
+    prev.style.height = (h*f)+'px';
+    prev.style.transform = `translate(${x*f}px, ${y*f}px)`;
+  }
 }
 function closeCropper(){ const c=document.getElementById('cropper'); if(c) c.remove(); _crop=null; }
 async function applyCrop(type){
