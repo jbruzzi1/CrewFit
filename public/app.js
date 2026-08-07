@@ -576,7 +576,7 @@ async function profileView(id){
     ? `<label class="pavatar-wrap" title="Change photo">
          ${avatar}
          <span class="pcam">📷</span>
-         <input id="av" type="file" accept="image/*" capture="environment" style="display:none" onchange="uploadAvatar(this)">
+         <input id="av" type="file" accept="image/*" style="display:none" onchange="uploadAvatar(this)">
        </label>`
     : avatar;
   const action = isMe ? '' : `<button class="sm ${p.followers>0&&false?'':'blue'}" id="followBtn" onclick="toggleFollow('${p.id}')">Follow</button>`;
