@@ -16,7 +16,9 @@
     .wrap { padding:14px; padding-left:calc(14px + env(safe-area-inset-left)); padding-right:calc(14px + env(safe-area-inset-right)); }
     h1 { font-size:19px; margin:4px 0 2px; }
     .home-head { padding-top:calc(20px + env(safe-area-inset-top)); }
-    .home-head h1 { font-size:22px; font-weight:700; margin:0 0 16px; letter-spacing:.2px; }
+    .home-top { display:flex; align-items:center; justify-content:space-between; margin:0 0 16px; }
+    .home-brand { font-size:20px; font-weight:700; letter-spacing:.2px; }
+    .home-avatar { width:38px; height:38px; border-radius:50%; background:var(--green); color:#fff; display:flex; align-items:center; justify-content:center; font-size:17px; font-weight:700; cursor:pointer; }
     .btn-hero { padding:15px; font-size:15px; border-radius:14px; margin:0 0 22px; }
     h2 { font-size:13px; margin:24px 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; }
     .muted { color:var(--muted); font-size:12px; }
@@ -142,6 +144,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="/app.js?v=22"></script>
+  <script src="/app.js?v=23"></script>
 </body>
 </html>
