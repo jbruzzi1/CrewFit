@@ -63,7 +63,7 @@
     .friend-row .meta { flex:1 1 auto; min-width:0; }
     .friend-row .name { font-weight:600; font-size:15px; line-height:1.2; }
     .friend-row .handle { color:var(--muted); font-size:12px; }
-    /* Invite friends list (New Workout) — compact iOS-style rows w/ switches */
+    /* Invite friends list (New Workout) — compact iOS-style rows w/ checkmark */
     .inv-row { display:flex; align-items:center; gap:12px; padding:10px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
     .inv-row:last-child { border-bottom:none; }
     .inv-row .inv-meta { flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:12px; }
@@ -72,12 +72,12 @@
     .inv-text { min-width:0; }
     .inv-text .name { font-weight:600; font-size:15px; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .inv-text .handle { color:var(--muted); font-size:12px; }
-    .switch { position:relative; flex:0 0 auto; width:46px; height:28px; }
-    .switch input { opacity:0; width:0; height:0; }
-    .switch .slider { position:absolute; inset:0; background:#3a3f45; border-radius:999px; transition:.2s; }
-    .switch .slider:before { content:""; position:absolute; width:24px; height:24px; left:2px; top:2px; background:#fff; border-radius:50%; transition:.2s; box-shadow:0 1px 3px rgba(0,0,0,.3); }
-    .switch input:checked + .slider { background:var(--green); }
-    .switch input:checked + .slider:before { transform:translateX(18px); }
+    .check { position:relative; flex:0 0 auto; width:24px; height:24px; }
+    .check input { opacity:0; width:0; height:0; }
+    .check .box { position:absolute; inset:0; border:2px solid var(--line); border-radius:50%; background:transparent; transition:.15s; display:flex; align-items:center; justify-content:center; }
+    .check .box:before { content:""; width:12px; height:7px; border-left:2px solid #fff; border-bottom:2px solid #fff; transform:rotate(-45deg) scale(0); transition:.15s; margin-top:-2px; }
+    .check input:checked + .box { background:var(--green); border-color:var(--green); }
+    .check input:checked + .box:before { transform:rotate(-45deg) scale(1); }
     .streak-pill { display:inline-flex; align-items:center; gap:3px; background:#fff4ec; color:#e8590c; border-radius:999px; padding:3px 9px; font-size:12px; font-weight:600; margin-top:3px; }
     .streak-pill svg { width:13px; height:13px; }
     .add-row { display:flex; gap:8px; align-items:center; margin:0 0 4px; }
@@ -177,6 +177,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="/app.js?v=47"></script>
+  <script src="/app.js?v=48"></script>
 </body>
 </html>
