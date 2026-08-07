@@ -204,6 +204,12 @@ async function createFlow(){
   if(!DRAFT.inviteUsernames) DRAFT.inviteUsernames=[];
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
   const friends = await H.get('/api/friends');
+  const invRows = friends.length ? friends.map(f=>{
+    const ini = (f.displayName||f.username||'?')[0]||'?';
+    const av = f.avatar ? `<img class="inv-av" src="${esc(f.avatar)}" alt="">` : `<div class="inv-av" style="background:${avatarColor(f.username)};color:#fff">${esc(ini)}</div>`;
+    const on = DRAFT.inviteUsernames.includes(f.username) ? 'checked' : '';
+    return `<label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap">${av}</div><div class="inv-text"><div class="name">${esc(f.displayName||f.username)}</div><div class="handle">@${esc(f.username)}</div></div></div><span class="switch"><input type="checkbox" value="${esc(f.username)}" ${on} onchange="toggleInvite(this)"><span class="slider"></span></span></label>`;
+  }).join('') : '<div class="muted">No friends yet — add some in Friends tab.</div>';
   $('app').innerHTML = `<div class="wrap create-flow"><button class="sec sm" onclick="showTab('home')">← Cancel</button>
     <h1>New workout</h1>
     <label class="muted">Workout name</label><input id="wname" placeholder="e.g. Chest & Back" value="${esc(DRAFT.name||'')}">
@@ -216,7 +222,7 @@ async function createFlow(){
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="openAddExercises()">+ Add exercise</button>
     <button class="sec sm" onclick="useTemplate()">⚡ Use a template</button>
-    <h2>Invite friends</h2><div id="invList">${friends.map(f=>`<label class="lib-item"><input type="checkbox" value="${esc(f.username)}" onchange="toggleInvite(this)"> ${esc(f.displayName)}</label>`).join('')||'<div class="muted">No friends yet — add some in Friends tab.</div>'}</div>
+    <h2>Invite friends</h2><div id="invList" class="card">${invRows}</div>
     <button class="blue" onclick="submitSession()">Create workout</button></div>`;
   renderDraft();
 }
