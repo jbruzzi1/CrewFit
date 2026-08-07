@@ -69,6 +69,16 @@
     .pavatar-wrap { position:relative; display:inline-block; cursor:pointer; }
     .pavatar { width:84px; height:84px; border-radius:50%; object-fit:cover; background:#e6e8ec; display:flex; align-items:center; justify-content:center; font-size:30px; font-weight:700; overflow:hidden; }
     .pcam { position:absolute; right:-2px; bottom:-2px; background:var(--green); color:#fff; border-radius:50%; width:26px; height:26px; display:flex; align-items:center; justify-content:center; font-size:13px; border:2px solid #fff; }
+    /* Avatar cropper modal */
+    .crop-overlay { position:fixed; inset:0; background:rgba(0,0,0,.92); z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:20px; }
+    .crop-stage { position:relative; width:240px; height:240px; border-radius:50%; overflow:hidden; border:2px solid #fff; touch-action:none; background:#222; }
+    .crop-img { position:absolute; top:0; left:0; transform-origin:0 0; will-change:transform; user-select:none; -webkit-user-drag:none; }
+    .crop-ring { position:absolute; inset:0; border-radius:50%; box-shadow:0 0 0 9999px rgba(0,0,0,.55); pointer-events:none; }
+    .crop-hint { color:#fff; opacity:.8; font-size:13px; margin:16px 0 10px; text-align:center; }
+    .crop-slider { width:80%; max-width:320px; margin:6px 0 18px; accent-color:var(--green); }
+    .crop-actions { display:flex; gap:12px; }
+    .crop-actions button { width:auto; padding:11px 22px; border-radius:12px; margin:0; }
+    .crop-actions .cancel { background:#444; color:#fff; }
     .pinfo { flex:1; min-width:0; }
     .pname { font-size:20px; font-weight:700; }
     .pstats { display:flex; justify-content:space-around; text-align:center; padding:12px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
@@ -144,6 +154,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="/app.js?v=25"></script>
+  <script src="/app.js?v=26"></script>
 </body>
 </html>

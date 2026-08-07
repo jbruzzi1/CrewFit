@@ -628,12 +628,75 @@ async function uploadAvatar(input){
   const file = input.files && input.files[0];
   if(!file) return;
   const reader = new FileReader();
-  reader.onload = async ()=>{
-    const r = await H.post('/api/me/avatar',{ data: reader.result, type: file.type });
-    if(r.avatar){ ME.avatar = r.avatar; profileView(ME.id); }
-    else alert(r.error||'upload failed');
-  };
+  reader.onload = ()=> openCropper(reader.result, file.type);
   reader.readAsDataURL(file);
+}
+// ---- Avatar cropper ----
+let _crop = null;
+function openCropper(dataUrl, type){
+  const ov = document.createElement('div');
+  ov.className = 'crop-overlay';
+  ov.id = 'cropper';
+  ov.innerHTML = `
+    <div class="crop-hint">Move & zoom to center your photo</div>
+    <div class="crop-stage" id="cropStage"><img class="crop-img" id="cropImg" src="${dataUrl}"><div class="crop-ring"></div></div>
+    <input class="crop-slider" id="cropZoom" type="range" min="1" max="4" step="0.01" value="1">
+    <div class="crop-actions">
+      <button class="cancel" onclick="closeCropper()">Cancel</button>
+      <button class="blue" onclick="applyCrop('${type}')">Use Photo</button>
+    </div>`;
+  document.body.appendChild(ov);
+  const img = document.getElementById('cropImg');
+  const stage = document.getElementById('cropStage');
+  const zoom = document.getElementById('cropZoom');
+  _crop = { scale:1, x:0, y:0, img, stage, zoom };
+  const fit = ()=>{
+    const s = Math.min(stage.clientWidth/img.naturalWidth, stage.clientHeight/img.naturalHeight);
+    _crop.base = s;
+    centerImage();
+  };
+  if(img.complete) fit(); else img.onload = fit;
+  // drag to pan
+  let dragging=false, sx=0, sy=0, ox=0, oy=0;
+  const down = e=>{ dragging=true; const p=e.touches?e.touches[0]:e; sx=p.clientX; sy=p.clientY; ox=_crop.x; oy=_crop.y; };
+  const move = e=>{ if(!dragging) return; e.preventDefault(); const p=e.touches?e.touches[0]:e; _crop.x=ox+(p.clientX-sx); _crop.y=oy+(p.clientY-sy); renderCrop(); };
+  const up = ()=> dragging=false;
+  stage.addEventListener('mousedown',down); stage.addEventListener('mousemove',move); window.addEventListener('mouseup',up);
+  stage.addEventListener('touchstart',down,{passive:false}); stage.addEventListener('touchmove',move,{passive:false}); stage.addEventListener('touchend',up);
+  zoom.addEventListener('input', ()=>{ _crop.scale = parseFloat(zoom.value); renderCrop(); });
+}
+function centerImage(){
+  const {img, stage, base, scale} = {..._crop, scale:_crop.scale||1};
+  const w = img.naturalWidth*base*scale, h = img.naturalHeight*base*scale;
+  _crop.x = (stage.clientWidth - w)/2;
+  _crop.y = (stage.clientHeight - h)/2;
+  renderCrop();
+}
+function renderCrop(){
+  const {img, base, scale, x, y} = _crop;
+  const s = base*(scale||1);
+  img.style.width = (img.naturalWidth*s)+'px';
+  img.style.height = (img.naturalHeight*s)+'px';
+  img.style.transform = `translate(${x}px, ${y}px)`;
+}
+function closeCropper(){ const c=document.getElementById('cropper'); if(c) c.remove(); _crop=null; }
+async function applyCrop(type){
+  const {img, stage, base, scale} = {..._crop, scale:_crop.scale||1};
+  const s = base*(scale||1);
+  const w = stage.clientWidth, h = stage.clientHeight;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  // draw the (possibly panned) image, clipped to circle
+  ctx.save();
+  ctx.beginPath(); ctx.arc(w/2,h/2,w/2,0,Math.PI*2); ctx.clip();
+  ctx.drawImage(img, _crop.x, _crop.y, img.naturalWidth*s, img.naturalHeight*s);
+  ctx.restore();
+  const out = canvas.toDataURL(type && type.indexOf('png')>=0 ? 'image/png' : 'image/jpeg', 0.9);
+  closeCropper();
+  const r = await H.post('/api/me/avatar',{ data: out, type: type||'image/jpeg' });
+  if(r.avatar){ ME.avatar = r.avatar; profileView(ME.id); }
+  else alert(r.error||'upload failed');
 }
 function meScreen(){ profileView(ME.id); }
 function logout(){ localStorage.removeItem('crewfit_token'); TOKEN=''; ME=null; $('nav').classList.add('hidden'); authScreen(); }
