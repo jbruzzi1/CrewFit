@@ -300,8 +300,10 @@ async function pickExercise(){
       ${eqs.map(k=>`<span class="cat-pill" data-eq="${k}" onclick="pickEq(this)">${eqLabel(k)}</span>`).join('')}
     </div>
     <div class="pick-list" id="libList"></div>
+    <div class="added-strip" id="addedStrip"></div>
   </div>`;
   filterLib();
+  renderAddedStrip();
 }
 function pickCat(el){
   window._PFILTER.cat = el.dataset.cat;
@@ -339,6 +341,13 @@ function filterLib(){
   `).join('');
   $('libList').innerHTML = list.length ? html : '<div class="muted" style="padding:20px;text-align:center">No matches.</div>';
 }
+function renderAddedStrip(){
+  const el = $('addedStrip'); if(!el) return;
+  if(!DRAFT.exercises.length){ el.innerHTML=''; el.classList.remove('on'); return; }
+  el.classList.add('on');
+  el.innerHTML = `<div class="added-title">In this workout (${DRAFT.exercises.length})</div>` +
+    DRAFT.exercises.map((e,i)=>`<span class="added-chip" onclick="rmEx(${i}); renderAddedStrip();">${esc(e.name)} <b>✕</b></span>`).join('');
+}
 function addEx(name, el){
   if($('loc')) DRAFT.location = $('loc').value;
   if($('len')) DRAFT.lengthMin = $('len').value;
@@ -348,6 +357,7 @@ function addEx(name, el){
   else DRAFT.exercises.push({name,defaultSets:3,defaultReps:10});
   const pc=$('pickCount'); if(pc) pc.textContent=DRAFT.exercises.length+' added';
   if(el){ const on=DRAFT.exercises.find(e=>e.name===name); el.classList.toggle('ex-on', !!on); el.querySelector('.ex-add').textContent = on?'✓':'+'; }
+  renderAddedStrip();
 }
 function closePick(){ createFlow(); }
 async function submitSession(){
