@@ -255,20 +255,18 @@ function exBadges(e){
   b.push(`<span class="ex-badge ex-type">${e.is_compound?'Compound':'Isolation'}</span>`);
   return b.join('');
 }
-// ---- Exercise thumbnail (SVG, shown in detail sheet only) ----
-// ---- Muscle-group icons (real mannequin crops w/ red highlight, from user reference images) ----
-// Map muscle-group key -> png in public/muscle-icons/. Old SVG glyphs replaced.
-function mgIcon(mg){
-  const key = MG_IMG[mg] || mg;
-  return `<img class="mg-img" src="muscle-icons/${key}.png" alt="${esc(mg)}" loading="lazy">`;
-}
-// keys that have a dedicated icon png; legacy data tags mapped to closest available icon
+// ---- Muscle-group label (text, no image — icon pngs removed per request) ----
+// maps a muscle-group key to a display label
 const MG_IMG = {
   chest:'chest', lats:'lats', traps:'traps', biceps:'biceps', triceps:'triceps',
   core:'core', quads:'quads', hamstrings:'hamstrings', calves:'calves',
   shoulders:'shoulders', forearms:'forearms', glutes:'glutes', cardio:'cardio',
   abdominals:'core'
 };
+function mgIcon(mg){
+  const label = MG_IMG[mg] || mg;
+  return `<div class="mg-ico mg-text">${esc(label)}</div>`;
+}
 function exThumb(e){
   const mg = (e.muscle_groups&&e.muscle_groups[0]) || 'abdominals';
   return mgIcon(mg);
