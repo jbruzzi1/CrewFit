@@ -256,8 +256,8 @@ function exBadges(e){
   b.push(`<span class="ex-badge ex-type">${e.is_compound?'Compound':'Isolation'}</span>`);
   return b.join('');
 }
-// ---- Muscle-group label (text, no image — icon pngs removed per request) ----
-// maps a muscle-group key to a display label
+// ---- Muscle-group icons (mannequin crops w/ red highlight) ----
+// Map muscle-group key -> png in public/muscle-icons/.
 const MG_IMG = {
   chest:'chest', lats:'lats', traps:'traps', biceps:'biceps', triceps:'triceps',
   core:'core', quads:'quads', hamstrings:'hamstrings', calves:'calves',
@@ -265,8 +265,8 @@ const MG_IMG = {
   abdominals:'core'
 };
 function mgIcon(mg){
-  const label = MG_IMG[mg] || mg;
-  return `<div class="mg-ico mg-text">${esc(label)}</div>`;
+  const key = MG_IMG[mg] || mg;
+  return `<img class="mg-img" src="muscle-icons/${key}.png" alt="${esc(mg)}" loading="lazy">`;
 }
 function exThumb(e){
   const mg = (e.muscle_groups&&e.muscle_groups[0]) || 'abdominals';
