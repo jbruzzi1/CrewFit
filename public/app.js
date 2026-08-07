@@ -233,7 +233,7 @@ async function useTemplate(){
 function toggleInvite(cb){ const u=cb.value; if(cb.checked){ if(!DRAFT.inviteUsernames.includes(u)) DRAFT.inviteUsernames.push(u);} else { DRAFT.inviteUsernames=DRAFT.inviteUsernames.filter(x=>x!==u);} }
 function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item draft-ex" onclick="editDraftEx(${i})">
       <div><div style="font-weight:600">${esc(e.name)}</div><div class="muted" style="font-size:12px">${e.defaultSets} sets × ${e.defaultReps} reps</div></div>
-      <button class="sm red" onclick="event.stopPropagation(); rmEx(${i})">✕</button>
+      <button class="draft-rm" onclick="event.stopPropagation(); rmEx(${i})">Remove</button>
     </div>`).join('') : '<div class="muted">None added.</div>'; }
 function editDraftEx(i){
   const e = DRAFT.exercises[i]; if(!e) return;
