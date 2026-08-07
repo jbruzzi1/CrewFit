@@ -56,8 +56,8 @@ async function home(){
   const sessions = await H.get('/api/sessions');
   const feed = await H.get('/api/feed');
   const friendName = async (id)=> (await H.get('/api/friends')).find(f=>f.id===id)?.displayName || 'friend';
-  let html = `<div class="wrap"><h1>Home</h1>
-    <button class="blue" onclick="createFlow()">+ New workout</button>`;
+  let html = `<div class="wrap home-head"><h1>Home</h1>
+    <button class="blue btn-hero" onclick="createFlow()">+ New workout</button>`;
 
   // Section 1: Friend's Activity (completed activity, not invites)
   html += `<h2>Friend's Activity</h2><div class="card">`;
