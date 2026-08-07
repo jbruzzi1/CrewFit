@@ -235,6 +235,7 @@ function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT
       <div class="draft-main" onclick="editDraftEx(${i})"><div style="font-weight:600">${esc(e.name)}</div><div class="muted" style="font-size:12px">${e.defaultSets} sets × ${e.defaultReps} reps</div></div>
       <button class="draft-rm" onclick="rmEx(${i})">Remove</button>
     </div>`).join('') : '<div class="muted">None added.</div>'; }
+function rmEx(i){ DRAFT.exercises.splice(i,1); renderDraft(); }
 function editDraftEx(i){
   const e = DRAFT.exercises[i]; if(!e) return;
   const sheet = document.createElement('div'); sheet.className='sheet-back';
