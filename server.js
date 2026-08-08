@@ -285,6 +285,24 @@ app.post('/api/templates', auth, (req, res) => {
   save(DB);
   res.json(t);
 });
+app.put('/api/templates/:id', auth, (req, res) => {
+  const t = DB.templates && DB.templates[req.params.id];
+  if (!t) return res.status(404).json({ error: 'not found' });
+  if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
+  const { name, exercises } = req.body || {};
+  if (name) t.name = name;
+  if (Array.isArray(exercises) && exercises.length) t.exercises = exercises.map(e => ({ name: e.name, defaultSets: e.defaultSets || 3, defaultReps: e.defaultReps || 10 }));
+  save(DB);
+  res.json(t);
+});
+app.delete('/api/templates/:id', auth, (req, res) => {
+  const t = DB.templates && DB.templates[req.params.id];
+  if (!t) return res.status(404).json({ error: 'not found' });
+  if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
+  delete DB.templates[req.params.id];
+  save(DB);
+  res.json({ ok: true });
+});
 
 // ---- Session comments (Message Host / chat) ----
 app.get('/api/sessions/:id/comments', auth, (req, res) => {
