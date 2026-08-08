@@ -340,10 +340,7 @@ async function tplQuickSaveConfirm(){
   alert('Template saved: '+n);
 }
 function toggleInvite(cb){ const u=cb.value; if(cb.checked){ if(!DRAFT.inviteUsernames.includes(u)) DRAFT.inviteUsernames.push(u);} else { DRAFT.inviteUsernames=DRAFT.inviteUsernames.filter(x=>x!==u);} }
-function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item draft-ex">
-      <div class="draft-main" onclick="editDraftEx(${i})"><div style="font-weight:600">${esc(e.name)}</div><div class="muted" style="font-size:12px">${e.defaultSets} sets × ${e.defaultReps} reps</div></div>
-      <button class="draft-rm" onclick="rmEx(${i})">Remove</button>
-    </div>`).join('') : '<div class="muted">None added.</div>'; }
+function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item draft-ex">\n      <div class="draft-main" onclick="editDraftEx(${i})"><span class="draft-name">${esc(e.name)}</span><span class="draft-chip">${e.defaultSets} × ${e.defaultReps}</span></div>\n      <button class="draft-rm" onclick="rmEx(${i})">Remove</button>\n    </div>`).join('') : '<div class="muted">None added.</div>'; }
 function rmEx(i){ DRAFT.exercises.splice(i,1); renderDraft(); }
 function editDraftEx(i){
   const e = DRAFT.exercises[i]; if(!e) return;
