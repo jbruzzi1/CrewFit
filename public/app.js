@@ -379,7 +379,9 @@ function dragReorder(container, arr, onChange){
   let dragEl=null, ph=null, grabY=0, startY=0, startX=0, started=false, h=0;
   const onDown=(e)=>{
     const item=e.target.closest('.draft-ex'); if(!item) return;
-    if(e.target.closest('.draft-rm')||e.target.closest('.draft-main')) return;
+    // Only the grip handle starts a drag, so scrolling/tapping the row body works normally.
+    if(!e.target.closest('.drag-handle')) return;
+    if(e.target.closest('.draft-rm')) return;
     dragEl=item; started=false;
     startY=(e.touches?e.touches[0].clientY:e.clientY); startX=(e.touches?e.touches[0].clientX:e.clientX);
     window.addEventListener('mousemove',onMove); window.addEventListener('mouseup',onUp);
