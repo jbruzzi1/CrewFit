@@ -147,13 +147,16 @@ async function openSession(id){
     }
   }
   let html = `<div class="wrap"><button class="sec sm" onclick="showTab('home')">← Back</button>
-    <h1>${fmtDate(s.scheduledAt)}</h1>
-    <div class="muted">${s.visibility==='friends'?'Friends-only · joinable':'Private'} · ${s.participants.length} people</div>
+    <h1 class="sess-date">${fmtDate(s.scheduledAt)}</h1>
+    <div class="muted sess-meta">${s.visibility==='friends'?'Friends-only · joinable':'Private'} · ${s.participants.length} people</div>
     ${s.location?`<div class="tag">📍 ${esc(s.location)}</div>`:''}
     ${s.lengthMin?`<div class="tag">⏱ ${esc(s.lengthMin)} min</div>`:''}
     ${s.creatorNote?`<div class="card muted">"${esc(s.creatorNote)}" — ${isCreator?'you':esc(s.creatorId)}</div>`:''}`;
-  if(isCreator && s.status!=='locked') html += `<button class="blue sm" onclick="lock('${s.id}')">Lock & finish</button>`;
-  if(isCreator) html += `<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button>`;
+  if(isCreator){
+    html += `<div class="sess-actions">`;
+    if(s.status!=='locked') html += `<button class="blue sm" onclick="lock('${s.id}')">Lock & finish</button>`;
+    html += `<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button></div>`;
+  }
   html += `<h2>Workout (your view)</h2>${myEx}`;
   if(edits) html += `<h2>Suggested swaps</h2>${edits}`;
   if(jr) html += `<h2>Join requests</h2>${jr}`;
