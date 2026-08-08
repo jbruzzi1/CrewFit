@@ -60,7 +60,7 @@ async function home(){
   const friendName = async (id)=> (await H.get('/api/friends')).find(f=>f.id===id)?.displayName || 'friend';
   const initial = ((ME&&(ME.displayName||ME.username))||'?')[0]||'?';
   const first = ((ME.displayName||ME.username||'there').split(' ')[0]);
-  const HYPE = ['Time to crush it','Let\'s get after it','Show up. Lift heavy','Let\'s move','Big day'];
+  const HYPE = ['Time to crush it','Let\'s get after it','Show up. Lift heavy'];
   const hypeLine = HYPE[Math.floor(Math.random()*HYPE.length)];
   const homeAvatarHtml = ME && ME.avatar
     ? `<img class="home-avatar" src="${esc(ME.avatar)}" alt="" onclick="showTab('me')">`
