@@ -251,7 +251,7 @@ async function templatesPage(){
     <div class="pick-head lib-head"><h1 style="flex:1">Templates</h1>
       <button class="icon-btn" onclick="tplNew()" title="New template">＋</button></div>
     <div class="muted" style="font-size:13px;margin:4px 2px 12px">Reusable workouts. Build one, then use it to start a new session in a tap.</div>
-    ${mine.length?mine.map(row).join(''):'<div class="card muted" style="padding:16px;text-align:center">No templates yet. Tap ＋ to create one.</div>'}
+    ${mine.length?mine.map(row).join(''):'<div class="card muted" style="padding:16px;text-align:center">No templates created. Tap ＋ to create one.</div>'}
     ${shared.length?`<div class="lib-cat" style="margin-top:12px">Shared by friends</div>`+shared.map(row).join(''):''}</div>`;
 }
 function tplNew(){
@@ -628,7 +628,7 @@ async function templates(){
     html += `<h2>From friends</h2>`;
     for(const t of shared) html += `<div class="lib-item"><div><b>${esc(t.name)}</b><div class="tag">${t.exercises.length} ex</div></div><button class="sm" onclick="useTpl('${t.id}')">Use</button></div>`;
   }
-  if(!mine.length && !shared.length) html += `<div class="card muted">No templates yet. Create a workout and choose "Save as template".</div>`;
+  if(!mine.length && !shared.length) html += `<div class="card muted">No templates created. Create a workout and choose "Save as template".</div>`;
   html += `</div>`;
   $('app').innerHTML = html;
 }
