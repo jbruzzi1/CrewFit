@@ -359,7 +359,7 @@ function editDraftEx(i){
       </div></div>
       <button class="red" style="margin-top:14px;width:100%" onclick="rmEx(${i}); closeSheet();">Remove exercise</button>
     </div>`;
-  sheet.onclick=closeSheet; document.body.appendChild(sheet);
+  sheet.onclick=(e)=>{ if(e.target===sheet) closeSheet(); }; document.body.appendChild(sheet);
   requestAnimationFrame(()=>sheet.classList.add('show'));
 }
 function stepDraft(i, field, delta){
@@ -586,8 +586,9 @@ function openCreateEx(presetMuscle){
       <label class="muted">Type</label><select id="ceType"><option value="0">Isolation</option><option value="1">Compound</option></select>
       <button class="blue" style="margin-top:14px;width:100%" onclick="submitCreateEx()">Save exercise</button>
     </div>`;
-  sheet.onclick=closeSheet; document.body.appendChild(sheet);
+  sheet.onclick=(e)=>{ if(e.target===sheet) closeSheet(); }; document.body.appendChild(sheet);
   requestAnimationFrame(()=>sheet.classList.add('show'));
+  const ceBtn=document.getElementById('ceName'); if(ceBtn) setTimeout(()=>ceBtn.focus(),60);
 }
 async function submitCreateEx(){
   const name=($('ceName').value||'').trim(); if(!name) return alert('Enter a name');
@@ -610,11 +611,11 @@ function exDetail(name){
       <div class="sheet-row"><span>Pattern</span><b>${esc(e.pattern||'—')}</b></div>
       <div class="sheet-row"><span>Suggested</span><b>${sets} × ${reps}</b></div>
     </div>`;
-  sheet.onclick=closeSheet; document.body.appendChild(sheet);
+  sheet.onclick=(e)=>{ if(e.target===sheet) closeSheet(); }; document.body.appendChild(sheet);
   requestAnimationFrame(()=>sheet.classList.add('show'));
 }
 function closeSheet(){ const s=document.querySelector('.sheet-back'); if(s){ s.classList.remove('show'); setTimeout(()=>s.remove(),200); } }
-function openSheetHtml(inner){ const s=document.createElement('div'); s.className='sheet-back'; s.onclick=closeSheet; s.innerHTML=inner; document.body.appendChild(s); requestAnimationFrame(()=>s.classList.add('show')); }
+function openSheetHtml(inner){ const s=document.createElement('div'); s.className='sheet-back'; s.onclick=(e)=>{ if(e.target===s) closeSheet(); }; s.innerHTML=inner; document.body.appendChild(s); requestAnimationFrame(()=>s.classList.add('show')); }
 
 // ---- Templates ----
 async function templates(){
