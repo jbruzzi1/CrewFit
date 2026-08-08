@@ -347,8 +347,10 @@ async function createFlow(){
     <select id="vis"><option value="private">Private (invite only)</option><option value="friends">Friends-only (joinable)</option></select>
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="openAddExercises()">+ Add exercise</button>
+    <div class="tpl-actions">
     <button class="sec sm" onclick="templatesPage()">Browse templates</button>
     <button class="sec sm" onclick="tplQuickSaveSheet()">Save as template</button>
+    </div>
     <h2>Invite friends</h2><div id="invList" class="card">${invRows}</div>
     ${EDITING_SESSION ? '<button class="blue" onclick="submitSession()">Save changes</button>' : '<button class="blue" onclick="submitSession()">Create workout</button>'}</div>`;
   renderDraft();

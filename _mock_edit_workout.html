@@ -54,6 +54,7 @@
   .draft-name { flex:0 1 auto; min-width:0; font-weight:500; font-size:14px; color:var(--fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .draft-chip { flex:0 0 auto; font-size:13px; font-weight:500; color:var(--muted); }
   .draft-rm { flex:0 0 auto; margin-left:auto; background:transparent; color:var(--red); border:1px solid var(--red); font-size:12px; font-weight:600; padding:7px 12px; border-radius:10px; width:auto; cursor:pointer; }
+  .tpl-actions { display:flex; justify-content:center; gap:10px; margin-top:10px; }
 </style>
 </head>
 <body>
@@ -73,8 +74,10 @@
     <div class="lib-item draft-ex" data-idx="2"><div class="drag-handle" title="Drag to reorder"></div><div class="draft-main"><span class="draft-name">Lat Pulldown</span><span class="draft-chip">4 x 8</span></div><button class="draft-rm">Remove</button></div>
   </div>
   <button class="sec" onclick="openAddExercises()">+ Add exercise</button>
-  <button class="sec sm" onclick="templatesPage()">Browse templates</button>
-  <button class="sec sm" onclick="tplQuickSaveSheet()">Save as template</button>
+  <div class="tpl-actions">
+    <button class="sec sm" onclick="templatesPage()">Browse templates</button>
+    <button class="sec sm" onclick="tplQuickSaveSheet()">Save as template</button>
+  </div>
   <h2>Invite friends</h2><div id="invList" class="card">
     <label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap"><div class="inv-av" style="background:#4f8cff;color:#fff">B</div></div><div class="inv-text"><div class="name">Brian</div><div class="handle">@brian</div></div></div><span class="check"><input type="checkbox" checked><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>
     <label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap"><div class="inv-av" style="background:#9333ea;color:#fff">S</div></div><div class="inv-text"><div class="name">Sam</div><div class="handle">@sam</div></div></div><span class="check"><input type="checkbox"><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>
