@@ -205,15 +205,17 @@
     .t-drop { background:rgba(147,51,234,.12); color:#9333ea; }
     .t-fail { background:rgba(220,38,38,.12); color:var(--red); }
     .type-tag.pr { background:rgba(245,158,11,.15); color:#b45309; }
-    .seg { display:flex; gap:6px; margin:6px 0 10px; }
-    .seg .chip { flex:1; text-align:center; background:#eef1f5; color:var(--muted); border:1px solid transparent; border-radius:999px; padding:8px 0; font-size:12px; font-weight:600; cursor:pointer; }
+    .seg { display:flex; gap:6px; margin:6px 0 14px; }
+    .seg .chip { flex:1; text-align:center; background:#eef1f5; color:var(--muted); border:1px solid transparent; border-radius:999px; padding:9px 0; font-size:12px; font-weight:600; cursor:pointer; }
     .seg .chip.on { background:var(--blue); color:#fff; border-color:var(--blue); }
-    .add-row { display:flex; gap:8px; align-items:center; }
-    .add-row input { margin:0; flex:1; }
-    .add-btn { flex:0 0 auto; width:auto; margin:0; padding:12px 18px; }
-    .rest { display:inline-flex; align-items:center; gap:8px; margin-top:10px; padding:7px 12px; background:#eef1f5; border-radius:999px; font-size:12px; color:var(--muted); }
+    .add-row { display:flex; gap:8px; align-items:center; width:100%; margin-top:2px; }
+    .add-row input { margin:0; flex:1 1 0; min-width:0; max-width:100%; box-sizing:border-box; padding:11px 12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fbfbfc; color:var(--fg); }
+    .add-row input::placeholder { color:#aeb4be; }
+    .add-btn { flex:0 0 auto; width:auto; margin:0; background:transparent; color:var(--blue); border:1px solid var(--blue); border-radius:10px; padding:11px 16px; font-size:14px; font-weight:600; }
+    .add-btn:active { background:rgba(37,99,235,.08); }
+    .rest { display:inline-flex; align-items:center; gap:8px; margin-top:14px; padding:8px 12px; background:#eef1f5; border-radius:999px; font-size:12px; color:var(--muted); }
     .rest b { color:var(--fg); font-size:14px; font-weight:700; }
-    .note { font-size:11px; color:var(--muted); margin-top:10px; }
+    .note { font-size:11px; color:var(--muted); margin-top:14px; }
   </style>
 </head>
 <body>

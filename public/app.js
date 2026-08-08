@@ -126,12 +126,10 @@ async function openSession(id){
     const name = v?`<b>${esc(v.swapTo)}</b> <span class="tag">(your swap)</span>`:esc(e.name);
     const tap = canEdit ? ` onclick="openLogSheet('${s.id}','${e.id}')"` : '';
     const cls = canEdit ? 'lib-item log-row' : 'lib-item';
-    // count of sets the user has logged for this exercise
     const cnt = (s.logs && s.logs[ME.id]) ? s.logs[ME.id].filter(l=>l.exerciseId===e.id).length : 0;
     const cntTag = canEdit ? `<span class="tag log-cnt">${cnt?cnt+' set'+(cnt>1?'s':''):'tap to log'}</span>` : '';
     return `<div class="${cls}"${tap}><div>${name}</div><div class="row" style="gap:8px;align-items:center">${cntTag}<div class="tag">${e.defaultSets}×${e.defaultReps}</div></div></div>`;
   }).join('');
-  if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 0">Tap an exercise to log your sets.</div>`;
   // suggested edits
   let edits = '';
   for(const ed of s.suggestedEdits){
@@ -166,6 +164,7 @@ async function openSession(id){
     html += `<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button></div>`;
   }
   html += `<h2>Workout (your view)</h2>${myEx}`;
+  if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div>`;
   if(edits) html += `<h2>Suggested swaps</h2>${edits}`;
   if(jr) html += `<h2>Join requests</h2>${jr}`;
   if(canEdit){
@@ -189,7 +188,6 @@ async function openSession(id){
     <div class="row"><input id="chatInput" placeholder="message host + crew"><button class="sm" onclick="sendChat('${s.id}')">Send</button></div></div>`;
   html += `</div>`;
   $('app').innerHTML = html;
-  renderLogs(s);
   loadChat(s);
 }
 async function acceptInvite(id){ await H.post(`/api/sessions/${id}/accept`,{}); openSession(id); }
@@ -220,10 +218,8 @@ async function openLogSheet(sid, exId){
   if(!s || s.error){ alert(s && s.error ? s.error : 'Session not found'); return; }
   const e = s.exercises.find(x=>x.id===exId); if(!e) return;
   LOGVIEW = { sid, exId };
-  // previous best volume for this exercise (across this session, this user) -> "Last time"
   const mine = (s.logs && s.logs[ME.id]) || [];
   const exLogs = mine.filter(l=>l.exerciseId===exId);
-  const best = exLogs.reduce((m,l)=>Math.max(m,(Number(l.weight)||0)*(Number(l.reps)||0)),0);
   const bestLog = exLogs.slice().sort((a,b)=>((Number(b.weight)||0)*(Number(b.reps)||0))-((Number(a.weight)||0)*(Number(a.reps)||0)))[0];
   const last = bestLog ? `${bestLog.weight} × ${bestLog.reps}` : '—';
   const sheet = document.createElement('div'); sheet.className='sheet-back';
@@ -236,12 +232,12 @@ async function openLogSheet(sid, exId){
         ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" data-t="${t.key}" onclick="logSetType('${t.key}')">${t.label}</div>`).join('')}
       </div>
       <div class="add-row">
-        <input id="logW" placeholder="lbs" type="number" inputmode="decimal">
-        <input id="logR" placeholder="reps" type="number" inputmode="numeric">
+        <input id="logW" placeholder="lbs" type="number" inputmode="tel" pattern="[0-9]*">
+        <input id="logR" placeholder="reps" type="number" inputmode="tel" pattern="[0-9]*">
         <button class="add-btn" onclick="addLogSet()">+ Add</button>
       </div>
       <div id="logRest"></div>
-      <div class="note">Tap a set to edit or delete it. Type defaults to Normal — pick a chip to change. Set # auto-fills.</div>
+      <div class="note">Tap a set to edit or delete it. Set # auto-fills.</div>
     </div>`;
   sheet.onclick=(ev)=>{ if(ev.target===sheet) closeSheet(); };
   document.body.appendChild(sheet);
@@ -285,9 +281,9 @@ async function editLogSet(logId){
       <div class="sheet-head"><h2>Edit set</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
       <div class="ex-sub">Set ${l.set||''}</div>
       <label class="muted" style="font-size:12px">Weight (lbs)</label>
-      <input id="edW" type="number" inputmode="decimal" value="${l.weight}">
+      <input id="edW" type="number" inputmode="tel" pattern="[0-9]*" value="${l.weight}">
       <label class="muted" style="font-size:12px">Reps</label>
-      <input id="edR" type="number" inputmode="numeric" value="${l.reps}">
+      <input id="edR" type="number" inputmode="tel" pattern="[0-9]*" value="${l.reps}">
       <label class="muted" style="font-size:12px">Type</label>
       <select id="edT">${SET_TYPES.map(t=>`<option value="${t.key}"${t.key===l.setType?' selected':''}>${t.label}</option>`).join('')}</select>
       <button class="blue" onclick="saveLogSet('${logId}')">Save</button>
@@ -317,9 +313,6 @@ function startRest(){
   clearInterval(REST_TIMER);
   REST_TIMER=setInterval(()=>{ sec--; const el=document.getElementById('restN'); if(el) el.textContent=`${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`; if(sec<=0){ clearInterval(REST_TIMER); box.innerHTML=''; } },1000);
 }
-// legacy compat shims (no longer used in UI)
-async function logSet(id){ /* deprecated */ }
-function renderLogs(s){ /* deprecated */ }
 async function lock(id){ await H.post(`/api/sessions/${id}/lock`); openSession(id); }
 async function deleteSession(id){
   if(!confirm('Delete this session? This removes it for everyone.')) return;
@@ -348,7 +341,7 @@ async function createFlow(){
     <label class="muted">Workout name</label><input id="wname" placeholder="e.g. Chest & Back" value="${esc(DRAFT.name||'')}">
     <label class="muted">When</label><input id="dt" type="datetime-local" value="${esc(DRAFT._dt||'')}">
     <label class="muted">Location</label><input id="loc" placeholder="e.g. Gold's Gym" value="${esc(DRAFT.location||'')}">
-    <div class="row"><div><label class="muted">Length (min)</label><input id="len" type="number" placeholder="60" value="${DRAFT.lengthMin||''}"></div></div>
+    <div class="row"><div><label class="muted">Length (min)</label><input id="len" type="number" inputmode="tel" pattern="[0-9]*" placeholder="60" value="${DRAFT.lengthMin||''}"></div></div>
     <label class="muted">Note to friends</label><input id="note" placeholder="let's hit legs hard" value="${esc(DRAFT.creatorNote||'')}">
     <label class="muted">Visibility</label>
     <select id="vis"><option value="private">Private (invite only)</option><option value="friends">Friends-only (joinable)</option></select>
