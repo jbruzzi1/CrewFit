@@ -4,6 +4,8 @@ let ME = null;
 const H = {
   get:p=>(fetch(API+p,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json())),
   post:(p,b)=>(fetch(API+p,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},body:JSON.stringify(b||{})}).then(r=>r.json())),
+  put:(p,b)=>(fetch(API+p,{method:'PUT',headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},body:JSON.stringify(b||{})}).then(r=>r.json())),
+  delete:p=>(fetch(API+p,{method:'DELETE',headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN}}).then(r=>r.json())),
 };
 const $ = id => document.getElementById(id);
 function setToken(t,u){ TOKEN=t; localStorage.setItem('crewfit_token',t); ME=u; $('nav').classList.toggle('hidden', !t); }
@@ -222,76 +224,115 @@ async function createFlow(){
     <select id="vis"><option value="private">Private (invite only)</option><option value="friends">Friends-only (joinable)</option></select>
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="openAddExercises()">+ Add exercise</button>
-    <button class="sec sm" onclick="useTemplate()">⚡ Use a template</button>
-    <button class="sec sm" onclick="saveDraftAsTemplate()">Save as template</button>
+    <button class="sec sm" onclick="templatesPage()">⚡ Use a template</button>
+    <button class="sec sm" onclick="tplQuickSaveSheet()">Save as template</button>
     <h2>Invite friends</h2><div id="invList" class="card">${invRows}</div>
     ${EDITING_TPL ? '<button class="blue" onclick="submitSession()">Update workout</button>' : '<button class="blue" onclick="submitSession()">Create workout</button>'}</div>`;
   renderDraft();
 }
-async function useTemplate(){
+async function submitSession(){
+  const dt=$('dt').value; const vis=$('vis').value;
+  const location=$('loc').value; const lengthMin=$('len').value; const creatorNote=$('note').value; const name=$('wname').value;
+  if(!DRAFT.exercises.length) return alert('Add at least one exercise');
+  const scheduledAt = dt? new Date(dt).toISOString() : new Date().toISOString();
+  const r = await H.post('/api/sessions',{scheduledAt,visibility:vis,name,exercises:DRAFT.exercises,inviteUsernames:DRAFT.inviteUsernames,location,lengthMin:lengthMin?Number(lengthMin):null,creatorNote});
+  if(r.error) alert(r.error); else home();
+}
+// ---- Templates: page-based flow (list -> name -> pick exercises -> save) ----
+const TPL_MODE = { active:false, id:null, name:'' };   // active while building a template
+async function templatesPage(){
+  document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
   const { mine, shared } = await H.get('/api/templates');
-  const all = [...mine, ...shared];
-  if(!all.length){ alert('No templates yet. Build a workout, then "Save as template".'); return; }
-  const pick = prompt('Pick a template:\n' + all.map((t,i)=>`${i+1}. ${t.name} (${t.exercises.length} ex)`).join('\n'));
-  const idx = parseInt(pick,10)-1;
-  if(isNaN(idx)||!all[idx]) return;
-  DRAFT.exercises = all[idx].exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps}));
+  window._TPL = { mine, shared };
+  const row = (t)=>`<div class="lib-item"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${t.exercises.length} exercises</div></div>
+    <button class="sec sm" onclick="tplUse('${t.id}')">Use</button>
+    ${t.ownerId===ME.id?`<button class="sec sm" onclick="tplEdit('${t.id}')">Edit</button><button class="sec sm red" onclick="tplDelete('${t.id}')">Delete</button>`:''}</div>`;
+  $('app').innerHTML = `<div class="wrap tpl-page">
+    <div class="pick-head lib-head"><h1 style="flex:1">Templates</h1>
+      <button class="icon-btn" onclick="tplNew()" title="New template">＋</button></div>
+    <div class="muted" style="font-size:13px;margin:4px 2px 12px">Reusable workouts. Build one, then use it to start a new session in a tap.</div>
+    ${mine.length?mine.map(row).join(''):'<div class="card muted" style="padding:16px;text-align:center">No templates yet. Tap ＋ to create one.</div>'}
+    ${shared.length?`<div class="lib-cat" style="margin-top:12px">Shared by friends</div>`+shared.map(row).join(''):''}</div>`;
+}
+function tplNew(){
+  TPL_MODE.active=true; TPL_MODE.id=null; TPL_MODE.name='';
+  DRAFT={ exercises:[] }; EDITING_TPL=null;
+  openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Name template</h2></div>
+    <label class="muted">Template name</label>
+    <input id="tplName" placeholder="e.g. Push Day" autocomplete="off">
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="sec" style="flex:1" onclick="closeSheet()">Cancel</button>
+      <button class="blue" style="flex:1" onclick="tplConfirmName()">✓ Create</button>
+    </div></div>`);
+  setTimeout(()=>{ const i=$('tplName'); if(i) i.focus(); }, 60);
+}
+function tplConfirmName(){
+  const n=$('tplName').value.trim();
+  if(!n){ alert('Name your template first.'); return; }
+  TPL_MODE.name=n; closeSheet(); templateExercises();
+}
+async function tplEdit(id){
+  const { mine } = await H.get('/api/templates');
+  const t = mine.find(x=>x.id===id); if(!t) return;
+  TPL_MODE.active=true; TPL_MODE.id=id; TPL_MODE.name=t.name;
+  DRAFT={ exercises:t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps})) };
+  EDITING_TPL=id;
+  templateExercises();
+}
+async function tplDelete(id){
+  const { mine } = await H.get('/api/templates');
+  const t = mine.find(x=>x.id===id); if(!t) return;
+  const r = await H.delete('/api/templates/'+id);
+  if(r.error) alert(r.error); else templatesPage();
+}
+async function templateExercises(){
+  document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
+  $('app').innerHTML = `<div class="wrap create-flow">
+    <button class="sec sm" onclick="closeSheet();templatesPage()">← Back</button>
+    <h1>${esc(TPL_MODE.name||'Template')}</h1>
+    <h2>Exercises</h2><div id="draftList" class="card"></div>
+    <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button>
+    <button class="blue" onclick="finishTemplate()">✓ ${TPL_MODE.id?'Save changes':'Create template'}</button></div>`;
   renderDraft();
 }
-async function templatesSheet(){
-  const { mine, shared } = await H.get('/api/templates');
-  const row = (t)=>`<div class="lib-item"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${t.exercises.length} exercises</div></div>
-    <button class="sec sm" onclick="useTemplateById('${t.id}')">Use</button>
-    ${t.ownerId===ME.id?`<button class="sec sm" onclick="editTemplate('${t.id}')">Edit</button><button class="sec sm red" onclick="deleteTemplate('${t.id}')">Delete</button>`:''}</div>`;
-  const html = `<div class="sheet"><div class="sheet-head"><h2>Templates</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
-    <div class="muted" style="font-size:12px;margin-bottom:10px">Reusable workouts. Build a workout, then save it as a template to reuse next time.</div>
-    <button class="sec" style="width:100%;margin-bottom:10px" onclick="newTemplate()">＋ New template</button>
-    ${mine.length?mine.map(row).join(''):'<div class="muted">No templates yet — build a workout and tap “Save as template”.</div>'}
-    ${shared.length?`<div class="lib-cat" style="margin-top:10px">Shared by friends</div>`+shared.map(row).join(''):''}
-  </div>`;
-  openSheetHtml(html);
+function tplOpenPicker(){ openAddExercises(); }
+async function finishTemplate(){
+  if(!DRAFT.exercises.length){ alert('Add at least one exercise'); return; }
+  const payload = { name:TPL_MODE.name||'My workout', exercises:DRAFT.exercises };
+  const r = TPL_MODE.id
+    ? await H.put('/api/templates/'+TPL_MODE.id, payload)
+    : await H.post('/api/templates', payload);
+  if(r.error) return alert(r.error);
+  TPL_MODE.active=false; TPL_MODE.id=null; templatesPage();
 }
-async function newTemplate(){
-  DRAFT = { exercises:[], inviteUsernames:[] };
-  EDITING_TPL = null;
-  closeSheet();
-  createFlow();
-}
-async function useTemplateById(id){
+async function tplUse(id){
   const { mine, shared } = await H.get('/api/templates');
   const t = [...mine,...shared].find(x=>x.id===id); if(!t) return;
+  DRAFT = DRAFT || { exercises:[], inviteUsernames:[] };
   DRAFT.exercises = t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps}));
-  EDITING_TPL = (t.ownerId===ME.id) ? t.id : null;
-  closeSheet(); createFlow();
+  EDITING_TPL = null;
+  createFlow();
 }
-async function editTemplate(id){
-  const { mine } = await H.get('/api/templates');
-  const t = mine.find(x=>x.id===id); if(!t) return;
-  if(!confirm('Load "'+t.name+'" into a new workout to edit its exercises?')) return;
-  DRAFT.exercises = t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps}));
-  DRAFT.name = t.name;
-  EDITING_TPL = t.id;
-  closeSheet(); createFlow();
+function tplQuickSaveSheet(){
+  if(!DRAFT.exercises.length){ alert('Add exercises first, then save as a template.'); return; }
+  openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Save as template</h2></div>
+    <label class="muted">Template name</label>
+    <input id="tplName" placeholder="${esc(DRAFT.name||'My workout')}" autocomplete="off">
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="sec" style="flex:1" onclick="closeSheet()">Cancel</button>
+      <button class="blue" style="flex:1" onclick="tplQuickSaveConfirm()">✓ Save</button>
+    </div></div>`);
+  setTimeout(()=>{ const i=$('tplName'); if(i) i.focus(); }, 60);
 }
-async function deleteTemplate(id){
-  const { mine } = await H.get('/api/templates');
-  const t = mine.find(x=>x.id===id); if(!t) return;
-  if(!confirm('Delete template "'+t.name+'"?')) return;
-  const r = await H.delete('/api/templates/'+id);
-  if(r.error) alert(r.error); else templatesSheet();
-}
-async function saveDraftAsTemplate(){
-  if(!DRAFT.exercises.length){ alert('Add exercises first (build a workout, then save as template).'); return; }
-  const def = DRAFT.name || 'My workout';
-  if(EDITING_TPL){
-    const r = await H.put('/api/templates/'+EDITING_TPL,{exercises:DRAFT.exercises,name:DRAFT.name||def});
-    if(r.error) return alert(r.error);
-    EDITING_TPL = null; alert('Template updated.'); return;
-  }
-  const name = prompt('Template name:', def); if(!name) return;
-  const r = await H.post('/api/templates',{name,exercises:DRAFT.exercises});
+async function tplQuickSaveConfirm(){
+  const n=$('tplName').value.trim(); if(!n){ alert('Name your template first.'); return; }
+  closeSheet();
+  if(!DRAFT.exercises.length){ return alert('Add exercises first.'); }
+  const r = EDITING_TPL
+    ? await H.put('/api/templates/'+EDITING_TPL,{name:n,exercises:DRAFT.exercises})
+    : await H.post('/api/templates',{name:n,exercises:DRAFT.exercises});
   if(r.error) return alert(r.error);
-  EDITING_TPL = null; alert('Saved template: '+name);
+  alert('Template saved: '+n);
 }
 function toggleInvite(cb){ const u=cb.value; if(cb.checked){ if(!DRAFT.inviteUsernames.includes(u)) DRAFT.inviteUsernames.push(u);} else { DRAFT.inviteUsernames=DRAFT.inviteUsernames.filter(x=>x!==u);} }
 function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item draft-ex">
@@ -412,7 +453,7 @@ function openAddExercises(){
   LIB_ADDMODE = true;
   showTab('lib');   // identical to tapping the bottom Workouts tab
 }
-function libDone(){ LIB_ADDMODE = false; createFlow(); }
+function libDone(){ LIB_ADDMODE = false; TPL_MODE.active ? templateExercises() : createFlow(); }
 async function library(){
   LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
   const lib = await H.get('/api/exercises');
@@ -425,7 +466,7 @@ async function library(){
        </div>`
     : `<div class="pick-head lib-head">
          <h1 style="flex:1">Workouts</h1>
-         <button class="txt-btn" onclick="templatesSheet()" title="Templates">Templates</button>
+         <button class="txt-btn" onclick="templatesPage()" title="Templates">Templates</button>
          <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
        </div>`;
   $('app').innerHTML = `<div class="pick">${head}
@@ -473,7 +514,7 @@ function libOpenMuscle(m){
     : `<div class="pick-head lib-head">
          <button class="sec sm" onclick="library()">‹ All muscles</button>
          <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
-         <button class="txt-btn" onclick="templatesSheet()" title="Templates">Templates</button>
+         <button class="txt-btn" onclick="templatesPage()" title="Templates">Templates</button>
          <button class="icon-btn" onclick="openCreateEx('${m}')" title="Create exercise">＋</button>
        </div>`;
   $('app').innerHTML = `<div class="pick">${head}
