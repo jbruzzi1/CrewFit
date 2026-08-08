@@ -223,7 +223,7 @@ async function createFlow(){
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="openAddExercises()">+ Add exercise</button>
     <button class="sec sm" onclick="useTemplate()">⚡ Use a template</button>
-    <button class="sec sm" onclick="saveDraftAsTemplate()">⚡ Save as template</button>
+    <button class="sec sm" onclick="saveDraftAsTemplate()">Save as template</button>
     <h2>Invite friends</h2><div id="invList" class="card">${invRows}</div>
     ${EDITING_TPL ? '<button class="blue" onclick="submitSession()">Update workout</button>' : '<button class="blue" onclick="submitSession()">Create workout</button>'}</div>`;
   renderDraft();
@@ -243,19 +243,19 @@ async function templatesSheet(){
   const row = (t)=>`<div class="lib-item"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${t.exercises.length} exercises</div></div>
     <button class="sec sm" onclick="useTemplateById('${t.id}')">Use</button>
     ${t.ownerId===ME.id?`<button class="sec sm" onclick="editTemplate('${t.id}')">Edit</button><button class="sec sm red" onclick="deleteTemplate('${t.id}')">Delete</button>`:''}</div>`;
-  const html = `<div class="sheet-back" onclick="if(event.target===this)closeSheet()"><div class="sheet" onclick="event.stopPropagation()">
-    <div class="sheet-head"><h2>Templates</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+  const html = `<div class="sheet"><div class="sheet-head"><h2>Templates</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="muted" style="font-size:12px;margin-bottom:10px">Reusable workouts. Build a workout, then save it as a template to reuse next time.</div>
     <button class="sec" style="width:100%;margin-bottom:10px" onclick="newTemplate()">＋ New template</button>
-    ${mine.length?mine.map(row).join(''):'<div class="muted">No templates yet.</div>'}
+    ${mine.length?mine.map(row).join(''):'<div class="muted">No templates yet — build a workout and tap “Save as template”.</div>'}
     ${shared.length?`<div class="lib-cat" style="margin-top:10px">Shared by friends</div>`+shared.map(row).join(''):''}
-  </div></div>`;
+  </div>`;
   openSheetHtml(html);
 }
 async function newTemplate(){
-  const name = prompt('Template name:','My workout'); if(!name) return;
-  if(!DRAFT.exercises.length){ alert('Add exercises first (build a workout, then save as template).'); return; }
-  const r = await H.post('/api/templates',{name,exercises:DRAFT.exercises});
-  if(r.error) alert(r.error); else { closeSheet(); alert('Saved template: '+name); }
+  DRAFT = { exercises:[], inviteUsernames:[] };
+  EDITING_TPL = null;
+  closeSheet();
+  createFlow();
 }
 async function useTemplateById(id){
   const { mine, shared } = await H.get('/api/templates');
@@ -425,7 +425,7 @@ async function library(){
        </div>`
     : `<div class="pick-head lib-head">
          <h1 style="flex:1">Workouts</h1>
-         <button class="icon-btn" onclick="templatesSheet()" title="Templates">⚡</button>
+         <button class="txt-btn" onclick="templatesSheet()" title="Templates">Templates</button>
          <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
        </div>`;
   $('app').innerHTML = `<div class="pick">${head}
@@ -473,7 +473,7 @@ function libOpenMuscle(m){
     : `<div class="pick-head lib-head">
          <button class="sec sm" onclick="library()">‹ All muscles</button>
          <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
-         <button class="icon-btn" onclick="templatesSheet()" title="Templates">⚡</button>
+         <button class="txt-btn" onclick="templatesSheet()" title="Templates">Templates</button>
          <button class="icon-btn" onclick="openCreateEx('${m}')" title="Create exercise">＋</button>
        </div>`;
   $('app').innerHTML = `<div class="pick">${head}
@@ -573,7 +573,7 @@ function exDetail(name){
   requestAnimationFrame(()=>sheet.classList.add('show'));
 }
 function closeSheet(){ const s=document.querySelector('.sheet-back'); if(s){ s.classList.remove('show'); setTimeout(()=>s.remove(),200); } }
-function openSheetHtml(html){ const s=document.createElement('div'); s.className='sheet-back'; s.innerHTML=html; document.body.appendChild(s); requestAnimationFrame(()=>s.classList.add('show')); }
+function openSheetHtml(inner){ const s=document.createElement('div'); s.className='sheet-back'; s.onclick=closeSheet; s.innerHTML=inner; document.body.appendChild(s); requestAnimationFrame(()=>s.classList.add('show')); }
 
 // ---- Templates ----
 async function templates(){
