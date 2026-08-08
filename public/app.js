@@ -120,7 +120,17 @@ async function openSession(id){
   const isParticipant = s.participants.includes(ME.id);
   const approvedJoin = s.joinRequests.find(j=>j.userId===ME.id&&j.status==='approved');
   const canEdit = isParticipant || approvedJoin;
-  // my variation view
+  // suggested edits, keyed by target exercise id (compact one-line inline row, C style)
+  const editByEx = {};
+  for(const ed of s.suggestedEdits){
+    (editByEx[ed.exerciseId] = editByEx[ed.exerciseId] || []).push(ed);
+  }
+  // pre-resolve proposer display names (await only at top level, not inside .map)
+  const nameCache = {};
+  const nameOfCached = async (id) => { if(!(id in nameCache)) nameCache[id] = await nameOf(id); return nameCache[id]; };
+  for(const ed of s.suggestedEdits){ await nameOfCached(ed.proposedBy); }
+  for(const j of s.joinRequests){ await nameOfCached(j.userId); }
+  // my variation view (interleave pending swap suggestion directly under its target exercise)
   const myEx = s.exercises.map(e=>{
     const v = s.variations[e.id] && s.variations[e.id][ME.id];
     const name = v?`<b>${esc(v.swapTo)}</b> <span class="tag">(your swap)</span>`:esc(e.name);
@@ -128,27 +138,39 @@ async function openSession(id){
     const cls = canEdit ? 'lib-item log-row' : 'lib-item';
     const cnt = (s.logs && s.logs[ME.id]) ? s.logs[ME.id].filter(l=>l.exerciseId===e.id).length : 0;
     const cntTag = canEdit ? `<span class="tag log-cnt">${cnt?cnt+' set'+(cnt>1?'s':''):'tap to log'}</span>` : '';
-    return `<div class="${cls}"${tap}><div>${name}</div><div class="row" style="gap:8px;align-items:center">${cntTag}<div class="tag">${e.defaultSets}×${e.defaultReps}</div></div></div>`;
+    let row = `<div class="${cls}"${tap}><div>${name}</div><div class="row" style="gap:8px;align-items:center">${cntTag}<div class="tag">${e.defaultSets}×${e.defaultReps}</div></div></div>`;
+    for(const ed of (editByEx[e.id]||[])){
+      const byName = nameCache[ed.proposedBy] || ed.proposedBy;
+      if(ed.status==='pending'){
+        row += `<div class="req"><div class="av">${esc((byName||'?')[0]||'?')}</div><div class="rc">${esc(byName)} suggests ${esc(e.name)} → ${esc(ed.swapTo)}</div>`;
+        if(isCreator) row += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
+        else row += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
+        row += `</div>`;
+      } else {
+        row += `<div class="req"><div class="av">${esc((byName||'?')[0]||'?')}</div><div class="rc">${esc(byName)} → ${esc(ed.swapTo)} <span class="tag">(${ed.status})</span></div></div>`;
+      }
+    }
+    return row;
   }).join('');
-  // suggested edits
+  // suggested edits (kept for any edits whose exercise no longer exists)
   let edits = '';
   for(const ed of s.suggestedEdits){
-    const by = await nameOf(ed.proposedBy);
+    if(editByEx[ed.exerciseId]) continue; // already shown inline above
+    const byName = nameCache[ed.proposedBy] || ed.proposedBy;
     if(ed.status==='pending'){
-      edits += `<div class="edits"><div>${esc(by)} suggested → <b>${esc(ed.swapTo)}</b></div>`;
-      if(isCreator) edits += `<div class="row"><button class="sm" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm red" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
-      else edits += `<div class="tag">waiting on creator</div>`;
-      edits += `</div>`;
+      edits += `<div class="card"><div class="req"><div class="av">${esc((byName||'?')[0]||'?')}</div><div class="rc">${esc(byName)} suggests → ${esc(ed.swapTo)}</div>`;
+      if(isCreator) edits += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
+      else edits += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
+      edits += `</div></div>`;
     } else {
-      edits += `<div class="me"><div>${esc(by)} → ${esc(ed.swapTo)} <span class="tag">(${ed.status})</span></div></div>`;
+      edits += `<div class="card"><div class="req"><div class="av">${esc((byName||'?')[0]||'?')}</div><div class="rc">${esc(byName)} → ${esc(ed.swapTo)} <span class="tag">(${ed.status})</span></div></div></div>`;
     }
   }
   // join requests (creator only)
   let jr = '';
   if(isCreator){
     for(const j of s.joinRequests.filter(x=>x.status==='pending')){
-      jr += `<div class="edits"><div>${esc(await nameOf(j.userId))} wants to join ${j.note?`— "${esc(j.note)}"`:''}</div>
-        <div class="row"><button class="sm" onclick="approveJoin('${s.id}','${j.id}')">Approve</button></div></div>`;
+      jr += `<div class="card"><div class="req"><div class="av">${esc((await nameOf(j.userId)||'?')[0]||'?')}</div><div class="rc"><b>${esc(await nameOf(j.userId))}</b> wants to join${j.note?` — <i>"${esc(j.note)}"</i>`:''}</div><div class="ra"><button class="sm" onclick="approveJoin('${s.id}','${j.id}')">Approve</button></div></div></div>`;
     }
   }
   let html = `<div class="wrap"><button class="sec sm" onclick="showTab('home')">← Back</button>
