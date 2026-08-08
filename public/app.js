@@ -376,7 +376,7 @@ function toggleInvite(cb){ const u=cb.value; if(cb.checked){ if(!DRAFT.inviteUse
 function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item draft-ex" data-idx="${i}"><div class="drag-handle" title="Drag to reorder">⠿</div><div class="draft-main" onclick="editDraftEx(${i})"><span class="draft-name">${esc(e.name)}</span><span class="draft-chip">${e.defaultSets} x ${e.defaultReps}</span></div><button class="draft-rm" onclick="rmEx(${i})">Remove</button></div>`).join('') : '<div class="muted">None added.</div>';  const list=$('draftList'); if(list) dragReorder(list, DRAFT.exercises, ()=>renderDraft()); }
 // Pointer-based drag reorder - works on mouse AND touch (iPhone). Reorders arr in place.
 function dragReorder(container, arr, onChange){
-  let dragEl=null, startY=0, startX=0, started=false;
+  let dragEl=null, ph=null, grabY=0, startY=0, startX=0, started=false, h=0;
   const onDown=(e)=>{
     const item=e.target.closest('.draft-ex'); if(!item) return;
     if(e.target.closest('.draft-rm')||e.target.closest('.draft-main')) return;
@@ -387,22 +387,33 @@ function dragReorder(container, arr, onChange){
   };
   const onMove=(e)=>{
     const y=(e.touches?e.touches[0].clientY:e.clientY), x=(e.touches?e.touches[0].clientX:e.clientX);
-    if(!started){ if(Math.abs(y-startY)<6 && Math.abs(x-startX)<6) return; started=true; dragEl.classList.add('dragging'); }
+    if(!started){
+      if(Math.abs(y-startY)<6 && Math.abs(x-startX)<6) return;
+      started=true; h=dragEl.offsetHeight;
+      ph=document.createElement('div'); ph.className='drag-placeholder'; ph.style.height=h+'px';
+      dragEl.parentNode.insertBefore(ph, dragEl.nextSibling);
+      const r=dragEl.getBoundingClientRect(); grabY=startY-r.top;
+      dragEl.style.width=r.width+'px'; dragEl.style.left=r.left+'px';
+      dragEl.classList.add('dragging');
+    }
     if(e.cancelable) e.preventDefault();
-    const after=document.elementFromPoint(x,y);
-    const over=after&&after.closest&&after.closest('.draft-ex'); if(!over||over===dragEl) return;
-    const from=Number(dragEl.getAttribute('data-idx')), to=Number(over.getAttribute('data-idx'));
-    if(from<to){ dragEl.parentNode.insertBefore(dragEl, over.nextSibling); } else { dragEl.parentNode.insertBefore(dragEl, over); }
-    dragEl.setAttribute('data-idx', to); over.setAttribute('data-idx', from);
+    dragEl.style.top=(y-grabY)+'px';
+    const others=[...container.querySelectorAll('.draft-ex')].filter(r=>r!==dragEl);
+    let target=null;
+    for(const r of others){ const rb=r.getBoundingClientRect(); if(y < rb.top+rb.height/2){ target=r; break; } }
+    if(target) container.insertBefore(ph, target); else container.appendChild(ph);
   };
   const onUp=()=>{
     window.removeEventListener('mousemove',onMove); window.removeEventListener('mouseup',onUp);
     window.removeEventListener('touchmove',onMove); window.removeEventListener('touchend',onUp);
-    if(!started||!dragEl) return; dragEl.classList.remove('dragging');
+    if(!started||!dragEl) return;
+    if(ph) ph.parentNode.replaceChild(dragEl, ph);
+    dragEl.classList.remove('dragging');
+    dragEl.style.position=''; dragEl.style.top=''; dragEl.style.left=''; dragEl.style.width=''; dragEl.style.zIndex='';
     const domOrder=[...container.querySelectorAll('.draft-ex')];
     const reordered=domOrder.map(el=>arr[Number(el.getAttribute('data-idx'))]);
     for(let k=0;k<arr.length;k++) arr[k]=reordered[k];
-    onChange();
+    dragEl=null; ph=null; onChange();
   };
   container.querySelectorAll('.draft-ex').forEach(el=>{ el.addEventListener('mousedown',onDown); el.addEventListener('touchstart',onDown,{passive:true}); });
 }
