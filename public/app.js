@@ -59,15 +59,15 @@ async function home(){
   const feed = await H.get('/api/feed');
   const friendName = async (id)=> (await H.get('/api/friends')).find(f=>f.id===id)?.displayName || 'friend';
   const initial = ((ME&&(ME.displayName||ME.username))||'?')[0]||'?';
-  const hr = new Date().getHours();
-  const greet = hr<12?'Good morning':hr<18?'Good afternoon':'Good evening';
   const first = ((ME.displayName||ME.username||'there').split(' ')[0]);
+  const HYPE = ['Time to crush it','Let\'s get after it','Show up. Lift heavy','Let\'s move','Big day'];
+  const hypeLine = HYPE[Math.floor(Math.random()*HYPE.length)];
   const homeAvatarHtml = ME && ME.avatar
     ? `<img class="home-avatar" src="${esc(ME.avatar)}" alt="" onclick="showTab('me')">`
     : `<div class="home-avatar" onclick="showTab('me')">${esc(initial.toUpperCase())}</div>`;
   let html = `<div class="wrap home-head">
     <div class="home-top">
-      <div><div class="home-brand">CrewFit</div><div class="home-greet">${greet}, ${esc(first)}</div></div>
+      <div><div class="home-brand">CrewFit</div><div class="home-greet">${esc(hypeLine)}, ${esc(first)}</div></div>
       ${homeAvatarHtml}
     </div>
     <button class="blue btn-hero" onclick="createFlow()">+ New workout</button>`;
