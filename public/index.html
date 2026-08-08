@@ -168,8 +168,8 @@
     .stepper { display:inline-flex; align-items:center; gap:12px; }
     .stepper .stp { width:34px; height:34px; border-radius:10px; background:var(--card); color:var(--fg); border:1px solid var(--line); font-size:20px; font-weight:600; display:flex; align-items:center; justify-content:center; cursor:pointer; }
     .stepper b { min-width:28px; text-align:center; font-size:17px; }
-    .draft-ex { cursor:default; align-items:center; padding:12px 6px; }
-    .draft-main { flex:1; min-width:0; cursor:pointer; display:flex; align-items:center; gap:10px; }
+    .draft-ex { display:flex; align-items:center; justify-content:flex-start; gap:12px; padding:12px 6px; }
+    .draft-main { display:flex; align-items:center; gap:10px; min-width:0; cursor:pointer; }
     .draft-name { font-weight:600; font-size:15px; color:var(--fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .draft-chip { flex:0 0 auto; font-size:12px; font-weight:600; color:var(--green); background:rgba(16,185,129,.12); border-radius:999px; padding:3px 10px; }
     .draft-rm { flex:0 0 auto; background:transparent; color:var(--red); border:1px solid var(--red); font-size:12px; font-weight:600; padding:7px 12px; border-radius:10px; width:auto; margin:0; cursor:pointer; }
@@ -184,6 +184,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="/app.js?v=57"></script>
+  <script src="/app.js?v=58"></script>
 </body>
 </html>
