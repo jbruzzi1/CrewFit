@@ -287,9 +287,12 @@ async function tplDelete(id){
 }
 async function templateExercises(){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
+  const nameField = TPL_MODE.id
+    ? `<input id="tplNameEdit" class="tpl-name-edit" value="${esc(TPL_MODE.name||'')}" placeholder="Template name" autocomplete="off">`
+    : `<h1>${esc(TPL_MODE.name||'Template')}</h1>`;
   $('app').innerHTML = `<div class="wrap create-flow">
     <button class="sec sm" onclick="closeSheet();templatesPage()">← Back</button>
-    <h1>${esc(TPL_MODE.name||'Template')}</h1>
+    ${nameField}
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button>
     <button class="blue" onclick="finishTemplate()">✓ ${TPL_MODE.id?'Save changes':'Create template'}</button></div>`;
@@ -298,7 +301,9 @@ async function templateExercises(){
 function tplOpenPicker(){ openAddExercises(); }
 async function finishTemplate(){
   if(!DRAFT.exercises.length){ alert('Add at least one exercise'); return; }
-  const payload = { name:TPL_MODE.name||'My workout', exercises:DRAFT.exercises };
+  const liveName = (TPL_MODE.id && $('tplNameEdit')) ? $('tplNameEdit').value.trim() : TPL_MODE.name.trim();
+  if(!liveName){ alert('Name your template first.'); return; }
+  const payload = { name:liveName, exercises:DRAFT.exercises };
   const r = TPL_MODE.id
     ? await H.put('/api/templates/'+TPL_MODE.id, payload)
     : await H.post('/api/templates', payload);

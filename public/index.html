@@ -16,6 +16,8 @@
     .wrap { padding:14px; padding-left:calc(14px + env(safe-area-inset-left)); padding-right:calc(14px + env(safe-area-inset-right)); }
     .create-flow > .sec.sm { margin:0 0 14px; }            /* Cancel button -> gap below */
     .create-flow > h1 { margin:0 0 16px; }                  /* New workout title -> gap below */
+    .tpl-name-edit { width:100%; margin:0 0 16px; font-size:19px; font-weight:700; line-height:1.2; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:var(--card); color:var(--text); box-sizing:border-box; }
+    .tpl-name-edit:focus { outline:none; border-color:var(--green); }
     .create-flow > label.muted:first-of-type { margin-top:0; }
     h1 { font-size:19px; margin:4px 0 2px; }
     .home-head { padding-top:calc(20px + env(safe-area-inset-top)); }
@@ -180,6 +182,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="/app.js?v=55"></script>
+  <script src="/app.js?v=56"></script>
 </body>
 </html>
