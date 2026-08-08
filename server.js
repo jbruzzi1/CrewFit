@@ -421,6 +421,16 @@ app.get('/api/sessions/:id', auth, (req, res) => {
   res.json(s);
 });
 
+// delete a session (creator only)
+app.delete('/api/sessions/:id', auth, (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not yours' });
+  delete DB.sessions[req.params.id];
+  save(DB);
+  res.json({ ok: true });
+});
+
 // accept an invite (move from invited[] to participants[])
 app.post('/api/sessions/:id/accept', auth, (req, res) => {
   const s = DB.sessions[req.params.id];

@@ -153,6 +153,7 @@ async function openSession(id){
     ${s.lengthMin?`<div class="tag">⏱ ${esc(s.lengthMin)} min</div>`:''}
     ${s.creatorNote?`<div class="card muted">"${esc(s.creatorNote)}" — ${isCreator?'you':esc(s.creatorId)}</div>`:''}`;
   if(isCreator && s.status!=='locked') html += `<button class="blue sm" onclick="lock('${s.id}')">Lock & finish</button>`;
+  if(isCreator) html += `<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button>`;
   html += `<h2>Workout (your view)</h2>${myEx}`;
   if(edits) html += `<h2>Suggested swaps</h2>${edits}`;
   if(jr) html += `<h2>Join requests</h2>${jr}`;
@@ -200,6 +201,12 @@ async function suggest(id){ const r=await H.post(`/api/sessions/${id}/suggest`,{
 async function logSet(id){ await H.post(`/api/sessions/${id}/log`,{exerciseId:$('lgEx').value,weight:$('lgW').value,reps:$('lgR').value}); const s=await H.get('/api/sessions/'+id); renderLogs(s); }
 function renderLogs(s){ const mine=(s.logs&&s.logs[ME.id])||[]; $('logview').innerHTML = mine.length?`Logged ${mine.length} set(s).`:'No sets yet.'; }
 async function lock(id){ await H.post(`/api/sessions/${id}/lock`); openSession(id); }
+async function deleteSession(id){
+  if(!confirm('Delete this session? This removes it for everyone.')) return;
+  const r = await H.delete(`/api/sessions/${id}`);
+  if(r && r.error){ alert(r.error); return; }
+  home();
+}
 
 // ---- Create flow ----
 let DRAFT = { exercises:[], inviteUsernames:[] };
