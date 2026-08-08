@@ -59,22 +59,25 @@ async function home(){
   const feed = await H.get('/api/feed');
   const friendName = async (id)=> (await H.get('/api/friends')).find(f=>f.id===id)?.displayName || 'friend';
   const initial = ((ME&&(ME.displayName||ME.username))||'?')[0]||'?';
+  const hr = new Date().getHours();
+  const greet = hr<12?'Good morning':hr<18?'Good afternoon':'Good evening';
+  const first = ((ME.displayName||ME.username||'there').split(' ')[0]);
   const homeAvatarHtml = ME && ME.avatar
     ? `<img class="home-avatar" src="${esc(ME.avatar)}" alt="" onclick="showTab('me')">`
     : `<div class="home-avatar" onclick="showTab('me')">${esc(initial.toUpperCase())}</div>`;
   let html = `<div class="wrap home-head">
     <div class="home-top">
-      <div class="home-brand">CrewFit</div>
+      <div><div class="home-brand">CrewFit</div><div class="home-greet">${greet}, ${esc(first)}</div></div>
       ${homeAvatarHtml}
     </div>
     <button class="blue btn-hero" onclick="createFlow()">+ New workout</button>`;
 
   // Section 1: Friend's Activity (completed activity, not invites)
-  html += `<h2>Friend's Activity</h2><div class="card">`;
+  html += `<h2>Friend's Activity${feed.length?`<span class="h2-badge">${feed.length}</span>`:''}</h2><div class="card">`;
   if(feed.length){
     for(const f of feed){
       const who = await friendName(f.by);
-      const ic = f.type==='pr' ? '🏆' : '✅';
+      const ic = f.type==='pr' ? `<span class="act-chip pr">PR</span>` : `<span class="act-chip done">✓</span>`;
       html += `<div class="lib-item"><div>${ic} <b>${esc(who)}</b> ${esc(f.text)}</div></div>`;
     }
   } else html += `<div class="muted">No recent activity from friends.</div>`;
@@ -82,7 +85,7 @@ async function home(){
 
   // Section 2: Your Sessions (only labeled routines)
   const yours = sessions.filter(s=>s.participants.includes(ME.id) && s.name);
-  html += `<h2>Your Sessions</h2><div class="card">`;
+  html += `<h2>Your Sessions${yours.length?`<span class="h2-badge">${yours.length}</span>`:''}</h2><div class="card">`;
   if(yours.length){
     for(const s of yours){
       const label = s.name;
@@ -94,7 +97,7 @@ async function home(){
 
   // Section 3: Invites Awaiting (pending invites, with who invited you)
   const pending = sessions.filter(s=>Array.isArray(s.invited)&&s.invited.includes(ME.id));
-  html += `<h2>Invites Awaiting</h2><div class="card">`;
+  html += `<h2>Invites Awaiting${pending.length?`<span class="h2-badge">${pending.length}</span>`:''}</h2><div class="card">`;
   if(pending.length){
     for(const s of pending){
       const creatorName = await friendName(s.creatorId);
