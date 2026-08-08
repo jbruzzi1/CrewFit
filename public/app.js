@@ -155,6 +155,7 @@ async function openSession(id){
   if(isCreator){
     html += `<div class="sess-actions">`;
     if(s.status!=='locked') html += `<button class="blue sm" onclick="lock('${s.id}')">Lock & finish</button>`;
+    html += `<button class="sec sm" onclick="editSession('${s.id}')">Edit</button>`;
     html += `<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button></div>`;
   }
   html += `<h2>Workout (your view)</h2>${myEx}`;
@@ -226,10 +227,10 @@ async function createFlow(){
     const on = DRAFT.inviteUsernames.includes(f.username) ? 'checked' : '';
     return `<label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap">${av}</div><div class="inv-text"><div class="name">${esc(f.displayName||f.username)}</div><div class="handle">@${esc(f.username)}</div></div></div><span class="check"><input type="checkbox" value="${esc(f.username)}" ${on} onchange="toggleInvite(this)"><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`;
   }).join('') : '<div class="muted">No friends yet — add some in Friends tab.</div>';
-  $('app').innerHTML = `<div class="wrap create-flow"><button class="sec sm" onclick="showTab('home')">← Cancel</button>
-    <h1>New workout</h1>
+  $('app').innerHTML = `<div class="wrap create-flow"><button class="sec sm" onclick="cancelCreate()">← ${EDITING_SESSION?'Cancel':'Cancel'}</button>
+    <h1>${EDITING_SESSION?'Edit workout':'New workout'}</h1>
     <label class="muted">Workout name</label><input id="wname" placeholder="e.g. Chest & Back" value="${esc(DRAFT.name||'')}">
-    <label class="muted">When</label><input id="dt" type="datetime-local">
+    <label class="muted">When</label><input id="dt" type="datetime-local" value="${esc(DRAFT._dt||'')}">
     <label class="muted">Location</label><input id="loc" placeholder="e.g. Gold's Gym" value="${esc(DRAFT.location||'')}">
     <div class="row"><div><label class="muted">Length (min)</label><input id="len" type="number" placeholder="60" value="${DRAFT.lengthMin||''}"></div></div>
     <label class="muted">Note to friends</label><input id="note" placeholder="let's hit legs hard" value="${esc(DRAFT.creatorNote||'')}">
@@ -237,10 +238,10 @@ async function createFlow(){
     <select id="vis"><option value="private">Private (invite only)</option><option value="friends">Friends-only (joinable)</option></select>
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="openAddExercises()">+ Add exercise</button>
-    <button class="sec sm" onclick="templatesPage()">⚡ Use a template</button>
+    <button class="sec sm" onclick="templatesPage()">Browse templates</button>
     <button class="sec sm" onclick="tplQuickSaveSheet()">Save as template</button>
     <h2>Invite friends</h2><div id="invList" class="card">${invRows}</div>
-    ${EDITING_TPL ? '<button class="blue" onclick="submitSession()">Update workout</button>' : '<button class="blue" onclick="submitSession()">Create workout</button>'}</div>`;
+    ${EDITING_SESSION ? '<button class="blue" onclick="submitSession()">Save changes</button>' : '<button class="blue" onclick="submitSession()">Create workout</button>'}</div>`;
   renderDraft();
 }
 async function submitSession(){
@@ -248,9 +249,28 @@ async function submitSession(){
   const location=$('loc').value; const lengthMin=$('len').value; const creatorNote=$('note').value; const name=$('wname').value;
   if(!DRAFT.exercises.length) return alert('Add at least one exercise');
   const scheduledAt = dt? new Date(dt).toISOString() : new Date().toISOString();
-  const r = await H.post('/api/sessions',{scheduledAt,visibility:vis,name,exercises:DRAFT.exercises,inviteUsernames:DRAFT.inviteUsernames,location,lengthMin:lengthMin?Number(lengthMin):null,creatorNote});
+  const payload={scheduledAt,visibility:vis,name,exercises:DRAFT.exercises,inviteUsernames:DRAFT.inviteUsernames,location,lengthMin:lengthMin?Number(lengthMin):null,creatorNote};
+  const r = EDITING_SESSION
+    ? await H.put('/api/sessions/'+EDITING_SESSION, payload)
+    : await H.post('/api/sessions', payload);
   if(r.error) alert(r.error); else home();
 }
+let EDITING_SESSION = null;
+function cancelCreate(){ EDITING_SESSION=null; EDITING_TPL=null; home(); }
+async function editSession(id){
+  const s = await H.get('/api/sessions/'+id);
+  if(!s || s.error){ alert(s && s.error ? s.error : 'Session not found'); return; }
+  if(s.creatorId!==ME.id){ alert('Only the creator can edit.'); return; }
+  const friends = await H.get('/api/friends');
+  const invitedUsernames = (s.invited||[]).map(fid=>{ const f=friends.find(x=>x.id===fid); return f?f.username:''; }).filter(Boolean);
+  DRAFT = { exercises: s.exercises.map(e=>({ id:e.id, name:e.name, defaultSets:e.defaultSets, defaultReps:e.defaultReps })),
+            inviteUsernames: invitedUsernames,
+            name: s.name||'', location: s.location||'', lengthMin: s.lengthMin||'', creatorNote: s.creatorNote||'' };
+  DRAFT._dt = s.scheduledAt ? toLocalInput(s.scheduledAt) : '';
+  EDITING_SESSION = id; EDITING_TPL=null;
+  createFlow();
+}
+function toLocalInput(iso){ const d=new Date(iso); const p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; }
 // ---- Templates: page-based flow (list -> name -> pick exercises -> save) ----
 const TPL_MODE = { active:false, id:null, name:'' };   // active while building a template
 async function templatesPage(){
@@ -353,7 +373,39 @@ async function tplQuickSaveConfirm(){
   alert('Template saved: '+n);
 }
 function toggleInvite(cb){ const u=cb.value; if(cb.checked){ if(!DRAFT.inviteUsernames.includes(u)) DRAFT.inviteUsernames.push(u);} else { DRAFT.inviteUsernames=DRAFT.inviteUsernames.filter(x=>x!==u);} }
-function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item draft-ex">\n      <div class="draft-main" onclick="editDraftEx(${i})"><span class="draft-name">${esc(e.name)}</span><span class="draft-chip">${e.defaultSets} × ${e.defaultReps}</span></div>\n      <button class="draft-rm" onclick="rmEx(${i})">Remove</button>\n    </div>`).join('') : '<div class="muted">None added.</div>'; }
+function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item draft-ex" data-idx="${i}"><div class="drag-handle" title="Drag to reorder">⠿</div><div class="draft-main" onclick="editDraftEx(${i})"><span class="draft-name">${esc(e.name)}</span><span class="draft-chip">${e.defaultSets} x ${e.defaultReps}</span></div><button class="draft-rm" onclick="rmEx(${i})">Remove</button></div>`).join('') : '<div class="muted">None added.</div>';  const list=$('draftList'); if(list) dragReorder(list, DRAFT.exercises, ()=>renderDraft()); }
+// Pointer-based drag reorder - works on mouse AND touch (iPhone). Reorders arr in place.
+function dragReorder(container, arr, onChange){
+  let dragEl=null, startY=0, startX=0, started=false;
+  const onDown=(e)=>{
+    const item=e.target.closest('.draft-ex'); if(!item) return;
+    if(e.target.closest('.draft-rm')||e.target.closest('.draft-main')) return;
+    dragEl=item; started=false;
+    startY=(e.touches?e.touches[0].clientY:e.clientY); startX=(e.touches?e.touches[0].clientX:e.clientX);
+    window.addEventListener('mousemove',onMove); window.addEventListener('mouseup',onUp);
+    window.addEventListener('touchmove',onMove,{passive:false}); window.addEventListener('touchend',onUp);
+  };
+  const onMove=(e)=>{
+    const y=(e.touches?e.touches[0].clientY:e.clientY), x=(e.touches?e.touches[0].clientX:e.clientX);
+    if(!started){ if(Math.abs(y-startY)<6 && Math.abs(x-startX)<6) return; started=true; dragEl.classList.add('dragging'); }
+    if(e.cancelable) e.preventDefault();
+    const after=document.elementFromPoint(x,y);
+    const over=after&&after.closest&&after.closest('.draft-ex'); if(!over||over===dragEl) return;
+    const from=Number(dragEl.getAttribute('data-idx')), to=Number(over.getAttribute('data-idx'));
+    if(from<to){ dragEl.parentNode.insertBefore(dragEl, over.nextSibling); } else { dragEl.parentNode.insertBefore(dragEl, over); }
+    dragEl.setAttribute('data-idx', to); over.setAttribute('data-idx', from);
+  };
+  const onUp=()=>{
+    window.removeEventListener('mousemove',onMove); window.removeEventListener('mouseup',onUp);
+    window.removeEventListener('touchmove',onMove); window.removeEventListener('touchend',onUp);
+    if(!started||!dragEl) return; dragEl.classList.remove('dragging');
+    const domOrder=[...container.querySelectorAll('.draft-ex')];
+    const reordered=domOrder.map(el=>arr[Number(el.getAttribute('data-idx'))]);
+    for(let k=0;k<arr.length;k++) arr[k]=reordered[k];
+    onChange();
+  };
+  container.querySelectorAll('.draft-ex').forEach(el=>{ el.addEventListener('mousedown',onDown); el.addEventListener('touchstart',onDown,{passive:true}); });
+}
 function rmEx(i){ DRAFT.exercises.splice(i,1); renderDraft(); }
 function editDraftEx(i){
   const e = DRAFT.exercises[i]; if(!e) return;

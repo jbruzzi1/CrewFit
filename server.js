@@ -431,6 +431,38 @@ app.delete('/api/sessions/:id', auth, (req, res) => {
   res.json({ ok: true });
 });
 
+// update a session (creator only): name/time/location/note/visibility/exercises/invites
+app.put('/api/sessions/:id', auth, (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not yours' });
+  const b = req.body || {};
+  if (typeof b.name === 'string') s.name = b.name;
+  if (b.scheduledAt) s.scheduledAt = b.scheduledAt;
+  if (typeof b.location === 'string') s.location = b.location;
+  if ('lengthMin' in b) s.lengthMin = b.lengthMin || null;
+  if (typeof b.creatorNote === 'string') s.creatorNote = b.creatorNote;
+  if (b.visibility) s.visibility = b.visibility === 'friends' ? 'friends' : 'private';
+  if (Array.isArray(b.exercises)) {
+    s.exercises = b.exercises.map((e, i) => ({
+      id: (e.id && s.exercises.find(x => x.id === e.id)) ? e.id : 'e_' + uid(),
+      name: e.name, order: i,
+      defaultSets: e.defaultSets || 3, defaultReps: e.defaultReps || 10
+    }));
+  }
+  if (Array.isArray(b.inviteUsernames)) {
+    const invites = [];
+    for (const un of b.inviteUsernames) {
+      const f = DB.users[req.userId].friends.find(fid => DB.users[fid].username === un);
+      if (f) invites.push(f);
+    }
+    s.invited = invites.map(f => f.id);
+  }
+  s.updatedAt = new Date().toISOString();
+  save(DB);
+  res.json(s);
+});
+
 // accept an invite (move from invited[] to participants[])
 app.post('/api/sessions/:id/accept', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
