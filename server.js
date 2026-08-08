@@ -561,20 +561,56 @@ app.post('/api/sessions/:id/log', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s.participants.includes(req.userId) && !s.joinRequests.find(j=>j.userId===req.userId&&j.status==='approved'))
     return res.status(403).json({ error: 'forbidden' });
-  const { exerciseId, weight, reps, set } = req.body || {};
+  const { exerciseId, weight, reps, set, setType } = req.body || {};
   if (!s.logs[req.userId]) s.logs[req.userId] = [];
   const w = Number(weight) || 0, r = Number(reps) || 0;
-  // PR detection: best volume (weight*reps) for this exercise by this user, across all their logs
+  const myExLogs = s.logs[req.userId].filter(l => l.exerciseId === exerciseId);
+  const setNum = (set && Number(set)) || myExLogs.length + 1;
   const prevBest = s.logs[req.userId].filter(l => l.exerciseId === exerciseId).reduce((m,l)=> Math.max(m, (Number(l.weight)||0)*(Number(l.reps)||0)), 0);
   const isPr = (w*r) > 0 && (w*r) > prevBest;
-  const entry = { exerciseId, weight: w, reps: r, set: set || s.logs[req.userId].length+1, isPr };
+  const entry = { id: 'log_'+uid(), exerciseId, weight: w, reps: r, set: setNum, setType: setType || 'normal', isPr };
   s.logs[req.userId].push(entry);
-  if (isPr) {
-    if (!DB.prs) DB.prs = {};
-    if (!DB.prs[req.userId]) DB.prs[req.userId] = {};
-    const exName = (s.exercises.find(e=>e.id===exerciseId)||{}).name || exerciseId;
-    DB.prs[req.userId][exerciseId] = { exercise: exName, weight: w, reps: r, at: new Date().toISOString() };
-  }
+  if (isPr) recalcPr(s, req.userId, exerciseId);
+  save(DB);
+  res.json(s);
+});
+
+function recalcPr(s, userId, exerciseId){
+  const exLogs = s.logs[userId].filter(l => l.exerciseId === exerciseId);
+  const best = exLogs.reduce((m,l)=> Math.max(m, (Number(l.weight)||0)*(Number(l.reps)||0)), 0);
+  for(const l of s.logs[userId]) if(l.exerciseId===exerciseId) l.isPr = ((Number(l.weight)||0)*(Number(l.reps)||0))===best && best>0;
+  if(!DB.prs) DB.prs={}; if(!DB.prs[userId]) DB.prs[userId]={};
+  const top = exLogs.slice().sort((a,b)=>((Number(b.weight)||0)*(Number(b.reps)||0))-((Number(a.weight)||0)*(Number(a.reps)||0)))[0];
+  if(top && (Number(top.weight)||0)*(Number(top.reps)||0)>0){
+    const exName=(s.exercises.find(e=>e.id===exerciseId)||{}).name||exerciseId;
+    DB.prs[userId][exerciseId]={exercise:exName, weight:Number(top.weight)||0, reps:Number(top.reps)||0, at:new Date().toISOString()};
+  } else { delete DB.prs[userId][exerciseId]; }
+}
+
+app.put('/api/sessions/:id/log/:logId', auth, (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error:'not found' });
+  const arr = s.logs[req.userId] || [];
+  const log = arr.find(l => l.id === req.params.logId);
+  if (!log) return res.status(404).json({ error:'log not found' });
+  const { weight, reps, setType, set } = req.body || {};
+  if (weight!==undefined) log.weight = Number(weight)||0;
+  if (reps!==undefined) log.reps = Number(reps)||0;
+  if (setType!==undefined) log.setType = setType || 'normal';
+  if (set!==undefined) log.set = Number(set)||log.set;
+  recalcPr(s, req.userId, log.exerciseId);
+  save(DB);
+  res.json(s);
+});
+
+app.delete('/api/sessions/:id/log/:logId', auth, (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error:'not found' });
+  const arr = s.logs[req.userId] || [];
+  const idx = arr.findIndex(l => l.id === req.params.logId);
+  if (idx<0) return res.status(404).json({ error:'log not found' });
+  const removed = arr.splice(idx,1)[0];
+  recalcPr(s, req.userId, removed.exerciseId);
   save(DB);
   res.json(s);
 });

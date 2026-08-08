@@ -123,8 +123,15 @@ async function openSession(id){
   // my variation view
   const myEx = s.exercises.map(e=>{
     const v = s.variations[e.id] && s.variations[e.id][ME.id];
-    return `<div class="lib-item"><div>${v?`<b>${esc(v.swapTo)}</b> <span class="tag">(your swap)</span>`:esc(e.name)}</div><div class="tag">${e.defaultSets}×${e.defaultReps}</div></div>`;
+    const name = v?`<b>${esc(v.swapTo)}</b> <span class="tag">(your swap)</span>`:esc(e.name);
+    const tap = canEdit ? ` onclick="openLogSheet('${s.id}','${e.id}')"` : '';
+    const cls = canEdit ? 'lib-item log-row' : 'lib-item';
+    // count of sets the user has logged for this exercise
+    const cnt = (s.logs && s.logs[ME.id]) ? s.logs[ME.id].filter(l=>l.exerciseId===e.id).length : 0;
+    const cntTag = canEdit ? `<span class="tag log-cnt">${cnt?cnt+' set'+(cnt>1?'s':''):'tap to log'}</span>` : '';
+    return `<div class="${cls}"${tap}><div>${name}</div><div class="row" style="gap:8px;align-items:center">${cntTag}<div class="tag">${e.defaultSets}×${e.defaultReps}</div></div></div>`;
   }).join('');
+  if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 0">Tap an exercise to log your sets.</div>`;
   // suggested edits
   let edits = '';
   for(const ed of s.suggestedEdits){
@@ -166,11 +173,6 @@ async function openSession(id){
       <select id="swEx">${s.exercises.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
       <input id="swTo" placeholder="swap to (exercise name)">
       <button onclick="suggest('${s.id}')">Suggest swap</button></div>`;
-    html += `<h2>Log your sets</h2><div class="card" id="logbox">
-      <select id="lgEx">${s.exercises.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
-      <div class="row"><input id="lgW" placeholder="weight" type="number"><input id="lgR" placeholder="reps" type="number"></div>
-      <button class="sm" onclick="logSet('${s.id}')">Add set</button>
-      <div id="logview" class="muted"></div></div>`;
   }
   // Invitee action menu (non-creator view)
   if(!isCreator){
@@ -202,8 +204,122 @@ async function approve(id,eid){ const s=await H.post(`/api/sessions/${id}/sugges
 async function reject(id,eid){ await H.post(`/api/sessions/${id}/suggest/${eid}/reject`); openSession(id); }
 async function approveJoin(id,jid){ await H.post(`/api/sessions/${id}/join/${jid}/approve`); openSession(id); }
 async function suggest(id){ const r=await H.post(`/api/sessions/${id}/suggest`,{exerciseId:$('swEx').value,swapTo:$('swTo').value}); if(r.error)alert(r.error); else openSession(id); }
-async function logSet(id){ await H.post(`/api/sessions/${id}/log`,{exerciseId:$('lgEx').value,weight:$('lgW').value,reps:$('lgR').value}); const s=await H.get('/api/sessions/'+id); renderLogs(s); }
-function renderLogs(s){ const mine=(s.logs&&s.logs[ME.id])||[]; $('logview').innerHTML = mine.length?`Logged ${mine.length} set(s).`:'No sets yet.'; }
+// ---------- Per-exercise set logger (Hevy/Strong style) ----------
+const SET_TYPES = [
+  { key:'normal', label:'Normal' },
+  { key:'warmup', label:'Warm up' },
+  { key:'drop', label:'Drop' },
+  { key:'failure', label:'Failure' }
+];
+const TYPE_CLASS = { normal:'t-normal', warmup:'t-warm', drop:'t-drop', failure:'t-fail' };
+const TYPE_LABEL = { normal:'Normal', warmup:'Warm up', drop:'Drop', failure:'Failure' };
+let LOGVIEW = { sid:null, exId:null };
+
+async function openLogSheet(sid, exId){
+  const s = await H.get('/api/sessions/'+sid);
+  if(!s || s.error){ alert(s && s.error ? s.error : 'Session not found'); return; }
+  const e = s.exercises.find(x=>x.id===exId); if(!e) return;
+  LOGVIEW = { sid, exId };
+  // previous best volume for this exercise (across this session, this user) -> "Last time"
+  const mine = (s.logs && s.logs[ME.id]) || [];
+  const exLogs = mine.filter(l=>l.exerciseId===exId);
+  const best = exLogs.reduce((m,l)=>Math.max(m,(Number(l.weight)||0)*(Number(l.reps)||0)),0);
+  const bestLog = exLogs.slice().sort((a,b)=>((Number(b.weight)||0)*(Number(b.reps)||0))-((Number(a.weight)||0)*(Number(a.reps)||0)))[0];
+  const last = bestLog ? `${bestLog.weight} × ${bestLog.reps}` : '—';
+  const sheet = document.createElement('div'); sheet.className='sheet-back';
+  sheet.innerHTML = `
+    <div class="sheet log-sheet" onclick="event.stopPropagation()">
+      <div class="sheet-head"><h2>Log · ${esc(e.name)}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <div class="ex-sub">Last time: <b>${esc(last)}</b></div>
+      <div id="logSetList"></div>
+      <div class="seg" id="logTypeSeg">
+        ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" data-t="${t.key}" onclick="logSetType('${t.key}')">${t.label}</div>`).join('')}
+      </div>
+      <div class="add-row">
+        <input id="logW" placeholder="lbs" type="number" inputmode="decimal">
+        <input id="logR" placeholder="reps" type="number" inputmode="numeric">
+        <button class="add-btn" onclick="addLogSet()">+ Add</button>
+      </div>
+      <div id="logRest"></div>
+      <div class="note">Tap a set to edit or delete it. Type defaults to Normal — pick a chip to change. Set # auto-fills.</div>
+    </div>`;
+  sheet.onclick=(ev)=>{ if(ev.target===sheet) closeSheet(); };
+  document.body.appendChild(sheet);
+  requestAnimationFrame(()=>sheet.classList.add('show'));
+  renderLogSets(s);
+}
+function logSetType(key){
+  const seg=document.getElementById('logTypeSeg'); if(!seg) return;
+  seg.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on', c.getAttribute('data-t')===key));
+}
+function renderLogSets(s){
+  const list=document.getElementById('logSetList'); if(!list) return;
+  const mine=(s.logs&&s.logs[ME.id])||[];
+  const exLogs=mine.filter(l=>l.exerciseId===LOGVIEW.exId).sort((a,b)=>(a.set||0)-(b.set||0));
+  if(!exLogs.length){ list.innerHTML='<div class="muted" style="padding:10px 2px">No sets logged yet.</div>'; return; }
+  list.innerHTML = exLogs.map(l=>`<div class="set-row" onclick="editLogSet('${l.id}')">
+      <div class="set-n">${l.set||'·'}</div>
+      <div class="set-vals"><b>${Number(l.weight)||0} lbs</b> · <span class="sub">${Number(l.reps)||0} reps</span></div>
+      <span class="type-tag ${TYPE_CLASS[l.setType]||'t-normal'}">${TYPE_LABEL[l.setType]||'Normal'}</span>
+      ${l.isPr?'<span class="type-tag pr">PR</span>':''}
+    </div>`).join('');
+}
+async function addLogSet(){
+  const w=document.getElementById('logW').value, r=document.getElementById('logR').value;
+  if(w==='' && r===''){ alert('Enter weight and/or reps'); return; }
+  const seg=document.getElementById('logTypeSeg');
+  const type=(seg&&seg.querySelector('.chip.on'))?seg.querySelector('.chip.on').getAttribute('data-t'):'normal';
+  const s=await H.post(`/api/sessions/${LOGVIEW.sid}/log`,{exerciseId:LOGVIEW.exId,weight:w,reps:r,setType:type});
+  if(s.error){ alert(s.error); return; }
+  LOGVIEW.sid && renderLogSets(s);
+  document.getElementById('logW').value=''; document.getElementById('logR').value='';
+  startRest();
+}
+async function editLogSet(logId){
+  const s=await H.get('/api/sessions/'+LOGVIEW.sid);
+  const mine=(s.logs&&s.logs[ME.id])||[];
+  const l=mine.find(x=>x.id===logId); if(!l) return;
+  const sheet=document.createElement('div'); sheet.className='sheet-back';
+  sheet.innerHTML=`
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="sheet-head"><h2>Edit set</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <div class="ex-sub">Set ${l.set||''}</div>
+      <label class="muted" style="font-size:12px">Weight (lbs)</label>
+      <input id="edW" type="number" inputmode="decimal" value="${l.weight}">
+      <label class="muted" style="font-size:12px">Reps</label>
+      <input id="edR" type="number" inputmode="numeric" value="${l.reps}">
+      <label class="muted" style="font-size:12px">Type</label>
+      <select id="edT">${SET_TYPES.map(t=>`<option value="${t.key}"${t.key===l.setType?' selected':''}>${t.label}</option>`).join('')}</select>
+      <button class="blue" onclick="saveLogSet('${logId}')">Save</button>
+      <button class="red" style="margin-top:8px" onclick="delLogSet('${logId}')">Delete set</button>
+    </div>`;
+  sheet.onclick=(ev)=>{ if(ev.target===sheet) closeSheet(); };
+  document.body.appendChild(sheet);
+  requestAnimationFrame(()=>sheet.classList.add('show'));
+}
+async function saveLogSet(logId){
+  const w=document.getElementById('edW').value, r=document.getElementById('edR').value, t=document.getElementById('edT').value;
+  const s=await H.put(`/api/sessions/${LOGVIEW.sid}/log/${logId}`,{weight:w,reps:r,setType:t});
+  if(s.error){ alert(s.error); return; }
+  closeSheet(); openLogSheet(LOGVIEW.sid, LOGVIEW.exId);
+}
+async function delLogSet(logId){
+  if(!confirm('Delete this set?')) return;
+  const s=await H.delete(`/api/sessions/${LOGVIEW.sid}/log/${logId}`);
+  if(s.error){ alert(s.error); return; }
+  closeSheet(); openLogSheet(LOGVIEW.sid, LOGVIEW.exId);
+}
+let REST_TIMER=null;
+function startRest(){
+  const box=document.getElementById('logRest'); if(!box) return;
+  let sec=60; box.innerHTML=`<div class="rest"><span>Rest</span><b id="restN">1:00</b><span>· tap to dismiss</span></div>`;
+  box.querySelector('.rest').onclick=()=>{ clearInterval(REST_TIMER); box.innerHTML=''; };
+  clearInterval(REST_TIMER);
+  REST_TIMER=setInterval(()=>{ sec--; const el=document.getElementById('restN'); if(el) el.textContent=`${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`; if(sec<=0){ clearInterval(REST_TIMER); box.innerHTML=''; } },1000);
+}
+// legacy compat shims (no longer used in UI)
+async function logSet(id){ /* deprecated */ }
+function renderLogs(s){ /* deprecated */ }
 async function lock(id){ await H.post(`/api/sessions/${id}/lock`); openSession(id); }
 async function deleteSession(id){
   if(!confirm('Delete this session? This removes it for everyone.')) return;
