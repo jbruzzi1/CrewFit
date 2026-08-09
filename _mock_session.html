@@ -23,7 +23,10 @@
     .sess-date { margin:18px 0 4px; }
     .sess-meta { margin:0 0 12px; }
     .sess-actions { display:flex; flex-wrap:wrap; gap:10px; margin:12px 0 4px; }
-    .sess-actions .sm { width:auto; }
+    .sess-actions .sm { width:auto; background:transparent; border:1px solid #b0b6c0; color:var(--fg); font-weight:600; }
+    .sess-actions .sm.blue { border-color:#bcd4fb; color:#2563eb; background:#e8f1ff; }
+    .sess-actions .sm.red { border-color:#f1b9b9; color:#dc2626; background:#fbe9e9; }
+    .sess-actions .sm.sec { border-color:#b0b6c0; color:var(--fg); background:transparent; }
     .home-head { padding-top:calc(20px + env(safe-area-inset-top)); }
     .home-top { display:flex; align-items:center; justify-content:space-between; margin:0 0 20px; }
     .home-brand { font-size:20px; font-weight:700; letter-spacing:.2px; }

@@ -23,7 +23,10 @@
     .sess-date { margin:18px 0 4px; }
     .sess-meta { margin:0 0 12px; }
     .sess-actions { display:flex; flex-wrap:wrap; gap:10px; margin:12px 0 4px; }
-    .sess-actions .sm { width:auto; }
+    .sess-actions .sm { width:auto; background:transparent; border:1px solid #b0b6c0; color:var(--fg); font-weight:600; }
+    .sess-actions .sm.blue { border-color:#bcd4fb; color:#2563eb; background:#e8f1ff; }
+    .sess-actions .sm.red { border-color:#f1b9b9; color:#dc2626; background:#fbe9e9; }
+    .sess-actions .sm.sec { border-color:#b0b6c0; color:var(--fg); background:transparent; }
     .home-head { padding-top:calc(20px + env(safe-area-inset-top)); }
     .home-top { display:flex; align-items:center; justify-content:space-between; margin:0 0 20px; }
     .home-brand { font-size:20px; font-weight:700; letter-spacing:.2px; }
@@ -243,6 +246,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="/app.js?v=84"></script>
+  <script src="/app.js?v=85"></script>
 </body>
 </html>
