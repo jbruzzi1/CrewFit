@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>SpotMe — Log a set (mock)</title>
+<style>
+  :root{ --bg:#f4f5f7; --card:#fff; --fg:#1c2024; --muted:#7a828d; --line:#e6e8ec; --blue:#2563eb; --red:#dc2626; --green:#16a34a; --chip:#eef1f5; }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  body{margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--fg);}
+  .app{ max-width:480px; margin:0 auto; min-height:100vh; background:var(--bg); padding:14px 14px 90px; }
+  h1.sess-date{font-size:20px; margin:6px 0 2px;}
+  .muted{color:var(--muted);}
+  .sess-meta{font-size:13px; color:var(--muted);}
+  .tag{display:inline-block; background:var(--chip); border:1px solid var(--line); border-radius:999px; padding:4px 10px; font-size:12px; margin:4px 6px 0 0;}
+  .chips{display:flex; flex-wrap:wrap; gap:5px; align-items:center; margin:8px 0 4px;}
+  .chip{background:#eef1f5; color:var(--fg); border:1px solid var(--line); border-radius:999px; padding:5px 10px; font-size:12px; cursor:pointer;}
+  h2{font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:18px 0 8px;}
+  .sess-actions{display:flex; gap:8px; margin:10px 0;}
+  .sm{font-size:13px; padding:9px 14px; border-radius:10px; border:1px solid var(--line); background:#fff; cursor:pointer; width:auto; margin:0;}
+  .blue{background:var(--blue); color:#fff; border-color:var(--blue);}
+  .sec{background:#fff; color:var(--fg); border:1px solid var(--line);}
+  .red{background:#fbe9e9; color:var(--red); border:1px solid #f1b9b9;}
+  .ex-card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:13px 14px 12px; margin:10px 0; box-shadow:0 1px 3px rgba(0,0,0,.04);}
+  .ex-head{display:flex; align-items:flex-start; justify-content:space-between; gap:10px;}
+  .ex-name{font-size:16px; font-weight:700;}
+  .log-hint{display:block; margin-top:6px; padding-left:2px; margin-bottom:6px; font-size:12px; font-weight:600; color:var(--blue);}
+  .tag-set{background:#eef1f5; color:var(--fg); border:1px solid var(--line); border-radius:999px; padding:4px 10px; font-size:13px;}
+  /* ---- logger sheet (copied faithfully from index.html) ---- */
+  .sheet-back{position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex; align-items:flex-end; opacity:1; transition:opacity .2s; z-index:50;}
+  .sheet{width:100%; max-width:480px; margin:0 auto; background:var(--card); border-radius:16px 16px 0 0; padding:18px 18px calc(18px + env(safe-area-inset-bottom)); transform:translateY(0); transition:transform .2s;}
+  .sheet-head{display:flex; align-items:center; gap:10px; margin-bottom:6px;}
+  .sheet-head h2{margin:0; flex:1; font-size:18px; text-transform:none; letter-spacing:0; color:var(--fg);}
+  .log-sheet{max-height:86vh; overflow:auto;}
+  .ex-sub{font-size:13px; color:var(--muted); margin:-2px 0 12px;}
+  .ex-sub b{color:var(--fg); font-weight:700;}
+  .set-row{display:flex; align-items:center; gap:10px; padding:13px 4px; border-bottom:1px solid var(--line); font-size:14px; cursor:pointer;}
+  .set-row:active{background:#f1f3f6;}
+  .set-n{width:30px; font-weight:700; color:var(--muted); flex:0 0 auto;}
+  .set-vals{flex:1; min-width:0;}
+  .set-vals b{font-size:15px;}
+  .set-vals .sub{font-size:12px; color:var(--muted);}
+  .type-tag{font-size:11px; font-weight:700; border-radius:999px; padding:3px 9px; flex:0 0 auto;}
+  .t-normal{background:#eef1f5; color:var(--muted);}
+  .t-warm{background:rgba(37,99,235,.12); color:var(--blue);}
+  .t-drop{background:rgba(147,51,234,.12); color:#9333ea;}
+  .t-fail{background:rgba(220,38,38,.12); color:var(--red);}
+  .type-tag.pr{background:rgba(245,158,11,.15); color:#b45309;}
+  .seg{display:flex; gap:6px; margin:6px 0 14px;}
+  .seg .chip{flex:1; text-align:center; background:#eef1f5; color:var(--muted); border:1px solid transparent; border-radius:999px; padding:9px 0; font-size:12px; font-weight:600; cursor:pointer;}
+  .seg .chip.on{background:var(--blue); color:#fff; border-color:var(--blue);}
+  .add-row{display:flex; gap:8px; align-items:center; width:100%; margin-top:2px;}
+  .add-row input{margin:0; flex:1 1 0; min-width:0; max-width:100%; box-sizing:border-box; padding:11px 12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fbfbfc; color:var(--fg);}
+  .add-row input::placeholder{color:#aeb4be;}
+  .add-btn{flex:0 0 auto; width:auto; margin:0; background:transparent; color:var(--blue); border:1px solid var(--blue); border-radius:10px; padding:11px 16px; font-size:14px; font-weight:600;}
+  .add-btn:active{background:rgba(37,99,235,.08);}
+  .rest{display:inline-flex; align-items:center; gap:8px; margin-top:14px; padding:8px 12px; background:#eef1f5; border-radius:999px; font-size:12px; color:var(--muted);}
+  .rest b{color:var(--fg); font-size:14px; font-weight:700;}
+  .note{font-size:11px; color:var(--muted); margin-top:14px;}
+  .nav{position:fixed; bottom:0; left:0; right:0; max-width:480px; margin:0 auto; display:flex; background:var(--card); border-top:1px solid var(--line); box-shadow:0 -1px 4px rgba(0,0,0,.05); padding-bottom:env(safe-area-inset-bottom);}
+  .nav button{background:transparent; color:#3a3f47; border-radius:0; margin:0; padding:8px 0 10px; font-size:11px; flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; border:none;}
+</style>
+</head>
+<body>
+<div class="app">
+  <button class="sec sm" style="margin-bottom:8px">← Back</button>
+  <h1 class="sess-date">Aug 8, 5:30 PM</h1>
+  <div class="muted sess-meta">Friends-only · joinable · 3 people</div>
+  <div class="chips"><span class="chip">You</span><span class="chip">Brian</span><span class="chip">Sam</span></div>
+  <div class="sess-actions">
+    <button class="blue sm">Lock &amp; finish</button>
+    <button class="sec sm">Edit</button>
+    <button class="red sm">Delete session</button>
+  </div>
+  <h2>Workout (your view)</h2>
+  <div class="ex-card">
+    <div class="ex-head">
+      <div class="ex-main"><div class="ex-name">Bench Press</div><span class="log-hint">1 set logged</span></div>
+      <div class="ex-meta"><span class="tag-set">3 × 10</span></div>
+    </div>
+  </div>
+  <div class="ex-card">
+    <div class="ex-head">
+      <div class="ex-main"><div class="ex-name">Incline Dumbbell Press</div></div>
+      <div class="ex-meta"><span class="tag-set">4 × 8</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Log a set sheet (open) ===== -->
+<div class="sheet-back show">
+  <div class="sheet log-sheet" onclick="event.stopPropagation()">
+    <div class="sheet-head"><h2>Log · Bench Press</h2><button class="sec sm" onclick="">✕</button></div>
+    <div class="ex-sub">Last time: <b>185 × 8</b></div>
+    <div id="logSetList">
+      <div class="set-row">
+        <div class="set-n">1</div>
+        <div class="set-vals"><b>135 lbs</b> · <span class="sub">12 reps</span></div>
+        <span class="type-tag t-warm">Warm up</span>
+      </div>
+      <div class="set-row">
+        <div class="set-n">2</div>
+        <div class="set-vals"><b>185 lbs</b> · <span class="sub">8 reps</span></div>
+        <span class="type-tag t-normal">Normal</span>
+        <span class="type-tag pr">PR</span>
+      </div>
+      <div class="set-row">
+        <div class="set-n">3</div>
+        <div class="set-vals"><b>175 lbs</b> · <span class="sub">10 reps</span></div>
+        <span class="type-tag t-normal">Normal</span>
+      </div>
+      <div class="set-row">
+        <div class="set-n">4</div>
+        <div class="set-vals"><b>155 lbs</b> · <span class="sub">12 reps</span></div>
+        <span class="type-tag t-drop">Drop</span>
+      </div>
+    </div>
+    <div class="seg" id="logTypeSeg">
+      <div class="chip on" data-t="normal">Normal</div>
+      <div class="chip" data-t="warmup">Warm up</div>
+      <div class="chip" data-t="drop">Drop</div>
+      <div class="chip" data-t="failure">Failure</div>
+    </div>
+    <div class="add-row">
+      <input id="logW" placeholder="lbs" type="number" inputmode="tel" pattern="[0-9]*">
+      <input id="logR" placeholder="reps" type="number" inputmode="tel" pattern="[0-9]*">
+      <button class="add-btn">+ Add</button>
+    </div>
+    <div id="logRest"><div class="rest"><span>Rest</span><b id="restN">0:48</b><span>· tap to dismiss</span></div></div>
+    <div class="note">Tap a set to edit or delete it. Set # auto-fills.</div>
+  </div>
+</div>
+
+<div class="nav">
+  <button>Home</button><button>Workouts</button><button>Friends</button><button>Profile</button>
+</div>
+</body>
+</html>
