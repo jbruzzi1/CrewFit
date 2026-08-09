@@ -130,27 +130,38 @@ async function openSession(id){
   const nameOfCached = async (id) => { if(!(id in nameCache)) nameCache[id] = await nameOf(id); return nameCache[id]; };
   for(const ed of s.suggestedEdits){ await nameOfCached(ed.proposedBy); }
   for(const j of s.joinRequests){ await nameOfCached(j.userId); }
-  // my variation view (interleave pending swap suggestion directly under its target exercise)
+  // my variation view (each exercise = its own card tile; swap suggestion nested inside)
   const myEx = s.exercises.map(e=>{
     const v = s.variations[e.id] && s.variations[e.id][ME.id];
-    const name = v?`<b>${esc(v.swapTo)}</b> <span class="tag">(your swap)</span>`:esc(e.name);
+    // find an approved swap for this exercise (option 1: exercise becomes swapTo + muted "swapped by X")
+    const approved = (editByEx[e.id]||[]).find(ed=>ed.status==='approved');
+    let name;
+    if(approved){
+      const byName = nameCache[approved.proposedBy] || approved.proposedBy;
+      const disp = (byName||'?').split(' ')[0]; // first name only, muted context
+      name = `${esc(approved.swapTo)} <span class="muted sm-text">· swapped by ${esc(disp)}</span>`;
+    } else if(v){
+      name = `${esc(v.swapTo)} <span class="tag">(your swap)</span>`;
+    } else {
+      name = esc(e.name);
+    }
     const tap = canEdit ? ` onclick="openLogSheet('${s.id}','${e.id}')"` : '';
-    const cls = canEdit ? 'lib-item log-row' : 'lib-item';
+    const cls = canEdit ? 'ex-card log-row' : 'ex-card';
     const cnt = (s.logs && s.logs[ME.id]) ? s.logs[ME.id].filter(l=>l.exerciseId===e.id).length : 0;
-    const cntTag = canEdit ? `<span class="tag log-cnt">${cnt?cnt+' set'+(cnt>1?'s':''):'tap to log'}</span>` : '';
-    let row = `<div class="${cls}"${tap}><div>${name}</div><div class="row" style="gap:8px;align-items:center">${cntTag}<div class="tag">${e.defaultSets}×${e.defaultReps}</div></div></div>`;
+    const statusTag = canEdit ? (cnt ? `<span class="logged">✓ ${cnt} set${cnt>1?'s':''} logged</span>` : `<span class="log-hint">Tap to log sets →</span>`) : '';
+    let head = `<div class="ex-head"${tap}><div class="ex-main"><div class="ex-name">${name}</div>${statusTag}</div><div class="ex-meta"><span class="tag">${e.defaultSets} × ${e.defaultReps}</span></div></div>`;
+    let sub = '';
     for(const ed of (editByEx[e.id]||[])){
       const byName = nameCache[ed.proposedBy] || ed.proposedBy;
       if(ed.status==='pending'){
-        row += `<div class="req"><div class="av">${esc((byName||'?')[0]||'?')}</div><div class="rc">${esc(byName)} suggests ${esc(e.name)} → ${esc(ed.swapTo)}</div>`;
-        if(isCreator) row += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
-        else row += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
-        row += `</div>`;
-      } else {
-        row += `<div class="req"><div class="av">${esc((byName||'?')[0]||'?')}</div><div class="rc">${esc(byName)} → ${esc(ed.swapTo)} <span class="tag">(${ed.status})</span></div></div>`;
+        sub += `<div class="req"><div class="av">${esc((byName||'?')[0]||'?')}</div><div class="rc">${esc(byName)} suggests ${esc(e.name)} → ${esc(ed.swapTo)}</div>`;
+        if(isCreator) sub += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
+        else sub += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
+        sub += `</div>`;
       }
+      // approved/rejected swaps: no residual row (approved becomes the exercise name above; rejected leaves original)
     }
-    return row;
+    return `<div class="${cls}">${head}${sub}</div>`;
   }).join('');
   // suggested edits (kept for any edits whose exercise no longer exists)
   let edits = '';
@@ -162,9 +173,12 @@ async function openSession(id){
       if(isCreator) edits += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
       else edits += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
       edits += `</div></div>`;
-    } else {
-      edits += `<div class="card"><div class="req"><div class="av">${esc((byName||'?')[0]||'?')}</div><div class="rc">${esc(byName)} → ${esc(ed.swapTo)} <span class="tag">(${ed.status})</span></div></div></div>`;
+    } else if(ed.status==='approved'){
+      // option 1: no residual pill — just show the agreed swap, muted "swapped by X"
+      const disp = (byName||'?').split(' ')[0];
+      edits += `<div class="card"><div class="req"><div class="rc">${esc(ed.swapTo)} <span class="muted sm-text">· swapped by ${esc(disp)}</span></div></div></div>`;
     }
+    // rejected: nothing shown
   }
   // join requests (creator only)
   let jr = '';
@@ -190,7 +204,7 @@ async function openSession(id){
   if(edits) html += `<h2>Suggested swaps</h2>${edits}`;
   if(jr) html += `<h2>Join requests</h2>${jr}`;
   if(canEdit){
-    html += `<h2>Suggest a swap</h2><div class="card">
+    html += `<h2 class="sep">Suggest a swap</h2><div class="card">
       <select id="swEx">${s.exercises.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
       <input id="swTo" placeholder="swap to (exercise name)">
       <button onclick="suggest('${s.id}')">Suggest swap</button></div>`;
