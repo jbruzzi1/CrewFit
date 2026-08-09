@@ -139,9 +139,9 @@ async function openSession(id){
     if(approved){
       const byName = nameCache[approved.proposedBy] || approved.proposedBy;
       const disp = (byName||'?').split(' ')[0]; // first name only, muted context
-      name = `${esc(approved.swapTo)} <span class="muted sm-text">· swapped by ${esc(disp)}</span>`;
+      name = `${esc(approved.swapTo)} <span class="swap-note">· swapped by ${esc(disp)}</span>`;
     } else if(v){
-      name = `${esc(v.swapTo)} <span class="tag">(your swap)</span>`;
+      name = `${esc(v.swapTo)} <span class="swap-note">(your swap)</span>`;
     } else {
       name = esc(e.name);
     }
@@ -154,7 +154,7 @@ async function openSession(id){
     for(const ed of (editByEx[e.id]||[])){
       const byName = nameCache[ed.proposedBy] || ed.proposedBy;
       if(ed.status==='pending'){
-        sub += `<div class="req"><div class="av">${esc((byName||'?')[0]||'?')}</div><div class="rc">${esc(byName)} suggests ${esc(e.name)} → ${esc(ed.swapTo)}</div>`;
+        sub += `<div class="req"><div class="rc">${esc(byName)} suggests ${esc(e.name)} → ${esc(ed.swapTo)}</div>`;
         if(isCreator) sub += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
         else sub += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
         sub += `</div>`;
@@ -169,14 +169,14 @@ async function openSession(id){
     if(editByEx[ed.exerciseId]) continue; // already shown inline above
     const byName = nameCache[ed.proposedBy] || ed.proposedBy;
     if(ed.status==='pending'){
-      edits += `<div class="card"><div class="req"><div class="av">${esc((byName||'?')[0]||'?')}</div><div class="rc">${esc(byName)} suggests → ${esc(ed.swapTo)}</div>`;
+      edits += `<div class="card"><div class="req"><div class="rc">${esc(byName)} suggests → ${esc(ed.swapTo)}</div>`;
       if(isCreator) edits += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
       else edits += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
       edits += `</div></div>`;
     } else if(ed.status==='approved'){
       // option 1: no residual pill — just show the agreed swap, muted "swapped by X"
       const disp = (byName||'?').split(' ')[0];
-      edits += `<div class="card"><div class="req"><div class="rc">${esc(ed.swapTo)} <span class="muted sm-text">· swapped by ${esc(disp)}</span></div></div></div>`;
+      edits += `<div class="card"><div class="req"><div class="rc">${esc(ed.swapTo)} <span class="swap-note">· swapped by ${esc(disp)}</span></div></div></div>`;
     }
     // rejected: nothing shown
   }
@@ -184,7 +184,7 @@ async function openSession(id){
   let jr = '';
   if(isCreator){
     for(const j of s.joinRequests.filter(x=>x.status==='pending')){
-      jr += `<div class="card"><div class="req"><div class="av">${esc((await nameOf(j.userId)||'?')[0]||'?')}</div><div class="rc"><b>${esc(await nameOf(j.userId))}</b> wants to join${j.note?` — <i>"${esc(j.note)}"</i>`:''}</div><div class="ra"><button class="sm" onclick="approveJoin('${s.id}','${j.id}')">Approve</button></div></div></div>`;
+      jr += `<div class="card"><div class="req"><div class="av">${esc((await nameOf(j.userId)||'?')[0]||'?')}</div><div class="rc"><b>${esc(await nameOf(j.userId))}</b> wants to join${j.note?` — <i>"${esc(j.note)}"</i>`:''}</div><div class="ra"><button class="sm ok" onclick="approveJoin('${s.id}','${j.id}')">Approve</button><button class="sm no" onclick="rejectJoin('${s.id}','${j.id}')">Reject</button></div></div></div>`;
     }
   }
   let html = `<div class="wrap"><button class="sec sm" onclick="showTab('home')">← Back</button>
@@ -237,6 +237,7 @@ async function nameOf(id){ if(id===ME.id) return 'You'; const f = (await H.get('
 async function approve(id,eid){ const s=await H.post(`/api/sessions/${id}/suggest/${eid}/approve`); openSession(id); }
 async function reject(id,eid){ await H.post(`/api/sessions/${id}/suggest/${eid}/reject`); openSession(id); }
 async function approveJoin(id,jid){ await H.post(`/api/sessions/${id}/join/${jid}/approve`); openSession(id); }
+async function rejectJoin(id,jid){ await H.post(`/api/sessions/${id}/join/${jid}/reject`); openSession(id); }
 async function suggest(id){ const r=await H.post(`/api/sessions/${id}/suggest`,{exerciseId:$('swEx').value,swapTo:$('swTo').value}); if(r.error)alert(r.error); else openSession(id); }
 // ---------- Per-exercise set logger (Hevy/Strong style) ----------
 const SET_TYPES = [

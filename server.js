@@ -547,6 +547,16 @@ app.post('/api/sessions/:id/join/:reqId/approve', auth, (req, res) => {
   res.json(s);
 });
 
+app.post('/api/sessions/:id/join/:reqId/reject', auth, (req, res) => {
+  const s = DB.sessions[req.params.id];
+  const jr = s.joinRequests.find(j => j.id === req.params.reqId);
+  if (!jr || s.creatorId !== req.userId) return res.status(403).json({ error: 'forbidden' });
+  jr.status = 'rejected';
+  save(DB);
+  notify(jr.userId, { title: 'Join declined', body: `${DB.users[s.creatorId].displayName} declined your join request` });
+  res.json(s);
+});
+
 // attendance
 app.post('/api/sessions/:id/attendance', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
