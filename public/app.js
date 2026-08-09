@@ -205,9 +205,9 @@ async function openSession(id){
   if(jr) html += `<h2>Join requests</h2>${jr}`;
   if(canEdit){
     html += `<h2 class="sep">Suggest a swap</h2><div class="card">
-      <select id="swEx">${s.exercises.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
-      <input id="swTo" placeholder="swap to (exercise name)">
-      <button onclick="suggest('${s.id}')">Suggest swap</button></div>`;
+      <select id="swEx" style="margin-bottom:10px">${s.exercises.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
+      <button class="sec sm" style="background:#f0f1f3; margin-bottom:5px" onclick="openSwapPicker('${s.id}')">Pick replacement from Workouts →</button>
+    </div>`;
   }
   // Invitee action menu (non-creator view)
   if(!isCreator){
@@ -221,7 +221,7 @@ async function openSession(id){
   }
   // Chat panel
   html += `<h2>💬 Chat</h2><div class="card"><div id="chatbox" class="scrolllist"></div>
-    <div class="row"><input id="chatInput" placeholder="message host + crew"><button class="sm" onclick="sendChat('${s.id}')">Send</button></div></div>`;
+    <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Message the crew"><button class="sm chat-send" onclick="sendChat('${s.id}')">Send</button></div></div>`;
   html += `</div>`;
   $('app').innerHTML = html;
   loadChat(s);
@@ -238,6 +238,29 @@ async function approve(id,eid){ const s=await H.post(`/api/sessions/${id}/sugges
 async function reject(id,eid){ await H.post(`/api/sessions/${id}/suggest/${eid}/reject`); openSession(id); }
 async function approveJoin(id,jid){ await H.post(`/api/sessions/${id}/join/${jid}/approve`); openSession(id); }
 async function rejectJoin(id,jid){ await H.post(`/api/sessions/${id}/join/${jid}/reject`); openSession(id); }
+// ---- Suggest a swap: pick a real replacement from the Workouts library ----
+function openSwapPicker(id){
+  SWAP_MODE = true;
+  SWAP_SESSION = id;
+  // remember which exercise is being swapped (from the select, if present)
+  const sel = document.getElementById('swEx');
+  SWAP_FROM = sel ? sel.value : null;
+  showTab('lib');
+}
+function swapCancel(){
+  const id = SWAP_SESSION;
+  SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;
+  openSession(id || '');
+}
+async function swapPick(name){
+  const id = SWAP_SESSION;
+  if(!id) return;
+  const fromId = SWAP_FROM;
+  SWAP_MODE = false;
+  SWAP_SESSION = null; SWAP_FROM = null;
+  const r = await H.post(`/api/sessions/${id}/suggest`,{exerciseId:fromId, swapTo:name});
+  if(r.error) alert(r.error); else openSession(id || '');
+}
 async function suggest(id){ const r=await H.post(`/api/sessions/${id}/suggest`,{exerciseId:$('swEx').value,swapTo:$('swTo').value}); if(r.error)alert(r.error); else openSession(id); }
 // ---------- Per-exercise set logger (Hevy/Strong style) ----------
 const SET_TYPES = [
@@ -672,6 +695,10 @@ const LIB_CATS = [
 let LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
 // ---- Add-exercise mode: open the Library so the user picks from there ----
 let LIB_ADDMODE = false;
+// ---- Swap mode: open the Library so the user picks a real exercise as the swap-to target ----
+let SWAP_MODE = false;
+let SWAP_SESSION = null;
+let SWAP_FROM = null;
 function openAddExercises(){
   // stash details typed so far on the workout form
   if($('loc')) DRAFT.location = $('loc').value;
@@ -691,6 +718,11 @@ async function library(){
          <h1 style="flex:1">Workouts</h1>
          <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
          <button class="blue sm" onclick="libDone()">Done (<span id="libDoneCount">${DRAFT.exercises.length}</span>)</button>
+       </div>`
+    : SWAP_MODE
+    ? `<div class="pick-head lib-head">
+         <button class="sec sm" onclick="swapCancel()">‹ Cancel</button>
+         <h1 style="flex:1;font-size:18px">Pick replacement</h1>
        </div>`
     : `<div class="pick-head lib-head">
          <h1 style="flex:1">Workouts</h1>
@@ -766,6 +798,16 @@ function applyLibSearch(){
   else renderLibGroups();
 }
 function exRowHtml(e){
+  if(SWAP_MODE){
+    return `<div class="ex-row" onclick="swapPick('${esc(e.name)}')">
+        <div class="ex-main">
+          <div class="ex-name">${esc(e.name)}</div>
+          <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}${e.custom?' · your exercise':''}</div>
+        </div>
+        <div class="ex-badges">${exBadges(e)}</div>
+        <div class="mg-chev">›</div>
+      </div>`;
+  }
   const added = DRAFT.exercises.find(x=>x.name===e.name);
   if(LIB_ADDMODE){
     return `<div class="ex-row ${added?'ex-on':''}" onclick="libToggle('${esc(e.name)}', this)">
