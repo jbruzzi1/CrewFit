@@ -130,6 +130,7 @@ async function openSession(id){
   const nameOfCached = async (id) => { if(!(id in nameCache)) nameCache[id] = await nameOf(id); return nameCache[id]; };
   for(const ed of s.suggestedEdits){ await nameOfCached(ed.proposedBy); }
   for(const j of s.joinRequests){ await nameOfCached(j.userId); }
+  for(const pid of s.participants){ await nameOfCached(pid); }
   // my variation view (each exercise = its own card tile; swap suggestion nested inside)
   const myEx = s.exercises.map(e=>{
     const v = s.variations[e.id] && s.variations[e.id][ME.id];
@@ -199,6 +200,7 @@ async function openSession(id){
     html += `<button class="sec sm" onclick="editSession('${s.id}')">Edit</button>`;
     html += `<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button></div>`;
   }
+  html += `${s.participants.length?`<h2>Friends joined</h2><div class="chips">${s.participants.map(pid=>`<span class="chip">${esc(nameCache[pid]||pid)}</span>`).join('')}</div>`:''}`;
   html += `<h2>Workout (your view)</h2>${myEx}`;
   if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div>`;
   if(edits) html += `<h2>Suggested swaps</h2>${edits}`;
