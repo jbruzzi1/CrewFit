@@ -200,7 +200,6 @@ async function openSession(id){
     html += `<button class="sec sm" onclick="editSession('${s.id}')">Edit</button>`;
     html += `<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button></div>`;
   }
-  html += `${s.participants.length?`<h2>Friends joined</h2><div class="chips">${s.participants.map(pid=>`<span class="chip">${esc(nameCache[pid]||pid)}</span>`).join('')}</div>`:''}`;
   html += `<h2>Workout (your view)</h2>${myEx}`;
   if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div>`;
   if(edits) html += `<h2>Suggested swaps</h2>${edits}`;
@@ -224,6 +223,7 @@ async function openSession(id){
   // Chat panel
   html += `<h2>💬 Chat</h2><div class="card"><div id="chatbox" class="scrolllist"></div>
     <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Message the crew"><button class="sm chat-send" onclick="sendChat('${s.id}')">Send</button></div></div>`;
+  html += `${(s.participants.filter(p=>p!==ME.id).length)?`<h2>Friends joined</h2><div class="chips mini">${s.participants.filter(p=>p!==ME.id).map(pid=>`<div class="fav"><div class="fav-av" style="background:${avatarColor(nameCache[pid]||pid)};color:#fff">${esc((nameCache[pid]||pid||'?')[0])}</div><span>${esc(nameCache[pid]||pid)}</span></div>`).join('')}</div>`:''}`;
   html += `</div>`;
   $('app').innerHTML = html;
   loadChat(s);

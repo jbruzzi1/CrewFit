@@ -68,6 +68,10 @@
     .chips .lbl { color:var(--muted); font-size:11px; margin-right:2px; }
     .chip { background:#eef1f5; color:var(--fg); border:1px solid var(--line); border-radius:999px; padding:5px 10px; font-size:12px; cursor:pointer; }
     .chip.on { background:var(--blue); color:#fff; border-color:var(--blue); }
+    .chips.mini { gap:8px; }
+    .fav { display:inline-flex; align-items:center; gap:7px; background:#eef1f5; border:1px solid var(--line); border-radius:999px; padding:4px 11px 4px 4px; }
+    .fav-av { width:28px; height:28px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; flex:0 0 auto; }
+    .fav span { font-size:13px; font-weight:600; color:var(--fg); }
     .ex-card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:13px 14px 12px; margin:10px 0; box-shadow:0 1px 3px rgba(0,0,0,.04); }
     .ex-card.log-row { cursor:pointer; }
     .ex-card.log-row:active { background:#f1f3f6; }
@@ -243,23 +247,22 @@
   </style>
 </head>
 <body>
-  <div id="app"><div class="wrap"><button class="sec sm" onclick="showTab('home')">← Back</button>
-    <h1 class="sess-date">Aug 8, 5:30 PM</h1>
-    <div class="muted sess-meta">Friends-only · joinable · 3 people</div>
-    <div class="tag">📍 Gold's Gym</div>
-    <div class="tag">⏱ 60 min</div>
-    <div class="card muted">"let's hit legs hard" — you</div><div class="sess-actions"><button class="blue sm" onclick="lock('ses_mock')">Lock & finish</button><button class="sec sm" onclick="editSession('ses_mock')">Edit</button><button class="red sm" onclick="deleteSession('ses_mock')">Delete session</button></div><h2>Friends joined</h2><div class="chips"><span class="chip">You</span><span class="chip">Brian</span><span class="chip">Sam</span></div><h2>Workout (your view)</h2><div class="ex-card log-row"><div class="ex-head" onclick="openLogSheet('ses_mock','ex_bench')"><div class="ex-main"><div class="ex-name">Bench Press</div><span class="logged">✓ 1 set logged</span></div><div class="ex-meta"><span class="tag">3 × 10</span></div></div><div class="req"><div class="rc">Brian suggests Bench Press → Leg Press</div><div class="ra"><button class="sm ok" onclick="approve('ses_mock','se_1')">Approve</button><button class="sm no" onclick="reject('ses_mock','se_1')">Reject</button></div></div></div><div class="ex-card log-row"><div class="ex-head" onclick="openLogSheet('ses_mock','ex_inc')"><div class="ex-main"><div class="ex-name">Incline Dumbbell Press</div><span class="log-hint">Tap to log sets →</span></div><div class="ex-meta"><span class="tag">4 × 8</span></div></div></div><div class="ex-card log-row"><div class="ex-head" onclick="openLogSheet('ses_mock','ex_lat')"><div class="ex-main"><div class="ex-name">Cable Row <span class="swap-note">· swapped by Brian</span></div><span class="log-hint">Tap to log sets →</span></div><div class="ex-meta"><span class="tag">4 × 8</span></div></div></div><div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div><h2>Join requests</h2><div class="card"><div class="req"><div class="av">A</div><div class="rc"><b>Alex</b> wants to join — <i>"can I join?"</i></div><div class="ra"><button class="sm ok" onclick="approveJoin('ses_mock','jr_1')">Approve</button><button class="sm no" onclick="rejectJoin('ses_mock','jr_1')">Reject</button></div></div></div><h2 class="sep">Suggest a swap</h2><div class="card">
-      <select id="swEx" style="margin-bottom:10px"><option value="ex_bench">Bench Press</option><option value="ex_inc">Incline Dumbbell Press</option><option value="ex_lat">Lat Pulldown</option></select>
-      <button class="sec sm" style="background:#f0f1f3; margin-bottom:5px" onclick="openSwapPicker('ses_mock')">Pick replacement from Workouts →</button>
-    </div><h2>💬 Chat</h2><div class="card"><div id="chatbox" class="scrolllist"></div>
-    <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Message the crew"><button class="sm chat-send" onclick="sendChat('ses_mock')">Send</button></div></div></div>
-  </div>
-  <div class="nav" id="nav">
+  <div id="app"></div>
+  <div class="nav hidden" id="nav">
     <button data-tab="home" class="active"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg><span>Home</span></button>
     <button data-tab="lib"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5l11 11"/><path d="M21 21l-1-1"/><path d="M3 3l1 1"/><path d="M9 9l1 1"/><path d="M15 15l1 1"/><rect x="4" y="4" width="4" height="4" rx="1" transform="rotate(45 6 6)"/><rect x="16" y="16" width="4" height="4" rx="1" transform="rotate(45 18 18)"/></svg><span>Workouts</span></button>
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
   
-</body>
+<body><div id="app"><div class="wrap"><button class="sec sm" onclick="showTab('home')">← Back</button>
+    <h1 class="sess-date">Aug 8, 1:30 PM</h1>
+    <div class="muted sess-meta">Friends-only · joinable · 3 people</div>
+    
+    <div class="tag">⏱ 60 min</div>
+    <div class="card muted">"let's hit legs hard" — you</div><div class="sess-actions"><button class="blue sm" onclick="lock('ses_X')">Lock & finish</button><button class="sec sm" onclick="editSession('ses_X')">Edit</button><button class="red sm" onclick="deleteSession('ses_X')">Delete session</button></div><h2>Workout (your view)</h2><div class="ex-card log-row"><div class="ex-head" onclick="openLogSheet('ses_X','ex_bench')"><div class="ex-main"><div class="ex-name">Bench Press</div><span class="log-hint">Tap to log sets →</span></div><div class="ex-meta"><span class="tag">3 × 10</span></div></div></div><div class="ex-card log-row"><div class="ex-head" onclick="openLogSheet('ses_X','ex_inc')"><div class="ex-main"><div class="ex-name">Incline Dumbbell Press</div><span class="log-hint">Tap to log sets →</span></div><div class="ex-meta"><span class="tag">4 × 8</span></div></div></div><div class="ex-card log-row"><div class="ex-head" onclick="openLogSheet('ses_X','ex_lat')"><div class="ex-main"><div class="ex-name">Cable Row <span class="swap-note">· swapped by Brian</span></div><span class="log-hint">Tap to log sets →</span></div><div class="ex-meta"><span class="tag">4 × 8</span></div></div></div><div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div><h2>Join requests</h2><div class="card"><div class="req"><div class="av">f</div><div class="rc"><b>friend</b> wants to join — <i>"can I join?"</i></div><div class="ra"><button class="sm ok" onclick="approveJoin('ses_X','jr_1')">Approve</button><button class="sm no" onclick="rejectJoin('ses_X','jr_1')">Reject</button></div></div></div><h2 class="sep">Suggest a swap</h2><div class="card">
+      <select id="swEx" style="margin-bottom:10px"><option value="ex_bench">Bench Press</option><option value="ex_inc">Incline Dumbbell Press</option><option value="ex_lat">Lat Pulldown</option></select>
+      <button class="sec sm" style="background:#f0f1f3; margin-bottom:5px" onclick="openSwapPicker('ses_X')">Pick replacement from Workouts →</button>
+    </div><h2>💬 Chat</h2><div class="card"><div id="chatbox" class="scrolllist"></div>
+    <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Message the crew"><button class="sm chat-send" onclick="sendChat('ses_X')">Send</button></div></div><h2>Friends joined</h2><div class="chips mini"><div class="fav"><div class="fav-av" style="background:#db2777;color:#fff">B</div><span>Brian</span></div><div class="fav"><div class="fav-av" style="background:#65a30d;color:#fff">S</div><span>Sam</span></div></div></div></div></body>
 </html>
