@@ -67,7 +67,12 @@ non-technical) and their AI agents (Hermes / Lovabl).
   (existing), join request/accept, swap suggest/approve. VAPID keys are **Fly secrets**
   (VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY) — do NOT rely on generated vapid.json in prod
   (ephemeral FS invalidates subs each deploy).
-- **Version bump:** increment `?v=` in index.html on every push (now v92).
+- **REGRESSION RULE (learned v92→v94):** when you change an API response SHAPE
+  (e.g. `/api/friends` array → object `{friends,incoming,outgoing}`), grep ALL client
+  callers for `.find/.map/.length` on that response and fix every one — not just the one
+  you're touching. v92 broke `home()`, `nameOf`, invite-picker, edit-session because only
+  the Friends screen was updated. After ANY API-shape change, **re-run `home()` in a stubbed
+  DOM harness** (see session) to prove the home screen still renders (no white screen).
 
 ## Current state (as of v88)
 - **Live:** https://spotmeapp.fly.dev (Fly; deploy via `flyctl deploy --remote-only`).

@@ -78,7 +78,9 @@ function showTab(tab){
 async function home(){
   const sessions = await H.get('/api/sessions');
   const feed = await H.get('/api/feed');
-  const friendName = async (id)=> (await H.get('/api/friends')).find(f=>f.id===id)?.displayName || 'friend';
+  const _fr = await H.get('/api/friends');
+  const myFriends = (_fr && _fr.friends) ? _fr.friends : (Array.isArray(_fr) ? _fr : []);
+  const friendName = async (id)=> myFriends.find(f=>f.id===id)?.displayName || 'friend';
   const initial = ((ME&&(ME.displayName||ME.username))||'?')[0]||'?';
   const first = ((ME.displayName||ME.username||'there').split(' ')[0]);
   const HYPE = ['Time to crush it','Let\'s get after it','Show up. Lift heavy'];
@@ -256,7 +258,7 @@ async function saveRoutine(id){ const s=await H.get('/api/sessions/'+id); const 
 async function openChat(id){ document.getElementById('chatInput').focus(); }
 async function sendChat(id){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:t}); $('chatInput').value=''; openSession(id); }
 async function loadChat(s){ const box=$('chatbox'); if(!box) return; const cs=await H.get(`/api/sessions/${s.id}/comments`); box.innerHTML = cs.length? cs.map(c=>`<div class="lib-item"><div><b>${esc(c.userId===ME.id?'You':(s.participants.includes(c.userId)?'':'?'))}</b> ${esc(c.text)}</div><div class="tag">${new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div></div>`).join('') : '<div class="muted">No messages yet.</div>'; }
-async function nameOf(id){ if(id===ME.id) return 'You'; const f = (await H.get('/api/friends')).find(x=>x.id===id); return f?f.displayName:'friend'; }
+async function nameOf(id){ if(id===ME.id) return 'You'; const f = (await H.get('/api/friends')); const arr = (f && f.friends) ? f.friends : (Array.isArray(f)?f:[]); const hit = arr.find(x=>x.id===id); return hit?hit.displayName:'friend'; }
 async function approve(id,eid){ const s=await H.post(`/api/sessions/${id}/suggest/${eid}/approve`); openSession(id); }
 async function reject(id,eid){ await H.post(`/api/sessions/${id}/suggest/${eid}/reject`); openSession(id); }
 async function approveJoin(id,jid){ await H.post(`/api/sessions/${id}/join/${jid}/approve`); openSession(id); }
@@ -413,7 +415,8 @@ async function createFlow(){
   if(!DRAFT.inviteUsernames) DRAFT.inviteUsernames=[];
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
   const friends = await H.get('/api/friends');
-  const invRows = friends.length ? friends.map(f=>{
+  const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
+  const invRows = friendList.length ? friendList.map(f=>{
     const ini = (f.displayName||f.username||'?')[0]||'?';
     const av = f.avatar ? `<img class="inv-av" src="${esc(f.avatar)}" alt="">` : `<div class="inv-av" style="background:${avatarColor(f.username)};color:#fff">${esc(ini)}</div>`;
     const on = DRAFT.inviteUsernames.includes(f.username) ? 'checked' : '';
@@ -456,7 +459,8 @@ async function editSession(id){
   if(!s || s.error){ alert(s && s.error ? s.error : 'Session not found'); return; }
   if(s.creatorId!==ME.id){ alert('Only the creator can edit.'); return; }
   const friends = await H.get('/api/friends');
-  const invitedUsernames = (s.invited||[]).map(fid=>{ const f=friends.find(x=>x.id===fid); return f?f.username:''; }).filter(Boolean);
+  const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
+  const invitedUsernames = (s.invited||[]).map(fid=>{ const f=friendList.find(x=>x.id===fid); return f?f.username:''; }).filter(Boolean);
   DRAFT = { exercises: s.exercises.map(e=>({ id:e.id, name:e.name, defaultSets:e.defaultSets, defaultReps:e.defaultReps })),
             inviteUsernames: invitedUsernames,
             name: s.name||'', location: s.location||'', lengthMin: s.lengthMin||'', creatorNote: s.creatorNote||'' };
