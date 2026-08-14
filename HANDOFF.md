@@ -67,19 +67,32 @@ non-technical) and their AI agents (Hermes / Lovabl).
   (existing), join request/accept, swap suggest/approve. VAPID keys are **Fly secrets**
   (VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY) — do NOT rely on generated vapid.json in prod
   (ephemeral FS invalidates subs each deploy).
-- **REGRESSION RULE (learned v92→v94):** when you change an API response SHAPE
-  (e.g. `/api/friends` array → object `{friends,incoming,outgoing}`), grep ALL client
-  callers for `.find/.map/.length` on that response and fix every one — not just the one
-  you're touching. v92 broke `home()`, `nameOf`, invite-picker, edit-session because only
-  the Friends screen was updated. After ANY API-shape change, **re-run `home()` in a stubbed
-  DOM harness** (see session) to prove the home screen still renders (no white screen).
+- **Workouts NEVER lock (v99 model):** "Log & Finish" records completion
+  (`s.completed=true`, writes `s.history`) but the session stays **fully editable** —
+  it is NOT set to `status:'locked'`. After Log & Finish the app opens the **Save page**
+  (notes + photo/video from camera roll + visibility: only_me/friends/public), and
+  **Save navigates to Home** (history), NOT the Profile. Because workouts never lock,
+  the session view always shows "Log & Finish" + an **"Edit photos & notes"** button
+  (shown only when `s.post` exists) that re-opens the Save page **pre-filled** with the
+  existing post. `saveWorkout(id)` calls `home()` (NOT `profileView`). Do NOT re-add a
+  `locked` gate or route Save to Profile — that reverts the v99 behavior.
+- **REGRESSION RULE (learned v96→v98):** (a) When adding custom CSS classes in a mock,
+  you MUST also add them to `public/index.html` before deploying — a mock that looks
+  right but omits the CSS ships unstyled (v97 broke the Save page this way). (b) Guard
+  every array field read in `openSession` (`joinRequests`, `suggestedEdits`,
+  `participants`, `invited`, `exercises`, `variations`) with `|| []` / `|| {}` — older or
+  persisted sessions may lack them, and an unguarded `.find`/`.map` crashes the whole
+  session view (v98 broke "Log & Finish" this way). Re-run `openSession(id)` in a stubbed
+  DOM harness after touching it.
 
-## Current state (as of v88)
+## Current state (as of v99)
 - **Live:** https://spotmeapp.fly.dev (Fly; deploy via `flyctl deploy --remote-only`).
-- **v88 changes:** "Friends joined" rendered as **avatar chips** (initials circles via
-  `avatarColor()`, reusing the Friends/Profile/Join idiom), **self ("You") filtered out**,
-  and **moved to the very bottom** (after Chat) so the page leads with the Workout.
-  Session order: Workout → Join requests → Suggest a swap → Chat → Friends joined.
+- **v99:** Workouts never lock — Log & Finish → Save page (notes/photo/visibility) →
+  Home; "Edit photos & notes" re-opens the Save page pre-filled; workouts stay editable.
+- **v98:** Fixed openSession crash (unguarded `joinRequests.find`) that broke the workout
+  view / Log & Finish. Hardened all session array fields with `|| []`/`|| {}`.
+- **v97:** Ported Save-page CSS (add-media/am-plus/media-line/fineprint/center-v) into
+  `index.html` so the live Save page matches the approved mock.
 - Approved swap display: exercise name becomes `swapTo` + muted `· swapped by [friend]`
   (app.js openSession; `.swap-note` CSS). Pending swap: `Brian suggests X → Y` + Approve/Reject
   inline on the exercise card. Logged state: `✓ N set(s) logged` replaces "Tap to log sets →".
