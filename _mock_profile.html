@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>SpotMe — Profile (My Workouts) mock</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --line:#e6e8ec; --fg:#11151c; --muted:#7b8290; --blue:#2563eb; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; background:var(--bg); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--fg); }
+  .wrap { max-width:480px; margin:0 auto; padding:14px; padding-bottom:90px; }
+  .profile-head { display:flex; align-items:center; gap:14px; margin-bottom:14px; }
+  .pavatar { width:60px; height:60px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:24px; color:#fff; background:#16a34a; }
+  .pname { font-size:18px; font-weight:700; }
+  .muted { color:var(--muted); font-size:12px; }
+  .pstats { display:flex; gap:10px; margin:14px 0; }
+  .pstat { flex:1; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px; text-align:center; }
+  .pstat b { display:block; font-size:18px; }
+  .pstat span { font-size:11px; color:var(--muted); }
+  .pbio { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px 12px; font-size:13px; margin-bottom:14px; }
+  h2 { font-size:13px; margin:20px 0 8px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:4px 12px; margin:0 0 4px; }
+  .lib-item { padding:11px 2px; border-top:1px solid var(--line); }
+  .lib-item:first-child { border-top:none; }
+  .lib-item b { font-weight:600; font-size:14px; }
+  .tag { font-size:11px; color:var(--muted); margin-top:2px; }
+  .note { font-size:11px; color:var(--muted); margin-top:14px; line-height:1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="profile-head">
+    <div class="pavatar">J</div>
+    <div>
+      <div class="pname">Jeff</div>
+      <div class="muted">@jeff</div>
+    </div>
+  </div>
+
+  <div class="pstats">
+    <div class="pstat"><b>12</b><span>Workouts</span></div>
+    <div class="pstat"><b>3</b><span>Friends</span></div>
+    <div class="pstat"><b>5</b><span>Followers</span></div>
+  </div>
+
+  <div class="pbio">Training hard. Leg day is the best day.</div>
+
+  <h2>My Workouts</h2>
+  <div class="card">
+    <div class="lib-item" onclick="/*openSession*/">
+      <div><b>Leg Day</b><div class="tag">Aug 14, 2026 · 5 exercises</div></div>
+    </div>
+    <div class="lib-item" onclick="/*openSession*/">
+      <div><b>Push Session</b><div class="tag">Aug 10, 2026 · 6 exercises</div></div>
+    </div>
+    <div class="lib-item" onclick="/*openSession*/">
+      <div><b>Upper Body</b><div class="tag">Aug 6, 2026 · 7 exercises</div></div>
+    </div>
+  </div>
+
+  <h2>Recent activity</h2>
+  <div class="card">
+    <div class="lib-item"><div><b>Jeff</b> completed 1 workout this week</div></div>
+    <div class="lib-item"><div><b>Jeff</b> hit a new PR on Bench Press (185×5)</div></div>
+  </div>
+
+  <div class="note">Mockup: "My Workouts" lists sessions you've completed via Log &amp; Finish (recorded to session history). Tapping a row opens that session. Empty state: "No workouts logged yet."</div>
+</div>
+</body>
+</html>
