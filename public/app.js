@@ -416,7 +416,7 @@ async function showSavePage(id){
   const vis = post.visibility || 'only_me';
   const visHint = vis==='only_me'?'Only you can see this on your profile.' : vis==='friends'?'Friends can see this on your profile.' : 'Anyone can see this on your profile.';
   const media = Array.isArray(post.media) ? post.media : [];
-  $('app').innerHTML = `<div class="wrap">
+  $('app').innerHTML = `<div class="wrap save-page">
     <h1>Save workout</h1>
     <p class="sub">${esc(s.name||'Workout')} · ${when} · ${(s.exercises||[]).length} exercises</p>
     <div class="sess-card">
