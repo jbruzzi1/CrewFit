@@ -226,7 +226,8 @@ async function openSession(id){
     ${s.creatorNote?`<div class="card muted">"${esc(s.creatorNote)}" — ${isCreator?'you':esc(s.creatorId)}</div>`:''}`;
   if(isCreator){
     html += `<div class="sess-actions">`;
-    if(s.status!=='locked') html += `<button class="blue sm" onclick="lock('${s.id}')">Log & Finish</button>`;
+    html += `<button class="blue sm" onclick="lock('${s.id}')">Log & Finish</button>`;
+    if(s.post) html += `<button class="sec sm" onclick="showSavePage('${s.id}')">Edit photos & notes</button>`;
     html += `<button class="sec sm" onclick="editSession('${s.id}')">Edit</button>`;
     html += `<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button></div>`;
   }
@@ -411,6 +412,10 @@ async function showSavePage(id){
   if(!s || s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
   const exNames = (s.exercises||[]).map(e=>(s.variations&&s.variations[e.id]&&s.variations[e.id][ME.id]?s.variations[e.id][ME.id].swapTo:e.name));
   const when = s.scheduledAt ? fmtDate(s.scheduledAt.slice(0,10)) : '';
+  const post = s.post || {};
+  const vis = post.visibility || 'only_me';
+  const visHint = vis==='only_me'?'Only you can see this on your profile.' : vis==='friends'?'Friends can see this on your profile.' : 'Anyone can see this on your profile.';
+  const media = Array.isArray(post.media) ? post.media : [];
   $('app').innerHTML = `<div class="wrap">
     <h1>Save workout</h1>
     <p class="sub">${esc(s.name||'Workout')} · ${when} · ${(s.exercises||[]).length} exercises</p>
@@ -419,7 +424,7 @@ async function showSavePage(id){
       <div class="tag">${esc(exNames.join(' · '))}</div>
     </div>
     <h2>Notes</h2>
-    <div class="card"><textarea id="saveNotes" placeholder="How did it go? PRs, how you felt, what to hit next time…"></textarea></div>
+    <div class="card"><textarea id="saveNotes" placeholder="How did it go? PRs, how you felt, what to hit next time…">${esc(post.notes||'')}</textarea></div>
     <h2>Photo / video</h2>
     <div class="card center-v">
       <div class="media-line">
@@ -431,21 +436,30 @@ async function showSavePage(id){
         <span class="ml-text">Add a photo / video</span>
       </div>
       <div class="thumbs" id="thumbs"></div>
-      <div class="tab-note" id="tabNote" style="display:none">Shown in your workout tab</div>
+      <div class="tab-note" id="tabNote" style="display:${media.length?'block':'none'}">Shown in your workout tab</div>
     </div>
     <h2>Visibility</h2>
     <div class="card">
       <div class="seg" id="vis">
-        <button class="on" onclick="setSaveVis(this,'only_me')">Only me</button>
-        <button onclick="setSaveVis(this,'friends')">Friends</button>
-        <button onclick="setSaveVis(this,'public')">Public</button>
+        <button class="${vis==='only_me'?'on':''}" onclick="setSaveVis(this,'only_me')">Only me</button>
+        <button class="${vis==='friends'?'on':''}" onclick="setSaveVis(this,'friends')">Friends</button>
+        <button class="${vis==='public'?'on':''}" onclick="setSaveVis(this,'public')">Public</button>
       </div>
-      <div class="fineprint" id="visHint">Only you can see this on your profile.</div>
+      <div class="fineprint" id="visHint">${visHint}</div>
     </div>
-    <button class="btn-primary" onclick="saveWorkout('${id}')">Save to profile</button>
+    <button class="btn-primary" onclick="saveWorkout('${id}')">Save</button>
   </div>`;
-  window.__saveMedia = [];
-  window.__saveVis = 'only_me';
+  window.__saveMedia = media.map(m=>({ type:m.type, src:m.src }));
+  window.__saveVis = vis;
+  // render existing media as thumbnails
+  const t=document.getElementById('thumbs');
+  window.__saveMedia.forEach(m=>{
+    const d=document.createElement('div'); d.className='thumb';
+    if(m.type==='image'){ const el=document.createElement('img'); el.src=m.src; d.appendChild(el); }
+    else { const el=document.createElement('video'); el.src=m.src; el.muted=true; d.appendChild(el); }
+    const x=document.createElement('span'); x.className='x'; x.textContent='✕'; x.onclick=()=>{ d.remove(); const i=window.__saveMedia.indexOf(m); if(i>-1) window.__saveMedia.splice(i,1); if(!t.children.length) document.getElementById('tabNote').style.display='none'; }; d.appendChild(x);
+    t.appendChild(d);
+  });
 }
 function setSaveVis(btn,v){ window.__saveVis=v; document.querySelectorAll('#vis button').forEach(b=>b.classList.remove('on')); btn.classList.add('on');
   document.getElementById('visHint').textContent = v==='only_me'?'Only you can see this on your profile.' : v==='friends'?'Friends can see this on your profile.' : 'Anyone can see this on your profile.'; }
@@ -470,7 +484,7 @@ async function saveWorkout(id){
   const notes=document.getElementById('saveNotes').value;
   const r=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'only_me' });
   if(r && r.error){ alert(r.error); return; }
-  profileView(ME.id);
+  home();
 }
 async function deleteSession(id){
   if(!confirm('Delete this session? This removes it for everyone.')) return;

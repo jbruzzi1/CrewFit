@@ -707,7 +707,7 @@ app.delete('/api/sessions/:id/log/:logId', auth, (req, res) => {
 app.post('/api/sessions/:id/lock', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator' });
-  s.status = 'locked';
+  s.completed = true;
   // record each participant's history
   for (const pid of s.participants) {
     const exNames = s.exercises.map(e => {
@@ -731,7 +731,6 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator' });
-  if (s.status !== 'locked') return res.status(400).json({ error: 'session not finished' });
   const { notes, media, visibility } = req.body || {};
   const vis = ['only_me','friends','public'].includes(visibility) ? visibility : 'only_me';
   // basic guard on media size (base64 dataURLs)
