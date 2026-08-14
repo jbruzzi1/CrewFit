@@ -142,9 +142,19 @@ function profileOf(id) {
     if ((s.history || []).some(h => h.userId === id)) completed.add(s.id);
   }
   const prs = (DB.prs && DB.prs[id]) ? Object.values(DB.prs[id]) : [];
+  const myWorkouts = Object.values(DB.sessions)
+    .filter(s => (s.history || []).some(h => h.userId === id))
+    .sort((a,b)=> new Date(b.scheduledAt||0) - new Date(a.scheduledAt||0))
+    .map(s => ({
+      id: s.id,
+      name: s.name || 'Workout',
+      date: (s.history.find(h=>h.userId===id)||{}).date || (s.scheduledAt ? s.scheduledAt.slice(0,10) : ''),
+      exerciseCount: (s.exercises||[]).length
+    }));
   return {
     ...publicUser(id),
     workoutsCompleted: completed.size,
+    myWorkouts,
     prCount: prs.length,
     streak: currentStreak(id),
     recentActivity: buildActivityFor(id)

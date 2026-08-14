@@ -1040,6 +1040,11 @@ async function profileView(id){
   const feed = (p.recentActivity&&p.recentActivity.length)
     ? p.recentActivity.map(a=>`<div class="feed-item"><span class="fi-ic">${a.type==='pr'?'🏆':a.type==='streak'?flameSvg():'✅'}</span><div>${esc(a.text)}</div></div>`).join('')
     : '<div class="muted" style="padding:14px 0;text-align:center">No recent activity yet.</div>';
+  const myWorkouts = (p.myWorkouts||[]).map(w=>`
+    <div class="lib-item" onclick="openSession('${w.id}')">
+      <div><b>${esc(w.name)}</b><div class="tag">${w.date?fmtDate(w.date):''} · ${w.exerciseCount} exercises</div></div>
+    </div>`).join('')
+    || '<div class="muted" style="padding:14px 0;text-align:center">No workouts logged yet.</div>';
   $('app').innerHTML = `<div class="wrap">
     <div class="profile-head">
       ${avatarBlock}
@@ -1052,6 +1057,8 @@ async function profileView(id){
     ${stats}
     ${actHtml}
     ${bioBlock}
+    <h2>My Workouts</h2>
+    <div class="card" style="padding:4px 12px">${myWorkouts}</div>
     <h2>Recent activity</h2>
     <div class="card" style="padding:4px 12px">${feed}</div>
     ${isMe?`<button class="sec" style="margin-top:18px" onclick="logout()">Log out</button>`:''}
