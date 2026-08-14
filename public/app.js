@@ -398,7 +398,73 @@ function startRest(){
   clearInterval(REST_TIMER);
   REST_TIMER=setInterval(()=>{ sec--; const el=document.getElementById('restN'); if(el) el.textContent=`${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`; if(sec<=0){ clearInterval(REST_TIMER); box.innerHTML=''; } },1000);
 }
-async function lock(id){ await H.post(`/api/sessions/${id}/lock`); openSession(id); }
+async function lock(id){ await H.post(`/api/sessions/${id}/lock`); showSavePage(id); }
+async function showSavePage(id){
+  const s = await H.get('/api/sessions/'+id);
+  if(!s || s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
+  const exNames = (s.exercises||[]).map(e=>(s.variations&&s.variations[e.id]&&s.variations[e.id][ME.id]?s.variations[e.id][ME.id].swapTo:e.name));
+  const when = s.scheduledAt ? fmtDate(s.scheduledAt.slice(0,10)) : '';
+  $('app').innerHTML = `<div class="wrap">
+    <h1>Save workout</h1>
+    <p class="sub">${esc(s.name||'Workout')} · ${when} · ${(s.exercises||[]).length} exercises</p>
+    <div class="sess-card">
+      <b>${esc(s.name||'Workout')}</b>
+      <div class="tag">${esc(exNames.join(' · '))}</div>
+    </div>
+    <h2>Notes</h2>
+    <div class="card"><textarea id="saveNotes" placeholder="How did it go? PRs, how you felt, what to hit next time…"></textarea></div>
+    <h2>Photo / video</h2>
+    <div class="card center-v">
+      <div class="media-line">
+        <label class="add-media" title="Add photos or video">
+          <svg class="am-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg>
+          <span class="am-plus">+</span>
+          <input id="mediaInput" type="file" accept="image/*,video/*" multiple style="display:none" onchange="addWorkoutMedia(this)">
+        </label>
+        <span class="ml-text">Add a photo / video</span>
+      </div>
+      <div class="thumbs" id="thumbs"></div>
+      <div class="tab-note" id="tabNote" style="display:none">Shown in your workout tab</div>
+    </div>
+    <h2>Visibility</h2>
+    <div class="card">
+      <div class="seg" id="vis">
+        <button class="on" onclick="setSaveVis(this,'only_me')">Only me</button>
+        <button onclick="setSaveVis(this,'friends')">Friends</button>
+        <button onclick="setSaveVis(this,'public')">Public</button>
+      </div>
+      <div class="fineprint" id="visHint">Only you can see this on your profile.</div>
+    </div>
+    <button class="btn-primary" onclick="saveWorkout('${id}')">Save to profile</button>
+  </div>`;
+  window.__saveMedia = [];
+  window.__saveVis = 'only_me';
+}
+function setSaveVis(btn,v){ window.__saveVis=v; document.querySelectorAll('#vis button').forEach(b=>b.classList.remove('on')); btn.classList.add('on');
+  document.getElementById('visHint').textContent = v==='only_me'?'Only you can see this on your profile.' : v==='friends'?'Friends can see this on your profile.' : 'Anyone can see this on your profile.'; }
+function addWorkoutMedia(input){
+  const t=document.getElementById('thumbs');
+  for(const file of input.files){
+    const d=document.createElement('div'); d.className='thumb';
+    const reader=new FileReader();
+    reader.onload=()=>{ const dataUrl=reader.result;
+      if(file.type.startsWith('image/')){ const el=document.createElement('img'); el.src=dataUrl; d.appendChild(el); }
+      else { const el=document.createElement('video'); el.src=dataUrl; el.muted=true; d.appendChild(el); }
+      window.__saveMedia.push({ type: file.type.startsWith('image/')?'image':'video', src: dataUrl });
+      const x=document.createElement('span'); x.className='x'; x.textContent='✕'; x.onclick=()=>{ d.remove(); }; d.appendChild(x);
+    };
+    reader.readAsDataURL(file);
+    t.appendChild(d);
+  }
+  input.value='';
+  if(t.children.length) document.getElementById('tabNote').style.display='block';
+}
+async function saveWorkout(id){
+  const notes=document.getElementById('saveNotes').value;
+  const r=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'only_me' });
+  if(r && r.error){ alert(r.error); return; }
+  profileView(ME.id);
+}
 async function deleteSession(id){
   if(!confirm('Delete this session? This removes it for everyone.')) return;
   const r = await H.delete(`/api/sessions/${id}`);
@@ -1040,11 +1106,7 @@ async function profileView(id){
   const feed = (p.recentActivity&&p.recentActivity.length)
     ? p.recentActivity.map(a=>`<div class="feed-item"><span class="fi-ic">${a.type==='pr'?'🏆':a.type==='streak'?flameSvg():'✅'}</span><div>${esc(a.text)}</div></div>`).join('')
     : '<div class="muted" style="padding:14px 0;text-align:center">No recent activity yet.</div>';
-  const myWorkouts = (p.myWorkouts||[]).map(w=>`
-    <div class="lib-item" onclick="openSession('${w.id}')">
-      <div><b>${esc(w.name)}</b><div class="tag">${w.date?fmtDate(w.date):''} · ${w.exerciseCount} exercises</div></div>
-    </div>`).join('')
-    || '<div class="muted" style="padding:14px 0;text-align:center">No workouts logged yet.</div>';
+  const myWorkouts = (p.myWorkouts||[]).map(w=>`<div class="lib-item" onclick="openSession('${w.id}')">${w.post&&w.post.thumb?`<img class="mw-thumb" src="${esc(w.post.thumb)}" alt="">`:''}<div><b>${esc(w.name)}</b><div class="tag">${w.date?fmtDate(w.date):''} · ${w.exerciseCount} exercises${w.post&&w.post.mediaCount>1?` · ${w.post.mediaCount} media`:''}</div>${w.post&&w.post.notes?`<div class="tag">${esc(w.post.notes.slice(0,80))}</div>`:''}</div></div>`).join('') || '<div class="muted" style="padding:14px 0;text-align:center">No workouts logged yet.</div>';
   $('app').innerHTML = `<div class="wrap">
     <div class="profile-head">
       ${avatarBlock}

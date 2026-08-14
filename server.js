@@ -133,7 +133,7 @@ app.post('/api/exercises/custom', auth, (req, res) => {
 });
 
 // ---- Profile (per-user, viewable by anyone logged in) ----
-function profileOf(id) {
+function profileOf(id, viewerId) {
   const u = DB.users[id];
   if (!u) return null;
   // workouts completed (distinct sessions with a history entry by this user)
@@ -142,15 +142,32 @@ function profileOf(id) {
     if ((s.history || []).some(h => h.userId === id)) completed.add(s.id);
   }
   const prs = (DB.prs && DB.prs[id]) ? Object.values(DB.prs[id]) : [];
+  const viewerIsFriend = viewerId && id !== viewerId && (DB.users[viewerId].friends||[]).includes(id);
+  const canSeePost = (post) => {
+    if (!post) return false;
+    if (id === viewerId) return true;                     // own profile: always
+    if (post.visibility === 'public') return true;
+    if (post.visibility === 'friends' && viewerIsFriend) return true;
+    return false;                                          // 'only_me' or non-friend
+  };
   const myWorkouts = Object.values(DB.sessions)
     .filter(s => (s.history || []).some(h => h.userId === id))
     .sort((a,b)=> new Date(b.scheduledAt||0) - new Date(a.scheduledAt||0))
-    .map(s => ({
-      id: s.id,
-      name: s.name || 'Workout',
-      date: (s.history.find(h=>h.userId===id)||{}).date || (s.scheduledAt ? s.scheduledAt.slice(0,10) : ''),
-      exerciseCount: (s.exercises||[]).length
-    }));
+    .map(s => {
+      const post = canSeePost(s.post) ? s.post : null;
+      return {
+        id: s.id,
+        name: s.name || 'Workout',
+        date: (s.history.find(h=>h.userId===id)||{}).date || (s.scheduledAt ? s.scheduledAt.slice(0,10) : ''),
+        exerciseCount: (s.exercises||[]).length,
+        post: post ? {
+          notes: post.notes || '',
+          thumb: post.media && post.media[0] ? post.media[0].src : '',
+          mediaCount: (post.media||[]).length,
+          visibility: post.visibility
+        } : null
+      };
+    });
   return {
     ...publicUser(id),
     workoutsCompleted: completed.size,
@@ -179,9 +196,9 @@ function buildActivityFor(userId) {
   return items;
 }
 
-app.get('/api/profile/me', auth, (req, res) => res.json(profileOf(req.userId)));
+app.get('/api/profile/me', auth, (req, res) => res.json(profileOf(req.userId, req.userId)));
 app.get('/api/profile/:id', auth, (req, res) => {
-  const p = profileOf(req.params.id);
+  const p = profileOf(req.params.id, req.userId);
   if (!p) return res.status(404).json({ error: 'user not found' });
   res.json(p);
 });
@@ -705,6 +722,30 @@ app.post('/api/sessions/:id/lock', auth, (req, res) => {
     if (!s.history) s.history = [];
     s.history.push({ userId: pid, date: new Date().toISOString().slice(0,10), muscleGroups: [...mgs], exercises: exNames });
   }
+  save(DB);
+  res.json(s);
+});
+
+// Save a post for a locked session (notes + media + visibility)
+app.post('/api/sessions/:id/post', auth, (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator' });
+  if (s.status !== 'locked') return res.status(400).json({ error: 'session not finished' });
+  const { notes, media, visibility } = req.body || {};
+  const vis = ['only_me','friends','public'].includes(visibility) ? visibility : 'only_me';
+  // basic guard on media size (base64 dataURLs)
+  const cleanMedia = Array.isArray(media) ? media.slice(0, 12).map(m => ({
+    type: m.type === 'video' ? 'video' : 'image',
+    src: String(m.src || '').slice(0, 3_000_000)
+  })).filter(m => m.src) : [];
+  s.post = {
+    by: req.userId,
+    at: new Date().toISOString(),
+    notes: String(notes || '').slice(0, 2000),
+    media: cleanMedia,
+    visibility: vis
+  };
   save(DB);
   res.json(s);
 });
