@@ -190,7 +190,7 @@ async function openSession(id){
   }
   let html = `<div class="wrap"><button class="sec sm" onclick="showTab('home')">← Back</button>
     <h1 class="sess-date">${fmtDate(s.scheduledAt)}</h1>
-    <div class="muted sess-meta">${s.visibility==='friends'?'Friends-only · joinable':'Private'} · ${s.participants.length} people</div>
+    <div class="muted sess-meta">${s.visibility==='friends'?'Friends-only · joinable':'Private'} · ${s.participants.length} ${s.participants.length===1?'person':'people'}</div>
     ${s.location?`<div class="tag">📍 ${esc(s.location)}</div>`:''}
     ${s.lengthMin?`<div class="tag">⏱ ${esc(s.lengthMin)} min</div>`:''}
     ${s.creatorNote?`<div class="card muted">"${esc(s.creatorNote)}" — ${isCreator?'you':esc(s.creatorId)}</div>`:''}`;
