@@ -430,7 +430,7 @@ async function showSavePage(id){
       <div class="media-line">
         <label class="add-media" title="Add photos or video">
           <svg class="am-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg>
-          <span class="am-plus">+</span>
+          <span class="am-plus"></span>
           <input id="mediaInput" type="file" accept="image/*,video/*" multiple style="display:none" onchange="addWorkoutMedia(this)">
         </label>
         <span class="ml-text">Add a photo / video</span>
