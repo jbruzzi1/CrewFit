@@ -50,6 +50,19 @@ non-technical) and their AI agents (Hermes / Lovabl).
   a DIFFERENT muscle-paint feature — `grep slotCount` returns ZERO matches in this repo.
   Disown it; do not re-fight it every turn.
 
+## Features / conventions (current state)
+- **Friends = REQUEST model** (not instant mutual-add): search (`/api/users/search?q=`)
+  → `POST /api/friends/request` (pending) → recipient sees it in Friends "Friend requests"
+  with Approve/Reject (`/api/friends/accept`|`/api/friends/reject`). Only after Approve are
+  both added to `friends`. Each user has `incoming[]`/`outgoing[]` request arrays.
+  UI: search box replaces old add-by-username; results show Add→Requested; requests use the
+  same `.req`/`.av`/`.rc`/`.ra` + Approve/Reject buttons as workout Join requests. Badge on
+  Friends heading shows pending count. Do NOT reintroduce old instant `/api/friends/add`.
+- **Usernames are UNIQUE** (server rejects duplicate at register, 409). Live availability
+  check on the register popup: `/api/register/check?username=` (debounced 350ms) →
+  ✓ available / ✕ taken, disables Create when taken.
+- **Version bump:** increment `?v=` in index.html on every push (now v91).
+
 ## Current state (as of v88)
 - **Live:** https://spotmeapp.fly.dev (Fly; deploy via `flyctl deploy --remote-only`).
 - **v88 changes:** "Friends joined" rendered as **avatar chips** (initials circles via

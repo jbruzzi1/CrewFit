@@ -935,9 +935,10 @@ async function useTpl(id){
 }
 
 async function friends(){
-  const f = await H.get('/api/friends');
+  const data = await H.get('/api/friends');
+  const f = data.friends||[]; const inc = data.incoming||[]; const out = data.outgoing||[];
   const flame = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>';
-  const rows = f.length ? f.map(x=>`
+  const friendRows = f.length ? f.map(x=>`
     <div class="friend-row" onclick="profileView('${x.id}')" style="cursor:pointer">
       <div class="avatar" style="background:${avatarColor(x.username)};color:#fff">${esc((x.displayName||x.username||'?')[0]||'?')}</div>
       <div class="meta">
@@ -946,24 +947,65 @@ async function friends(){
         ${x.streak>1?`<div class="streak-pill">${flame}${x.streak} day streak</div>`:''}
       </div>
     </div>`).join('')
-    : '<div class="card muted" style="text-align:center">No friends yet.<br>Add a friend below to start training together.</div>';
+    : '<div class="card muted" style="text-align:center">No friends yet.<br>Search above to find people to train with.</div>';
+  const reqRows = inc.length ? inc.map(x=>`
+    <div class="req">
+      <div class="av" style="background:${avatarColor(x.username)};color:#fff">${esc((x.displayName||x.username||'?')[0]||'?')}</div>
+      <div class="rc"><b>${esc(x.displayName||x.username)}</b> wants to train with you</div>
+      <div class="ra">
+        <button class="sm ok" onclick="acceptRequest('${x.reqId}')">Approve</button>
+        <button class="sm no" onclick="rejectRequest('${x.reqId}')">Reject</button>
+      </div>
+    </div>`).join('')
+    : '<div class="muted" style="padding:4px 0">No pending requests.</div>';
+  const badge = inc.length ? `<span class="badge">${inc.length}</span>` : '';
   $('app').innerHTML = `<div class="wrap">
-    <h1>Friends</h1>
-    ${f.length?`<div class="muted" style="margin:-2px 0 8px">${f.length} ${f.length===1?'friend':'friends'}</div>`:''}
+    <h1>Friends ${badge}</h1>
     <div class="card">
       <div class="add-row">
-        <input id="fu" placeholder="friend username">
-        <button class="sm" onclick="addFriend()">Add</button>
+        <input id="fu" placeholder="Search people by name or @username" autocomplete="off" oninput="friendSearch()">
+        <button class="sm blue" onclick="friendSearch()">Search</button>
       </div>
+      <div id="fresults"></div>
     </div>
-    <div class="card" style="padding:6px 12px">${rows}</div>
+    ${inc.length?`<h2>Friend requests</h2><div class="card" style="padding:6px 12px">${reqRows}</div>`:''}
+    <h2>Friends</h2>
+    <div class="card" style="padding:6px 12px">${friendRows}</div>
   </div>`;
+}
+async function friendSearch(){
+  const q = ($('fu').value||'').trim();
+  const box = document.getElementById('fresults');
+  if(!q){ if(box) box.innerHTML=''; return; }
+  try {
+    const hits = await H.get('/api/users/search?q='+encodeURIComponent(q));
+    if(!box) return;
+    if(!hits.length){ box.innerHTML='<div class="muted" style="padding:8px 2px">No people found.</div>'; return; }
+    box.innerHTML = hits.map(x=>{
+      const btn = x.requestStatus==='friends' ? `<button class="sm" disabled style="background:#f0f1f3;border-color:transparent;color:var(--muted)">Friends</button>`
+        : x.requestStatus==='sent' ? `<button class="sm" disabled style="background:#f0f1f3;border-color:transparent;color:var(--muted)">Requested</button>`
+        : `<button class="sm sec" onclick="sendRequest('${esc(x.username)}', this)">Add</button>`;
+      return `<div class="user-row"><div class="avatar" style="background:${avatarColor(x.username)};color:#fff">${esc((x.displayName||x.username||'?')[0]||'?')}</div><div class="meta"><div class="name">${esc(x.displayName||x.username)}</div><div class="handle">@${esc(x.username)}</div></div>${btn}</div>`;
+    }).join('');
+  } catch(e){ if(box) box.innerHTML=''; }
+}
+async function sendRequest(username, btn){
+  const r = await H.post('/api/friends/request',{username});
+  if(r.error){ alert(r.error); return; }
+  if(btn){ btn.textContent='Requested'; btn.className='sm'; btn.disabled=true; btn.style.background='#f0f1f3'; btn.style.borderColor='transparent'; btn.style.color='var(--muted)'; }
+}
+async function acceptRequest(id){
+  const r = await H.post('/api/friends/accept',{from:id});
+  if(r.error) alert(r.error); else friends();
+}
+async function rejectRequest(id){
+  const r = await H.post('/api/friends/reject',{from:id});
+  if(r.error) alert(r.error); else friends();
 }
 function avatarColor(seed){
   const colors=['#16a34a','#2563eb','#dc2626','#9333ea','#ea580c','#0891b2','#db2777','#65a30d'];
   let h=0; for(const c of seed) h=(h*31+c.charCodeAt(0))>>>0; return colors[h%colors.length];
 }
-async function addFriend(){ const v=$('fu').value.trim(); if(!v)return; const r=await H.post('/api/friends/add',{username:v}); if(r.error)alert(r.error); else friends(); }
 
 // ---- Profile (me + any friend) ----
 function flameSvg(){ return '<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;vertical-align:-1px"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>'; }

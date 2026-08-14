@@ -211,19 +211,62 @@ app.post('/api/unfollow/:id', auth, (req, res) => {
 });
 
 // ---- Friends ----
-app.post('/api/friends/add', auth, (req, res) => {
+// friendRequests model: each user has incoming[] / outgoing[] of {from|to, status:'pending'}
+function ensureFriendArrays(u){ if(!u.incoming) u.incoming=[]; if(!u.outgoing) u.outgoing=[]; if(!u.friends) u.friends=[]; }
+app.get('/api/users/search', auth, (req, res) => {
+  const q = (req.query.q||'').trim().toLowerCase();
+  if(!q) return res.json([]);
+  const me = req.userId;
+  const hits = Object.values(DB.users).filter(u => u.id!==me && (
+    u.username.toLowerCase().includes(q) || (u.displayName||'').toLowerCase().includes(q)
+  )).slice(0,20).map(u => ({ ...publicUser(u.id), requestStatus:
+    (DB.users[me].outgoing||[]).some(r=>r.to===u.id&&r.status==='pending') ? 'sent' :
+    (DB.users[me].friends||[]).includes(u.id) ? 'friends' : 'none'
+  }));
+  res.json(hits);
+});
+app.post('/api/friends/request', auth, (req, res) => {
   const { username } = req.body || {};
   const friend = Object.values(DB.users).find(u => u.username === username);
   if (!friend) return res.status(404).json({ error: 'user not found' });
   if (friend.id === req.userId) return res.status(400).json({ error: 'cannot friend self' });
-  const me = DB.users[req.userId];
-  if (!me.friends.includes(friend.id)) me.friends.push(friend.id);
-  if (!friend.friends.includes(req.userId)) friend.friends.push(req.userId);
+  const me = DB.users[req.userId]; ensureFriendArrays(me); ensureFriendArrays(friend);
+  if (me.friends.includes(friend.id)) return res.status(400).json({ error: 'already friends' });
+  if (me.outgoing.some(r=>r.to===friend.id && r.status==='pending')) return res.status(400).json({ error: 'request already sent' });
+  me.outgoing.push({ to: friend.id, status:'pending' });
+  friend.incoming.push({ from: req.userId, status:'pending' });
+  save(DB);
+  res.json({ ok:true });
+});
+app.post('/api/friends/accept', auth, (req, res) => {
+  const { from } = req.body || {};
+  const me = DB.users[req.userId]; ensureFriendArrays(me);
+  const req2 = me.incoming.find(r=>r.from===from && r.status==='pending');
+  if(!req2) return res.status(404).json({ error: 'no such request' });
+  req2.status='accepted';
+  me.incoming = me.incoming.filter(r=>!(r.from===from));
+  const other = DB.users[from]; ensureFriendArrays(other);
+  if(!me.friends.includes(from)) me.friends.push(from);
+  if(!other.friends.includes(req.userId)) other.friends.push(req.userId);
+  other.outgoing = other.outgoing.filter(r=>!(r.to===req.userId));
   save(DB);
   res.json({ friends: me.friends.map(publicUser) });
 });
+app.post('/api/friends/reject', auth, (req, res) => {
+  const { from } = req.body || {};
+  const me = DB.users[req.userId]; ensureFriendArrays(me);
+  me.incoming = me.incoming.filter(r=>!(r.from===from));
+  const other = DB.users[from]; if(other) { ensureFriendArrays(other); other.outgoing = other.outgoing.filter(r=>!(r.to===req.userId)); }
+  save(DB);
+  res.json({ ok:true });
+});
 app.get('/api/friends', auth, (req, res) => {
-  res.json(DB.users[req.userId].friends.map(id => ({ ...publicUser(id), streak: currentStreak(id) })));
+  const me = DB.users[req.userId]; ensureFriendArrays(me);
+  res.json({
+    friends: me.friends.map(id => ({ ...publicUser(id), streak: currentStreak(id) })),
+    incoming: me.incoming.filter(r=>r.status==='pending').map(r=>({ ...publicUser(r.from), reqId:r.from })),
+    outgoing: me.outgoing.filter(r=>r.status==='pending').map(r=>({ ...publicUser(r.to), reqId:r.to }))
+  });
 });
 
 // ---- Activity feed (Friend's Activity) ----
