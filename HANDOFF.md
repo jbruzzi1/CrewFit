@@ -61,7 +61,13 @@ non-technical) and their AI agents (Hermes / Lovabl).
 - **Usernames are UNIQUE** (server rejects duplicate at register, 409). Live availability
   check on the register popup: `/api/register/check?username=` (debounced 350ms) →
   ✓ available / ✕ taken, disables Create when taken.
-- **Version bump:** increment `?v=` in index.html on every push (now v91).
+- **Push notifications** (web-push, already wired): `setupPush()` in app.js requests
+  `Notification.requestPermission()` then subscribes; server stores `DB.pushSubs[userId]`
+  and `notify(userId,payload)` sends. Fires on: **friend request** (new), **workout invite**
+  (existing), join request/accept, swap suggest/approve. VAPID keys are **Fly secrets**
+  (VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY) — do NOT rely on generated vapid.json in prod
+  (ephemeral FS invalidates subs each deploy).
+- **Version bump:** increment `?v=` in index.html on every push (now v92).
 
 ## Current state (as of v88)
 - **Live:** https://spotmeapp.fly.dev (Fly; deploy via `flyctl deploy --remote-only`).

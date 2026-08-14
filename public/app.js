@@ -1177,7 +1177,10 @@ function logout(){ localStorage.removeItem('crewfit_token'); TOKEN=''; ME=null; 
 // ---- Push ----
 async function setupPush(){
   if(!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  if(!('Notification' in window)) return;
   try{
+    if(Notification.permission === 'default'){ try{ await Notification.requestPermission(); }catch(e){} }
+    if(Notification.permission !== 'granted') return; // user declined; push stays optional
     const reg = await navigator.serviceWorker.register('/sw.js');
     const sub = await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey: await vapidKey()});
     await H.post('/api/push/subscribe',{subscription:sub});

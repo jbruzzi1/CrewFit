@@ -235,6 +235,7 @@ app.post('/api/friends/request', auth, (req, res) => {
   if (me.outgoing.some(r=>r.to===friend.id && r.status==='pending')) return res.status(400).json({ error: 'request already sent' });
   me.outgoing.push({ to: friend.id, status:'pending' });
   friend.incoming.push({ from: req.userId, status:'pending' });
+  notify(friend.id, { title: 'Friend request', body: `${me.displayName||me.username} wants to train with you` });
   save(DB);
   res.json({ ok:true });
 });
