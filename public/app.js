@@ -196,14 +196,14 @@ async function openSession(id){
     ${s.creatorNote?`<div class="card muted">"${esc(s.creatorNote)}" — ${isCreator?'you':esc(s.creatorId)}</div>`:''}`;
   if(isCreator){
     html += `<div class="sess-actions">`;
-    if(s.status!=='locked') html += `<button class="blue sm" onclick="lock('${s.id}')">Lock & finish</button>`;
+    if(s.status!=='locked') html += `<button class="blue sm" onclick="lock('${s.id}')">Log & Finish</button>`;
     html += `<button class="sec sm" onclick="editSession('${s.id}')">Edit</button>`;
     html += `<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button></div>`;
   }
   html += `<h2>Workout (your view)</h2>${myEx}`;
   if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div>`;
   if(edits) html += `<h2>Suggested swaps</h2>${edits}`;
-  if(jr) html += `<h2>Join requests</h2>${jr}`;
+  if(jr) html += `<h2 class="pt">Join requests</h2>${jr}`;
   if(canEdit){
     html += `<h2 class="sep">Suggest a swap</h2><div class="card">
       <select id="swEx" style="margin-bottom:10px">${s.exercises.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
