@@ -67,6 +67,13 @@ app.post('/api/register', (req, res) => {
   SESSIONS_TOKEN[token] = id;
   res.json({ token, user: publicUser(id) });
 });
+// Live username availability check (used by the register popup as the user types)
+app.get('/api/register/check', (req, res) => {
+  const username = (req.query.username || '').trim();
+  if (!username) return res.json({ available: false });
+  const exists = Object.values(DB.users).find(u => u.username === username);
+  res.json({ available: !exists });
+});
 
 app.post('/api/login', (req, res) => {
   const { username, pin } = req.body || {};

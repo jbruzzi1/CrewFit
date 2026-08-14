@@ -25,14 +25,30 @@ function authScreen(){
       <div style="text-align:center;margin-top:4px"><button class="linkbtn" onclick="forgotFlow()">Forgot username or password?</button></div>
       <div id="regbox" style="display:none;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
         <h2>New account</h2>
-        <input id="rx" placeholder="username">
+        <input id="rx" placeholder="username" autocomplete="off" oninput="checkUsername()">
+        <div id="rxHint" class="muted" style="font-size:12px;margin:4px 0 0;min-height:14px"></div>
         <input id="rp" placeholder="password" type="password">
         <input id="rn" placeholder="display name (optional)">
-        <button onclick="doReg()">Create account</button>
+        <button id="regBtn" onclick="doReg()">Create account</button>
       </div>
     </div></div>`;
 }
 function showReg(){ const b=document.getElementById('regbox'); if(b) b.style.display = b.style.display==='none'?'block':'none'; }
+let _chkTimer;
+async function checkUsername(){
+  const inp = document.getElementById('rx'); const hint = document.getElementById('rxHint'); const btn = document.getElementById('regBtn');
+  const v = (inp.value||'').trim().toLowerCase();
+  clearTimeout(_chkTimer);
+  if(!v){ hint.textContent=''; hint.style.color=''; btn.disabled=false; return; }
+  hint.textContent='Checking availability…'; hint.style.color='';
+  _chkTimer = setTimeout(async ()=>{
+    try {
+      const r = await H.get('/api/register/check?username='+encodeURIComponent(v));
+      if(r.available){ hint.textContent='✓ username available'; hint.style.color='var(--green)'; btn.disabled=false; }
+      else { hint.textContent='✕ username taken'; hint.style.color='var(--red)'; btn.disabled=true; }
+    } catch(e){ hint.textContent=''; hint.style.color=''; btn.disabled=false; }
+  }, 350);
+}
 async function forgotFlow(){
   const uname = prompt('Enter your username to reset your password:');
   if(!uname) return;
@@ -45,7 +61,12 @@ async function forgotFlow(){
   else alert(res.error||'reset failed');
 }
 async function doLogin(){ try { const r=await H.post('/api/login',{username:$('lx').value,pin:$('lp').value}); if(r.token){ setToken(r.token,r.user); home(); } else alert(r.error||'login failed'); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
-async function doReg(){ try { const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value}); if(r.token){ setToken(r.token,r.user); home(); } else alert(r.error||'register failed'); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
+async function doReg(){ try {
+  const btn = document.getElementById('regBtn');
+  if(btn && btn.disabled) return;
+  const u=($('rx').value||'').trim().toLowerCase();
+  if(u){ try { const c=await H.get('/api/register/check?username='+encodeURIComponent(u)); if(c && c.available===false){ alert('username taken'); return; } } catch(e){} }
+  const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value}); if(r.token){ setToken(r.token,r.user); home(); } else alert(r.error||'register failed'); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
 
 // ---- Nav ----
 function showTab(tab){

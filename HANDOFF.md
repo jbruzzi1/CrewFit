@@ -21,10 +21,16 @@ non-technical) and their AI agents (Hermes / Lovabl).
 5. Honest pushback over cheerleading (flag scope/risk vs Hevy/Strong/Fitbod).
 
 ## UI conventions
+- **Typography: prefer SMALLER text sizes** for mocks/designs — Jeff wants the clean,
+  tight, crisp look (not clunky/big). Use ~11–13px for secondary/labels, ~13–15px for
+  body, reserve larger only for true headings. When multiple boxes/cards show similar
+  text (e.g. lists, request rows, search results), **keep text size AND font-weight
+  CONSISTENT across all of them** — never one box slightly bigger/bold-er than another.
 - Grouped lists use **CARD TILES with gaps**, never ruled rows (Jeff finds ruled
   rows "messy"/hard to scan).
 - Never 3 equal-weight elements. Vary weight/size.
 - Bottom nav, light theme, responsive, max-width ~480px (iPhone portrait).
+- All text inputs use ONE shared `.text-input` style (same size/weight/padding/radius).
 - Mock → Jeff sign-off → build. Don't deploy until he says "push".
 
 ## Verification (vision backend is DOWN — agent cannot see images)
