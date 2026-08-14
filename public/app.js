@@ -2,10 +2,22 @@ const API = '';
 let TOKEN = localStorage.getItem('crewfit_token') || '';
 let ME = null;
 const H = {
-  get:p=>(fetch(API+p,{headers:{Authorization:'Bearer '+TOKEN}}).then(r=>r.json())),
-  post:(p,b)=>(fetch(API+p,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},body:JSON.stringify(b||{})}).then(r=>r.json())),
-  put:(p,b)=>(fetch(API+p,{method:'PUT',headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},body:JSON.stringify(b||{})}).then(r=>r.json())),
-  delete:p=>(fetch(API+p,{method:'DELETE',headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN}}).then(r=>r.json())),
+  _req(method,p,b){ return fetch(API+p,{method,headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},body:b?JSON.stringify(b):undefined})
+    .then(async res=>{
+      let json=null; try{ json=await res.json(); }catch(e){}
+      if(res.status===401){
+        // stale/invalid token: clear it and return to login instead of leaving the user broken
+        localStorage.removeItem('crewfit_token'); TOKEN=''; ME=null;
+        try{ authScreen(); }catch(e){}
+        return { error:'Session expired — please log in again', _expired:true };
+      }
+      return json;
+    })
+    .catch(()=>({ error:'Network error' })); },
+  get:p=>H._req('GET',p),
+  post:(p,b)=>H._req('POST',p,b),
+  put:(p,b)=>H._req('PUT',p,b),
+  delete:p=>H._req('DELETE',p),
 };
 const $ = id => document.getElementById(id);
 function setToken(t,u){ TOKEN=t; localStorage.setItem('crewfit_token',t); ME=u; $('nav').classList.toggle('hidden', !t); }
@@ -138,7 +150,7 @@ async function home(){
 
 async function openSession(id){
   const s = await H.get('/api/sessions/'+id);
-  if(!s || s.error){ alert(s && s.error ? s.error : 'Session not found'); return; }
+  if(!s || (s.error && !s._expired)){ alert(s && s.error ? s.error : 'Session not found'); return; }
   // defensive: older/persisted sessions may lack these array fields
   s.participants = s.participants || [];
   s.invited = s.invited || [];
