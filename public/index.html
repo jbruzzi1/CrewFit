@@ -258,6 +258,9 @@
     .seg { display:flex; gap:6px; margin:6px 0 14px; }
     .seg .chip, .seg button { flex:1; text-align:center; background:#eef1f5; color:var(--muted); border:1px solid transparent; border-radius:999px; padding:9px 0; font-size:12px; font-weight:600; cursor:pointer; font:inherit; }
     .seg .chip.on, .seg button.on { background:rgba(37,99,235,.12); color:var(--blue); border:1px solid var(--blue); font-weight:700; }
+    /* Save-page visibility control: match the squared, larger-text blue buttons (.btn-primary / button.blue) */
+    #vis .chip, #vis button { border-radius:12px; font-size:13px; }
+    #vis .chip.on, #vis button.on { border-radius:12px; }
     .add-row { display:flex; gap:8px; align-items:center; width:100%; margin-top:2px; }
     .add-row input { margin:0; flex:1 1 0; min-width:0; max-width:100%; box-sizing:border-box; padding:11px 12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fbfbfc; color:var(--fg); }
     .add-row input::placeholder { color:#aeb4be; }
@@ -276,6 +279,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="/app.js?v=101"></script>
+  <script src="/app.js?v=102"></script>
 </body>
 </html>
