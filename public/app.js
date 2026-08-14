@@ -139,6 +139,13 @@ async function home(){
 async function openSession(id){
   const s = await H.get('/api/sessions/'+id);
   if(!s || s.error){ alert(s && s.error ? s.error : 'Session not found'); return; }
+  // defensive: older/persisted sessions may lack these array fields
+  s.participants = s.participants || [];
+  s.invited = s.invited || [];
+  s.exercises = s.exercises || [];
+  s.suggestedEdits = s.suggestedEdits || [];
+  s.joinRequests = s.joinRequests || [];
+  s.variations = s.variations || {};
   const isCreator = s.creatorId===ME.id;
   const isParticipant = s.participants.includes(ME.id);
   const approvedJoin = s.joinRequests.find(j=>j.userId===ME.id&&j.status==='approved');
