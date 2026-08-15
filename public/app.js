@@ -248,7 +248,7 @@ async function openSession(id){
     }
     html += `<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button></div>`;
   }
-  html += `<h2>Workout (your view)</h2>${myEx}`;
+  html += `<h2>Workout</h2>${myEx}`;
   if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div>`;
   if(jr) html += `<h2 class="pt">Join requests</h2>${jr}`;
   if(s.post){
@@ -559,7 +559,7 @@ function renderWorkoutEdit(s){
   $('app').innerHTML = `<div class="wrap edit-mode">
     <div class="edit-banner">✎ Editing — tap Save when done</div>
     <h1 class="sess-date">${fmtDate(s.scheduledAt)}</h1>
-    <h2>Workout (your view)</h2>
+    <h2>Workout</h2>
     <div id="inexList">${exRows}</div>
     <button class="sec" onclick="addInex()">+ Add exercise</button>
     <h2>Photos</h2>
