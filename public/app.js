@@ -1345,9 +1345,6 @@ async function profileView(id){
   const settingsBtn = isMe ? `<button class="profile-set" title="Settings" onclick="openSettings()">${gearSvg()}</button>` : '';
   const action = isMe ? '' : `<button class="sm ${p.followers>0&&false?'':'blue'}" id="followBtn" onclick="toggleFollow('${p.id}')">Follow</button>`;
   const actHtml = action?`<div style="margin:10px 0">${action}</div>`:'';
-  const feed = (p.recentActivity&&p.recentActivity.length)
-    ? p.recentActivity.map(a=>`<div class="feed-item"><span class="fi-ic">${a.type==='pr'?'🏆':a.type==='streak'?flameSvg():'✅'}</span><div>${esc(a.text)}</div></div>`).join('')
-    : '<div class="muted" style="padding:14px 0;text-align:center">No recent activity yet.</div>';
   const workouts = p.myWorkouts||[];
   function woCard(w){
     const img = (w.post&&w.post.media&&w.post.media[0]) ? `<img class="wthumb" src="${esc(w.post.media[0].src)}" alt="">` : `<div class="wthumb wthumb-empty"></div>`;
@@ -1390,7 +1387,6 @@ async function profileView(id){
     ${bioBlock}
     <div class="sec-head"><h2>My Workouts</h2><div class="view-toggle"><button class="" id="vtGrid" onclick="setWorkoutView('grid')">▦ Grid</button><button id="vtList" onclick="setWorkoutView('list')">☰ List</button></div></div>
     <div style="margin:8px 0 14px" id="workoutView">${wview==='grid'?gridHtml:listHtml}</div>
-    ${p.recentActivity&&p.recentActivity.length ? `<h2>Recent activity</h2><div class="card" style="padding:4px 12px">${feed}</div>` : ''}
     ${isMe?`<button class="sec" style="margin-top:18px" onclick="logout()">Log out</button>`:''}
   </div>`;
   // reflect follow state
