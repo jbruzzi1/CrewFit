@@ -22,6 +22,13 @@ const H = {
 const $ = id => document.getElementById(id);
 function setToken(t,u){ TOKEN=t; localStorage.setItem('crewfit_token',t); ME=u; $('nav').classList.toggle('hidden', !t); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+async function nameOf(id){
+  if(id===ME.id) return 'You';
+  const f = (await H.get('/api/friends'));
+  const arr = (f && f.friends) ? f.friends : (Array.isArray(f)?f:[]);
+  const hit = arr.find(x=>x.id===id);
+  return hit ? hit.displayName : 'friend';
+}
 function fmtDate(s){ const d=new Date(s); return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
 
 // ---- Auth screens ----
@@ -561,21 +568,34 @@ async function showSavePage(id){
 function setSaveVis(btn,v){ window.__saveVis=v; document.querySelectorAll('#vis button').forEach(b=>b.classList.remove('on')); btn.classList.add('on');
   document.getElementById('visHint').textContent = v==='only_me'?'Only you can see this on your profile.' : v==='friends'?'Friends can see this on your profile.' : 'Anyone can see this on your profile.'; }
 function addWorkoutMedia(input){
-  const t=document.getElementById('thumbs');
+  const t=document.getElementById('thumbs'); if(!t) return;
+  const MAX=4;
   for(const file of input.files){
+    if(window.__saveMedia.length>=MAX){ alert('You can add up to 4 photos or videos.'); break; }
+    const isImg=file.type.startsWith('image/');
+    const type=isImg?'image':'video';
+    if(type==='video' && window.__saveMedia.some(m=>m.type==='video')){ alert('Only one video is allowed.'); continue; }
     const d=document.createElement('div'); d.className='thumb';
     const reader=new FileReader();
     reader.onload=()=>{ const dataUrl=reader.result;
-      if(file.type.startsWith('image/')){ const el=document.createElement('img'); el.src=dataUrl; d.appendChild(el); }
-      else { const el=document.createElement('video'); el.src=dataUrl; el.muted=true; d.appendChild(el); }
-      window.__saveMedia.push({ type: file.type.startsWith('image/')?'image':'video', src: dataUrl });
-      const x=document.createElement('span'); x.className='x'; x.textContent='✕'; x.onclick=()=>{ d.remove(); }; d.appendChild(x);
+      const el=document.createElement(type==='image'?'img':'video');
+      if(type==='video') el.muted=true; el.src=dataUrl; d.appendChild(el);
+      const media={ type, src:dataUrl };
+      window.__saveMedia.push(media);
+      const x=document.createElement('span'); x.className='x'; x.textContent='✕';
+      x.onclick=()=>{ const i=window.__saveMedia.indexOf(media); if(i>-1) window.__saveMedia.splice(i,1); d.remove(); markDirty(); refreshAddBtn(); };
+      d.appendChild(x);
+      refreshAddBtn();
+      const tn=document.getElementById('tabNote'); if(tn && t.children.length) tn.style.display='block';
     };
     reader.readAsDataURL(file);
     t.appendChild(d);
   }
   input.value='';
-  if(t.children.length) document.getElementById('tabNote').style.display='block';
+}
+function refreshAddBtn(){
+  const btn=document.getElementById('addMediaBtn');
+  if(btn) btn.style.display = (window.__saveMedia.length>=4)?'none':'flex';
 }
 async function saveWorkout(id){
   const notes=document.getElementById('saveNotes').value;
@@ -594,9 +614,11 @@ async function deleteSession(id){
 let INLINE_DIRTY = false;
 function markDirty(){ INLINE_DIRTY = true; }
 function enterWorkoutEdit(id){ EDITING_ID = id; openSession(id); }
-function exitWorkoutEdit(id){
+async function exitWorkoutEdit(id){
   if(INLINE_DIRTY && !confirm('Discard your changes?')) return;
-  INLINE_DIRTY = false; EDITING_ID = null; openSession(id);
+  INLINE_DIRTY = false; EDITING_ID = null;
+  const s = await H.get('/api/sessions/'+id);
+  if(s && s.post) viewPost(id); else openSession(id);
 }
 function renderInlineThumbs(){
   const t = document.getElementById('thumbs'); if(!t) return; t.innerHTML='';
@@ -605,9 +627,10 @@ function renderInlineThumbs(){
     if(m.type==='image'){ const el=document.createElement('img'); el.src=m.src; d.appendChild(el); }
     else { const el=document.createElement('video'); el.src=m.src; el.muted=true; d.appendChild(el); }
     const x=document.createElement('span'); x.className='x'; x.textContent='✕';
-    x.onclick=()=>{ const i=window.__saveMedia.indexOf(m); if(i>-1) window.__saveMedia.splice(i,1); d.remove(); markDirty(); };
+    x.onclick=()=>{ const i=window.__saveMedia.indexOf(m); if(i>-1) window.__saveMedia.splice(i,1); d.remove(); markDirty(); refreshAddBtn(); };
     d.appendChild(x); t.appendChild(d);
   });
+  refreshAddBtn();
 }
 function renderWorkoutEdit(s){
   INLINE_DIRTY=false;
@@ -630,12 +653,14 @@ function renderWorkoutEdit(s){
     <button class="sec" onclick="addInex()">+ Add exercise</button>
     <h2>Photos</h2>
     <div class="card center-v">
-      <div class="media-line"><label class="add-media" title="Add photos or video">
-        <svg class="am-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg>
-        <span class="am-plus"></span>
-        <input id="mediaInput" type="file" accept="image/*,video/*" multiple style="display:none" onchange="addWorkoutMedia(this)"></label>
-        <span class="ml-text">Add a photo / video</span></div>
-      <div class="thumbs" id="thumbs"></div>
+      <div class="media-line">
+        <label class="add-media" id="addMediaBtn" title="Add photos or video">
+          <svg class="am-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg>
+          <span class="am-plus"></span>
+          <input id="mediaInput" type="file" accept="image/*,video/*" multiple style="display:none" onchange="addWorkoutMedia(this)">
+        </label>
+        <div class="thumbs" id="thumbs"></div>
+      </div>
     </div>
     <h2>Notes</h2>
     <textarea id="saveNotes" placeholder="How'd it go?">${esc((s.post&&s.post.notes)||'')}</textarea>
@@ -688,7 +713,8 @@ async function saveWorkoutEdit(id){
   if(r1&&r1.error){ alert(r1.error); return; }
   const r2=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'only_me' });
   if(r2&&r2.error){ alert(r2.error); return; }
-  INLINE_DIRTY=false; EDITING_ID=null; openSession(id);
+  INLINE_DIRTY=false; EDITING_ID=null;
+  if(s.post) viewPost(id); else openSession(id);
 }
 
 // ---- Create flow ----
