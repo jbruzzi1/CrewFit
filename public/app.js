@@ -159,6 +159,8 @@ async function openSession(id){
   s.joinRequests = s.joinRequests || [];
   s.variations = s.variations || {};
   const isCreator = s.creatorId===ME.id;
+  // Inline edit mode for a saved (posted) workout: render the whole page editable.
+  if(EDITING_ID===id && isCreator && s.post){ renderWorkoutEdit(s); return; }
   const isParticipant = s.participants.includes(ME.id);
   const approvedJoin = s.joinRequests.find(j=>j.userId===ME.id&&j.status==='approved');
   const canEdit = isParticipant || approvedJoin;
@@ -239,7 +241,7 @@ async function openSession(id){
   if(isCreator){
     html += `<div class="sess-actions">`;
     if(s.post){
-      html += `<button class="sec sm" onclick="showSavePage('${s.id}')">Edit</button>`;
+      html += `<button class="sec sm" onclick="enterWorkoutEdit('${s.id}')">Edit</button>`;
     } else {
       html += `<button class="blue sm" onclick="lock('${s.id}')">Log & Finish</button>`;
       html += `<button class="sec sm" onclick="editSession('${s.id}')">Edit</button>`;
@@ -522,9 +524,111 @@ async function deleteSession(id){
   home();
 }
 
+// ===== Inline edit mode for saved (posted) workouts =====
+let INLINE_DIRTY = false;
+function markDirty(){ INLINE_DIRTY = true; }
+function enterWorkoutEdit(id){ EDITING_ID = id; openSession(id); }
+function exitWorkoutEdit(id){
+  if(INLINE_DIRTY && !confirm('Discard your changes?')) return;
+  INLINE_DIRTY = false; EDITING_ID = null; openSession(id);
+}
+function renderInlineThumbs(){
+  const t = document.getElementById('thumbs'); if(!t) return; t.innerHTML='';
+  (window.__saveMedia||[]).forEach(m=>{
+    const d=document.createElement('div'); d.className='thumb';
+    if(m.type==='image'){ const el=document.createElement('img'); el.src=m.src; d.appendChild(el); }
+    else { const el=document.createElement('video'); el.src=m.src; el.muted=true; d.appendChild(el); }
+    const x=document.createElement('span'); x.className='x'; x.textContent='✕';
+    x.onclick=()=>{ const i=window.__saveMedia.indexOf(m); if(i>-1) window.__saveMedia.splice(i,1); d.remove(); markDirty(); };
+    d.appendChild(x); t.appendChild(d);
+  });
+}
+function renderWorkoutEdit(s){
+  INLINE_DIRTY=false;
+  const vis = (s.post && s.post.visibility) || 'only_me';
+  window.__saveVis = vis;
+  const media = (s.post && Array.isArray(s.post.media)) ? s.post.media : [];
+  window.__saveMedia = media.map(m=>({ type:m.type, src:m.src }));
+  const exRows = s.exercises.map(e=>`
+    <div class="card inex-row" data-ex="${e.id}">
+      <div class="inex-top"><input class="inex-name" id="inex-name-${e.id}" value="${esc(e.name)}" oninput="markDirty()">
+        <button class="sec sm red" onclick="removeInex('${e.id}')">Remove</button></div>
+      <div class="inex-meta"><label class="muted">Sets</label><input class="inex-num" id="inex-sets-${e.id}" type="number" min="1" value="${e.defaultSets}" oninput="markDirty()">
+        <label class="muted">Reps</label><input class="inex-num" id="inex-reps-${e.id}" type="number" min="1" value="${e.defaultReps}" oninput="markDirty()"></div>
+    </div>`).join('');
+  $('app').innerHTML = `<div class="wrap edit-mode">
+    <div class="edit-banner">✎ Editing — tap Save when done</div>
+    <h1 class="sess-date">${fmtDate(s.scheduledAt)}</h1>
+    <h2>Workout (your view)</h2>
+    <div id="inexList">${exRows}</div>
+    <button class="sec" onclick="addInex()">+ Add exercise</button>
+    <h2>Photos</h2>
+    <div class="card center-v">
+      <div class="media-line"><label class="add-media" title="Add photos or video">
+        <svg class="am-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg>
+        <span class="am-plus"></span>
+        <input id="mediaInput" type="file" accept="image/*,video/*" multiple style="display:none" onchange="addWorkoutMedia(this)"></label>
+        <span class="ml-text">Add a photo / video</span></div>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+    <h2>Notes</h2>
+    <div class="card"><textarea id="saveNotes" placeholder="How did it go?">${esc((s.post&&s.post.notes)||'')}</textarea></div>
+    <h2>Visibility</h2>
+    <div class="card">
+      <div class="seg" id="vis">
+        <button class="${vis==='only_me'?'on':''}" onclick="setSaveVis(this,'only_me')">Only me</button>
+        <button class="${vis==='friends'?'on':''}" onclick="setSaveVis(this,'friends')">Friends</button>
+        <button class="${vis==='public'?'on':''}" onclick="setSaveVis(this,'public')">Public</button>
+      </div>
+      <div class="fineprint" id="visHint">${vis==='only_me'?'Only you can see this on your profile.':vis==='friends'?'Friends can see this on your profile.':'Anyone can see this on your profile.'}</div>
+    </div>
+    <div class="edit-spacer"></div>
+  </div>
+  <div class="sticky-bar">
+    <button class="sec" onclick="exitWorkoutEdit('${s.id}')">Cancel</button>
+    <button class="btn-primary" onclick="saveWorkoutEdit('${s.id}')">Save changes</button>
+  </div>`;
+  renderInlineThumbs();
+}
+function addInex(){
+  const id='ex_'+Date.now()+Math.floor(Math.random()*1000);
+  const div=document.createElement('div'); div.className='card inex-row'; div.dataset.ex=id;
+  div.innerHTML=`<div class="inex-top"><input class="inex-name" id="inex-name-${id}" placeholder="Exercise name" oninput="markDirty()"><button class="sec sm red" onclick="removeInex('${id}')">Remove</button></div>
+    <div class="inex-meta"><label class="muted">Sets</label><input class="inex-num" id="inex-sets-${id}" type="number" min="1" value="3" oninput="markDirty()"><label class="muted">Reps</label><input class="inex-num" id="inex-reps-${id}" type="number" min="1" value="10" oninput="markDirty()"></div>`;
+  document.getElementById('inexList').appendChild(div); markDirty();
+}
+function removeInex(id){ const el=document.querySelector('.inex-row[data-ex="'+id+'"]'); if(el) el.remove(); markDirty(); }
+async function saveWorkoutEdit(id){
+  const s = await H.get('/api/sessions/'+id);
+  if(!s||s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
+  const rows=[...document.querySelectorAll('.inex-row')];
+  const exercises=rows.map(r=>{ const eid=r.dataset.ex;
+    return { id:eid, name:(document.getElementById('inex-name-'+eid)||{}).value||'Exercise', defaultSets:Number((document.getElementById('inex-sets-'+eid)||{}).value||3), defaultReps:Number((document.getElementById('inex-reps-'+eid)||{}).value||10) };
+  });
+  if(!exercises.length){ alert('Add at least one exercise'); return; }
+  // Friend-set warning: exercises removed (or id changed) that ANY other user logged sets against
+  const origIds=(s.exercises||[]).map(e=>e.id);
+  const newIds=exercises.map(e=>e.id);
+  const removed=origIds.filter(x=>!newIds.includes(x));
+  const touched=[];
+  for(const rid of removed){
+    const ex=(s.exercises||[]).find(e=>e.id===rid);
+    const who=Object.keys(s.logs||{}).filter(pid=>pid!==ME.id && (s.logs[pid]||[]).some(l=>l.exerciseId===rid));
+    if(who.length) touched.push((ex&&ex.name)||'exercise');
+  }
+  if(touched.length && !confirm(touched.length+' friend(s) logged sets on: '+touched.join(', ')+'. Saving will detach those sets. Continue?')) return;
+  const notes=document.getElementById('saveNotes').value;
+  const r1=await H.put('/api/sessions/'+id,{ name:s.name, scheduledAt:s.scheduledAt, visibility:s.visibility, exercises, invited:(s.invited||[]), location:s.location, lengthMin:s.lengthMin, creatorNote:s.creatorNote });
+  if(r1&&r1.error){ alert(r1.error); return; }
+  const r2=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'only_me' });
+  if(r2&&r2.error){ alert(r2.error); return; }
+  INLINE_DIRTY=false; EDITING_ID=null; openSession(id);
+}
+
 // ---- Create flow ----
-let DRAFT = { exercises:[], inviteUsernames:[] };
+let DRAFT = { exercises:[], inviteUsernames:[] } ;
 let EDITING_TPL = null;
+let EDITING_ID = null;          // set when a saved workout is in inline edit mode
 async function createFlow(){
   DRAFT = DRAFT || { exercises:[], inviteUsernames:[] };
   if(!DRAFT.exercises) DRAFT.exercises=[];
