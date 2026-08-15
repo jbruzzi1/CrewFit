@@ -1233,6 +1233,17 @@ function avatarColor(seed){
 
 // ---- Profile (me + any friend) ----
 function flameSvg(){ return '<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;vertical-align:-1px"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>'; }
+function gearSvg(){ return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>'; }
+function openSettings(){
+  const inner = `<div class="sheet"><div class="sheet-head"><h2>Settings</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="sheet-list">
+      <button class="sheet-row" onclick="closeSheet(); document.getElementById('av').click()">Edit photo</button>
+      <button class="sheet-row" onclick="closeSheet(); editBio()">Edit bio</button>
+      <button class="sheet-row red" onclick="closeSheet(); logout()">Log out</button>
+    </div>
+  </div>`;
+  openSheetHtml(inner);
+}
 async function profileView(id){
   const p = await H.get('/api/profile/'+id);
   const isMe = id===ME.id;
@@ -1254,7 +1265,7 @@ async function profileView(id){
          <input id="av" type="file" accept="image/*" style="display:none" onchange="uploadAvatar(this)">
        </label>`
     : avatar;
-  const editPhotoLink = isMe ? `<button class="linkbtn" style="padding:6px 0 0;font-size:13px" onclick="document.getElementById('av').click()">Edit photo</button>` : '';
+  const settingsBtn = isMe ? `<button class="profile-set" title="Settings" onclick="openSettings()">${gearSvg()}</button>` : '';
   const action = isMe ? '' : `<button class="sm ${p.followers>0&&false?'':'blue'}" id="followBtn" onclick="toggleFollow('${p.id}')">Follow</button>`;
   const actHtml = action?`<div style="margin:10px 0">${action}</div>`:'';
   const feed = (p.recentActivity&&p.recentActivity.length)
@@ -1268,8 +1279,8 @@ async function profileView(id){
         <div class="pname">${esc(p.displayName||p.username)}</div>
         <div class="muted">@${esc(p.username)}</div>
         ${p.streak>=2?`<div class="streak-pill" style="margin-top:6px">${flameSvg()}${p.streak} day streak</div>`:''}
-        ${editPhotoLink}
       </div>
+      ${settingsBtn}
     </div>
     ${stats}
     ${actHtml}
