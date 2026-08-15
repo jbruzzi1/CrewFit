@@ -263,7 +263,7 @@ async function openSession(id){
         ${postMedia.length?`<div class="thumbs">${postMedia.map(m=>`<div class="thumb">${m.type==='image'?`<img src="${m.src}">`:`<video src="${m.src}" muted></video>`}</div>`).join('')}</div>`:''}
       </div>`;
     }
-    html += `<h2>Notes</h2><div class="notes-box">${s.post.notes ? esc(s.post.notes) : '<span class="muted">No notes yet</span>'}</div>`;
+    html += `<h2>Notes</h2><div class="notes-box">${s.post.notes ? esc(s.post.notes) : '<span class="muted">How\'d it go?</span>'}</div>`;
   } else if(isCreator){
     // Unsaved ACTIVE draft: Suggest a swap (only place it appears)
     html += `<h2 class="sep">Suggest a swap</h2><div class="card">
@@ -454,7 +454,7 @@ async function showSavePage(id){
       <div class="tag">${esc(exNames.join(' · '))}</div>
     </div>
     <h2>Notes</h2>
-    <div class="card"><textarea id="saveNotes" placeholder="How did it go? PRs, how you felt, what to hit next time…">${esc(post.notes||'')}</textarea></div>
+    <div class="card"><textarea id="saveNotes" placeholder="How'd it go?">${esc(post.notes||'')}</textarea></div>
     <h2>Photo / video</h2>
     <div class="card center-v">
       <div class="media-line">
@@ -572,7 +572,7 @@ function renderWorkoutEdit(s){
       <div class="thumbs" id="thumbs"></div>
     </div>
     <h2>Notes</h2>
-    <textarea id="saveNotes" placeholder="How did it go?">${esc((s.post&&s.post.notes)||'')}</textarea>
+    <textarea id="saveNotes" placeholder="How'd it go?">${esc((s.post&&s.post.notes)||'')}</textarea>
     <h2>Visibility</h2>
     <div class="card">
       <div class="seg" id="vis">
