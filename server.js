@@ -34,7 +34,7 @@ const EX_LIB = JSON.parse(fs.readFileSync(LIB_FILE, 'utf8')).exercises;
 // ---- Auth (simple username + pin, no password hashing for MVP demo) ----
 function uid() { return Math.random().toString(36).slice(2, 10); }
 const app = express();
-app.use(express.json({ limit: '12mb' }));
+app.use(express.json({ limit: '60mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 // User-uploaded avatars live in the persistent volume so they survive redeploys.
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
@@ -742,11 +742,23 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator' });
   const { notes, media, visibility } = req.body || {};
   const vis = ['only_me','friends','public'].includes(visibility) ? visibility : 'only_me';
-  // basic guard on media size (base64 dataURLs)
-  const cleanMedia = Array.isArray(media) ? media.slice(0, 12).map(m => ({
-    type: m.type === 'video' ? 'video' : 'image',
-    src: String(m.src || '').slice(0, 3_000_000)
-  })).filter(m => m.src) : [];
+  // Persist media to disk on the volume (avoids huge/truncated base64 blobs in data.json).
+  const cleanMedia = Array.isArray(media) ? media.slice(0, 12).map(m => {
+    const type = m.type === 'video' ? 'video' : 'image';
+    let src = String(m.src || '');
+    const dm = src.match(/^data:(image\/(?:png|jpeg|jpg|webp|gif)|video\/(?:mp4|webm|quicktime));base64,(.+)$/);
+    if (dm) {
+      try {
+        const sub = dm[1];
+        const ext = sub.includes('png') ? 'png' : sub.includes('webp') ? 'webp' : sub.includes('gif') ? 'gif'
+                  : sub.includes('mp4') ? 'mp4' : sub.includes('webm') ? 'webm' : sub.includes('quicktime') ? 'mov' : 'jpg';
+        const fname = `post_${req.params.id}_${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
+        fs.writeFileSync(path.join(UPLOAD_DIR, fname), Buffer.from(dm[2], 'base64'));
+        src = `/uploads/${fname}`;
+      } catch (e) { console.error('MEDIA_WRITE_ERR', e && e.message); src = ''; }
+    }
+    return { type, src };
+  }).filter(m => m.src) : [];
   s.post = {
     by: req.userId,
     at: new Date().toISOString(),
