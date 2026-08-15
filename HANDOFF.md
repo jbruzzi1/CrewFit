@@ -76,17 +76,38 @@ non-technical) and their AI agents (Hermes / Lovabl).
   (shown only when `s.post` exists) that re-opens the Save page **pre-filled** with the
   existing post. `saveWorkout(id)` calls `home()` (NOT `profileView`). Do NOT re-add a
   `locked` gate or route Save to Profile — that reverts the v99 behavior.
-- **REGRESSION RULE (learned v96→v98):** (a) When adding custom CSS classes in a mock,
+- **REGRESSION RULE (learned v96→v107):** (a) When adding custom CSS classes in a mock,
   you MUST also add them to `public/index.html` before deploying — a mock that looks
   right but omits the CSS ships unstyled (v97 broke the Save page this way). (b) Guard
   every array field read in `openSession` (`joinRequests`, `suggestedEdits`,
   `participants`, `invited`, `exercises`, `variations`) with `|| []` / `|| {}` — older or
   persisted sessions may lack them, and an unguarded `.find`/`.map` crashes the whole
   session view (v98 broke "Log & Finish" this way). Re-run `openSession(id)` in a stubbed
-  DOM harness after touching it.
+  DOM harness after touching it. (c) **NEVER eyeball mock-vs-live matching — measure
+  rendered geometry.** When a mock and the live app disagree on layout, render BOTH with
+  Playwright (mock via `file://.../_mock_X.html`; live via local server :3200 + token +
+  openSession + click "Log & Finish"), then `getComputedStyle` + `getBoundingClientRect`
+  on the same selector in each and diff the numbers (padding, margin, height, width, font,
+  radius). Visual "looks the same" lies — pixel deltas don't. (d) **Scoped overrides must
+  reset EVERY property a global rule sets.** Global `button { margin:6px 0; ... }`
+  (index.html ~line 45) leaked a 12px vertical margin onto the Save-page visibility
+  buttons because the `#vis.seg button` override only reset border/padding/font — the
+  container ballooned to 49px vs the mock's 38px (v107 fixed by adding `margin:0`). When
+  scoping a mock's element styles under an id/class, copy the mock's full property set
+  (including `margin:0`) so no global leaks through. (e) The app has NO persistent DB
+  issue on deploy — Fly mounts a 1GB volume at /data (DATA_DIR=/data) and it IS attached
+  to the running machine, so data survives deploys. "Unauthorized" on a stale phone token
+  is a CLIENT token issue, not data loss; v106 made the H helper clear a dead token and
+  drop to login on any 401 instead of throwing "unauthorized" alerts.
 
-## Current state (as of v99)
+## Current state (as of v107)
 - **Live:** https://spotmeapp.fly.dev (Fly; deploy via `flyctl deploy --remote-only`).
+- **v107:** Visibility buttons now EXACTLY match the approved mock (measured geometry):
+  reset leaked global `button` margin to 0, track padding 3px, container 39px≈mock 38px.
+- **v106:** Graceful stale-token handling — 401 clears dead token, returns to login
+  (no more "unauthorized" alerts from a stale phone token after a deploy).
+- **v105:** Save page matches mock exactly (solid blue Save button, card padding 12/14,
+  textarea 56px, h2 spacing) scoped under `.save-page`.
 - **v99:** Workouts never lock — Log & Finish → Save page (notes/photo/visibility) →
   Home; "Edit photos & notes" re-opens the Save page pre-filled; workouts stay editable.
 - **v98:** Fixed openSession crash (unguarded `joinRequests.find`) that broke the workout
