@@ -277,12 +277,12 @@ async function openSession(id){
       <button class="blue" onclick="acceptInvite('${s.id}')">Accept</button>
       <button class="sec" onclick="requestChanges('${s.id}')">Request Changes</button>
       <button class="sec" onclick="saveRoutine('${s.id}')">Save This Routine</button>
-      <button class="sec" onclick="openChat('${s.id}')">💬 Message Host</button>
+      <button class="sec" onclick="openChat('${s.id}')">Message Host</button>
       <button class="sec red" onclick="declineInvite('${s.id}')">Decline</button>
     </div>`;
   }
   // Chat panel
-  html += `<h2>💬 Chat</h2><div class="card"><div id="chatbox" class="scrolllist"></div>
+  html += `<h2>Chat</h2><div class="card"><div id="chatbox" class="scrolllist"></div>
     <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Message the crew"><button class="sm chat-send" onclick="sendChat('${s.id}')">Send</button></div></div>`;
   html += `${(s.participants.filter(p=>p!==ME.id).length)?`<h2>Friends joined</h2><div class="chips mini">${s.participants.filter(p=>p!==ME.id).map(pid=>`<div class="fav"><div class="fav-av" style="background:${avatarColor(nameCache[pid]||pid)};color:#fff">${esc((nameCache[pid]||pid||'?')[0])}</div><span>${esc(nameCache[pid]||pid)}</span></div>`).join('')}</div>`:''}`;
   html += `</div>`;
