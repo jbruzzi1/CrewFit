@@ -242,26 +242,32 @@ async function openSession(id){
       html += `<button class="sec sm" onclick="showSavePage('${s.id}')">Edit</button>`;
     } else {
       html += `<button class="blue sm" onclick="lock('${s.id}')">Log & Finish</button>`;
+      html += `<button class="sec sm" onclick="editSession('${s.id}')">Edit</button>`;
     }
     html += `<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button></div>`;
   }
   html += `<h2>Workout (your view)</h2>${myEx}`;
   if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div>`;
   if(jr) html += `<h2 class="pt">Join requests</h2>${jr}`;
-  // Photos (in the spot where Suggest a swap used to be)
-  const postMedia = (s.post && Array.isArray(s.post.media)) ? s.post.media : [];
-  if(isCreator || postMedia.length){
-    html += `<h2>Photos</h2><div class="card center-v">
-      <div class="media-line"><div class="add-media" title="Add photos or video" onclick="showSavePage('${s.id}')">
-        <svg class="am-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg>
-        <span class="am-plus"></span></div>
-        <span class="ml-text">Add a photo / video</span></div>
-      ${postMedia.length?`<div class="thumbs">${postMedia.map(m=>`<div class="thumb">${m.type==='image'?`<img src="${m.src}">`:`<video src="${m.src}" muted></video>`}</div>`).join('')}</div>`:''}
+  if(s.post){
+    // Completed/saved workout: Photos where Suggest a swap used to be, then Notes
+    const postMedia = (Array.isArray(s.post.media)) ? s.post.media : [];
+    if(isCreator || postMedia.length){
+      html += `<h2>Photos</h2><div class="card center-v">
+        <div class="media-line"><div class="add-media" title="Add photos or video" onclick="showSavePage('${s.id}')">
+          <svg class="am-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg>
+          <span class="am-plus"></span></div>
+          <span class="ml-text">Add a photo / video</span></div>
+        ${postMedia.length?`<div class="thumbs">${postMedia.map(m=>`<div class="thumb">${m.type==='image'?`<img src="${m.src}">`:`<video src="${m.src}" muted></video>`}</div>`).join('')}</div>`:''}
+      </div>`;
+    }
+    html += `<h2>Notes</h2><div class="card">${s.post.notes ? esc(s.post.notes) : '<span class="muted">No notes yet</span>'}</div>`;
+  } else if(isCreator){
+    // Unsaved draft: original Suggest a swap section
+    html += `<h2 class="sep">Suggest a swap</h2><div class="card">
+      <select id="swEx" style="margin-bottom:10px">${s.exercises.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
+      <button class="sec sm" style="background:#f0f1f3; margin-bottom:5px" onclick="openSwapPicker('${s.id}')">Pick replacement from Workouts →</button>
     </div>`;
-  }
-  // Notes (read-only here; edit via the Edit button)
-  if(s.post && s.post.notes){
-    html += `<h2>Notes</h2><div class="card">${esc(s.post.notes)}</div>`;
   }
   // Invitee action menu (non-creator view)
   if(!isCreator){
