@@ -252,11 +252,7 @@ async function openSession(id){
   if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div>`;
   if(jr) html += `<h2 class="pt">Join requests</h2>${jr}`;
   if(s.post){
-    // Completed/saved workout: Suggest a swap, Photos (where swap-via-profile slot is), then Notes
-    html += `<h2 class="sep">Suggest a swap</h2><div class="card">
-      <select id="swEx" style="margin-bottom:10px">${s.exercises.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
-      <button class="sec sm" style="background:#f0f1f3; margin-bottom:5px" onclick="openSwapPicker('${s.id}')">Pick replacement from Workouts →</button>
-    </div>`;
+    // Completed/saved workout: Photos (where swap slot was), then Notes
     const postMedia = (Array.isArray(s.post.media)) ? s.post.media : [];
     if(isCreator || postMedia.length){
       html += `<h2>Photos</h2><div class="card center-v">
@@ -269,7 +265,7 @@ async function openSession(id){
     }
     html += `<h2>Notes</h2><div class="card">${s.post.notes ? esc(s.post.notes) : '<span class="muted">No notes yet</span>'}</div>`;
   } else if(isCreator){
-    // Unsaved draft: original Suggest a swap section
+    // Unsaved ACTIVE draft: Suggest a swap (only place it appears)
     html += `<h2 class="sep">Suggest a swap</h2><div class="card">
       <select id="swEx" style="margin-bottom:10px">${s.exercises.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
       <button class="sec sm" style="background:#f0f1f3; margin-bottom:5px" onclick="openSwapPicker('${s.id}')">Pick replacement from Workouts →</button>
@@ -459,11 +455,6 @@ async function showSavePage(id){
     </div>
     <h2>Notes</h2>
     <div class="card"><textarea id="saveNotes" placeholder="How did it go? PRs, how you felt, what to hit next time…">${esc(post.notes||'')}</textarea></div>
-    <h2>Suggest a swap</h2>
-    <div class="card">
-      <select id="swEx" style="margin-bottom:10px;width:100%">${s.exercises.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
-      <button class="sec sm" style="background:#f0f1f3; margin-bottom:5px" onclick="openSwapPicker('${id}')">Pick replacement from Workouts →</button>
-    </div>
     <h2>Photo / video</h2>
     <div class="card center-v">
       <div class="media-line">
