@@ -1349,34 +1349,30 @@ async function profileView(id){
     ? p.recentActivity.map(a=>`<div class="feed-item"><span class="fi-ic">${a.type==='pr'?'🏆':a.type==='streak'?flameSvg():'✅'}</span><div>${esc(a.text)}</div></div>`).join('')
     : '<div class="muted" style="padding:14px 0;text-align:center">No recent activity yet.</div>';
   const workouts = p.myWorkouts||[];
-  const listHtml = workouts.length
-    ? workouts.map(w=>{
-        const cover = (w.post&&w.post.media&&w.post.media[0]) ? `<img class="feed-cover" src="${esc(w.post.media[0].src)}" alt="">` : '';
-        const title = (w.name && w.name!=='Workout') ? w.name : ((w.firstExercises&&w.firstExercises[0])||'Workout');
-        const exList = (w.firstExercises&&w.firstExercises.length) ? w.firstExercises.map(e=>`<b>${esc(e)}</b>`).join(', ') : title;
-        const collab = (w.collaborators&&w.collaborators.length) ? ` <span class="tcollab">with @${esc(w.collaborators[0].username)}${w.collaborators.length>1?` +${w.collaborators.length-1}`:''}</span>` : '';
-        return `<div class="feed-card" onclick="viewPost('${w.id}')">
-          ${cover}
-          <div class="feed-body">
-            <div class="feed-title">${esc(title)} · ${w.exerciseCount} exercises${collab}</div>
-            <div class="feed-ex">${exList}</div>
-            ${w.post&&w.post.notes?`<div class="feed-ex" style="margin-top:4px">${esc(w.post.notes)}</div>`:''}
-          </div>
-        </div>`;
-      }).join('')
-    : '<div class="muted" style="padding:14px 0;text-align:center">No workouts logged yet.</div>';
+  function woCard(w){
+    const img = (w.post&&w.post.media&&w.post.media[0]) ? `<img class="wthumb" src="${esc(w.post.media[0].src)}" alt="">` : `<div class="wthumb wthumb-empty"></div>`;
+    const title = (w.name && w.name!=='Workout') ? w.name : ((w.firstExercises&&w.firstExercises[0])||'Workout');
+    const desc = (w.post&&w.post.notes) ? w.post.notes : '';
+    const exs = (w.firstExercises||[]).slice(0,3);
+    const more = (w.exerciseCount||0) - exs.length;
+    const exChips = exs.length ? exs.map(e=>`<span class="wexchip">${esc(e)}</span>`).join('') + (more>0?`<span class="wexchip more">+${more}</span>`:'') : '<span class="wexchip">No exercises</span>';
+    const collab = (w.collaborators&&w.collaborators.length) ? ` · with @${esc(w.collaborators[0].username)}${w.collaborators.length>1?` +${w.collaborators.length-1}`:''}` : '';
+    const when = w.at ? fmtDate(w.at) : (w.date||'');
+    return `<div class="wtile" onclick="viewPost('${w.id}')">
+      ${img}
+      <div class="wbody">
+        <div class="wtitle">${esc(title)}</div>
+        ${desc?`<div class="wdesc">${esc(desc)}</div>`:''}
+        <div class="wex">${exChips}</div>
+        <div class="wmeta">${w.exerciseCount} exercises · ${esc(when)}${collab}</div>
+      </div>
+    </div>`;
+  }
   const gridHtml = workouts.length
-    ? `<div class="wgrid">` + workouts.map(w=>{
-        const img = (w.post&&w.post.media&&w.post.media[0]) ? `<img class="timg" src="${esc(w.post.media[0].src)}" alt="">` : `<div class="timg"></div>`;
-        const title = (w.name && w.name!=='Workout') ? w.name : ((w.firstExercises&&w.firstExercises[0])||'Workout');
-        const badge = (w.post&&w.post.notes) ? `<span class="tbadge note">📝</span>` : (w.firstExercises&&w.firstExercises.length?`<span class="tbadge">${w.exerciseCount}</span>`:'');
-        const collab = (w.collaborators&&w.collaborators.length) ? `<span class="tcollab">with @${esc(w.collaborators[0].username)}${w.collaborators.length>1?` +${w.collaborators.length-1}`:''}</span>` : '';
-        const when = w.at ? fmtDate(w.at) : (w.date||'');
-        return `<div class="wtile" onclick="viewPost('${w.id}')">
-          ${img}${badge}
-          <div class="tcap"><div class="tname">${esc(title)}</div><div class="tmeta">${esc(when)} · ${w.exerciseCount} ex${collab}</div></div>
-        </div>`;
-      }).join('') + `</div>`
+    ? `<div class="wgrid">` + workouts.map(w=>woCard(w)).join('') + `</div>`
+    : '<div class="muted" style="padding:14px 0;text-align:center">No workouts logged yet.</div>';
+  const listHtml = workouts.length
+    ? `<div class="wgrid wlist">` + workouts.map(w=>woCard(w)).join('') + `</div>`
     : '<div class="muted" style="padding:14px 0;text-align:center">No workouts logged yet.</div>';
   const wview = (window.__wview||'grid');
   $('app').innerHTML = `<div class="wrap">
