@@ -572,7 +572,7 @@ function renderWorkoutEdit(s){
       <div class="thumbs" id="thumbs"></div>
     </div>
     <h2>Notes</h2>
-    <div class="card"><textarea id="saveNotes" placeholder="How did it go?">${esc((s.post&&s.post.notes)||'')}</textarea></div>
+    <textarea id="saveNotes" placeholder="How did it go?">${esc((s.post&&s.post.notes)||'')}</textarea>
     <h2>Visibility</h2>
     <div class="card">
       <div class="seg" id="vis">
