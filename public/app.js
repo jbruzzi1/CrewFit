@@ -320,7 +320,7 @@ async function viewPost(id){
       : `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">No sets logged</div>`;
     return `<div class="pp-ex"><div class="pp-ex-name">${esc(e.name)}</div></div>${setsHtml}`;
   }).join('');
-  const photos = media.length ? `<h2>Photos</h2><div class="pp-photos">${media.map(m=>m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
+  const photos = media.length ? `<h2>Photos</h2><div class="pp-photos">${media.map((m,i)=>`<div class="pp-photo">${m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`}${isCreator?`<button class="pp-photo-x" onclick="deletePhoto('${id}',${i})" aria-label="Delete photo">✕</button>`:''}</div>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
   const notes = post.notes ? esc(post.notes) : '<span class="muted">How\'d it go?</span>';
   const dots = isCreator ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none"><button onclick="enterWorkoutEdit('${id}')">Edit session</button><button class="danger" onclick="deleteSession('${id}')">Delete session</button></div>` : '';
   const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="showTab('home')">← Back</button>${dots}</div>\n    <h1 class="sess-date">${fmtDate(s.scheduledAt)}</h1>\n    <div class="muted sess-meta">${s.visibility==='friends'?'Friends-only':'Private'}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    <h2>Notes</h2><div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}')">Send</button></div></div>`;
@@ -338,30 +338,15 @@ async function viewPost(id){
 // ===== Recovered post-view + chat helpers =====
 function togglePostMenu(id){ const m=document.getElementById('ppMenu-'+id); if(m) m.style.display = m.style.display==='none'?'block':'none'; }
 async function sendPostComment(id){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:t}); $('chatInput').value=''; viewPost(id); }
-async function acceptInvite(id){ await H.post(`/api/sessions/${id}/accept`,{}); openSession(id); }
-async function declineInvite(id){ if(!confirm('Decline this invite?')) return; await H.post(`/api/sessions/${id}/decline`,{}); home(); }
-async function requestChanges(id){ const t=prompt('What changes do you want?'); if(t) { await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+t}); openSession(id); } }
-async function saveRoutine(id){ const s=await H.get('/api/sessions/'+id); const r=await H.post('/api/templates',{name:prompt('Template name:','Saved routine')||'Saved routine',exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps}))}); alert('Saved as template: '+r.name); }
-async function openChat(id){ document.getElementById('chatInput').focus(); }
-async function sendChat(id){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:t}); $('chatInput').value=''; openSession(id); }
-async function loadChat(s){
-  const box=$('chatbox'); if(!box) return;
-  const cs=await H.get(`/api/sessions/${s.id}/comments`);
-  if(!cs.length){ box.innerHTML='<div class="muted">No comments yet. Be the first to comment.</div>'; return; }
-  const nm={};
-  for(const c of cs){ if(!(c.userId in nm)) nm[c.userId]= await nameOf(c.userId); }
-  box.innerHTML = cs.map(c=>{
-    const name = c.userId===ME.id?'You':(nm[c.userId]||'User');
-    const ini = c.userId===ME.id?'Y':((nm[c.userId]||'?')[0]||'?');
-    const col = c.userId===ME.id?'#f0a23c':avatarColor(nm[c.userId]||c.userId);
-    const t = new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-    return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div></div>';
-  }).join('');
+async function deletePhoto(id, idx){
+  if(!confirm('Delete this photo?')) return;
+  const s = await H.get('/api/sessions/'+id);
+  if(!s || !s.post) return;
+  const media = (s.post.media||[]).filter((_,i)=>i!==idx);
+  const r = await H.post(`/api/sessions/${id}/post`, { notes: s.post.notes||'', media, visibility: s.post.visibility||'only_me' });
+  if(r && r.error){ alert(r.error); return; }
+  viewPost(id);
 }
-
-// ===== Recovered post-view + chat helpers =====
-function togglePostMenu(id){ const m=document.getElementById('ppMenu-'+id); if(m) m.style.display = m.style.display==='none'?'block':'none'; }
-async function sendPostComment(id){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:t}); $('chatInput').value=''; viewPost(id); }
 async function acceptInvite(id){ await H.post(`/api/sessions/${id}/accept`,{}); openSession(id); }
 async function declineInvite(id){ if(!confirm('Decline this invite?')) return; await H.post(`/api/sessions/${id}/decline`,{}); home(); }
 async function requestChanges(id){ const t=prompt('What changes do you want?'); if(t) { await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+t}); openSession(id); } }

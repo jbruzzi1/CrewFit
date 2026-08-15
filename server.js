@@ -28,7 +28,40 @@ function load() {
   catch (e) { return { users: {}, sessions: {}, friendships: {}, pushSubs: {}, customExercises: {} }; }
 }
 function save(d) { fs.writeFileSync(DATA_FILE, JSON.stringify(d, null, 2)); }
+// One-time migration: old posts stored photos as huge base64 blobs in data.json
+// (truncated at 3,000,000 chars -> broken images, and re-uploaded on every Save -> very slow).
+// Convert stored base64 to real files on the volume; drop unrecoverable (truncated) ones.
+function migrateMedia() {
+  let sessionsChanged = 0, recovered = 0, dropped = 0;
+  for (const s of Object.values(DB.sessions || {})) {
+    if (!s.post || !Array.isArray(s.post.media) || !s.post.media.length) continue;
+    let touched = false;
+    const keep = [];
+    for (const m of s.post.media) {
+      const src = m && m.src ? String(m.src) : '';
+      if (src.startsWith('data:') && src.indexOf('base64,') > -1) {
+        // Truncated blobs were sliced at exactly 3,000,000 chars -> unrecoverable.
+        if (src.length >= 2_990_000) { dropped++; touched = true; continue; }
+        try {
+          const comma = src.indexOf(',');
+          const mime = (src.slice(5, comma).match(/^(image\/\w+|video\/\w+)/) || [])[1] || 'image/jpeg';
+          const b64 = src.slice(comma + 1);
+          const ext = ({ 'image/png':'png','image/jpeg':'jpg','image/jpg':'jpg','image/webp':'webp','image/gif':'gif','video/mp4':'mp4','video/webm':'webm','video/quicktime':'mov' })[mime] || (mime.startsWith('video') ? 'mp4' : 'jpg');
+          const fname = `post_mig_${s.id}_${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
+          fs.writeFileSync(path.join(UPLOAD_DIR, fname), Buffer.from(b64, 'base64'));
+          keep.push({ type: m.type === 'video' ? 'video' : 'image', src: `/uploads/${fname}` });
+          recovered++; touched = true;
+        } catch (e) { dropped++; touched = true; }
+      } else {
+        keep.push(m);
+      }
+    }
+    if (touched) { s.post.media = keep; sessionsChanged++; }
+  }
+  if (sessionsChanged) { save(DB); console.log(`MIGRATE media: sessions=${sessionsChanged} recovered=${recovered} dropped=${dropped}`); }
+}
 let DB = load();
+migrateMedia();
 const EX_LIB = JSON.parse(fs.readFileSync(LIB_FILE, 'utf8')).exercises;
 
 // ---- Auth (simple username + pin, no password hashing for MVP demo) ----

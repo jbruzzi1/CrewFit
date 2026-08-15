@@ -66,6 +66,8 @@
     .pp-photos { display:flex; gap:8px; overflow-x:auto; scroll-snap-type:x mandatory; -webkit-overflow-scrolling:touch; border-radius:12px; scrollbar-width:none; }
     .pp-photos::-webkit-scrollbar { display:none; }
     .pp-photos img, .pp-photos video { flex:0 0 100%; width:100%; aspect-ratio:1/1; object-fit:cover; border-radius:12px; display:block; background:#e6e8ec; scroll-snap-align:start; }
+    .pp-photo { position:relative; flex:0 0 100%; }
+    .pp-photo-x { position:absolute; top:8px; right:8px; width:30px; height:30px; border-radius:50%; background:rgba(0,0,0,.6); color:#fff; border:none; font-size:15px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:5; }
     .pp-photo-dots { display:flex; gap:6px; justify-content:center; margin-top:8px; }
     .pp-photo-dots .pp-dot { width:6px; height:6px; border-radius:50%; background:#cfd4da; transition:background .15s; }
     .pp-photo-dots .pp-dot.on { background:var(--blue); }
@@ -380,6 +382,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=130"></script>
+  <script src="app.js?v=132"></script>
 </body>
 </html>
