@@ -263,7 +263,7 @@ async function openSession(id){
         ${postMedia.length?`<div class="thumbs">${postMedia.map(m=>`<div class="thumb">${m.type==='image'?`<img src="${m.src}">`:`<video src="${m.src}" muted></video>`}</div>`).join('')}</div>`:''}
       </div>`;
     }
-    html += `<h2>Notes</h2><div class="card">${s.post.notes ? esc(s.post.notes) : '<span class="muted">No notes yet</span>'}</div>`;
+    html += `<h2>Notes</h2><div class="notes-box">${s.post.notes ? esc(s.post.notes) : '<span class="muted">No notes yet</span>'}</div>`;
   } else if(isCreator){
     // Unsaved ACTIVE draft: Suggest a swap (only place it appears)
     html += `<h2 class="sep">Suggest a swap</h2><div class="card">
