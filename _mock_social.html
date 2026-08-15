@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>SpotMe — Social (mock)</title>
+<style>
+  :root{ --blue:#2563eb; --blue-bg:#e8f1ff; --green:#2dd478; --red:#dc2626; --fg:#1c2024; --muted:#8a94a6; --card:#fff; --line:#e6e8ec; --bg:#f4f5f7; }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  body{margin:0; background:var(--bg); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; color:var(--fg);}
+  .phone{ max-width:390px; margin:0 auto; background:var(--bg); min-height:844px; padding-bottom:70px;}
+  .topbar{ display:flex; align-items:center; gap:10px; padding:14px 16px 6px; background:var(--bg);}
+  .topbar h1{ font-size:20px; margin:0; flex:1;}
+  .gear{ width:36px; height:36px; border-radius:50%; border:1px solid var(--line); background:#fff; color:var(--blue); display:flex; align-items:center; justify-content:center; font-size:18px;}
+  .profile-head{ display:flex; align-items:center; gap:16px; padding:8px 16px 14px; background:var(--bg);}
+  .avatar{ width:80px; height:80px; border-radius:50%; background:linear-gradient(135deg,#3b82f6,#2563eb); color:#fff; display:flex; align-items:center; justify-content:center; font-size:30px; font-weight:700; flex:0 0 auto;}
+  .pinfo{ flex:1; min-width:0;}
+  .pname{ font-size:19px; font-weight:700;}
+  .puser{ font-size:13px; color:var(--muted); margin-bottom:6px;}
+  .stats{ display:flex; gap:18px;}
+  .stat b{ font-size:16px;} .stat span{ font-size:12px; color:var(--muted); display:block;}
+  .stats-row{ display:flex; align-items:flex-start; gap:8px; padding:0 16px;}
+  .stats-bar{ display:flex; gap:18px; padding:10px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line);}
+  .sect{ padding:14px 16px 4px;}
+  .sect h2{ font-size:12px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:var(--muted); margin:0 0 8px;}
+  .saved-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-bottom:6px;}
+  .saved-grid .sq{ position:relative; aspect-ratio:1/1; overflow:hidden; background:#dfe2e6;}
+  .saved-grid .sq img{ width:100%; height:100%; object-fit:cover; display:block;}
+  .saved-grid .sq.add{ display:flex; align-items:center; justify-content:center; border:1px dashed var(--line); color:var(--muted); font-size:24px; background:#fff;}
+  .saved-grid .more{ position:absolute; inset:0; background:rgba(0,0,0,.45); color:#fff; display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:700;}
+  .ex-list{ margin:4px 0;}
+  .ex-line{ display:flex; align-items:center; gap:12px; padding:11px 0; border-bottom:1px solid var(--line);}
+  .ex-line:last-child{ border-bottom:none;}
+  .ex-idx{ flex:0 0 auto; width:22px; height:22px; border-radius:50%; background:#eef1f5; color:var(--muted); font-size:12px; font-weight:700; display:flex; align-items:center; justify-content:center;}
+  .ex-body{ flex:1; min-width:0;}
+  .ex-title{ font-size:15px; font-weight:600;}
+  .ex-detail{ font-size:12.5px; color:var(--muted); margin-top:2px;}
+  .ex-wt{ flex:0 0 auto; font-size:13px; font-weight:600;}
+  .notes-box{ background:#fff; border:1px solid var(--line); border-radius:10px; padding:9px 11px; font-size:13px; line-height:1.45; color:var(--fg); margin:6px 0 4px;}
+  /* Feed */
+  .feed-card{ background:#fff; border:1px solid var(--line); border-radius:14px; margin:10px 16px; overflow:hidden;}
+  .feed-top{ display:flex; align-items:center; gap:10px; padding:11px 12px;}
+  .fa{ width:40px; height:40px; border-radius:50%; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:15px; flex:0 0 auto;}
+  .feed-name{ font-weight:600; font-size:14px;}
+  .feed-sub{ font-size:12px; color:var(--muted);}
+  .feed-cover{ width:100%; height:150px; object-fit:cover; display:block; background:#dfe2e6;}
+  .feed-body{ padding:10px 12px 12px;}
+  .feed-title{ font-weight:700; font-size:15px; margin-bottom:6px;}
+  .feed-ex{ font-size:13px; color:var(--muted);}
+  .feed-ex b{ color:var(--fg);}
+  .tag-row{ display:flex; gap:6px; margin-top:8px;}
+  .tag{ font-size:11px; background:var(--blue-bg); color:var(--blue); border-radius:999px; padding:3px 9px; font-weight:600;}
+  .nav{ position:fixed; left:0; right:0; bottom:0; max-width:390px; margin:0 auto; display:flex; background:#fff; border-top:1px solid var(--line);}
+  .nav button{ flex:1; background:none; border:none; padding:8px 0 10px; font-size:11px; color:var(--muted); display:flex; flex-direction:column; align-items:center; gap:3px;}
+  .nav button.on{ color:var(--blue);}
+  .divider{ height:6px; background:var(--bg);}
+  .label{ font-size:12px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:var(--muted); padding:14px 16px 2px;}
+</style>
+</head>
+<body>
+<div class="phone">
+  <!-- PROFILE -->
+  <div class="topbar"><h1>Profile</h1><div class="gear">⚙</div></div>
+  <div class="profile-head">
+    <div class="avatar">J</div>
+    <div class="pinfo">
+      <div class="pname">Jeff</div>
+      <div class="puser">@jbruzzi</div>
+      <div class="stats">
+        <div class="stat"><b>48</b><span>workouts</span></div>
+        <div class="stat"><b>312</b><span>followers</span></div>
+        <div class="stat"><b>88</b><span>following</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="stats-row"><div class="stats-bar" style="flex:1">
+    <div class="stat"><b>12</b><span>friends</span></div>
+    <div class="stat"><b>7</b><span>this week</span></div>
+    <div class="stat"><b>52m</b><span>avg</span></div>
+  </div></div>
+
+  <div class="sect"><h2>Photos</h2>
+    <div class="saved-grid">
+      <div class="sq"><img src="https://picsum.photos/seed/bb1/200"></div>
+      <div class="sq"><img src="https://picsum.photos/seed/bb2/200"></div>
+      <div class="sq"><img src="https://picsum.photos/seed/bb3/200"></div>
+      <div class="sq"><img src="https://picsum.photos/seed/bb4/200"></div>
+      <div class="sq"><img src="https://picsum.photos/seed/bb5/200"></div>
+      <div class="sq add">+</div>
+    </div>
+  </div>
+
+  <div class="sect"><h2>Workout · Thursday, Aug 13</h2>
+    <div class="ex-list">
+      <div class="ex-line"><div class="ex-idx">1</div><div class="ex-body"><div class="ex-title">Barbell Bench Press</div><div class="ex-detail">4 × 8 · logged 4 sets</div></div><div class="ex-wt">185 lbs</div></div>
+      <div class="ex-line"><div class="ex-idx">2</div><div class="ex-body"><div class="ex-title">Lat Pulldown</div><div class="ex-detail">3 × 10 · logged 3 sets</div></div><div class="ex-wt">120 lbs</div></div>
+      <div class="ex-line"><div class="ex-idx">3</div><div class="ex-body"><div class="ex-title">Shoulder Press</div><div class="ex-detail">3 × 12</div></div><div class="ex-wt">55 lbs</div></div>
+      <div class="ex-line"><div class="ex-idx">4</div><div class="ex-body"><div class="ex-title">Triceps Pushdown</div><div class="ex-detail">3 × 15</div></div><div class="ex-wt">40 lbs</div></div>
+    </div>
+  </div>
+
+  <div class="sect"><h2>Notes</h2>
+    <div class="notes-box">Felt strong today. Bench was a PR at 185×4. Kept rest tight ~90s.</div>
+  </div>
+
+  <div class="divider"></div>
+  <div class="label">Friends feed</div>
+
+  <!-- FEED -->
+  <div class="feed-card">
+    <div class="feed-top">
+      <div class="fa" style="background:#9333ea">B</div>
+      <div><div class="feed-name">Brian</div><div class="feed-sub">2h · Friends-only</div></div>
+    </div>
+    <img class="feed-cover" src="https://picsum.photos/seed/feed1/400/200">
+    <div class="feed-body">
+      <div class="feed-title">Leg Day Destroyer</div>
+      <div class="feed-ex"><b>5 exercises</b> · Squat, RDL, Leg Press…</div>
+      <div class="tag-row"><span class="tag">PR · Squat 315</span><span class="tag">62 min</span></div>
+    </div>
+  </div>
+
+  <div class="feed-card">
+    <div class="feed-top">
+      <div class="fa" style="background:#0891b2">M</div>
+      <div><div class="feed-name">Maria</div><div class="feed-sub">Yesterday · Friends-only</div></div>
+    </div>
+    <img class="feed-cover" src="https://picsum.photos/seed/feed2/400/200">
+    <div class="feed-body">
+      <div class="feed-title">Push Session</div>
+      <div class="feed-ex"><b>4 exercises</b> · Bench, Incline, Fly…</div>
+      <div class="tag-row"><span class="tag">48 min</span><span class="tag">chest</span></div>
+    </div>
+  </div>
+
+  <div class="nav">
+    <button>🏠<span>Home</span></button>
+    <button>💪<span>Workouts</span></button>
+    <button class="on">👥<span>Friends</span></button>
+    <button>👤<span>Profile</span></button>
+  </div>
+</div>
+</body>
+</html>

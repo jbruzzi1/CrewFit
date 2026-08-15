@@ -136,10 +136,12 @@ app.post('/api/exercises/custom', auth, (req, res) => {
 function profileOf(id, viewerId) {
   const u = DB.users[id];
   if (!u) return null;
-  // workouts completed (distinct sessions with a history entry by this user)
+  // workouts completed: distinct sessions with a history entry by this user,
+  // OR sessions this user posted (saved) — both count as a completed workout
   const completed = new Set();
   for (const s of Object.values(DB.sessions)) {
     if ((s.history || []).some(h => h.userId === id)) completed.add(s.id);
+    else if (s.post && s.post.by === id) completed.add(s.id);
   }
   const prs = (DB.prs && DB.prs[id]) ? Object.values(DB.prs[id]) : [];
   const viewerIsFriend = viewerId && id !== viewerId && (DB.users[viewerId].friends||[]).includes(id);
@@ -151,20 +153,27 @@ function profileOf(id, viewerId) {
     return false;                                          // 'only_me' or non-friend
   };
   const myWorkouts = Object.values(DB.sessions)
-    .filter(s => (s.history || []).some(h => h.userId === id))
+    .filter(s => (s.post && s.post.by === id) || (s.history || []).some(h => h.userId === id))
     .sort((a,b)=> new Date(b.scheduledAt||0) - new Date(a.scheduledAt||0))
     .map(s => {
       const post = canSeePost(s.post) ? s.post : null;
+      // collaborators = other participants (and invited) who aren't the profile owner
+      const others = new Set([...(s.participants||[]), ...(s.invited||[])].filter(x=>x && x!==id));
+      const collaborators = [...others].map(uid=>DB.users[uid]).filter(Boolean).map(u=>({username:u.username, name:u.displayName||u.username}));
       return {
         id: s.id,
         name: s.name || 'Workout',
         date: (s.history.find(h=>h.userId===id)||{}).date || (s.scheduledAt ? s.scheduledAt.slice(0,10) : ''),
         exerciseCount: (s.exercises||[]).length,
+        firstExercises: (s.exercises||[]).slice(0,3).map(e=>e.name),
+        at: post ? post.at : (s.scheduledAt||''),
+        collaborators,
         post: post ? {
           notes: post.notes || '',
-          thumb: post.media && post.media[0] ? post.media[0].src : '',
+          media: (post.media||[]).slice(0,6),
           mediaCount: (post.media||[]).length,
-          visibility: post.visibility
+          visibility: post.visibility,
+          at: post.at
         } : null
       };
     });
@@ -463,7 +472,7 @@ app.post('/api/sessions', auth, (req, res) => {
     name: name || '',
     exercises: ex,
     participants: [req.userId],
-    invited: invites.map(f => f.id),
+    invited: invites,
     variations: {},
     suggestedEdits: [],
     joinRequests: [],
@@ -529,12 +538,12 @@ app.put('/api/sessions/:id', auth, (req, res) => {
     }));
   }
   if (Array.isArray(b.inviteUsernames)) {
-    const invites = [];
-    for (const un of b.inviteUsernames) {
-      const f = DB.users[req.userId].friends.find(fid => DB.users[fid].username === un);
-      if (f) invites.push(f);
-    }
-    s.invited = invites.map(f => f.id);
+  const invites = [];
+  for (const un of b.inviteUsernames) {
+    const f = DB.users[req.userId].friends.find(fid => DB.users[fid].username === un);
+    if (f) invites.push(f);
+  }
+  s.invited = invites;
   }
   s.updatedAt = new Date().toISOString();
   save(DB);

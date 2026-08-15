@@ -55,6 +55,32 @@
     .btn-primary { width:100%; box-sizing:border-box; margin-top:18px; padding:14px; border-radius:12px; border:none; background:var(--blue); color:#fff; font:inherit; font-size:15px; font-weight:700; cursor:pointer; }
     .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:6px 12px; margin:10px 0; box-shadow:0 1px 3px rgba(0,0,0,.05); }
     .notes-box { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:9px 11px; margin:10px 0; font-family:inherit; font-size:13px; line-height:1.45; color:var(--fg); min-height:60px; box-sizing:border-box; }
+    /* Posted-workout (read-only post) view */
+    .pp-head { display:flex; align-items:center; justify-content:space-between; gap:10px; position:relative; }
+    .pp-dots { background:transparent; border:none; font-size:22px; line-height:1; color:var(--fg); cursor:pointer; padding:2px 8px; border-radius:8px; width:auto; flex:0 0 auto; margin-left:auto; }
+    .pp-dots:active { background:#f1f3f6; }
+    .pp-menu { position:absolute; top:40px; right:0; background:var(--card); border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,.12); z-index:20; min-width:170px; overflow:hidden; }
+    .pp-menu button { display:block; width:100%; text-align:left; background:transparent; border:none; padding:12px 15px; font-size:14px; color:var(--fg); cursor:pointer; }
+    .pp-menu button:active { background:#f1f3f6; }
+    .pp-menu button.danger { color:#d23; }
+    .pp-photos { display:flex; gap:8px; overflow-x:auto; scroll-snap-type:x mandatory; -webkit-overflow-scrolling:touch; border-radius:12px; scrollbar-width:none; }
+    .pp-photos::-webkit-scrollbar { display:none; }
+    .pp-photos img, .pp-photos video { flex:0 0 100%; width:100%; aspect-ratio:1/1; object-fit:cover; border-radius:12px; display:block; background:#e6e8ec; scroll-snap-align:start; }
+    .pp-photo-dots { display:flex; gap:6px; justify-content:center; margin-top:8px; }
+    .pp-photo-dots .pp-dot { width:6px; height:6px; border-radius:50%; background:#cfd4da; transition:background .15s; }
+    .pp-photo-dots .pp-dot.on { background:var(--blue); }
+    .pp-ex { display:flex; justify-content:space-between; align-items:center; padding:11px 4px; border-bottom:1px solid var(--line); }
+    .pp-ex:last-child { border-bottom:none; }
+    .pp-ex-name { font-size:14px; font-weight:600; color:var(--fg); }
+    .pp-sets { margin:5px 0 2px; padding-left:2px; }
+    .pp-set { display:flex; align-items:center; gap:8px; padding:3px 0; font-size:13px; }
+    .pp-set-n { width:22px; height:22px; border-radius:6px; background:#eef1f5; color:var(--muted); font-size:11px; font-weight:700; display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; }
+    .pp-set-n.warm { background:#fff3e0; color:#b26a00; }
+    .pp-set-n.drop { background:#ffe8e0; color:#c2410c; }
+    .pp-set-n.fail { background:#fde2e2; color:#b91c1c; }
+    .pp-set-val { color:var(--fg); }
+    .pp-pr { font-size:10px; font-weight:700; color:#b8860b; background:#fff8e1; border-radius:6px; padding:1px 6px; }
+    .pp-collab { font-size:12px; color:var(--blue); margin:2px 0 10px; }
     .row { display:flex; gap:8px; align-items:center; }
     .row > * { flex:1; }
     .chat-row { align-items:center; }
@@ -78,6 +104,14 @@
     .chips.mini { gap:8px; }
     .fav { display:inline-flex; align-items:center; gap:7px; background:#eef1f5; border:1px solid var(--line); border-radius:999px; padding:4px 11px 4px 4px; }
     .fav-av { width:28px; height:28px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; flex:0 0 auto; }
+    /* Comments thread */
+    .cmt { display:flex; gap:9px; padding:9px 6px; border-bottom:1px solid var(--line); }
+    .cmt:last-child { border-bottom:none; }
+    .cmt-av { width:30px; height:30px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; flex:0 0 auto; }
+    .cmt-body { flex:1 1 auto; min-width:0; }
+    .cmt-top { display:flex; align-items:center; gap:8px; }
+    .cmt-top b { font-size:13px; }
+    .cmt-text { font-size:13px; color:var(--fg); margin-top:2px; line-height:1.35; word-wrap:break-word; }
     /* ---- Save workout page ---- */
     .card.center-v { text-align:center; padding:16px 14px; line-height:0; }
     .add-media { display:inline-flex; align-items:center; justify-content:center; width:58px; height:58px; border-radius:12px; border:1px solid var(--line); background:#fafbfc; color:var(--blue); cursor:pointer; position:relative; flex:0 0 auto; vertical-align:middle; }
@@ -294,6 +328,48 @@
     .sticky-bar button { flex:1 1 0; width:auto; min-height:46px; display:inline-flex; align-items:center; justify-content:center; margin:0; }
     .sticky-bar .btn-primary { font-size:15px; }
     .sticky-bar .sec { font-size:15px; }
+    /* Saved workout (Hevy-style): square photo grid above, clean exercise list below */
+    .saved-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin:10px 0; }
+    .saved-grid .sq { position:relative; aspect-ratio:1/1; border-radius:0; overflow:hidden; background:#e6e8ec; }
+    .saved-grid .sq img { width:100%; height:100%; object-fit:cover; display:block; }
+    .saved-grid .sq video { width:100%; height:100%; object-fit:cover; display:block; }
+    .saved-grid .sq.add { display:flex; align-items:center; justify-content:center; border:1px dashed var(--line); color:var(--muted); font-size:24px; font-weight:300; cursor:pointer; }
+    .saved-grid .more { position:absolute; inset:0; background:rgba(0,0,0,.45); color:#fff; display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:700; }
+    .ex-list { margin:10px 0; }
+    .ex-line { display:flex; align-items:center; gap:12px; padding:11px 0; border-bottom:1px solid var(--line); }
+    .ex-line:last-child { border-bottom:none; }
+    .ex-idx { flex:0 0 auto; width:22px; height:22px; border-radius:50%; background:#eef1f5; color:var(--muted); font-size:12px; font-weight:700; display:flex; align-items:center; justify-content:center; }
+    .ex-body { flex:1; min-width:0; }
+    .ex-title { font-size:15px; font-weight:600; }
+    .ex-detail { font-size:12.5px; color:var(--muted); margin-top:2px; }
+    .ex-wt { flex:0 0 auto; font-size:13px; font-weight:600; color:var(--fg); }
+    /* Friends feed (Hevy-style social cards) */
+    .feed-card { background:var(--card); border:1px solid var(--line); border-radius:14px; margin:10px 0; overflow:hidden; }
+    .feed-top { display:flex; align-items:center; gap:10px; padding:11px 12px; }
+    .feed-av { width:40px; height:40px; border-radius:50%; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:15px; flex:0 0 auto; }
+    .feed-name { font-weight:600; font-size:14px; }
+    .feed-sub { font-size:12px; color:var(--muted); }
+    .feed-cover { width:100%; height:160px; object-fit:cover; display:block; background:#e6e8ec; }
+    .feed-body { padding:10px 12px 12px; }
+    .feed-title { font-weight:700; font-size:15px; margin-bottom:4px; }
+    .feed-ex { font-size:13px; color:var(--muted); }
+    .feed-ex b { color:var(--fg); }
+    .tag-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+    .tag-pill { font-size:11px; background:var(--blue-bg); color:var(--blue); border-radius:999px; padding:3px 9px; font-weight:600; }
+    /* Profile workout GRID (toggle view) */
+    .wgrid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+    .wtile { position:relative; aspect-ratio:1/1; border:1px solid var(--line); border-radius:12px; overflow:hidden; background:var(--card); cursor:pointer; display:flex; flex-direction:column; }
+    .wtile .timg { width:100%; flex:1 1 auto; min-height:0; object-fit:cover; display:block; background:#e6e8ec; }
+    .wtile .tcap { padding:7px 9px 9px; flex:0 0 auto; background:var(--card); }
+    .wtile .tname { font-size:13px; font-weight:700; color:var(--fg); line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .wtile .tmeta { font-size:11px; color:var(--muted); margin-top:2px; }
+    .wtile .tbadge { position:absolute; top:7px; right:7px; background:rgba(37,99,235,.92); color:#fff; font-size:10px; font-weight:700; padding:2px 6px; border-radius:20px; }
+    .wtile .tbadge.note { background:rgba(0,0,0,.5); }
+    .tcollab { display:inline-block; margin-top:3px; font-size:10px; font-weight:700; color:var(--blue); background:var(--blue-bg); border-radius:999px; padding:1px 7px; }
+    .view-toggle { display:inline-flex; gap:4px; margin-left:auto; }
+    .view-toggle button { border:1px solid var(--line); background:#fff; color:var(--muted); font-size:12px; padding:4px 9px; border-radius:8px; cursor:pointer; }
+    .view-toggle button.on { background:var(--blue); color:#fff; border-color:var(--blue); }
+    .sec-head { display:flex; align-items:center; }
   </style>
 </head>
 <body>
@@ -304,6 +380,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="/app.js?v=127"></script>
+  <script src="app.js?v=129"></script>
 </body>
 </html>

@@ -163,7 +163,7 @@ async function openSession(id){
   if(EDITING_ID===id && isCreator && s.post){ renderWorkoutEdit(s); return; }
   const isParticipant = s.participants.includes(ME.id);
   const approvedJoin = s.joinRequests.find(j=>j.userId===ME.id&&j.status==='approved');
-  const canEdit = isParticipant || approvedJoin;
+  const canEdit = s.post ? isCreator : (isParticipant || approvedJoin);
   // suggested edits, keyed by target exercise id (compact one-line inline row, C style)
   const editByEx = {};
   for(const ed of s.suggestedEdits){
@@ -271,8 +271,8 @@ async function openSession(id){
       <button class="sec sm" style="background:#f0f1f3; margin-bottom:5px" onclick="openSwapPicker('${s.id}')">Pick replacement from Workouts →</button>
     </div>`;
   }
-  // Invitee action menu (non-creator view)
-  if(!isCreator){
+  // Invitee action menu (non-creator, active/unsaved session only)
+  if(!isCreator && !s.post){
     html += `<h2>Respond</h2><div class="card">
       <button class="blue" onclick="acceptInvite('${s.id}')">Accept</button>
       <button class="sec" onclick="requestChanges('${s.id}')">Request Changes</button>
@@ -281,35 +281,101 @@ async function openSession(id){
       <button class="sec red" onclick="declineInvite('${s.id}')">Decline</button>
     </div>`;
   }
-  // Chat panel
-  html += `<h2>Chat</h2><div class="card"><div id="chatbox" class="scrolllist"></div>
-    <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Message the crew"><button class="sm chat-send" onclick="sendChat('${s.id}')">Send</button></div></div>`;
+  // Comments panel (public thread on a saved workout; crew chat while active)
+  const isPosted = !!s.post;
+  html += `<h2>${isPosted?'Comments':'Chat'}</h2><div class="card"><div id="chatbox" class="scrolllist"></div>
+    <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="${isPosted?'Add a comment…':'Message the crew'}"><button class="sm chat-send" onclick="sendChat('${s.id}')">Send</button></div></div>`;
   html += `${(s.participants.filter(p=>p!==ME.id).length)?`<h2>Friends joined</h2><div class="chips mini">${s.participants.filter(p=>p!==ME.id).map(pid=>`<div class="fav"><div class="fav-av" style="background:${avatarColor(nameCache[pid]||pid)};color:#fff">${esc((nameCache[pid]||pid||'?')[0])}</div><span>${esc(nameCache[pid]||pid)}</span></div>`).join('')}</div>`:''}`;
   html += `</div>`;
   $('app').innerHTML = html;
   loadChat(s);
 }
+// ===== Dedicated POSTED-WORKOUT view (read-only, like an Instagram/Hevy post) =====
+// Opened when tapping a saved workout on a profile. Creator-only ⋯ menu (edit/delete).
+async function viewPost(id){
+  const s = await H.get('/api/sessions/'+id);
+  if(!s || (s.error && !s._expired)){ alert(s && s.error ? s.error : 'Session not found'); return; }
+  s.participants = s.participants || [];
+  s.exercises = s.exercises || [];
+  const isCreator = s.creatorId===ME.id;
+  const post = s.post || {};
+  const media = (post.media && post.media.length) ? post.media : [];
+  // resolve collaborator display names (participants excluding creator)
+  const nm = {};
+  for(const pid of s.participants){ if(pid!==s.creatorId) nm[pid]= await nameOf(pid); }
+  const collabNames = Object.values(nm).filter(Boolean);
+  const collab = collabNames.length ? `<div class="pp-collab">with ${collabNames.map(n=>'@'+esc(n.split(' ')[0])).join(', ')}</div>` : '';
+  const creatorLogs = (s.logs && s.logs[s.creatorId]) || [];
+  const exList = s.exercises.map(e=>{
+    const sets = creatorLogs.filter(l=>l.exerciseId===e.id).sort((a,b)=>(Number(a.set)||0)-(Number(b.set)||0));
+    const setsHtml = sets.length
+      ? `<div class="pp-sets">${sets.map(l=>`<div class="pp-set">${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} lbs × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr">PR</span>':''}</div>`).join('')}</div>`
+      : `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">No sets logged</div>`;
+    return `<div class="pp-ex"><div class="pp-ex-name">${esc(e.name)}</div></div>${setsHtml}`;
+  }).join('');
+  const photos = media.length ? `<h2>Photos</h2><div class="pp-photos">${media.map(m=>m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
+  const notes = post.notes ? esc(post.notes) : '<span class="muted">How\'d it go?</span>';
+  const dots = isCreator ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none"><button onclick="enterWorkoutEdit('${id}')">Edit session</button><button class="danger" onclick="deleteSession('${id}')">Delete session</button></div>` : '';
+  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="showTab('home')">← Back</button>${dots}</div>\n    <h1 class="sess-date">${fmtDate(s.scheduledAt)}</h1>\n    <div class="muted sess-meta">${s.visibility==='friends'?'Friends-only':'Private'}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    <h2>Notes</h2><div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}')">Send</button></div></div>`;
+  $('app').innerHTML = html;
+  if(media.length>1){
+    const strip=document.querySelector('.pp-photos');
+    const dots=document.querySelectorAll('#ppDots-'+id+' .pp-dot');
+    if(strip) strip.addEventListener('scroll',()=>{
+      const i=Math.round(strip.scrollLeft/Math.max(1,strip.clientWidth));
+      dots.forEach((d,k)=>d.classList.toggle('on',k===i));
+    }, {passive:true});
+  }
+  loadChat(s);
+}
+// ===== Recovered post-view + chat helpers =====
+function togglePostMenu(id){ const m=document.getElementById('ppMenu-'+id); if(m) m.style.display = m.style.display==='none'?'block':'none'; }
+async function sendPostComment(id){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:t}); $('chatInput').value=''; viewPost(id); }
 async function acceptInvite(id){ await H.post(`/api/sessions/${id}/accept`,{}); openSession(id); }
 async function declineInvite(id){ if(!confirm('Decline this invite?')) return; await H.post(`/api/sessions/${id}/decline`,{}); home(); }
 async function requestChanges(id){ const t=prompt('What changes do you want?'); if(t) { await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+t}); openSession(id); } }
 async function saveRoutine(id){ const s=await H.get('/api/sessions/'+id); const r=await H.post('/api/templates',{name:prompt('Template name:','Saved routine')||'Saved routine',exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps}))}); alert('Saved as template: '+r.name); }
 async function openChat(id){ document.getElementById('chatInput').focus(); }
 async function sendChat(id){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:t}); $('chatInput').value=''; openSession(id); }
-async function loadChat(s){ const box=$('chatbox'); if(!box) return; const cs=await H.get(`/api/sessions/${s.id}/comments`); box.innerHTML = cs.length? cs.map(c=>`<div class="lib-item"><div><b>${esc(c.userId===ME.id?'You':(s.participants.includes(c.userId)?'':'?'))}</b> ${esc(c.text)}</div><div class="tag">${new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div></div>`).join('') : '<div class="muted">No messages yet.</div>'; }
-async function nameOf(id){ if(id===ME.id) return 'You'; const f = (await H.get('/api/friends')); const arr = (f && f.friends) ? f.friends : (Array.isArray(f)?f:[]); const hit = arr.find(x=>x.id===id); return hit?hit.displayName:'friend'; }
-async function approve(id,eid){ const s=await H.post(`/api/sessions/${id}/suggest/${eid}/approve`); openSession(id); }
-async function reject(id,eid){ await H.post(`/api/sessions/${id}/suggest/${eid}/reject`); openSession(id); }
-async function approveJoin(id,jid){ await H.post(`/api/sessions/${id}/join/${jid}/approve`); openSession(id); }
-async function rejectJoin(id,jid){ await H.post(`/api/sessions/${id}/join/${jid}/reject`); openSession(id); }
-// ---- Suggest a swap: pick a real replacement from the Workouts library ----
-function openSwapPicker(id){
-  SWAP_MODE = true;
-  SWAP_SESSION = id;
-  // remember which exercise is being swapped (from the select, if present)
-  const sel = document.getElementById('swEx');
-  SWAP_FROM = sel ? sel.value : null;
-  showTab('lib');
+async function loadChat(s){
+  const box=$('chatbox'); if(!box) return;
+  const cs=await H.get(`/api/sessions/${s.id}/comments`);
+  if(!cs.length){ box.innerHTML='<div class="muted">No comments yet. Be the first to comment.</div>'; return; }
+  const nm={};
+  for(const c of cs){ if(!(c.userId in nm)) nm[c.userId]= await nameOf(c.userId); }
+  box.innerHTML = cs.map(c=>{
+    const name = c.userId===ME.id?'You':(nm[c.userId]||'User');
+    const ini = c.userId===ME.id?'Y':((nm[c.userId]||'?')[0]||'?');
+    const col = c.userId===ME.id?'#f0a23c':avatarColor(nm[c.userId]||c.userId);
+    const t = new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div></div>';
+  }).join('');
 }
+
+// ===== Recovered post-view + chat helpers =====
+function togglePostMenu(id){ const m=document.getElementById('ppMenu-'+id); if(m) m.style.display = m.style.display==='none'?'block':'none'; }
+async function sendPostComment(id){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:t}); $('chatInput').value=''; viewPost(id); }
+async function acceptInvite(id){ await H.post(`/api/sessions/${id}/accept`,{}); openSession(id); }
+async function declineInvite(id){ if(!confirm('Decline this invite?')) return; await H.post(`/api/sessions/${id}/decline`,{}); home(); }
+async function requestChanges(id){ const t=prompt('What changes do you want?'); if(t) { await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+t}); openSession(id); } }
+async function saveRoutine(id){ const s=await H.get('/api/sessions/'+id); const r=await H.post('/api/templates',{name:prompt('Template name:','Saved routine')||'Saved routine',exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps}))}); alert('Saved as template: '+r.name); }
+async function openChat(id){ document.getElementById('chatInput').focus(); }
+async function sendChat(id){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:t}); $('chatInput').value=''; openSession(id); }
+async function loadChat(s){
+  const box=$('chatbox'); if(!box) return;
+  const cs=await H.get(`/api/sessions/${s.id}/comments`);
+  if(!cs.length){ box.innerHTML='<div class="muted">No comments yet. Be the first to comment.</div>'; return; }
+  const nm={};
+  for(const c of cs){ if(!(c.userId in nm)) nm[c.userId]= await nameOf(c.userId); }
+  box.innerHTML = cs.map(c=>{
+    const name = c.userId===ME.id?'You':(nm[c.userId]||'User');
+    const ini = c.userId===ME.id?'Y':((nm[c.userId]||'?')[0]||'?');
+    const col = c.userId===ME.id?'#f0a23c':avatarColor(nm[c.userId]||c.userId);
+    const t = new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div></div>';
+  }).join('');
+}
+
 function swapCancel(){
   const id = SWAP_SESSION;
   SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;
@@ -1271,7 +1337,37 @@ async function profileView(id){
   const feed = (p.recentActivity&&p.recentActivity.length)
     ? p.recentActivity.map(a=>`<div class="feed-item"><span class="fi-ic">${a.type==='pr'?'🏆':a.type==='streak'?flameSvg():'✅'}</span><div>${esc(a.text)}</div></div>`).join('')
     : '<div class="muted" style="padding:14px 0;text-align:center">No recent activity yet.</div>';
-  const myWorkouts = (p.myWorkouts||[]).map(w=>`<div class="lib-item" onclick="openSession('${w.id}')">${w.post&&w.post.thumb?`<img class="mw-thumb" src="${esc(w.post.thumb)}" alt="">`:''}<div><b>${esc(w.name)}</b><div class="tag">${w.date?fmtDate(w.date):''} · ${w.exerciseCount} exercises${w.post&&w.post.mediaCount>1?` · ${w.post.mediaCount} media`:''}</div>${w.post&&w.post.notes?`<div class="tag">${esc(w.post.notes.slice(0,80))}</div>`:''}</div></div>`).join('') || '<div class="muted" style="padding:14px 0;text-align:center">No workouts logged yet.</div>';
+  const workouts = p.myWorkouts||[];
+  const listHtml = workouts.length
+    ? workouts.map(w=>{
+        const cover = (w.post&&w.post.media&&w.post.media[0]) ? `<img class="feed-cover" src="${esc(w.post.media[0].src)}" alt="">` : '';
+        const title = (w.name && w.name!=='Workout') ? w.name : ((w.firstExercises&&w.firstExercises[0])||'Workout');
+        const exList = (w.firstExercises&&w.firstExercises.length) ? w.firstExercises.map(e=>`<b>${esc(e)}</b>`).join(', ') : title;
+        const collab = (w.collaborators&&w.collaborators.length) ? ` <span class="tcollab">with @${esc(w.collaborators[0].username)}${w.collaborators.length>1?` +${w.collaborators.length-1}`:''}</span>` : '';
+        return `<div class="feed-card" onclick="viewPost('${w.id}')">
+          ${cover}
+          <div class="feed-body">
+            <div class="feed-title">${esc(title)} · ${w.exerciseCount} exercises${collab}</div>
+            <div class="feed-ex">${exList}</div>
+            ${w.post&&w.post.notes?`<div class="feed-ex" style="margin-top:4px">${esc(w.post.notes)}</div>`:''}
+          </div>
+        </div>`;
+      }).join('')
+    : '<div class="muted" style="padding:14px 0;text-align:center">No workouts logged yet.</div>';
+  const gridHtml = workouts.length
+    ? `<div class="wgrid">` + workouts.map(w=>{
+        const img = (w.post&&w.post.media&&w.post.media[0]) ? `<img class="timg" src="${esc(w.post.media[0].src)}" alt="">` : `<div class="timg"></div>`;
+        const title = (w.name && w.name!=='Workout') ? w.name : ((w.firstExercises&&w.firstExercises[0])||'Workout');
+        const badge = (w.post&&w.post.notes) ? `<span class="tbadge note">📝</span>` : (w.firstExercises&&w.firstExercises.length?`<span class="tbadge">${w.exerciseCount}</span>`:'');
+        const collab = (w.collaborators&&w.collaborators.length) ? `<span class="tcollab">with @${esc(w.collaborators[0].username)}${w.collaborators.length>1?` +${w.collaborators.length-1}`:''}</span>` : '';
+        const when = w.at ? fmtDate(w.at) : (w.date||'');
+        return `<div class="wtile" onclick="viewPost('${w.id}')">
+          ${img}${badge}
+          <div class="tcap"><div class="tname">${esc(title)}</div><div class="tmeta">${esc(when)} · ${w.exerciseCount} ex${collab}</div></div>
+        </div>`;
+      }).join('') + `</div>`
+    : '<div class="muted" style="padding:14px 0;text-align:center">No workouts logged yet.</div>';
+  const wview = (window.__wview||'grid');
   $('app').innerHTML = `<div class="wrap">
     <div class="profile-head">
       ${avatarBlock}
@@ -1285,14 +1381,19 @@ async function profileView(id){
     ${stats}
     ${actHtml}
     ${bioBlock}
-    <h2>My Workouts</h2>
-    <div class="card" style="padding:4px 12px">${myWorkouts}</div>
-    <h2>Recent activity</h2>
-    <div class="card" style="padding:4px 12px">${feed}</div>
+    <div class="sec-head"><h2>My Workouts</h2><div class="view-toggle"><button class="" id="vtGrid" onclick="setWorkoutView('grid')">▦ Grid</button><button id="vtList" onclick="setWorkoutView('list')">☰ List</button></div></div>
+    <div style="margin:8px 0 14px" id="workoutView">${wview==='grid'?gridHtml:listHtml}</div>
+    ${p.recentActivity&&p.recentActivity.length ? `<h2>Recent activity</h2><div class="card" style="padding:4px 12px">${feed}</div>` : ''}
     ${isMe?`<button class="sec" style="margin-top:18px" onclick="logout()">Log out</button>`:''}
   </div>`;
   // reflect follow state
   if(!isMe) reflectFollow(p);
+}
+function setWorkoutView(v){
+  window.__wview = v;
+  const g=document.getElementById('vtGrid'), l=document.getElementById('vtList');
+  if(g){ g.className = v==='grid'?'on':''; l.className = v==='list'?'on':''; }
+  if(ME&&ME.id) profileView(ME.id);
 }
 async function reflectFollow(p){
   const me = await H.get('/api/profile/me');
