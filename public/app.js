@@ -1280,8 +1280,9 @@ async function profileView(id){
         <div class="muted">@${esc(p.username)}</div>
         ${p.streak>=2?`<div class="streak-pill" style="margin-top:6px">${flameSvg()}${p.streak} day streak</div>`:''}
       </div>
+      ${settingsBtn}
     </div>
-    <div class="stats-row">${stats}${settingsBtn}</div>
+    ${stats}
     ${actHtml}
     ${bioBlock}
     <h2>My Workouts</h2>
