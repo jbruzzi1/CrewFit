@@ -1251,10 +1251,10 @@ async function profileView(id){
   const avatarBlock = isMe
     ? `<label class="pavatar-wrap" title="Change photo">
          ${avatar}
-         <span class="pcam">📷</span>
          <input id="av" type="file" accept="image/*" style="display:none" onchange="uploadAvatar(this)">
        </label>`
     : avatar;
+  const editPhotoLink = isMe ? `<button class="linkbtn" style="padding:6px 0 0;font-size:13px" onclick="document.getElementById('av').click()">Edit photo</button>` : '';
   const action = isMe ? '' : `<button class="sm ${p.followers>0&&false?'':'blue'}" id="followBtn" onclick="toggleFollow('${p.id}')">Follow</button>`;
   const actHtml = action?`<div style="margin:10px 0">${action}</div>`:'';
   const feed = (p.recentActivity&&p.recentActivity.length)
@@ -1268,6 +1268,7 @@ async function profileView(id){
         <div class="pname">${esc(p.displayName||p.username)}</div>
         <div class="muted">@${esc(p.username)}</div>
         ${p.streak>=2?`<div class="streak-pill" style="margin-top:6px">${flameSvg()}${p.streak} day streak</div>`:''}
+        ${editPhotoLink}
       </div>
     </div>
     ${stats}
