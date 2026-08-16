@@ -1387,7 +1387,7 @@ async function profileView(id){
     ${stats}
     ${actHtml}
     ${bioBlock}
-    <div class="sec-head"><h2>My Workouts</h2><div class="view-toggle"><button class="" id="vtGrid" onclick="setWorkoutView('grid')">▦ Grid</button><button id="vtList" onclick="setWorkoutView('list')">☰ List</button></div></div>
+    <div class="sec-head"><h2>My Workouts</h2><div class="view-toggle"><button class="${wview==='grid'?'on':''}" id="vtGrid" onclick="setWorkoutView('grid')">▦ Grid</button><button class="${wview==='list'?'on':''}" id="vtList" onclick="setWorkoutView('list')">☰ List</button></div></div>
     <div style="margin:8px 0 14px" id="workoutView">${wview==='grid'?gridHtml:listHtml}</div>
     ${isMe?`<button class="sec" style="margin-top:18px" onclick="logout()">Log out</button>`:''}
   </div>`;
