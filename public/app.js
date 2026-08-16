@@ -1349,20 +1349,17 @@ async function profileView(id){
   function woCard(w){
     const img = (w.post&&w.post.media&&w.post.media[0]) ? `<img class="wthumb" src="${esc(w.post.media[0].src)}" alt="">` : `<div class="wthumb wthumb-empty"></div>`;
     const title = (w.name && w.name!=='Workout') ? w.name : ((w.firstExercises&&w.firstExercises[0])||'Workout');
-    const desc = (w.post&&w.post.notes) ? w.post.notes : '';
     const exs = (w.firstExercises||[]).slice(0,3);
     const more = (w.exerciseCount||0) - exs.length;
-    const exChips = exs.length ? exs.map(e=>`<span class="wexchip">${esc(e)}</span>`).join('') + (more>0?`<span class="wexchip more">+${more}</span>`:'') : '<span class="wexchip">No exercises</span>';
-    const collab = (w.collaborators&&w.collaborators.length) ? ` · with @${esc(w.collaborators[0].username)}${w.collaborators.length>1?` +${w.collaborators.length-1}`:''}` : '';
+    const exList = exs.length ? `<div class="wex-h">Exercises</div><ol class="wexb">${exs.map(e=>`<li>${esc(e)}</li>`).join('')}</ol>${more>0?`<div class="wexb-more">+${more} more</div>`:''}` : '<div class="wexnone">No exercises</div>';
+    const collab = (w.collaborators&&w.collaborators.length) ? `with @${esc(w.collaborators[0].username)}${w.collaborators.length>1?` +${w.collaborators.length-1}`:''}` : '';
     const when = w.at ? fmtDate(w.at) : (w.date||'');
     return `<div class="wtile" onclick="viewPost('${w.id}')">
+      <div class="wdate">${esc(when)}</div>
+      <div class="wtitle">${esc(title)}</div>
       ${img}
-      <div class="wbody">
-        <div class="wtitle">${esc(title)}</div>
-        ${desc?`<div class="wdesc">${esc(desc)}</div>`:''}
-        <div class="wex">${exChips}</div>
-        <div class="wmeta">${w.exerciseCount} exercises · ${esc(when)}${collab}</div>
-      </div>
+      <div class="wex">${exList}</div>
+      ${collab?`<div class="wcollab">${collab}</div>`:''}
     </div>`;
   }
   const gridHtml = workouts.length
