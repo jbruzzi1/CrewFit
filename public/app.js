@@ -283,8 +283,8 @@ async function openSession(id){
       <button class="sec sm" style="background:#f0f1f3; margin-bottom:5px" onclick="openSwapPicker('${s.id}')">Pick replacement from Workouts →</button>
     </div>`;
   }
-  // Invitee action menu (non-creator, active/unsaved session only)
-  if(!isCreator && !s.post){
+  // Invitee action menu (non-creator, active/unsaved session, AND not yet accepted)
+  if(!isCreator && !s.post && !isParticipant){
     html += `<h2>Respond</h2><div class="card">
       <button class="blue" onclick="acceptInvite('${s.id}')">Accept</button>
       <button class="sec" onclick="requestChanges('${s.id}')">Request Changes</button>
