@@ -1350,6 +1350,27 @@ async function profileView(id){
   const settingsBtn = isMe ? `<button class="profile-set" title="Settings" onclick="openSettings()">${gearSvg()}</button>` : '';
   const action = isMe ? '' : `<button class="sm ${p.followers>0&&false?'':'blue'}" id="followBtn" onclick="toggleFollow('${p.id}')">Follow</button>`;
   const actHtml = action?`<div style="margin:10px 0">${action}</div>`:'';
+  // v147: surface recentActivity (PRs / weekly completions / streaks) — server already computes
+  // this (buildActivityFor in server.js) but the profile page never rendered it. Reuses the same
+  // .card.feed-strip / .feed-item / .act-chip styling as Home's "Friend's Activity" for consistency.
+  const activity = p.recentActivity||[];
+  const activityRows = activity.length
+    ? activity.map(a=>{
+        const chip = a.type==='pr' ? `<span class="act-chip pr">PR</span>` : `<span class="act-chip done">✓</span>`;
+        return `<div class="feed-item">${chip} ${esc(a.text)}</div>`;
+      }).join('')
+    : (isMe ? `<div class="muted">No activity yet — log a workout to see it here.</div>` : '');
+  const activityBlock = (activity.length || isMe)
+    ? `<h2 class="light">Recent Activity</h2><div class="card feed-strip">${activityRows}</div>`
+    : '';
+  // v148: Personal Records list — until now a PR only ever flashed briefly on the set you logged it
+  // on; there was nowhere to go check "what's my Bench Press PR". p.prs comes from the server's
+  // cross-session PR tracking (one entry per exercise, your true current best).
+  const prs = p.prs||[];
+  const prRows = prs.map(pr=>`<div class="pr-row"><div class="pr-name">${esc(pr.exercise)}</div><div class="pr-val"><div class="pr-weight">${pr.weight} × ${pr.reps}</div><div class="pr-date">${fmtDate(pr.at)}</div></div></div>`).join('');
+  const prsBlock = prs.length
+    ? `<h2 class="light">Personal Records</h2><div class="card">${prRows}</div>`
+    : (isMe ? `<h2 class="light">Personal Records</h2><div class="card"><div class="muted" style="padding:6px 4px">Log a workout to start tracking PRs.</div></div>` : '');
   const workouts = p.myWorkouts||[];
   function woCard(w){
     const img = (w.post&&w.post.media&&w.post.media[0]) ? `<img class="wthumb" src="${esc(w.post.media[0].src)}" alt="">` : `<div class="wthumb wthumb-empty"></div>`;
@@ -1387,6 +1408,8 @@ async function profileView(id){
     ${stats}
     ${actHtml}
     ${bioBlock}
+    ${activityBlock}
+    ${prsBlock}
     <div class="sec-head"><h2>My Workouts</h2><div class="view-toggle"><button class="${wview==='grid'?'on':''}" id="vtGrid" onclick="setWorkoutView('grid')">▦ Grid</button><button class="${wview==='list'?'on':''}" id="vtList" onclick="setWorkoutView('list')">☰ List</button></div></div>
     <div style="margin:8px 0 14px" id="workoutView">${wview==='grid'?gridHtml:listHtml}</div>
     ${isMe?`<button class="sec" style="margin-top:18px" onclick="logout()">Log out</button>`:''}

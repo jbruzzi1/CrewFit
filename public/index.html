@@ -374,6 +374,10 @@
     /* Profile workout GRID (toggle view) */
     .wgrid { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }
     .wgrid.wlist { grid-template-columns:1fr; }
+    /* Deliberately NO shadow here: Jeff reviewed the elevated-card treatment for Profile and chose to
+       keep the flatter look. It is also unsafe at this geometry — an 18px-blur shadow across the 12px
+       .wgrid gutter never clears back to page background, so the 2x2 grid reads as one gray slab
+       rather than four cards. If elevation is wanted later, tighten to ~0 2px 8px AND widen the gutter. */
     .wtile { background:var(--card); border:1px solid var(--line); border-radius:14px; overflow:hidden; cursor:pointer; display:flex; flex-direction:column; padding:10px; }
     .wdate { font-size:13px; font-weight:600; color:var(--muted); letter-spacing:.02em; }
     .wtitle { font-size:16px; font-weight:700; color:var(--fg); line-height:1.2; margin-top:8px; }
@@ -388,6 +392,13 @@
     .wexnone { font-size:12px; color:var(--muted); }
     .wcollab { font-size:11px; color:var(--muted); margin-top:8px; }
     .tcollab { display:inline-block; margin-top:3px; font-size:10px; font-weight:700; color:var(--blue); background:var(--blue-bg); border-radius:999px; padding:1px 7px; }
+    /* Profile: Personal Records list (v148) */
+    .pr-row { display:flex; justify-content:space-between; align-items:center; padding:10px 4px; border-bottom:1px solid var(--line); }
+    .pr-row:last-child { border-bottom:none; }
+    .pr-name { font-weight:600; font-size:14px; color:var(--fg); }
+    .pr-val { text-align:right; }
+    .pr-weight { font-weight:700; font-size:14px; color:var(--fg); }
+    .pr-date { font-size:11px; color:var(--muted); margin-top:2px; }
     .view-toggle { display:inline-flex; gap:6px; margin-left:auto; }
     /* inline-flex + nowrap + line-height:1 keeps the icon beside the label on ONE line,
        so both buttons share a baseline and match in size (they wrapped differently before). */
@@ -404,6 +415,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=146"></script>
+  <script src="app.js?v=149"></script>
 </body>
 </html>

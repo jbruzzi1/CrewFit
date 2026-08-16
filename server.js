@@ -62,6 +62,10 @@ function migrateMedia() {
 }
 let DB = load();
 migrateMedia();
+// v148: rebuild PR tracking on boot — fixes any PRs recorded under the old per-session logic
+// (see rebuildAllPrs below) so existing users' data self-heals on next deploy, no manual migration.
+rebuildAllPrs();
+save(DB);
 const EX_LIB = JSON.parse(fs.readFileSync(LIB_FILE, 'utf8')).exercises;
 
 // ---- Auth (simple username + pin, no password hashing for MVP demo) ----
@@ -215,6 +219,9 @@ function profileOf(id, viewerId) {
     workoutsCompleted: completed.size,
     myWorkouts,
     prCount: prs.length,
+    // v148: full PR list (name, best weight×reps, when it was set), most recent first — powers the
+    // profile's "Personal Records" section. prCount above still just needs the length.
+    prs: prs.slice().sort((a,b)=> new Date(b.at) - new Date(a.at)),
     streak: currentStreak(id),
     recentActivity: buildActivityFor(id)
   };
@@ -224,7 +231,10 @@ function buildActivityFor(userId) {
   const items = [];
   const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
   const prs = (DB.prs && DB.prs[userId]) ? Object.values(DB.prs[userId]) : [];
-  for (const p of prs) items.push({ type: 'pr', at: p.at, text: `hit a new PR on ${p.exercise} (${p.weight}×${p.reps})` });
+  // Only surface PRs actually set in the last week here — DB.prs holds every current best regardless
+  // of age, and without this filter "Recent Activity" would list every exercise you've ever maxed out,
+  // forever, not just what's new.
+  for (const p of prs) if (new Date(p.at).getTime() >= weekAgo) items.push({ type: 'pr', at: p.at, text: `hit a new PR on ${p.exercise} (${p.weight}×${p.reps})` });
   let count = 0;
   for (const s of Object.values(DB.sessions)) {
     for (const h of (s.history || [])) {
@@ -696,25 +706,53 @@ app.post('/api/sessions/:id/log', auth, (req, res) => {
   const w = Number(weight) || 0, r = Number(reps) || 0;
   const myExLogs = s.logs[req.userId].filter(l => l.exerciseId === exerciseId);
   const setNum = (set && Number(set)) || myExLogs.length + 1;
-  const prevBest = s.logs[req.userId].filter(l => l.exerciseId === exerciseId).reduce((m,l)=> Math.max(m, (Number(l.weight)||0)*(Number(l.reps)||0)), 0);
-  const isPr = (w*r) > 0 && (w*r) > prevBest;
-  const entry = { id: 'log_'+uid(), exerciseId, weight: w, reps: r, set: setNum, setType: setType || 'normal', isPr };
+  const entry = { id: 'log_'+uid(), exerciseId, weight: w, reps: r, set: setNum, setType: setType || 'normal', isPr: false, at: new Date().toISOString() };
   s.logs[req.userId].push(entry);
-  if (isPr) recalcPr(s, req.userId, exerciseId);
+  rebuildAllPrs();
   save(DB);
   res.json(s);
 });
 
-function recalcPr(s, userId, exerciseId){
-  const exLogs = s.logs[userId].filter(l => l.exerciseId === exerciseId);
-  const best = exLogs.reduce((m,l)=> Math.max(m, (Number(l.weight)||0)*(Number(l.reps)||0)), 0);
-  for(const l of s.logs[userId]) if(l.exerciseId===exerciseId) l.isPr = ((Number(l.weight)||0)*(Number(l.reps)||0))===best && best>0;
-  if(!DB.prs) DB.prs={}; if(!DB.prs[userId]) DB.prs[userId]={};
-  const top = exLogs.slice().sort((a,b)=>((Number(b.weight)||0)*(Number(b.reps)||0))-((Number(a.weight)||0)*(Number(a.reps)||0)))[0];
-  if(top && (Number(top.weight)||0)*(Number(top.reps)||0)>0){
-    const exName=(s.exercises.find(e=>e.id===exerciseId)||{}).name||exerciseId;
-    DB.prs[userId][exerciseId]={exercise:exName, weight:Number(top.weight)||0, reps:Number(top.reps)||0, at:new Date().toISOString()};
-  } else { delete DB.prs[userId][exerciseId]; }
+// v148: PRs are tracked per exercise NAME across a user's entire history, not per exercise-instance-id
+// within one workout. (Each workout used to mint a fresh random id for "Bench Press" every time it was
+// added, so the old logic could only ever compare a set against sets logged in that same session.)
+// This does a full, cheap replay of every log across every session — fine at this app's scale, and it
+// means edits/deletes to old sets always leave isPr flags and DB.prs in a provably correct state rather
+// than patching a single session in place and hoping nothing upstream drifted.
+function exerciseNameFor(session, exerciseId) {
+  const e = session.exercises.find(x => x.id === exerciseId);
+  return e ? e.name : exerciseId;
+}
+function rebuildAllPrs() {
+  const groups = {}; // groups[userId][exerciseName] = [logEntry, ...]
+  for (const s of Object.values(DB.sessions)) {
+    if (!s.logs) continue;
+    for (const userId of Object.keys(s.logs)) {
+      for (const l of s.logs[userId]) {
+        if (!l.at) l.at = String(s.scheduledAt || s.id || '1970-01-01'); // backfill legacy entries so ordering is stable
+        const name = exerciseNameFor(s, l.exerciseId);
+        groups[userId] = groups[userId] || {};
+        groups[userId][name] = groups[userId][name] || [];
+        groups[userId][name].push(l);
+      }
+    }
+  }
+  DB.prs = {};
+  for (const userId of Object.keys(groups)) {
+    for (const name of Object.keys(groups[userId])) {
+      const chronological = groups[userId][name].slice().sort((a, b) => new Date(a.at) - new Date(b.at));
+      let best = 0, bestLog = null;
+      for (const l of chronological) {
+        const val = (Number(l.weight) || 0) * (Number(l.reps) || 0);
+        if (val > 0 && val > best) { best = val; bestLog = l; l.isPr = true; }
+        else { l.isPr = false; }
+      }
+      if (bestLog) {
+        DB.prs[userId] = DB.prs[userId] || {};
+        DB.prs[userId][name] = { exercise: name, weight: Number(bestLog.weight) || 0, reps: Number(bestLog.reps) || 0, at: bestLog.at };
+      }
+    }
+  }
 }
 
 app.put('/api/sessions/:id/log/:logId', auth, (req, res) => {
@@ -728,7 +766,7 @@ app.put('/api/sessions/:id/log/:logId', auth, (req, res) => {
   if (reps!==undefined) log.reps = Number(reps)||0;
   if (setType!==undefined) log.setType = setType || 'normal';
   if (set!==undefined) log.set = Number(set)||log.set;
-  recalcPr(s, req.userId, log.exerciseId);
+  rebuildAllPrs();
   save(DB);
   res.json(s);
 });
@@ -739,8 +777,8 @@ app.delete('/api/sessions/:id/log/:logId', auth, (req, res) => {
   const arr = s.logs[req.userId] || [];
   const idx = arr.findIndex(l => l.id === req.params.logId);
   if (idx<0) return res.status(404).json({ error:'log not found' });
-  const removed = arr.splice(idx,1)[0];
-  recalcPr(s, req.userId, removed.exerciseId);
+  arr.splice(idx,1);
+  rebuildAllPrs();
   save(DB);
   res.json(s);
 });
