@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>Progress — SpotMe</title>
+<style>
+  :root { --bg:#fbfbfd; --card:#ffffff; --fg:#15181f; --muted:#5c6470; --faint:#7b828e;
+          --blue:#2563eb; --line:#edeff2;
+          --good:#067a06;                    /* AA-safe on white (4.9:1) */
+          --s1:#cde2fb; --s2:#9ec5f4; --s3:#5598e7; --s4:#2563eb;  /* one hue, light->dark */
+          --rest:#e8ebef; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; padding:0; background:var(--bg); color:var(--fg);
+              font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  body { max-width:480px; margin:0 auto; }
+  .wrap { padding:14px; padding-bottom:calc(84px + env(safe-area-inset-bottom)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:14px;
+          margin:12px 0; box-shadow:0 6px 18px rgba(20,24,31,.06); }
+  h1 { font-size:22px; margin:6px 0 2px; letter-spacing:-.2px; }
+  h2 { font-size:12px; margin:24px 0 10px; color:var(--muted); text-transform:uppercase;
+       letter-spacing:.8px; font-weight:600; }
+  .sub { font-size:13px; color:var(--muted); margin:0 0 12px; }
+
+  .seg { display:flex; background:#eef1f5; border-radius:10px; padding:3px; margin:12px 0 4px; }
+  .seg button { flex:1; border:none; background:transparent; padding:8px 4px; border-radius:8px;
+                font:inherit; font-size:12.5px; font-weight:600; color:var(--muted); cursor:pointer; }
+  .seg button.on { background:#fff; color:var(--blue); box-shadow:0 1px 2px rgba(0,0,0,.08); }
+
+  /* custom range row — only rendered when the Custom preset is active */
+  .range { display:flex; align-items:center; justify-content:space-between; gap:10px;
+           background:#fff; border:1px solid var(--line); border-radius:12px;
+           padding:8px 10px 8px 8px; margin:8px 0 2px; }
+  .range-dates { display:flex; align-items:center; gap:8px; }
+  .range-btn { background:#eef1f5; border:none; border-radius:8px; padding:7px 12px;
+               font:inherit; font-size:13px; font-weight:600; color:var(--fg); cursor:pointer; }
+  .range-to { font-size:12px; color:var(--muted); }
+  .range-len { font-size:12px; color:var(--muted); font-weight:600; }
+
+  /* ---- 1. Ready to add weight (leads the page — the actionable module) ---- */
+  .rp { display:flex; align-items:center; gap:11px; padding:12px 2px; border-bottom:1px solid var(--line); }
+  .rp:last-child { border-bottom:none; }
+  .rp-ic { flex:0 0 auto; width:27px; height:27px; border-radius:8px; background:rgba(6,122,6,.11);
+           color:var(--good); display:flex; align-items:center; justify-content:center;
+           font-size:14px; font-weight:800; }
+  .rp-main { flex:1; min-width:0; }
+  .rp-name { font-size:14.5px; font-weight:600; }
+  .rp-why { font-size:11.5px; color:var(--muted); margin-top:2px; }
+  .rp-to { flex:0 0 auto; text-align:right; }
+  .rp-new { font-size:15px; font-weight:700; color:var(--fg); }   /* ink, not status green */
+  .rp-old { font-size:10.5px; color:var(--muted); }
+  .rp-tag { display:inline-flex; align-items:center; gap:3px; font-size:10px; font-weight:700;
+            color:var(--good); text-transform:uppercase; letter-spacing:.4px; margin-top:2px; }
+
+  .hold-sec { margin-top:4px; padding-top:10px; border-top:1px solid var(--line); }
+  .hold-head { font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase;
+               letter-spacing:.6px; padding:2px 2px 0; }
+  .hold { display:flex; align-items:center; gap:11px; padding:11px 2px 2px; }
+  .hold-ic { flex:0 0 auto; width:27px; height:27px; border-radius:8px; background:#eef1f5;
+             color:var(--muted); display:flex; align-items:center; justify-content:center;
+             font-size:14px; font-weight:800; }
+
+  /* ---- 2. Consistency: weeks across, days trained up ---- */
+  .kpi { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:4px; }
+  .hero { font-size:30px; font-weight:700; line-height:1; letter-spacing:-.5px; }
+  .hero-u { font-size:14px; color:var(--muted); font-weight:600; }
+  .hero-cap { font-size:11.5px; color:var(--muted); margin-top:4px; }
+  .wk-hint { font-size:11px; color:var(--muted); text-align:center; margin-top:2px; }
+  .streak { display:inline-flex; align-items:center; gap:4px; background:#eef1f5; color:var(--fg);
+            border-radius:999px; padding:4px 10px; font-size:11.5px; font-weight:600; }
+
+  /* ---- 3. Strength trend ---- */
+  .chips { display:flex; gap:6px; overflow-x:auto; padding:2px 0 12px; scrollbar-width:none; }
+  .chips::-webkit-scrollbar { display:none; }
+  .chip { flex:0 0 auto; background:#fff; border:1px solid var(--line); color:var(--fg);
+          border-radius:999px; padding:6px 13px; font-size:12.5px; font-weight:600; cursor:pointer; }
+  .chip.on { background:var(--blue); color:#fff; border-color:var(--blue); }
+  .ch-head { display:flex; align-items:baseline; justify-content:space-between; }
+  .ch-val { font-size:26px; font-weight:700; letter-spacing:-.4px; }
+  .ch-unit { font-size:12px; color:var(--muted); font-weight:600; }
+  .ch-delta { font-size:12.5px; font-weight:700; color:var(--good); }
+  .ch-note { font-size:11.5px; color:var(--muted); margin:3px 0 12px; }
+  .legendline { display:flex; align-items:center; gap:14px; font-size:11px; color:var(--muted);
+                margin-top:8px; padding-top:9px; border-top:1px solid var(--line); }
+  .legendline b { color:var(--fg); font-weight:600; }
+  .tblnote { font-size:11px; color:var(--muted); padding:8px 2px 0; line-height:1.5; }
+
+  /* ---- 4. PRs ---- */
+  .pr { display:flex; justify-content:space-between; align-items:center; padding:11px 2px;
+        border-bottom:1px solid var(--line); }
+  .pr:last-child { border-bottom:none; }
+  .pr-n { font-size:14px; font-weight:600; }
+  .pr-d { font-size:11px; color:var(--muted); margin-top:2px; }
+  .pr-r { text-align:right; }
+  .pr-w { font-size:14px; font-weight:700; }
+  .pr-up { font-size:11px; font-weight:700; color:var(--good); margin-top:2px; }
+  .pr-flat { font-size:11px; color:var(--muted); margin-top:2px; }
+
+  .nav { position:fixed; bottom:0; left:0; right:0; max-width:480px; margin:0 auto; display:flex;
+         background:var(--card); border-top:1px solid var(--line); box-shadow:0 -2px 10px rgba(0,0,0,.04);
+         padding-bottom:env(safe-area-inset-bottom); }
+  .nav button { background:transparent; color:#3a3f47; border:none; margin:0; padding:8px 0 10px;
+                font-size:10px; flex:1; display:flex; flex-direction:column; align-items:center;
+                gap:3px; font-family:inherit; cursor:pointer; }
+  .nav button.active { color:var(--blue); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Progress</h1>
+  <p class="sub">Sunday, Aug 16 · 21 weeks in</p>
+
+  <div class="seg" role="group" aria-label="Time range">
+    <button>4 weeks</button><button>3 months</button>
+    <button>6 months</button><button class="on" aria-pressed="true">Custom</button>
+  </div>
+
+  <div class="range" id="rangeRow">
+    <div class="range-dates">
+      <button class="range-btn">Jun 1</button>
+      <span class="range-to">to</span>
+      <button class="range-btn">Aug 16</button>
+    </div>
+    <span class="range-len">11 weeks</span>
+  </div>
+
+  <h2>Add weight next time</h2>
+  <div class="card">
+    <div class="rp">
+      <div class="rp-ic" aria-hidden="true">↑</div>
+      <div class="rp-main"><div class="rp-name">Bench Press</div>
+        <div class="rp-why">Cleared 3×8 at 205 lb, twice</div></div>
+      <div class="rp-to"><div class="rp-new">210 lb</div><div class="rp-tag">▲ ready</div></div>
+    </div>
+    <div class="rp">
+      <div class="rp-ic" aria-hidden="true">↑</div>
+      <div class="rp-main"><div class="rp-name">Barbell Row</div>
+        <div class="rp-why">Cleared 3×10 at 135 lb, twice</div></div>
+      <div class="rp-to"><div class="rp-new">145 lb</div><div class="rp-tag">▲ ready</div></div>
+    </div>
+    <div class="rp">
+      <div class="rp-ic" aria-hidden="true">↑</div>
+      <div class="rp-main"><div class="rp-name">Leg Press</div>
+        <div class="rp-why">Cleared 3×12 at 270 lb, twice</div></div>
+      <div class="rp-to"><div class="rp-new">290 lb</div><div class="rp-tag">▲ ready</div></div>
+    </div>
+    <div class="hold-sec">
+      <div class="hold-head">Hold for now</div>
+      <div class="hold">
+        <div class="hold-ic" aria-hidden="true">–</div>
+        <div class="rp-main"><div class="rp-name">Back Squat</div>
+          <div class="rp-why">Missed the last set at 275 lb — repeat it before adding</div></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Consistency</h2>
+  <div class="card">
+    <div class="kpi">
+      <div>
+        <div class="hero"><span id="heroAvg">—</span><span class="hero-u"> days/week average</span></div>
+        <div class="hero-cap" id="heroCap">—</div>
+      </div>
+      <span class="streak" id="streak">—</span>
+    </div>
+    <div id="weeks"></div>
+    <div class="wk-hint">Tap any week to see just that week</div>
+  </div>
+
+  <h2>Strength trend</h2>
+  <div class="chips">
+    <span class="chip on">Bench</span><span class="chip">Squat</span>
+    <span class="chip">Deadlift</span><span class="chip">Row</span><span class="chip">OHP</span>
+  </div>
+  <div class="card">
+    <div class="ch-head">
+      <div><span class="ch-val" id="chVal">—</span> <span class="ch-unit">lb estimated max</span></div>
+      <div class="ch-delta" id="chDelta">—</div>
+    </div>
+    <div class="ch-note">Bench Press · since May 17</div>
+    <div id="chart"></div>
+    <div class="legendline">
+      <span><b>●</b> a session</span><span><b>★</b> a personal record</span>
+    </div>
+    <div class="tblnote">Estimated max is what your heaviest set predicts for a single all-out rep
+      (weight × [1 + reps ÷ 30]). It lets a heavy triple and a light set of ten be compared on one line.</div>
+  </div>
+
+  <h2>Personal records</h2>
+  <div class="card">
+    <div class="pr"><div><div class="pr-n">Bench Press</div><div class="pr-d">Fri, Aug 14</div></div>
+      <div class="pr-r"><div class="pr-w">205 × 8</div><div class="pr-up">▲ 20 lb in 3 months</div></div></div>
+    <div class="pr"><div><div class="pr-n">Back Squat</div><div class="pr-d">Wed, Aug 12</div></div>
+      <div class="pr-r"><div class="pr-w">275 × 5</div><div class="pr-up">▲ 25 lb in 3 months</div></div></div>
+    <div class="pr"><div><div class="pr-n">Deadlift</div><div class="pr-d">Mon, Aug 10</div></div>
+      <div class="pr-r"><div class="pr-w">315 × 3</div><div class="pr-up">▲ 30 lb in 3 months</div></div></div>
+    <div class="pr"><div><div class="pr-n">Overhead Press</div><div class="pr-d">Sun, Jun 28</div></div>
+      <div class="pr-r"><div class="pr-w">115 × 6</div><div class="pr-flat">unchanged · 7 weeks</div></div></div>
+  </div>
+</div>
+
+<div class="nav">
+  <button><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg><span>Home</span></button>
+  <button><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5l11 11"/><path d="M21 21l-1-1"/><path d="M3 3l1 1"/><rect x="4" y="4" width="4" height="4" rx="1" transform="rotate(45 6 6)"/><rect x="16" y="16" width="4" height="4" rx="1" transform="rotate(45 18 18)"/></svg><span>Workouts</span></button>
+  <button class="active"><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20V11"/><path d="M9 20V4"/><path d="M15 20v-6"/><path d="M21 20V8"/></svg><span>Progress</span></button>
+  <button><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/></svg><span>Friends</span></button>
+  <button><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
+</div>
+
+<script>
+/* ---------------------------------------------------------------
+   ONE consistent fake dataset. Today = Sunday Aug 16 2026.
+   13 week-ending dates, most recent last. daysTrained drives both
+   the strip and every headline number, so nothing can contradict.
+----------------------------------------------------------------*/
+const WEEKS=[
+ {end:'May 24',d:2},{end:'May 31',d:3},{end:'Jun 7',d:3},{end:'Jun 14',d:3},
+ {end:'Jun 21',d:4},{end:'Jun 28',d:3},{end:'Jul 5',d:3},{end:'Jul 12',d:4},
+ {end:'Jul 19',d:3},{end:'Jul 26',d:4},{end:'Aug 2',d:4},{end:'Aug 9',d:4},{end:'Aug 16',d:4},
+];
+const avg=(WEEKS.reduce((a,w)=>a+w.d,0)/WEEKS.length).toFixed(1);
+document.getElementById('heroAvg').textContent=avg;
+document.getElementById('heroCap').textContent=
+  'Jun 1 – Aug 16 · '+WEEKS[WEEKS.length-1].d+(WEEKS[WEEKS.length-1].d===1?' day':' days')+' this week';
+let st=0; for(let i=WEEKS.length-1;i>=0;i--){ if(WEEKS[i].d>0) st++; else break; }
+document.getElementById('streak').textContent=st+'-week streak';
+
+
+// weeks across the bottom, days trained up. One hue, taller = more.
+const BW=326,BH=96,BB=20,BT=6,gap=5;
+const cw=(BW-gap*(WEEKS.length-1))/WEEKS.length;
+const maxd=6;
+let bars='',xlab='',whits='';
+WEEKS.forEach((w,i)=>{
+  const x=i*(cw+gap), h=Math.max(3,(BH-BB-BT)*w.d/maxd), y=BH-BB-h;
+  const cur=i===WEEKS.length-1;
+  const shade = w.d<=2?'var(--s1)': w.d===3?'var(--s2)':'var(--s3)';
+  bars+=`<rect x="${x}" y="${y}" width="${cw}" height="${h}" rx="4"
+          fill="${cur?'var(--s4)':shade}"/>`;
+  // Hit columns TILE edge-to-edge (one pitch wide, no gaps, no overlap) so every x maps to
+  // exactly one week and there are no dead zones. At 13 weeks the pitch is ~26 CSS px — under
+  // Apple's 44px guidance, which is written for isolated controls; a contiguous strip is more
+  // forgiving. The real fix is granularity following the range: 4 weeks -> ~80px bars, and
+  // 6 months should aggregate to monthly bars rather than shrink to 26 weekly ones.
+  const HIT=cw+gap, hx=x-gap/2;
+  whits+=`<rect x="${hx}" y="0" width="${HIT}" height="${BH-BB}" fill="transparent" style="cursor:pointer">
+          <title>Week ending ${w.end}: ${w.d} days trained — tap to view this week</title></rect>`;
+  bars+=`<text x="${x+cw/2}" y="${y-3.5}" text-anchor="middle" font-size="9.5" font-weight="700"
+          fill="${cur?'#15181f':'#5c6470'}">${w.d}</text>`;
+  // anchor the first/last labels inward so they cannot clip at the viewBox edges
+  if(i===0||i===6||cur){
+    const a = i===0?'start' : cur?'end' : 'middle';
+    const lx = i===0?0 : cur?BW : x+cw/2;
+    xlab+=`<text x="${lx}" y="${BH-6}" text-anchor="${a}" font-size="9.5"
+          fill="#5c6470">${cur?'this week':w.end}</text>`;
+  }
+});
+document.getElementById('weeks').innerHTML=
+ `<svg viewBox="0 0 ${BW} ${BH}" width="100%" style="display:block" role="img"
+   aria-label="Days trained per week, 13 weeks. Most recent 4 days.">${bars}${xlab}${whits}</svg>`;
+
+/* ---- strength trend: single series, one point per session ---- */
+// Epley estimated max = w*(1+r/30). Values below are real sets, converted.
+const S=[
+ {d:'May 17',w:175,r:8},{d:'May 21',w:175,r:9},{d:'May 28',w:180,r:8},{d:'Jun 4',w:180,r:9},
+ {d:'Jun 11',w:185,r:8},{d:'Jun 18',w:185,r:9},{d:'Jun 25',w:190,r:8},{d:'Jul 2',w:190,r:9},
+ {d:'Jul 9',w:195,r:8},{d:'Jul 16',w:195,r:9},{d:'Jul 23',w:200,r:8},{d:'Jul 30',w:200,r:9},
+ {d:'Aug 6',w:205,r:7},{d:'Aug 14',w:205,r:8},
+].map(p=>({...p,v:Math.round(p.w*(1+p.r/30))}));
+// star only TRUE running maxima
+let run=0; S.forEach(p=>{ p.pr = p.v>run; if(p.pr) run=p.v; });
+
+const W=326,H=150,PL=32,PRr=12,PT=20,PB=24;
+const vs=S.map(p=>p.v), lo=Math.floor(Math.min(...vs)/10)*10-5, hi=Math.ceil(Math.max(...vs)/10)*10+5;
+const xs=i=>PL+i*(W-PL-PRr)/(S.length-1);
+const ys=v=>PT+(hi-v)*(H-PT-PB)/(hi-lo);
+let grid='',lbl='';
+for(let g=Math.ceil(lo/10)*10; g<=hi; g+=10){
+  grid+=`<line x1="${PL}" y1="${ys(g)}" x2="${W-PRr}" y2="${ys(g)}" stroke="#eef1f5" stroke-width="1"/>`;
+  lbl+=`<text x="${PL-7}" y="${ys(g)+3.5}" text-anchor="end" font-size="9.5" fill="#5c6470">${g}</text>`;
+}
+const pts=S.map((p,i)=>`${xs(i)},${ys(p.v)}`).join(' ');
+let dots='',stars='',hits='';
+S.forEach((p,i)=>{
+  const last=i===S.length-1;
+  dots+=`<circle cx="${xs(i)}" cy="${ys(p.v)}" r="${last?5.5:4.4}" fill="${last?'#2563eb':'#fff'}"
+          stroke="#2563eb" stroke-width="2"/>`;
+  if(p.pr&&!last) stars+=`<text x="${xs(i)}" y="${ys(p.v)-8}" text-anchor="middle" font-size="10"
+          fill="#5c6470">★</text>`;
+  hits+=`<circle cx="${xs(i)}" cy="${ys(p.v)}" r="14" fill="transparent">
+          <title>${p.d}: ${p.w} lb × ${p.r} — est. max ${p.v} lb${p.pr?' (PR)':''}</title></circle>`;
+});
+let xl='';
+[[0,S[0].d,'start'],[Math.floor(S.length/2),S[Math.floor(S.length/2)].d,'middle'],
+ [S.length-1,S[S.length-1].d,'end']].forEach(([i,t,a])=>{
+  xl+=`<text x="${xs(i)}" y="${H-7}" text-anchor="${a}" font-size="9.5" fill="#5c6470">${t}</text>`;});
+// headline + delta computed from the same array the line is drawn from
+const lastY=ys(S[S.length-1].v);
+document.getElementById('chVal').textContent=S[S.length-1].v;
+document.getElementById('chDelta').textContent='▲ '+(S[S.length-1].v-S[0].v)+' lb';
+document.getElementById('chart').innerHTML=`
+<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible">
+  ${grid}
+  <polyline points="${pts}" fill="none" stroke="#2563eb" stroke-width="2"
+    stroke-linejoin="round" stroke-linecap="round"/>
+  ${dots}${stars}${lbl}${xl}
+  <text x="${xs(S.length-1)-9}" y="${lastY-9}" text-anchor="end" font-size="11" font-weight="700"
+    fill="#15181f">${S[S.length-1].v}</text>
+  ${hits}
+</svg>`;
+</script>
+</body>
+</html>
