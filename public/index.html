@@ -228,7 +228,8 @@
     .cat-pills::-webkit-scrollbar { display:none; }
     .cat-pill { flex:0 0 auto; background:var(--card); border:1px solid var(--line); color:var(--fg); border-radius:999px; padding:6px 13px; font-size:13px; cursor:pointer; }
     .cat-pill.on { background:var(--green); color:#fff; border-color:var(--green); }
-    .pick-list { flex:1; overflow-y:auto; padding-bottom:20px; }
+    .pick-list { flex:1; overflow-y:auto; padding-bottom:calc(84px + env(safe-area-inset-bottom)); }
+    .pick-list > .card { box-shadow:0 6px 18px rgba(20,24,31,.09); margin:4px 0 14px; }
     .ex-row { display:flex; align-items:center; gap:12px; padding:14px 2px; border-bottom:1px solid var(--line); cursor:pointer; }
     .ex-row:last-child { border-bottom:none; }
     .ex-row:active { background:#f1f3f6; }
