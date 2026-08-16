@@ -135,8 +135,8 @@ async function home(){
   // Primary action (compact)
   html += `<button class="blue btn-new" onclick="createFlow()">+ New workout</button>`;
 
-  // Your Sessions (prime spot)
-  const yours = sessions.filter(s=>s.participants.includes(ME.id) && s.name);
+  // Your Sessions (prime spot) — only sessions you've accepted/joined (exclude pending invites)
+  const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)));
   html += `<h2>Your Sessions</h2><div class="card">`;
   if(yours.length){
     for(const s of yours){
