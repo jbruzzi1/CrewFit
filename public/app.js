@@ -142,13 +142,13 @@ async function home(){
     for(const s of yours){
       const label = s.name;
       html += `<div class="lib-item" onclick="openSession('${s.id}')">
-        <div><b>${esc(label)} - ${s.exercises.length} exercises</b><div class="tag">${fmtDate(s.scheduledAt)}</div></div></div>`;
+        <div><b>${esc(label)} · ${s.exercises.length} exercises</b><div class="tag">${fmtDate(s.scheduledAt)}</div></div></div>`;
     }
   } else html += `<div class="muted">No sessions yet.</div>`;
   html += `</div>`;
 
-  // Friend's Activity (lighter strip)
-  html += `<h2 class="light">Friend's Activity</h2><div class="feed-strip">`;
+  // Friend's Activity (lighter strip, in an elevated card to match Your Sessions)
+  html += `<h2 class="light">Friend's Activity</h2><div class="card feed-strip">`;
   if(feed.length){
     for(const f of feed){
       const who = await friendName(f.by);

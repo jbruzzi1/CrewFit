@@ -9,7 +9,7 @@
   <link rel="apple-touch-icon" href="/icon-192.png" />
   <title>CrewFit</title>
   <style>
-    :root { --bg:#f7f8fa; --card:#ffffff; --fg:#15181f; --muted:#6b7280; --green:#16a34a; --blue:#2563eb; --red:#dc2626; --line:#e6e8ec; }
+    :root { --bg:#fbfbfd; --card:#ffffff; --fg:#15181f; --muted:#6b7280; --green:#16a34a; --blue:#2563eb; --red:#dc2626; --line:#edeff2; }
     * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
     html,body { margin:0; padding:0; background:var(--bg); color:var(--fg); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
     body { max-width:480px; margin:0 auto; padding-bottom:calc(72px + env(safe-area-inset-bottom)); }
@@ -27,21 +27,21 @@
     .sess-actions .sm.blue { border-color:#bcd4fb; color:#2563eb; background:#e8f1ff; }
     .sess-actions .sm.red { border-color:#f1b9b9; color:#dc2626; background:#fbe9e9; }
     .sess-actions .sm.sec { border-color:#b0b6c0; color:var(--fg); background:transparent; }
-    .home-head { padding-top:calc(16px + env(safe-area-inset-top)); }
-    .home-top { display:flex; align-items:center; justify-content:space-between; margin:0 0 14px; }
+    .home-head { padding-top:calc(22px + env(safe-area-inset-top)); }
+    .home-top { display:flex; align-items:center; justify-content:space-between; margin:0 0 16px; }
     .home-brand { font-size:20px; font-weight:700; letter-spacing:.2px; }
-    .home-avatar { width:40px; height:40px; border-radius:50%; background:var(--green); color:#fff; display:flex; align-items:center; justify-content:center; font-size:17px; font-weight:700; cursor:pointer; object-fit:cover; overflow:hidden; box-shadow:0 0 0 3px var(--card), 0 0 0 4px var(--line); }
-    .home-greet { font-size:17px; color:var(--text); font-weight:700; }
+    .home-avatar { width:44px; height:44px; border-radius:50%; background:var(--green); color:#fff; display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:700; cursor:pointer; object-fit:cover; overflow:hidden; box-shadow:0 2px 8px rgba(22,163,74,.25); }
+    .home-greet { font-size:19px; color:var(--fg); font-weight:700; background:linear-gradient(90deg,#3b82f6,#60a5fa);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent; }
     .act-chip { flex:0 0 auto; font-size:11px; font-weight:700; border-radius:999px; padding:3px 8px; vertical-align:middle; }
     .act-chip.pr { background:rgba(245,158,11,.15); color:#b45309; }
     .act-chip.done { background:rgba(16,185,129,.15); color:var(--green); }
-    .btn-new { padding:11px; font-size:14px; border-radius:12px; margin:0 0 16px; width:auto; align-self:flex-start; }
-    h2 { font-size:13px; margin:24px 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; }
-    h2.light { margin:20px 0 6px; }
+    .btn-new { padding:13px 18px; font-size:14px; border-radius:14px; margin:16px 0 8px; width:auto; align-self:flex-start; box-shadow:0 4px 12px rgba(37,99,235,.25); }
+    h2 { font-size:12px; margin:28px 0 12px; color:var(--muted); text-transform:uppercase; letter-spacing:.8px; font-weight:600; }
+    h2.light { margin:24px 0 8px; }
     h2.pt { margin-top:84px; }
     h2.sep { margin-top:28px; padding-top:18px; border-top:1px solid var(--line); }
     .inv-banner { background:#f4f8ff; border:1px solid #dbe7fb; border-radius:14px; padding:10px 12px; margin:0 0 16px; }
-    .inv-empty { font-size:12.5px; color:var(--muted); background:transparent; border:1px dashed var(--line); border-radius:12px; padding:10px 12px; margin:0 0 16px; }
+    .inv-empty { font-size:12.5px; color:var(--muted); background:#f4f6f9; border:1px solid var(--line); border-radius:12px; padding:11px 12px; margin:0 0 16px; }
     .inv-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
     .inv-row + .inv-row { margin-top:8px; padding-top:8px; border-top:1px solid #e6eefb; }
     .inv-info { font-size:13px; color:var(--fg); line-height:1.35; }
@@ -63,7 +63,7 @@
     input,select { width:100%; padding:10px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--fg); margin:5px 0; font:inherit; font-size:14px; }
     textarea { width:100%; box-sizing:border-box; padding:9px 11px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--fg); font:inherit; font-size:13px; resize:none; min-height:60px; }
     .btn-primary { width:100%; box-sizing:border-box; margin-top:18px; padding:14px; border-radius:12px; border:none; background:var(--blue); color:#fff; font:inherit; font-size:15px; font-weight:700; cursor:pointer; }
-    .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:6px 12px; margin:10px 0; box-shadow:0 1px 3px rgba(0,0,0,.05); }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:8px 14px; margin:12px 0; box-shadow:0 6px 18px rgba(20,24,31,.06); }
     .notes-box { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:9px 11px; margin:10px 0; font-family:inherit; font-size:13px; line-height:1.45; color:var(--fg); min-height:60px; box-sizing:border-box; }
     /* Posted-workout (read-only post) view */
     .pp-head { display:flex; align-items:center; justify-content:space-between; gap:10px; position:relative; }
@@ -153,7 +153,7 @@
     .ex-card .ex-meta { flex:0 0 auto; display:flex; align-items:center; }
     .ex-card .tag { font-size:12px; color:var(--muted); white-space:nowrap; }
     .ex-card .req { margin-top:10px; padding-top:10px; padding-bottom:0; border-top:1px solid var(--line); }
-    .nav { position:fixed; bottom:0; left:0; right:0; max-width:480px; margin:0 auto; display:flex; background:var(--card); border-top:1px solid var(--line); box-shadow:0 -1px 4px rgba(0,0,0,.05); padding-bottom:env(safe-area-inset-bottom); }
+    .nav { position:fixed; bottom:0; left:0; right:0; max-width:480px; margin:0 auto; display:flex; background:var(--card); border-top:1px solid var(--line); box-shadow:0 -2px 10px rgba(0,0,0,.04); padding-bottom:env(safe-area-inset-bottom); }
     .nav button { background:transparent; color:#3a3f47; border-radius:0; margin:0; padding:8px 0 10px; font-size:11px; flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; }
     .nav button svg { display:block; }
     .nav button.active { color:var(--blue); }
@@ -399,6 +399,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=139"></script>
+  <script src="app.js?v=140"></script>
 </body>
 </html>
