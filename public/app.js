@@ -1073,7 +1073,7 @@ function renderLibGroups(){
       (e.muscle_groups||[]).join(' ').toLowerCase().includes(q) ||
       (e.equipment||[]).join(' ').toLowerCase().includes(q)
     ).sort((a,b)=>a.name.localeCompare(b.name));
-    $('lib2').innerHTML = matches.length ? matches.map(exRowHtml).join('')
+    $('lib2').innerHTML = matches.length ? `<div class="card">${matches.map(exRowHtml).join('')}</div>`
       : '<div class="muted" style="padding:20px;text-align:center">No exercises found.</div>';
     return;
   }
@@ -1086,7 +1086,7 @@ function renderLibGroups(){
         <div class="mg-card-body"><div class="mg-card-name">${esc(m)}</div><div class="mg-card-count">${counts[m]} exercises</div></div>
         <div class="mg-chev">›</div>
       </div>`).join('');
-    return `<div class="lib-cat">${esc(cat.name)}</div>${rows}`;
+    return `<div class="lib-cat">${esc(cat.name)}</div><div class="card">${rows}</div>`;
   }).join('');
   $('lib2').innerHTML = blocks;
 }
@@ -1168,7 +1168,7 @@ function renderLibExercises(){
     (!eq || eqFamilies(e).includes(eq)) &&
     (!q || e.name.toLowerCase().includes(q) || (e.muscle_groups||[]).join(' ').includes(q))
   ).sort((a,b)=>a.name.localeCompare(b.name));
-  $('lib2').innerHTML = list.length ? list.map(exRowHtml).join('')
+  $('lib2').innerHTML = list.length ? `<div class="card">${list.map(exRowHtml).join('')}</div>`
     : '<div class="muted" style="padding:20px;text-align:center">No exercises here.</div>';
 }
 function openCreateEx(presetMuscle){
