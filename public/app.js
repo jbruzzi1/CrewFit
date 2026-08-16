@@ -109,23 +109,33 @@ async function home(){
     : `<div class="home-avatar" onclick="showTab('me')">${esc(initial.toUpperCase())}</div>`;
   let html = `<div class="wrap home-head">
     <div class="home-top">
-      <div><div class="home-brand">CrewFit</div><div class="home-greet">${esc(hypeLine)}, ${esc(first)}</div></div>
+      <div class="home-greet">${esc(hypeLine)}, ${esc(first)}</div>
       ${homeAvatarHtml}
-    </div>
-    <button class="blue btn-hero" onclick="createFlow()">+ New workout</button>`;
+    </div>`;
 
-  // Section 1: Friend's Activity (completed activity, not invites)
-  html += `<h2>Friend's Activity</h2><div class="card">`;
-  if(feed.length){
-    for(const f of feed){
-      const who = await friendName(f.by);
-      const ic = f.type==='pr' ? `<span class="act-chip pr">PR</span>` : `<span class="act-chip done">✓</span>`;
-      html += `<div class="lib-item"><div>${ic} <b>${esc(who)}</b> ${esc(f.text)}</div></div>`;
+  // Invites slot: blue banner when pending, else subtle empty-state hint (so new users learn the feature exists)
+  const pending = sessions.filter(s=>Array.isArray(s.invited)&&s.invited.includes(ME.id));
+  if(pending.length){
+    html += `<div class="inv-banner">`;
+    for(const s of pending){
+      const creatorName = await friendName(s.creatorId);
+      html += `<div class="inv-row">
+        <div class="inv-info"><b>${esc(creatorName)}</b> invited you<div class="tag">${esc(s.name||'Workout')} · ${s.exercises.length} exercises</div></div>
+        <div class="row" style="justify-content:flex-end; gap:6px;">
+          <button class="sm blue" onclick="event.stopPropagation();acceptInvite('${s.id}')">Accept</button>
+          <button class="sm gray" onclick="event.stopPropagation();declineInvite('${s.id}')">Decline</button>
+        </div>
+      </div>`;
     }
-  } else html += `<div class="muted">No recent activity from friends.</div>`;
-  html += `</div>`;
+    html += `</div>`;
+  } else {
+    html += `<div class="inv-empty">No invites yet — friends you train with will show up here.</div>`;
+  }
 
-  // Section 2: Your Sessions (only labeled routines)
+  // Primary action (compact)
+  html += `<button class="blue btn-new" onclick="createFlow()">+ New workout</button>`;
+
+  // Your Sessions (prime spot)
   const yours = sessions.filter(s=>s.participants.includes(ME.id) && s.name);
   html += `<h2>Your Sessions</h2><div class="card">`;
   if(yours.length){
@@ -137,20 +147,15 @@ async function home(){
   } else html += `<div class="muted">No sessions yet.</div>`;
   html += `</div>`;
 
-  // Section 3: Invites Awaiting (pending invites, with who invited you)
-  const pending = sessions.filter(s=>Array.isArray(s.invited)&&s.invited.includes(ME.id));
-  html += `<h2>Invites Awaiting</h2><div class="card">`;
-  if(pending.length){
-    for(const s of pending){
-      const creatorName = await friendName(s.creatorId);
-      html += `<div class="lib-item" onclick="openSession('${s.id}')">
-        <div><b>${esc(creatorName)}</b> invited you<div class="tag">${esc(s.name||'Workout')} - ${s.exercises.length} exercises</div><div class="tag">${fmtDate(s.scheduledAt)}${s.location?` · ${esc(s.location)}`:''}</div></div>
-        <div class="row" style="justify-content:flex-end; gap:8px; margin-top:6px;">
-          <button class="sm blue" onclick="event.stopPropagation();acceptInvite('${s.id}')">Accept</button>
-          <button class="sm gray" onclick="event.stopPropagation();declineInvite('${s.id}')">Decline</button>
-        </div></div>`;
+  // Friend's Activity (lighter strip)
+  html += `<h2 class="light">Friend's Activity</h2><div class="feed-strip">`;
+  if(feed.length){
+    for(const f of feed){
+      const who = await friendName(f.by);
+      const ic = f.type==='pr' ? `<span class="act-chip pr">PR</span>` : `<span class="act-chip done">✓</span>`;
+      html += `<div class="feed-item">${ic} <b>${esc(who)}</b> ${esc(f.text)}</div>`;
     }
-  } else html += `<div class="muted">No invites right now.</div>`;
+  } else html += `<div class="muted">No recent activity from friends.</div>`;
   html += `</div></div>`;
   $('app').innerHTML = html;
 }

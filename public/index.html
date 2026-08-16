@@ -27,18 +27,28 @@
     .sess-actions .sm.blue { border-color:#bcd4fb; color:#2563eb; background:#e8f1ff; }
     .sess-actions .sm.red { border-color:#f1b9b9; color:#dc2626; background:#fbe9e9; }
     .sess-actions .sm.sec { border-color:#b0b6c0; color:var(--fg); background:transparent; }
-    .home-head { padding-top:calc(20px + env(safe-area-inset-top)); }
-    .home-top { display:flex; align-items:center; justify-content:space-between; margin:0 0 20px; }
+    .home-head { padding-top:calc(16px + env(safe-area-inset-top)); }
+    .home-top { display:flex; align-items:center; justify-content:space-between; margin:0 0 14px; }
     .home-brand { font-size:20px; font-weight:700; letter-spacing:.2px; }
     .home-avatar { width:40px; height:40px; border-radius:50%; background:var(--green); color:#fff; display:flex; align-items:center; justify-content:center; font-size:17px; font-weight:700; cursor:pointer; object-fit:cover; overflow:hidden; box-shadow:0 0 0 3px var(--card), 0 0 0 4px var(--line); }
-    .home-greet { font-size:15px; color:var(--text); margin-top:4px; font-weight:600; }
+    .home-greet { font-size:17px; color:var(--text); font-weight:700; }
     .act-chip { flex:0 0 auto; font-size:11px; font-weight:700; border-radius:999px; padding:3px 8px; vertical-align:middle; }
     .act-chip.pr { background:rgba(245,158,11,.15); color:#b45309; }
     .act-chip.done { background:rgba(16,185,129,.15); color:var(--green); }
-    .btn-hero { padding:15px; font-size:15px; border-radius:14px; margin:0 0 22px; }
+    .btn-new { padding:11px; font-size:14px; border-radius:12px; margin:0 0 16px; width:auto; align-self:flex-start; }
     h2 { font-size:13px; margin:24px 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; }
+    h2.light { margin:20px 0 6px; }
     h2.pt { margin-top:84px; }
     h2.sep { margin-top:28px; padding-top:18px; border-top:1px solid var(--line); }
+    .inv-banner { background:#f4f8ff; border:1px solid #dbe7fb; border-radius:14px; padding:10px 12px; margin:0 0 16px; }
+    .inv-empty { font-size:12.5px; color:var(--muted); background:transparent; border:1px dashed var(--line); border-radius:12px; padding:10px 12px; margin:0 0 16px; }
+    .inv-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .inv-row + .inv-row { margin-top:8px; padding-top:8px; border-top:1px solid #e6eefb; }
+    .inv-info { font-size:13px; color:var(--fg); line-height:1.35; }
+    .inv-info .tag { margin-top:2px; }
+    .feed-strip { display:flex; flex-direction:column; gap:2px; }
+    .feed-item { font-size:13px; color:var(--fg); line-height:1.5; padding:7px 0; border-bottom:1px solid var(--line); }
+    .feed-item:last-child { border-bottom:none; }
     .muted { color:var(--muted); font-size:12px; }
     .sm-text { font-size:11px; }
     .swap-note { font-size:11px; color:var(--muted); font-weight:400; }
@@ -389,6 +399,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=138"></script>
+  <script src="app.js?v=139"></script>
 </body>
 </html>
