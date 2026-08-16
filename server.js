@@ -196,7 +196,7 @@ function profileOf(id, viewerId) {
       return {
         id: s.id,
         name: s.name || 'Workout',
-        date: (s.history.find(h=>h.userId===id)||{}).date || (s.scheduledAt ? s.scheduledAt.slice(0,10) : ''),
+        date: (s.history.find(h=>h.userId===id)||{}).date || (s.scheduledAt ? String(s.scheduledAt).slice(0,10) : ''),
         exerciseCount: (s.exercises||[]).length,
         firstExercises: (s.exercises||[]).slice(0,3).map(e=>e.name),
         at: post ? post.at : (s.scheduledAt||''),
