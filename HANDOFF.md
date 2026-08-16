@@ -1,6 +1,8 @@
 # SpotMe (CrewFit) — Engineer Handoff
 
-Social/collaborative fitness PWA. Founders: Jeff + Brian (non-technical). The agent builds; they validate on iPhone 16 Pro, portrait.
+Social/collaborative fitness PWA. Founders: Jeff + Brian (non-technical). Claude builds, renders, and verifies; Jeff validates on iPhone 16 Pro, portrait, and is the only one who approves a deploy.
+
+> **Agent rules live in `CLAUDE.md`** (short, auto-loaded every session) and **`CLAUDE_HANDOFF.md`** (full context, correction history). Read those first — this file is the technical layer.
 
 ## Stack
 - Node `server.js` (Express, in-memory `DB` persisted to disk via `save(DB)`), no ORM.
@@ -16,6 +18,8 @@ Social/collaborative fitness PWA. Founders: Jeff + Brian (non-technical). The ag
 - v141 — greeting back to solid near-black (`color:var(--fg)`); blue stays on CTA + active nav only
 - v142 — pending invites excluded from "Your Sessions" (filter: `participants.includes(ME.id) && !(invited.includes(ME.id))`)
 - v143 — after Accept, session view hides the Respond menu (`!isCreator && !s.post && !isParticipant`); transitions to joined state
+- v144 — Workouts tab gets the v140 treatment (muscle-group / exercise / search lists in elevated `.card`, h2-style category labels, breathing room)
+- v145 — Workouts tab polish: stronger `.pick-list > .card` elevation + fixed list scrolling under the bottom nav (`.pick-list` padding-bottom `84px + safe-area`)
 
 ## Invite / session data model (server.js)
 - Create: `participants:[creatorId]`, `invited:[...inviteeIds]`.
@@ -40,6 +44,8 @@ node diag_x.cjs   # uses http requests to /api/register, /api/friends/*, /api/se
 ```
 Seeding pattern: register Jeff + friends, `/api/friends/request` + `/api/friends/accept`, create sessions, then UI-login (`#lx` username, `#lp` pin, `button.blue`) and screenshot. The app reads token from `localStorage` key `crewfit_token`. Prefer UI-login + click path over boot-token (boot fetch is flaky in Playwright).
 
+**You own this step — and rendering is not reviewing.** Before showing Jeff, have a subagent review the diff + screenshot cold, and check the edges specifically (bottom ~90px for nav overlap, top safe-area, side gutters). v145 exists because a v144 screenshot showed the list running under the nav and the agent that made it did not notice. Run against the real `server.js`; a static mock proves CSS only, not invites/accept/decline/logging. State anything you could not verify.
+
 ## Known-correct areas (do not "fix" — already verified)
 - Decline flow: declining from the home banner removes the invite, no error/zombie.
 - Profile "Your Workouts": correctly excludes pending invites.
@@ -49,7 +55,7 @@ Seeding pattern: register Jeff + friends, `/api/friends/request` + `/api/friends
 ## Open questions / likely next work
 - The `confirm()` / `prompt()` native dialogs on Accept/Decline/Save-Routine — fine on iPhone but worth a custom modal if polish is needed.
 - "Request Changes" / "Save This Routine" from the pending Respond menu re-render but keep Accept/Decline (correct, but `prompt()` UX is native).
-- Other pages (Workouts tab, New workout creation, Profile) have NOT been given the v140 "open it up" visual treatment — candidate for consistency pass.
+- Profile and New workout creation have NOT been given the v140 "open it up" visual treatment — the main remaining consistency gap. (Workouts tab is done as of v144/v145.)
 
 ## Commands cheat-sheet
 - Syntax check: `node --check public/app.js && node --check server.js`

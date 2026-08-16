@@ -42,6 +42,8 @@ Jeff was burned (Aug 15, 2026: an agent deployed a profile thumbnail redesign **
 - v141 — greeting back to solid near-black (`color:var(--fg)`); blue stays on CTA + active nav only
 - v142 — pending invites excluded from "Your Sessions" (filter `participants.includes(ME.id) && !(invited.includes(ME.id))`)
 - v143 — after Accept, session view hides Respond menu (`!isCreator && !s.post && !isParticipant`); transitions to joined state. Decline-from-banner verified clean; profile invites already correctly excluded.
+- v144 — Workouts tab gets the v140 treatment: muscle-group / exercise / search lists wrapped in elevated `.card`, h2-style category labels, more breathing room. Pure CSS + wrapper pass, no behavior change.
+- v145 — Workouts tab polish: stronger card elevation on `.pick-list > .card` (matches home), and fixed the exercise list scrolling under the bottom nav (`.pick-list` padding-bottom `84px + safe-area`, was 20px).
 
 ## 5. INVITE / SESSION DATA MODEL (server.js)
 - Create: `participants:[creatorId]`, `invited:[...inviteeIds]`.
@@ -61,6 +63,7 @@ Jeff was burned (Aug 15, 2026: an agent deployed a profile thumbnail redesign **
 8. **"Pending invites shouldn't show in Your Sessions."** Wanted invites ONLY in top banner until accepted. → v142 fix.
 9. **"What if there are no invites?"** Worried button would sit low / slot empty+confusing. Verified: banner collapses, button moves up under header — no break. But he wanted new users to LEARN the invite feature exists → kept grey empty-state hint.
 10. **ENV TRAP (agent infra, not product):** terminal can flip to broken Singularity/Apptainer mode → all tools fail 'apptainer not found'. Recovery: fully QUIT the agent app + NEW session. Shell bug prepends 'cd /root' → pass terminal `workdir` param. (Agent-specific; may not hit every environment, but good to know.)
+11. **Rendering a screenshot is not the same as SEEING it.** (Aug 16, 2026) An agent shipped a v144 Workouts pass with `.pick-list` bottom padding of 20px, so the exercise list scrolled under the bottom nav. It had rendered the page, screenshotted it, and sent Jeff the image with the nav sitting on top of the content — and still did not notice. Caught only because a second pass (v145) looked again. → A builder is the worst reviewer of its own change: it sees what it intended, not what is there. Use §8's cold-review step, and check the bottom ~90px of every full-page render specifically.
 
 ## 7. KNOWN-CORRECT AREAS (do NOT "fix" — already verified)
 - Decline flow (banner): removes invite, no error/zombie.
@@ -77,13 +80,31 @@ node diag_x.cjs                       # terminal 2: http reqs to /api/register,/
 ```
 Seeding: register Jeff + friends, `/api/friends/request` + `/api/friends/accept`, create sessions, then UI-login (`#lx` username, `#lp` pin, `button.blue`) + screenshot. Prefer UI-login+click over boot-token (boot fetch flaky in Playwright). **You own the render/verify step** — render + eyeball before showing Jeff.
 
+### Reviewing your own work (nobody else is checking it)
+Rendering is not reviewing. You will look straight at a bug and not see it, because you see
+the change you intended rather than the pixels in front of you — this has already happened
+(§6.11). Build the skepticism in deliberately:
+- **Cold review.** Before showing Jeff, hand the diff + screenshot to a subagent with no
+  knowledge of why you built it that way, and ask what is wrong with it. It is not blind
+  where you are blind.
+- **Check the edges.** Bottom ~90px (nav overlap), top safe-area, and both horizontal
+  gutters. That is where layout bugs hide and where the eye skips.
+- **Real server, not a mock.** A static mock proves CSS only — it cannot prove invites,
+  accept/decline, logging, or session state. Run the harness above.
+- **Say what you did NOT verify.** Name it plainly; never let silence imply it passed.
+- **Sandbox caveat:** a cloud session with a blocked npm registry cannot install
+  `express`/`web-push`, so `server.js` will not run and only static/CSS rendering is
+  possible. Disclose that explicitly. Claude Code on Jeff's machine has working npm
+  (`node_modules/` is already present) and runs the full harness.
+
 ## 9. AGENT ROLE (how Jeff runs this)
 - **You (Claude Code)** = the build agent. Write code, run checks, render + verify the UI (use the harness in §8), commit locally.
 - **Loop:** Jeff gives a task → you build + render + verify → show Jeff the change (full-page screenshot) → wait for his explicit "go" → deploy.
-- **Hard:** never `fly deploy` without Jeff's explicit go. Render + show him the change FIRST (see §1).
+- **Hard:** never `fly deploy` without Jeff's explicit go. Owning the verify step is NOT owning the deploy decision — that stayed with Jeff. Render + show him the change FIRST (see §1).
+- **History:** a separate verify/render agent (Hermes) used to own §8. Jeff consolidated to Claude-only on Aug 16, 2026. Leave `.hermes/hermes-agent/` and `.hermes/memories/MEMORY.md` on disk regardless — retiring the workflow is not a reason to delete his files.
 
 ## 10. OPEN / LIKELY NEXT WORK
-- Workouts tab / New workout creation haven't had the v140 "open it up" visual pass — consistency candidate.
+- **Profile tab + New workout creation** still haven't had the v140 "open it up" visual pass — the main remaining consistency gap. (Workouts tab is done as of v144/v145.)
 - `confirm()` / `prompt()` native dialogs on Accept/Decline/Save-Routine work on iPhone but a custom modal is polish.
 - "Request Changes" / "Save This Routine" from pending Respond menu re-render but keep Accept/Decline (correct, but native `prompt()` UX).
 
