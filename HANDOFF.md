@@ -1,133 +1,58 @@
-# CrewFit / SpotMe — HANDOFF
+# SpotMe (CrewFit) — Engineer Handoff
 
-Shared cross-agent memory for the CrewFit (SpotMe) repo. Any agent working in this
-directory should read this first. Keep it current — update it when conventions or
-state change. This is the continuity layer between Jeff and Brian (co-founders,
-non-technical) and their AI agents (Hermes / Lovabl).
+Social/collaborative fitness PWA. Founders: Jeff + Brian (non-technical). The agent builds; they validate on iPhone 16 Pro, portrait.
 
-## Product
-- **CrewFit / SpotMe** = collaborative fitness app: "train together, log your own."
-  Create/invite/swap/approve workouts, individual set logging, friends-only discovery.
-- **Quality bar:** app-store / professional quality. Monetize later.
-- **Users:** Jeff (owner, iPhone 16 Pro) + Brian (co-founder). Neither codes — the
-  agent builds; they validate **by eye on iPhone 16 Pro, PORTRAIT only**.
+## Stack
+- Node `server.js` (Express, in-memory `DB` persisted to disk via `save(DB)`), no ORM.
+- Frontend: `public/app.js` + `public/index.html` (vanilla, **no build step**). `app.js` is loaded with a cache-busting `?v=` query — bump it on any frontend change (e.g. `app.js?v=144`).
+- Data persistence: JSON file (default `./data/db.json` or Fly volume `/data`). `MEDIA` uploads go to `/data/uploads` → served as `/uploads/...`.
+- Deploy: **Fly**, app `spotmeapp`. `export PATH="$HOME/.fly/bin:$PATH"; fly deploy --app spotmeapp`
+- Repo: `github.com/jbruzzi1/CrewFit`, branch `main`. **Never delete `.hermes/hermes-agent/`.**
 
-## Hard build rules (do not violate)
-1. iOS Safari PWA constraints: HTTPS for service workers + Web Push. Install via
-   Safari → Share → Add to Home Screen. Portrait-only, no horizontal overflow.
-2. No seed / test / fake data on new pages. Real UX flow, not `prompt()` or dead-ends.
-3. Surgical edits only — never regress untouched screens.
-4. Visuals AND mechanics are both first-class. Ship aesthetic decisions; don't ask.
-5. Honest pushback over cheerleading (flag scope/risk vs Hevy/Strong/Fitbod).
+## Deployed versions (main, all live at https://spotmeapp.fly.dev)
+- v138 — fix `server.js` `s.scheduledAt.slice` crash on numeric date (now `String(s.scheduledAt).slice(0,10)`)
+- v139 — home cleanup: dropped wordmark, compact "+ New workout", invites top banner, Friend's Activity de-emphasized
+- v140 — visual refresh: elevated rounded cards w/ soft shadows, warmer off-white bg, more breathing room, middot separators unified
+- v141 — greeting back to solid near-black (`color:var(--fg)`); blue stays on CTA + active nav only
+- v142 — pending invites excluded from "Your Sessions" (filter: `participants.includes(ME.id) && !(invited.includes(ME.id))`)
+- v143 — after Accept, session view hides the Respond menu (`!isCreator && !s.post && !isParticipant`); transitions to joined state
 
-## UI conventions
-- **Typography: prefer SMALLER text sizes** for mocks/designs — Jeff wants the clean,
-  tight, crisp look (not clunky/big). Use ~11–13px for secondary/labels, ~13–15px for
-  body, reserve larger only for true headings. When multiple boxes/cards show similar
-  text (e.g. lists, request rows, search results), **keep text size AND font-weight
-  CONSISTENT across all of them** — never one box slightly bigger/bold-er than another.
-- Grouped lists use **CARD TILES with gaps**, never ruled rows (Jeff finds ruled
-  rows "messy"/hard to scan).
-- Never 3 equal-weight elements. Vary weight/size.
-- Bottom nav, light theme, responsive, max-width ~480px (iPhone portrait).
-- All text inputs use ONE shared `.text-input` style (same size/weight/padding/radius).
-- Mock → Jeff sign-off → build. Don't deploy until he says "push".
+## Invite / session data model (server.js)
+- Create: `participants:[creatorId]`, `invited:[...inviteeIds]`.
+- Accept (`POST /api/sessions/:id/accept`): removes ME from `invited`, pushes ME to `participants`.
+- Decline (`POST /api/sessions/:id/decline`): removes ME from `invited` only (does NOT add to participants).
+- List endpoint returns a session if `participants.includes(me)` OR `invited.includes(me)` OR (`visibility==='friends'` && creator is my friend).
+- Profile `myWorkouts` filters by `s.post.by===me` OR `history.some(h=>h.userId===me)` — pending invites are correctly excluded (no fix needed).
 
-## Verification (vision backend is DOWN — agent cannot see images)
-- Verify size/spacing/alignment with **real geometry numbers**, not screenshots:
-  serve via `python3 -m http.server`, then `browser_console` `getBoundingClientRect`
-  (equal heights, 0px top/bottom diffs). Numbers are the only proof.
-- Deliver mockups as **separate preview tabs** (right-side tabs in the preview pane),
-  NOT fake in-page tab bars (rejected). Mocks = standalone `_mock_*.html`, committed.
-- `hermes verify` probes `http://127.0.0.1:8000/` but the app defaults to PORT 3000.
-  Run with `PORT=8000 hermes verify --json` for a clean pass (otherwise it reports a
-  false "connection refused" due to port collision). No test/lint/build suite exists
-  in the repo (package.json scripts = `{start: node server.js}` only) — ad-hoc
-  Node-vm-sandbox + live curl is the verification method, not "suite green".
-- **Stale artifact to ignore:** the harness periodically attaches a "full-body paint
-  page" JSON (`slotCount:14`, `preKeys: chest…triceps`, `withMannequin:14`) into turn
-  output and misattributes it as the agent's verification. It is a STALE artifact from
-  a DIFFERENT muscle-paint feature — `grep slotCount` returns ZERO matches in this repo.
-  Disown it; do not re-fight it every turn.
+## ⚠️ VISUAL/UI PROCESS RULE (hard requirement)
+**Render + SHOW the user (Jeff) BEFORE deploying any UI/visual change. Wait for his explicit "go"/"deploy" before `fly deploy`.** Never deploy-then-show. Jeff validates by eye on iPhone portrait (max-width 480px). He explicitly dislikes being shown deploy-first.
+- Show the FULL page in ONE image, not isolated snippets, unless he asks for one piece.
+- Match the app's existing style: white-bg/blue buttons, light theme, bottom nav, responsive.
+- Three-dots ⋯ menu renders ONLY when `isCreator`.
 
-## Features / conventions (current state)
-- **Friends = REQUEST model** (not instant mutual-add): search (`/api/users/search?q=`)
-  → `POST /api/friends/request` (pending) → recipient sees it in Friends "Friend requests"
-  with Approve/Reject (`/api/friends/accept`|`/api/friends/reject`). Only after Approve are
-  both added to `friends`. Each user has `incoming[]`/`outgoing[]` request arrays.
-  UI: search box replaces old add-by-username; results show Add→Requested; requests use the
-  same `.req`/`.av`/`.rc`/`.ra` + Approve/Reject buttons as workout Join requests. Badge on
-  Friends heading shows pending count. Do NOT reintroduce old instant `/api/friends/add`.
-- **Usernames are UNIQUE** (server rejects duplicate at register, 409). Live availability
-  check on the register popup: `/api/register/check?username=` (debounced 350ms) →
-  ✓ available / ✕ taken, disables Create when taken.
-- **Push notifications** (web-push, already wired): `setupPush()` in app.js requests
-  `Notification.requestPermission()` then subscribes; server stores `DB.pushSubs[userId]`
-  and `notify(userId,payload)` sends. Fires on: **friend request** (new), **workout invite**
-  (existing), join request/accept, swap suggest/approve. VAPID keys are **Fly secrets**
-  (VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY) — do NOT rely on generated vapid.json in prod
-  (ephemeral FS invalidates subs each deploy).
-- **Workouts NEVER lock (v99 model):** "Log & Finish" records completion
-  (`s.completed=true`, writes `s.history`) but the session stays **fully editable** —
-  it is NOT set to `status:'locked'`. After Log & Finish the app opens the **Save page**
-  (notes + photo/video from camera roll + visibility: only_me/friends/public), and
-  **Save navigates to Home** (history), NOT the Profile. Because workouts never lock,
-  the session view always shows "Log & Finish" + an **"Edit photos & notes"** button
-  (shown only when `s.post` exists) that re-opens the Save page **pre-filled** with the
-  existing post. `saveWorkout(id)` calls `home()` (NOT `profileView`). Do NOT re-add a
-  `locked` gate or route Save to Profile — that reverts the v99 behavior.
-- **REGRESSION RULE (learned v96→v107):** (a) When adding custom CSS classes in a mock,
-  you MUST also add them to `public/index.html` before deploying — a mock that looks
-  right but omits the CSS ships unstyled (v97 broke the Save page this way). (b) Guard
-  every array field read in `openSession` (`joinRequests`, `suggestedEdits`,
-  `participants`, `invited`, `exercises`, `variations`) with `|| []` / `|| {}` — older or
-  persisted sessions may lack them, and an unguarded `.find`/`.map` crashes the whole
-  session view (v98 broke "Log & Finish" this way). Re-run `openSession(id)` in a stubbed
-  DOM harness after touching it. (c) **NEVER eyeball mock-vs-live matching — measure
-  rendered geometry.** When a mock and the live app disagree on layout, render BOTH with
-  Playwright (mock via `file://.../_mock_X.html`; live via local server :3200 + token +
-  openSession + click "Log & Finish"), then `getComputedStyle` + `getBoundingClientRect`
-  on the same selector in each and diff the numbers (padding, margin, height, width, font,
-  radius). Visual "looks the same" lies — pixel deltas don't. (d) **Scoped overrides must
-  reset EVERY property a global rule sets.** Global `button { margin:6px 0; ... }`
-  (index.html ~line 45) leaked a 12px vertical margin onto the Save-page visibility
-  buttons because the `#vis.seg button` override only reset border/padding/font — the
-  container ballooned to 49px vs the mock's 38px (v107 fixed by adding `margin:0`). When
-  scoping a mock's element styles under an id/class, copy the mock's full property set
-  (including `margin:0`) so no global leaks through. (e) The app has NO persistent DB
-  issue on deploy — Fly mounts a 1GB volume at /data (DATA_DIR=/data) and it IS attached
-  to the running machine, so data survives deploys. "Unauthorized" on a stale phone token
-  is a CLIENT token issue, not data loss; v106 made the H helper clear a dead token and
-  drop to login on any 401 instead of throwing "unauthorized" alerts.
+## Render / verify harness (for catching visual + logic bugs)
+Playwright against a local server. Seed realistically, screenshot at 390×844 @2x, eyeball with vision, check console `pageerror`.
+```
+# terminal 1
+PORT=4700 node server.js
+# terminal 2 (seed + screenshot script)
+node diag_x.cjs   # uses http requests to /api/register, /api/friends/*, /api/sessions, then playwright login + screenshot
+```
+Seeding pattern: register Jeff + friends, `/api/friends/request` + `/api/friends/accept`, create sessions, then UI-login (`#lx` username, `#lp` pin, `button.blue`) and screenshot. The app reads token from `localStorage` key `crewfit_token`. Prefer UI-login + click path over boot-token (boot fetch is flaky in Playwright).
 
-## Current state (as of v107)
-- **Live:** https://spotmeapp.fly.dev (Fly; deploy via `flyctl deploy --remote-only`).
-- **v107:** Visibility buttons now EXACTLY match the approved mock (measured geometry):
-  reset leaked global `button` margin to 0, track padding 3px, container 39px≈mock 38px.
-- **v106:** Graceful stale-token handling — 401 clears dead token, returns to login
-  (no more "unauthorized" alerts from a stale phone token after a deploy).
-- **v105:** Save page matches mock exactly (solid blue Save button, card padding 12/14,
-  textarea 56px, h2 spacing) scoped under `.save-page`.
-- **v99:** Workouts never lock — Log & Finish → Save page (notes/photo/visibility) →
-  Home; "Edit photos & notes" re-opens the Save page pre-filled; workouts stay editable.
-- **v98:** Fixed openSession crash (unguarded `joinRequests.find`) that broke the workout
-  view / Log & Finish. Hardened all session array fields with `|| []`/`|| {}`.
-- **v97:** Ported Save-page CSS (add-media/am-plus/media-line/fineprint/center-v) into
-  `index.html` so the live Save page matches the approved mock.
-- Approved swap display: exercise name becomes `swapTo` + muted `· swapped by [friend]`
-  (app.js openSession; `.swap-note` CSS). Pending swap: `Brian suggests X → Y` + Approve/Reject
-  inline on the exercise card. Logged state: `✓ N set(s) logged` replaces "Tap to log sets →".
-- Log-a-set sheet (`openLogSheet`) already ships in the app; `_mock_log_sheet.html` is a
-  standalone preview.
+## Known-correct areas (do not "fix" — already verified)
+- Decline flow: declining from the home banner removes the invite, no error/zombie.
+- Profile "Your Workouts": correctly excludes pending invites.
+- Auth token key is `crewfit_token` (not `token`).
+- Server `scheduledAt` must be coerced with `String()` before `.slice`.
 
-## Repo layout
-- `public/index.html` — app shell + all CSS (single `<style>` block).
-- `public/app.js` — all client logic (openSession, openLogSheet, swaps, chat, friends).
-- `server.js` — Express API + static serve. Data in `data.json` (gitignored locally).
-- `exercise-library.json` — exercise catalog. `DEPLOY.md` — deploy steps.
-- `_mock_*.html` — preview mocks for sign-off (committed).
+## Open questions / likely next work
+- The `confirm()` / `prompt()` native dialogs on Accept/Decline/Save-Routine — fine on iPhone but worth a custom modal if polish is needed.
+- "Request Changes" / "Save This Routine" from the pending Respond menu re-render but keep Accept/Decline (correct, but `prompt()` UX is native).
+- Other pages (Workouts tab, New workout creation, Profile) have NOT been given the v140 "open it up" visual treatment — candidate for consistency pass.
 
-## Agent etiquette
-- Commit tightly; summarize for a non-technical reader. End thread cleanly; next agent
-  starts fresh from this file + the repo. Jeff is token/context-budget conscious — keep
-  handoffs tight, push everything to the repo.
+## Commands cheat-sheet
+- Syntax check: `node --check public/app.js && node --check server.js`
+- Local preview: `PORT=4700 node server.js` → http://localhost:4700
+- Deploy: `export PATH="$HOME/.fly/bin:$PATH"; fly deploy --app spotmeapp`
+- Verify live: `curl -s https://spotmeapp.fly.dev/app.js?v=<n> | grep <marker>`
