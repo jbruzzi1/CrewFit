@@ -16,3 +16,11 @@ live-backup.json
 *-backup.json
 *backup*.json
 backups/
+
+# Agent scratch. Probe scripts written to poke at a running server during a bug hunt or a
+# render check — throwaway by nature, and often belonging to a session other than yours, so
+# never commit or delete them. Tracked code never matches these (checked): _design/ is a
+# directory, and no tracked file is a root-level _*.mjs / _*.cjs.
+_*.mjs
+_*.cjs
+*.tgz
