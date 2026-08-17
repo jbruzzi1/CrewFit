@@ -713,6 +713,19 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, (req, res) => {
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator approves' });
   edit.status = 'approved';
   s.variations[edit.exerciseId] = Object.assign({}, s.variations[edit.exerciseId], { [edit.proposedBy]: { swapTo: edit.swapTo, reason: 'swap' } });
+  // Sets now carry the exercise name frozen at log time, which is what stops an unrelated edit
+  // rewriting history. Approving a swap is not unrelated — it is a deliberate statement of what
+  // was actually performed — so it corrects the name on that person's already-logged sets for
+  // this exercise. Without this, logging first and approving the swap afterwards left the sets
+  // filed under the lift they did not do. Nobody else's sets are touched.
+  const already = (s.logs && s.logs[edit.proposedBy]) || [];
+  let renamed = 0;
+  for (const l of already) {
+    if (l.exerciseId !== edit.exerciseId) continue;
+    if (l.exerciseName === edit.swapTo) continue;
+    l.exerciseName = edit.swapTo; renamed++;
+  }
+  if (renamed) rebuildAllPrs();            // the records are grouped by that name
   save(DB);
   notify(edit.proposedBy, { title: 'Swap approved', body: `${DB.users[s.creatorId].displayName} approved your swap to ${edit.swapTo}` });
   res.json(s);
@@ -828,7 +841,7 @@ function sessionsForUser(userId) {
     const byName = {};
     for (const l of s.logs[userId]) {
       if (!isWorkingSet(l)) continue;               // warm-ups and drop sets are not working sets
-      const name = exerciseNameFor(s, l.exerciseId, userId);
+      const name = logExerciseName(s, l, userId);
       (byName[name] = byName[name] || []).push(l);
     }
     for (const name of Object.keys(byName)) {
@@ -952,7 +965,7 @@ function trendFor(userId) {
       if (!isWorkingSet(l)) continue;
       const e = estMax(l);
       if (!e) continue;                                  // bodyweight / incomplete
-      const name = exerciseNameFor(s, l.exerciseId, userId);
+      const name = logExerciseName(s, l, userId);
       if (!perEx[name] || e > perEx[name].e) perEx[name] = { e, l };
     }
     for (const name of Object.keys(perEx)) {
@@ -1124,7 +1137,13 @@ app.post('/api/sessions/:id/log', auth, (req, res) => {
   // would retroactively change whether a set hit its target.
   const exDef = s.exercises.find(x => x.id === exerciseId);
   const rr = exDef ? repRange(exDef) : null;
-  const entry = { id: 'log_'+uid(), exerciseId, weight: w, reps: r, set: setNum, setType: setType || 'normal', isPr: false, at: new Date().toISOString() };
+  // Snapshot the exercise NAME too. Everything else about a set is already frozen at log time
+  // (rep target, unit, loadType) so that editing a workout later cannot rewrite history — the
+  // name was the one field still resolved live, through the session's exercise list. Remove that
+  // exercise and the set pointed at nothing: records started showing raw ids like "e_ycc71vos",
+  // permanently, and the sets could never be reattached because re-adding mints a new id.
+  const entry = { id: 'log_'+uid(), exerciseId, exerciseName: exerciseNameFor(s, exerciseId, req.userId),
+                  weight: w, reps: r, set: setNum, setType: setType || 'normal', isPr: false, at: new Date().toISOString() };
   if (lt) entry.loadType = lt;   // omitted entirely for unambiguous lifts (barbell, cable, machine)
   if (unit !== 'lb') entry.unit = unit;   // omitted when lb, so existing data stays byte-identical
   if (rr) { entry.targetReps = rr.lo; if (rr.hi !== rr.lo) entry.targetRepsMax = rr.hi; }
@@ -1186,6 +1205,13 @@ function perfDate(scheduledAt, fallback) {
   return isNaN(d) ? (fallback || '1970-01-01T00:00:00.000Z') : d.toISOString();
 }
 
+// What lift a SET is. Prefers the name frozen onto the set at log time; falls back to resolving
+// through the session for anything logged before v167. Use this for logs — exerciseNameFor()
+// below is for the session's exercise list, which is a different question.
+function logExerciseName(session, log, userId) {
+  if (log && log.exerciseName) return log.exerciseName;
+  return exerciseNameFor(session, log ? log.exerciseId : null, userId);
+}
 function exerciseNameFor(session, exerciseId, userId) {
   const e = session.exercises.find(x => x.id === exerciseId);
   if (!e) return exerciseId;
@@ -1216,6 +1242,30 @@ function migrateLoadTypes() {
   return stamped;
 }
 
+// v167: stamp the exercise name onto sets logged before the field existed. Where the exercise
+// is still in the workout this is exact. Where it was already removed the name is unrecoverable —
+// those are counted and named in the log rather than guessed at, because inventing a lift name
+// would put a fabricated record on someone's profile.
+function migrateExerciseNames() {
+  let stamped = 0; const orphans = [];
+  for (const sess of Object.values(DB.sessions)) {
+    if (!sess.logs) continue;
+    for (const userId of Object.keys(sess.logs)) {
+      for (const l of sess.logs[userId]) {
+        if (l.exerciseName) continue;                    // already stamped — never overwrite
+        const known = (sess.exercises || []).some(x => x.id === l.exerciseId);
+        if (!known) { orphans.push(`${sess.id}/${userId}/${l.exerciseId}`); continue; }
+        l.exerciseName = exerciseNameFor(sess, l.exerciseId, userId);
+        stamped++;
+      }
+    }
+  }
+  if (stamped) console.log('migrateExerciseNames: stamped ' + stamped + ' historical sets');
+  if (orphans.length) console.log('migrateExerciseNames: ' + orphans.length +
+    ' set(s) were ALREADY orphaned before this fix and cannot be named: ' + orphans.slice(0,20).join(', '));
+  return stamped;
+}
+
 function rebuildAllPrs() {
   const groups = {}; // groups[userId][exerciseName] = [logEntry, ...]
   for (const s of Object.values(DB.sessions)) {
@@ -1229,7 +1279,7 @@ function rebuildAllPrs() {
         // non-persisted: the training date, used for ordering only
         Object.defineProperty(l, '_performedAt', {
           value: perfDate(s.scheduledAt, l.at), enumerable: false, configurable: true });
-        const name = exerciseNameFor(s, l.exerciseId, userId);
+        const name = logExerciseName(s, l, userId);
         groups[userId] = groups[userId] || {};
         groups[userId][name] = groups[userId][name] || [];
         groups[userId][name].push(l);
@@ -1382,6 +1432,7 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
 // full replay every boot by design, so PRs self-heal whenever the rule behind them changes.
 backupOnBoot();          // FIRST — after this line, everything below may rewrite data.json
 migrateMedia();
+migrateExerciseNames();     // before rebuildAllPrs, which groups by the name
 rebuildAllPrs();
 migrateLoadTypes();
 save(DB);

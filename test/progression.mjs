@@ -278,7 +278,25 @@ console.log('\nswapping an exercise keeps its history');
   ok(swapTo === 'Incline Barbell Bench Press', `the swap is recorded on the session (got ${swapTo})`);
   const underSwap = await ask(u, 'Incline Barbell Bench Press');
   ok(underSwap.sessions === 1,
-     `history files under the swap, so the sheet must ask under the swap too (got ${underSwap.sessions})`);
+     `logged BEFORE approving the swap -> approving corrects the name (got ${underSwap.sessions})`);
+  const underOld = await ask(u, 'Flat Barbell Bench Press');
+  ok(underOld.sessions === 0, `and it is no longer filed under the lift not performed (got ${underOld.sessions})`);
+}
+{
+  // the ordinary order: swap approved first, then the sets are logged
+  const u = await newUser();
+  const s = await fetch(B + '/api/sessions', { method: 'POST', headers: u.H,
+    body: JSON.stringify({ name: 'Pull', visibility: 'private', scheduledAt: '2026-08-12T18:00:00Z',
+      exercises: [{ name: 'Barbell Row', defaultSets: 3, defaultReps: 8, defaultRepsMax: 10 }] }) }).then(x => x.json());
+  const sug = await fetch(B + `/api/sessions/${s.id}/suggest`, { method: 'POST', headers: u.H,
+    body: JSON.stringify({ exerciseId: s.exercises[0].id, swapTo: 'Seated Cable Row' }) }).then(x => x.json());
+  await fetch(B + `/api/sessions/${s.id}/suggest/${sug.suggestedEdits.slice(-1)[0].id}/approve`,
+    { method: 'POST', headers: u.H });
+  await fetch(B + `/api/sessions/${s.id}/log`, { method: 'POST', headers: u.H,
+    body: JSON.stringify({ exerciseId: s.exercises[0].id, weight: 90, reps: 10 }) });
+  const a = await ask(u, 'Seated Cable Row'), b = await ask(u, 'Barbell Row');
+  ok(a.sessions === 1 && b.sessions === 0,
+     `swap first, then log -> files under the lift performed (cable ${a.sessions}, row ${b.sessions})`);
 }
 
 console.log('\nexactly ONE set per lift wears the PR badge');
@@ -328,6 +346,31 @@ console.log('\nnobody can reset a password they cannot prove they own');
   const real = await fetch(B + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: u.username, pin: '1234' }) }).then(x => x.json());
   ok(!!real.token, 'and the real owner is not locked out');
+}
+
+console.log('\nremoving an exercise from a workout cannot strand the sets you logged');
+{
+  const u = await newUser();
+  const s1 = await log(u, 'Flat Barbell Bench Press', '2026-08-10T18:00:00Z', 185, 10);
+  const s2 = await log(u, 'Barbell Back Squat',       '2026-08-11T18:00:00Z', 315, 5);
+
+  const before = await fetch(B + '/api/progress?weeks=4', { headers: u.H }).then(x => x.json());
+  const names = () => before.prs.map(p => p.exercise);
+  ok(names().includes('Flat Barbell Bench Press'), `the bench record exists first (${names().join(', ')})`);
+
+  // the creator edits the workout and drops the exercise the sets belong to
+  const full = await fetch(B + '/api/sessions/' + s1.id, { headers: u.H }).then(x => x.json());
+  const r = await fetch(B + '/api/sessions/' + s1.id, { method: 'PUT', headers: u.H,
+    body: JSON.stringify({ name: full.name, scheduledAt: full.scheduledAt, exercises: [] }) });
+  ok(r.status < 400, `the edit went through (${r.status})`);
+
+  const after = await fetch(B + '/api/progress?weeks=4', { headers: u.H }).then(x => x.json());
+  const got = after.prs.map(p => p.exercise);
+  ok(got.includes('Flat Barbell Bench Press'),
+     `the record keeps its NAME after the exercise is removed (got ${got.join(', ') || 'nothing'})`);
+  ok(!got.some(n => /^e_/.test(n)),
+     `and no raw id leaks out as an exercise name (got ${got.join(', ') || 'nothing'})`);
+  ok(got.includes('Barbell Back Squat'), 'the untouched workout is unaffected');
 }
 
 console.log('\n/api/progress agrees with the log sheet');
