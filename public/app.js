@@ -93,7 +93,7 @@ async function doReg(){ try {
 // ---- Nav ----
 function showTab(tab){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
-  if(tab==='home') home(); else if(tab==='lib') library(); else if(tab==='templates') templates(); else if(tab==='friends') friends(); else if(tab==='me') meScreen();
+  if(tab==='home') home(); else if(tab==='progress') progressScreen(); else if(tab==='lib') library(); else if(tab==='templates') templates(); else if(tab==='friends') friends(); else if(tab==='me') meScreen();
 }
 
 // ---- Home / sessions (Option B: split sections) ----
@@ -1089,6 +1089,108 @@ async function submitSession(){
     home();
   }
 }
+
+
+// ---- Progress tab ------------------------------------------------------------------------
+// Design + rationale: _design/progress/README.md. "Add weight next time" is computed server
+// side (/api/progress) from the last two sessions per lift, NOT from the week range — a
+// recommendation is about what to do next, so it must not change when the range is scrubbed.
+let PROG_WEEKS = 13;
+const GROUP_LABEL = { legs:'Legs', push:'Push', pull:'Pull', core:'Core', cardio:'Cardio', other:'Other' };
+
+// A bodyweight best has no weight — "0 × 10" reads as broken. Show the reps, which is what
+// you actually compare bodyweight sets on.
+function prLabel(p,U){
+  const w=Number(p.weight)||0;
+  if(w===0) return `${p.reps} reps`;
+  return `${w} ${U} × ${p.reps}`;
+}
+async function progressScreen(){
+  const d = await H.get('/api/progress?weeks='+PROG_WEEKS);
+  if(!d || d.error){ $('app').innerHTML = `<div class="wrap"><h1>Progress</h1><div class="muted">Couldn\'t load progress.</div></div>`; return; }
+  const U = d.unit || 'lb';
+
+  // --- add weight next time, grouped by training split ---
+  let readyHtml = '';
+  if(d.ready.length){
+    const byGroup = {};
+    d.ready.forEach(r => (byGroup[r.group] = byGroup[r.group] || []).push(r));
+    readyHtml = Object.keys(byGroup).map(g => `<div class="grp">
+        <div class="grp-h">${GROUP_LABEL[g]||g}</div>
+        ${byGroup[g].map(r=>`<div class="rp">
+          <div class="rp-ic" aria-hidden="true">↑</div>
+          <div class="rp-main"><div class="rp-name">${esc(r.exercise)}</div>
+            <div class="rp-why">Hit ${r.targetRepsMax} reps at ${r.weight} ${U} · last 2 sessions</div></div>
+          <div class="rp-to"><div class="rp-new">${r.suggested} ${U}</div>
+            <div class="rp-tag">▲ +${r.step}</div></div>
+        </div>`).join('')}
+      </div>`).join('');
+  } else {
+    readyHtml = `<div class="empty">
+      <div class="empty-ic" aria-hidden="true">↑</div>
+      <div class="empty-t">Nothing to add yet</div>
+      <div class="empty-b">Reach the top of your rep range on a lift <b>two sessions in a row</b>
+        and it shows up here with the weight to try next.</div></div>`;
+  }
+  let holdHtml = '';
+  if(d.holds.length){
+    holdHtml = `<div class="hold-sec"><div class="hold-head">Hold for now</div>
+      ${d.holds.map(h=>`<div class="hold">
+        <div class="hold-ic" aria-hidden="true">–</div>
+        <div class="rp-main"><div class="rp-name">${esc(h.exercise)}</div>
+          <div class="rp-why">${h.reps} of ${h.targetRepsMax} reps at ${h.weight} ${U} — repeat it before adding</div></div>
+      </div>`).join('')}</div>`;
+  }
+
+  // --- consistency ---
+  const maxd = Math.max(6, ...d.weeks.map(w=>w.days));
+  const BW=326, BH=96, BB=20, BT=6, gap=5;
+  const cw = Math.min(30,(BW-gap*(d.weeks.length-1))/d.weeks.length);
+  let bars='', xlab='', hits='';
+  d.weeks.forEach((w,i)=>{
+    const x=i*(cw+gap), h=Math.max(3,(BH-BB-BT)*w.days/maxd), y=BH-BB-h;
+    const cur=i===d.weeks.length-1;
+    const shade = w.days<=1?'var(--s1)': w.days<=2?'var(--s2)': w.days<=3?'var(--s3)':'var(--s4)';
+    bars+=`<rect x="${x}" y="${y}" width="${cw}" height="${h}" rx="4" fill="${shade}" ${cur?'stroke="#2563eb" stroke-width="2"':''}/>`;
+    bars+=`<text x="${x+cw/2}" y="${y-3.5}" text-anchor="middle" font-size="9.5" font-weight="700" fill="${cur?'#15181f':'#5c6470'}">${w.days}</text>`;
+    hits+=`<rect x="${x-gap/2}" y="0" width="${cw+gap}" height="${BH-BB}" fill="transparent"><title>Week of ${w.weekOf}: ${w.days} day${w.days===1?'':'s'}</title></rect>`;
+    if(i===0||cur) xlab+=`<text x="${cur?BW:0}" y="${BH-6}" text-anchor="${cur?'end':'start'}" font-size="9.5" fill="#5c6470">${cur?'this week':w.weekOf.slice(5)}</text>`;
+  });
+
+  const prHtml = d.prs.length
+    ? d.prs.slice(0,8).map(p=>`<div class="pr">
+        <div><div class="pr-n">${esc(p.exercise)}</div><div class="pr-d">${fmtDate(p.at)}</div></div>
+        <div class="pr-r"><div class="pr-w">${prLabel(p,U)}</div></div></div>`).join('')
+    : `<div class="muted" style="padding:8px 2px">Log a workout — your first set of any exercise is a record.</div>`;
+
+  $('app').innerHTML = `<div class="wrap">
+    <h1>Progress</h1>
+    <p class="sub">${d.thisWeek} day${d.thisWeek===1?'':'s'} trained this week</p>
+
+    <h2>Add weight next time</h2>
+    <div class="card">${readyHtml}${holdHtml}
+      <div class="rulenote"><b>How it works:</b> reach the top of your rep range two sessions in
+        a row and the weight goes up. Warm-ups and drop sets don\'t count.</div>
+    </div>
+
+    <h2>Consistency</h2>
+    <div class="card">
+      <div class="kpi"><div>
+        <div class="hero">${d.avgPerWeek}<span class="hero-u"> days/week average</span></div>
+        <div class="hero-cap">over ${d.weeks.length} weeks</div>
+      </div><span class="streak">${d.streakWeeks}-week streak</span></div>
+      <svg viewBox="0 0 ${BW} ${BH}" width="100%" style="display:block" role="img"
+        aria-label="Days trained per week over ${d.weeks.length} weeks. Most recent: ${d.thisWeek} days.">${bars}${xlab}${hits}</svg>
+      <div class="seg" style="margin-top:12px">
+        ${[4,13,26].map(w=>`<button class="${PROG_WEEKS===w?'on':''}" onclick="setProgWeeks(${w})">${w} weeks</button>`).join('')}
+      </div>
+    </div>
+
+    <h2>Personal records</h2>
+    <div class="card">${prHtml}</div>
+  </div>`;
+}
+function setProgWeeks(w){ PROG_WEEKS=w; progressScreen(); }
 
 // ---- Library (two views: muscle groups -> exercises) ----
 const LIB_MUSCLES = ['chest','lats','traps','biceps','triceps','forearms','shoulders','abdominals','quads','hamstrings','glutes','calves','cardio'];

@@ -714,6 +714,132 @@ app.post('/api/me/units', auth, (req, res) => {
   res.json({ units: u });
 });
 
+
+// ---- Progression: "add weight next time" -------------------------------------------------
+// Rule (Jeff, Aug 17): look at WORKING sets only. Find the heaviest set of the session. If it
+// reached the TOP of the prescribed rep range, that session counts as topped out. Two topped-out
+// sessions in a row => suggest more weight. If the most recent session did not, it's a hold.
+//
+// Judged on the heaviest set rather than "all sets at one weight" so it works for straight sets,
+// ascending pyramids and single-top-set training alike. Targets come from the set itself
+// (snapshotted at log time, v154), never from the session's current plan.
+
+// How much to add. Falls back to body-part defaults; exercises whose real-world step differs
+// (machine stacks, fixed dumbbells) can override via `increment` in exercise-library.json.
+const INCREMENT_LB = { upper: 5, lower: 10, machine: 20, other: 5 };
+const INCREMENT_KG = { upper: 2.5, lower: 5, machine: 10, other: 2.5 };
+function incrementFor(name, unit) {
+  const lib = EX_LIB.find(x => x.name === name);
+  const table = unit === 'kg' ? INCREMENT_KG : INCREMENT_LB;
+  if (lib && lib.increment && lib.increment[unit === 'kg' ? 'kg' : 'lb']) {
+    return lib.increment[unit === 'kg' ? 'kg' : 'lb'];
+  }
+  if (!lib) return table.other;
+  const eq = (lib.equipment || []).join(' ').toLowerCase();
+  if (/machine|leg press|hack squat|smith|pulldown|pec deck|sled/.test(eq) && !/bench press/.test(eq)) return table.machine;
+  return lib.pattern === 'legs' ? table.lower : table.upper;
+}
+
+// Every session in which this user logged working sets for this exercise, newest first.
+function sessionsForUser(userId) {
+  const out = [];
+  for (const s of Object.values(DB.sessions)) {
+    if (!s.logs || !s.logs[userId] || !s.logs[userId].length) continue;
+    const byName = {};
+    for (const l of s.logs[userId]) {
+      if (!isWorkingSet(l)) continue;               // warm-ups and drop sets are not working sets
+      const name = exerciseNameFor(s, l.exerciseId, userId);
+      (byName[name] = byName[name] || []).push(l);
+    }
+    for (const name of Object.keys(byName)) {
+      const sets = byName[name];
+      // the heaviest set of the session decides it; ties broken by reps
+      const top = sets.reduce((a, b) =>
+        (toLb(b.weight, b.unit) > toLb(a.weight, a.unit) ||
+         (toLb(b.weight, b.unit) === toLb(a.weight, a.unit) && (b.reps||0) > (a.reps||0))) ? b : a);
+      out.push({ name, when: perfDate(s.scheduledAt), top, sets });
+    }
+  }
+  return out.sort((a, b) => new Date(b.when) - new Date(a.when));
+}
+
+function toppedOut(entry) {
+  const ceiling = Number(entry.top.targetRepsMax) || Number(entry.top.targetReps);
+  if (!ceiling) return false;                        // no target recorded => nothing to judge
+  return (Number(entry.top.reps) || 0) >= ceiling;
+}
+
+function recommendationsFor(userId) {
+  const unit = (DB.users[userId] && DB.users[userId].units) || 'lb';
+  const byName = {};
+  for (const e of sessionsForUser(userId)) (byName[e.name] = byName[e.name] || []).push(e);
+
+  const ready = [], holds = [];
+  for (const name of Object.keys(byName)) {
+    const hist = byName[name];                       // newest first
+    if (hist.length < 2) continue;                   // need a previous session to compare against
+    const [latest, prev] = hist;
+    const lib = EX_LIB.find(x => x.name === name);
+    const group = lib && ['push','pull','legs','core','cardio'].includes(lib.pattern) ? lib.pattern : 'other';
+    const base = { exercise: name, group, weight: Number(latest.top.weight) || 0, unit,
+                   reps: Number(latest.top.reps) || 0,
+                   targetRepsMax: Number(latest.top.targetRepsMax) || Number(latest.top.targetReps) || null,
+                   at: latest.when };
+    if (toppedOut(latest) && toppedOut(prev)) {
+      const step = incrementFor(name, unit);
+      ready.push(Object.assign({}, base, { suggested: (Number(latest.top.weight) || 0) + step, step }));
+    } else if (!toppedOut(latest)) {
+      holds.push(base);
+    }
+  }
+  const order = { legs: 0, push: 1, pull: 2, core: 3, cardio: 4, other: 5 };
+  ready.sort((a, b) => (order[a.group] - order[b.group]) || a.exercise.localeCompare(b.exercise));
+  holds.sort((a, b) => (order[a.group] - order[b.group]) || a.exercise.localeCompare(b.exercise));
+  return { unit, ready, holds };
+}
+
+// Weeks of training, most recent last. Counts DISTINCT days with at least one working set,
+// not sessions — two workouts in a day is one training day.
+function weeksFor(userId, count) {
+  const days = new Set();
+  for (const s of Object.values(DB.sessions)) {
+    const mine = s.logs && s.logs[userId];
+    if (!mine || !mine.some(isWorkingSet)) continue;
+    days.add(perfDate(s.scheduledAt).slice(0, 10));
+  }
+  const today = new Date();
+  const monday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));   // start of this week
+  const out = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const start = new Date(monday); start.setUTCDate(start.getUTCDate() - i * 7);
+    const end = new Date(start); end.setUTCDate(end.getUTCDate() + 7);
+    const a = start.toISOString().slice(0, 10), b = end.toISOString().slice(0, 10);
+    out.push({ weekOf: a, days: [...days].filter(d => d >= a && d < b).length });
+  }
+  return out;
+}
+
+app.get('/api/progress', auth, (req, res) => {
+  const weeks = Math.min(52, Math.max(4, Number(req.query.weeks) || 13));
+  const rec = recommendationsFor(req.userId);
+  const w = weeksFor(req.userId, weeks);
+  const trained = w.reduce((a, x) => a + x.days, 0);
+  let streak = 0;
+  for (let i = w.length - 1; i >= 0; i--) { if (w[i].days > 0) streak++; else break; }
+  res.json({
+    unit: rec.unit,
+    ready: rec.ready,
+    holds: rec.holds,
+    weeks: w,
+    thisWeek: w.length ? w[w.length - 1].days : 0,
+    avgPerWeek: w.length ? Number((trained / w.length).toFixed(1)) : 0,
+    streakWeeks: streak,
+    prs: (DB.prs && DB.prs[req.userId]) ? Object.values(DB.prs[req.userId])
+          .sort((a, b) => new Date(b.at) - new Date(a.at)) : []
+  });
+});
+
 app.post('/api/sessions/:id/log', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s.participants.includes(req.userId) && !s.joinRequests.find(j=>j.userId===req.userId&&j.status==='approved'))
