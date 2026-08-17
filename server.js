@@ -1000,7 +1000,11 @@ app.get('/api/progress/exercise/:name', auth, (req, res) => {
   res.json({
     unit: r.unit,
     sessions: r.counts[name] || 0,
-    seeded: !!r.seeded[name],     // a seeded working weight counts as the first of the pair
+    // The working weight they entered at setup, in whatever unit they are on now. The sheet
+    // names it back to them, because it is the weight the rule is about to be judged against.
+    seed: r.seeded[name]
+      ? { weight: inUnit(r.seeded[name].weight, r.seeded[name].unit, r.unit), unit: r.unit }
+      : null,
     ready: r.ready.find(x => x.exercise === name) || null,
     hold:  r.holds.find(x => x.exercise === name) || null,
     soon:  r.soon.find(x => x.exercise === name) || null

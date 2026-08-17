@@ -54,8 +54,10 @@ function shown(r) {
   if (r.ready) return 'READY';
   if (r.hold)  return 'HOLD';
   if (r.soon)  return 'ALMOST';
-  if (!r.sessions) return r.seeded ? 'SEEDED_READY_WHEN_YOU_ARE' : 'FIRST_TIME';
-  return r.sessions === 1 ? 'ONE_SESSION' : 'KEEP_LOGGING';
+  // One message for every no-advice case, deliberately. It used to report a session count and
+  // the count included the workout you were standing in, announcing a session you had not
+  // finished. The only variation left is naming the working weight you entered at setup.
+  return r.seed ? 'NOT_YET_SEEDED' : 'NOT_YET';
 }
 
 await boot();
@@ -64,10 +66,10 @@ try {
 console.log('the box always says something — it is never empty');
 {
   const u = await newUser();
-  ok(shown(await ask(u, 'Leg Press')) === 'FIRST_TIME', 'never logged  -> "First time logging this"');
+  ok(shown(await ask(u, 'Leg Press')) === 'NOT_YET', 'never logged  -> "When to add weight"');
   await log(u, 'Leg Press', '2026-08-05T18:00:00Z', 270, 10);
-  ok(shown(await ask(u, 'Leg Press')) === 'ONE_SESSION', 'one session   -> "One session logged"');
-  ok(shown(await ask(u, 'Nonexistent Lift')) === 'FIRST_TIME', 'unknown lift  -> no crash, still speaks');
+  ok(shown(await ask(u, 'Leg Press')) === 'NOT_YET', 'one session   -> the SAME words, no session count');
+  ok(shown(await ask(u, 'Nonexistent Lift')) === 'NOT_YET', 'unknown lift  -> no crash, still speaks');
 }
 
 console.log('\ndouble progression: top of the range twice AT THE SAME WEIGHT');
@@ -158,11 +160,21 @@ console.log('\na seeded working weight is the first half of the pair');
     body: JSON.stringify({ exercise: 'Flat Barbell Bench Press', weight: 185, reps: 10 }) }).then(x => x.json());
   ok(sr.seeds && sr.seeds['Flat Barbell Bench Press'], 'the seed saved');
   let a = await ask(u, 'Flat Barbell Bench Press');
-  ok(shown(a) === 'SEEDED_READY_WHEN_YOU_ARE',
-     `seeded, nothing logged -> promises ONE session, not two (${shown(a)})`);
+  ok(shown(a) === 'NOT_YET_SEEDED' && a.seed && a.seed.weight === 185,
+     `seeded -> the sheet names their own working weight back to them (${shown(a)})`);
   await log(u, 'Flat Barbell Bench Press', '2026-08-12T18:00:00Z', 185, 10);
   a = await ask(u, 'Flat Barbell Bench Press');
   ok(shown(a) === 'READY', `then one clean session -> a real suggestion, as promised (${shown(a)})`);
+}
+{
+  // The sheet prints the seeded weight back at the user, so it has to follow their unit too.
+  const u = await newUser();
+  await fetch(B + '/api/me/seeds', { method: 'PUT', headers: u.H,
+    body: JSON.stringify({ exercise: 'Leg Press', weight: 270, reps: 10 }) });
+  await fetch(B + '/api/me/units', { method: 'POST', headers: u.H, body: JSON.stringify({ units: 'kg' }) });
+  const a = await ask(u, 'Leg Press');
+  ok(a.seed && a.seed.unit === 'kg' && a.seed.weight === 122.5,
+     `a 270 lb seed reads as 122.5 kg after switching units, got ${a.seed && a.seed.weight} ${a.seed && a.seed.unit}`);
 }
 
 console.log('\nsets logged before rep targets were recorded (pre-v154 data)');
@@ -183,7 +195,7 @@ console.log('\nsets logged before rep targets were recorded (pre-v154 data)');
   const u2 = { H: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + r.token } };
   const a = await ask(u2, 'Leg Press');
   ok(!a.hold, 'no "8 of null reps" hold invented from a set with no target');
-  ok(shown(a) === 'KEEP_LOGGING', `the box still says something rather than rendering empty (${shown(a)})`);
+  ok(shown(a) === 'NOT_YET', `the box still says something rather than rendering empty (${shown(a)})`);
   const p = await progress(u2);
   ok(!JSON.stringify(p).includes('"targetRepsMax":null'), 'no null rep targets anywhere in /api/progress');
 }

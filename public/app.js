@@ -521,29 +521,19 @@ async function openLogSheet(sid, exId){
     // catch-all on purpose: the box must never render empty, whatever shape the history is in.
     else box.innerHTML=`<div class="log-rec soon">
         <span class="lr-ic" aria-hidden="true">⋯</span>
-        <span class="lr-t">${logSoonTitle(r)}</span>
-        <span class="lr-why">${logSoonWhy(r)}</span>
+        <span class="lr-t">When to add weight</span>
+        <span class="lr-why">${r.seed
+          ? `Your working weight is ${r.seed.weight} ${U}. Hit the top of your rep range at that weight and this box gives you your next working weight.`
+          : `Hit the top of your rep range two sessions in a row at the same weight. Then this box gives you your next working weight.`}</span>
       </div>`;
   }).catch(()=>{});
 }
-// What the sheet says before it has anything to advise. Kept honest against the actual rule:
-// two sessions at the top of the rep range, at the SAME weight — except for someone who entered
-// a working weight at setup, where that entry is the first of the pair and one session finishes it.
-function logSoonTitle(r){
-  if(!r.sessions) return r.seeded ? 'Ready when you are' : 'First time logging this';
-  return r.sessions===1 ? 'One session logged' : 'Keep logging';
-}
-// One sentence, deliberately. `sessions` is a bare count — it does not know whether those
-// sessions topped out or at what weight — so anything more specific ("one more and…") would be
-// a promise this state cannot keep. The seeded line differs only because the entered working
-// weight really is the first half of the pair.
-function logSoonWhy(r){
-  if(!r.sessions && r.seeded)
-    return 'the weight you entered counts as your first session — hit the top of your rep range '
-         + 'at that weight and this box tells you what to add';
-  return 'hit the top of your rep range twice in a row at the same weight and this box tells you '
-       + 'what weight to add';
-}
+// NOTE: this state deliberately says the SAME thing no matter how much history you have.
+// It used to report a status — "First time logging this" / "One session logged" / "Keep
+// logging" — driven by a session count, and the count included the workout you were standing
+// in, so it announced a session you had not finished. A count also cannot know whether those
+// sessions topped out or at what weight, so no status built on it can be reliably true. The
+// box has one job; it now states that job and nothing else, until it has real advice.
 // One tap fills the weight box, so the advice is one action rather than something to memorise.
 function useSuggested(w){
   const el=document.getElementById('logW'); if(!el) return;
