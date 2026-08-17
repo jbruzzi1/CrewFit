@@ -1100,6 +1100,11 @@ const GROUP_LABEL = { legs:'Legs', push:'Push', pull:'Pull', core:'Core', cardio
 
 // A bodyweight best has no weight — "0 × 10" reads as broken. Show the reps, which is what
 // you actually compare bodyweight sets on.
+// "2026-05-01" -> "May 1"
+function shortDate(iso){
+  const d=new Date(iso+'T00:00:00Z'); if(isNaN(d)) return iso;
+  return d.toLocaleDateString(undefined,{month:'short',day:'numeric',timeZone:'UTC'});
+}
 function prLabel(p,U){
   const w=Number(p.weight)||0;
   if(w===0) return `${p.reps} reps`;
@@ -1154,7 +1159,7 @@ async function progressScreen(){
     bars+=`<rect x="${x}" y="${y}" width="${cw}" height="${h}" rx="4" fill="${shade}" ${cur?'stroke="#2563eb" stroke-width="2"':''}/>`;
     bars+=`<text x="${x+cw/2}" y="${y-3.5}" text-anchor="middle" font-size="9.5" font-weight="700" fill="${cur?'#15181f':'#5c6470'}">${w.days}</text>`;
     hits+=`<rect x="${x-gap/2}" y="0" width="${cw+gap}" height="${BH-BB}" fill="transparent"><title>Week of ${w.weekOf}: ${w.days} day${w.days===1?'':'s'}</title></rect>`;
-    if(i===0||cur) xlab+=`<text x="${cur?BW:0}" y="${BH-6}" text-anchor="${cur?'end':'start'}" font-size="9.5" fill="#5c6470">${cur?'this week':w.weekOf.slice(5)}</text>`;
+    if(i===0||cur) xlab+=`<text x="${cur?BW:0}" y="${BH-6}" text-anchor="${cur?'end':'start'}" font-size="9.5" fill="#5c6470">${cur?'this week':shortDate(w.weekOf)}</text>`;
   });
 
   const prHtml = d.prs.length
@@ -1181,7 +1186,7 @@ async function progressScreen(){
       </div><span class="streak">${d.streakWeeks}-week streak</span></div>
       <svg viewBox="0 0 ${BW} ${BH}" width="100%" style="display:block" role="img"
         aria-label="Days trained per week over ${d.weeks.length} weeks. Most recent: ${d.thisWeek} days.">${bars}${xlab}${hits}</svg>
-      <div class="seg" style="margin-top:12px">
+      <div class="seg wk-seg">
         ${[4,13,26].map(w=>`<button class="${PROG_WEEKS===w?'on':''}" onclick="setProgWeeks(${w})">${w} weeks</button>`).join('')}
       </div>
     </div>
