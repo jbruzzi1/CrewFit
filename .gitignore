@@ -9,3 +9,10 @@ __pycache__/
 
 # local scratch — safe to delete
 _to_delete/
+
+# Snapshots of live data. These contain every user's PIN IN PLAINTEXT — committing one
+# publishes them permanently. Pulled with: fly ssh sftp get /data/data.json ...
+live-backup.json
+*-backup.json
+*backup*.json
+backups/

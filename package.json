@@ -1,12 +1,12 @@
 {
   "name": "crew-fit",
   "version": "0.1.0",
-  "description": "CrewFit — social fitness app for training partners (create, invite, swap, log together)",
+  "description": "CrewFit \u2014 social fitness app for training partners (create, invite, swap, log together)",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/progression.mjs"
+    "test": "node test/progression.mjs && node test/data-safety.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",

@@ -22,12 +22,77 @@ if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
 webpush.setVapidDetails('mailto:jeff@example.com', vapid.publicKey, vapid.privateKey);
 
 // ---- Store ----
+const EMPTY_DB = () => ({ users: {}, sessions: {}, friendships: {}, pushSubs: {}, customExercises: {} });
+
+// REFUSING TO START IS THE FEATURE. This used to `catch` a parse failure and return an empty
+// database — and because the boot block below calls save(DB), the very next thing that happened
+// was writing that emptiness over the file. Measured Aug 17, 2026 against a copy of production:
+// 639,995 bytes and 377 users went to 112 bytes and 0 users, with no error, and the server
+// stayed up reporting healthy. Every user, workout and PR, gone, unrecoverably, in silence.
+//
+// A process that will not start is loud, obvious, and fixable from a backup. A process that
+// starts on an empty database destroys the thing it was supposed to be serving. Never soften
+// this into a fallback.
 function load() {
-  if (!fs.existsSync(DATA_FILE)) return { users: {}, sessions: {}, friendships: {}, pushSubs: {}, customExercises: {} };
-  try { const d = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); d.customExercises = d.customExercises || {}; return d; }
-  catch (e) { return { users: {}, sessions: {}, friendships: {}, pushSubs: {}, customExercises: {} }; }
+  if (!fs.existsSync(DATA_FILE)) return EMPTY_DB();          // genuinely first run
+  const raw = fs.readFileSync(DATA_FILE, 'utf8');            // an unreadable file must throw too
+  let d;
+  try { d = JSON.parse(raw); }
+  catch (e) {
+    throw new Error(
+      `REFUSING TO START: ${DATA_FILE} is not valid JSON (${raw.length} bytes) — ${e.message}\n` +
+      `The file was NOT touched. Starting on an empty database would overwrite it.\n` +
+      `Restore the newest file from ${path.join(DATA_DIR, 'backups')} over it, then restart.`);
+  }
+  if (!d || typeof d !== 'object' || typeof d.users !== 'object' || typeof d.sessions !== 'object') {
+    throw new Error(
+      `REFUSING TO START: ${DATA_FILE} parsed but has no users/sessions — it is not a database.\n` +
+      `The file was NOT touched. Restore from ${path.join(DATA_DIR, 'backups')} and restart.`);
+  }
+  d.friendships = d.friendships || {};
+  d.pushSubs = d.pushSubs || {};
+  d.customExercises = d.customExercises || {};
+  return d;
 }
-function save(d) { fs.writeFileSync(DATA_FILE, JSON.stringify(d, null, 2)); }
+
+// Write to a temp file, flush it to disk, then rename. rename(2) is atomic on POSIX, so
+// data.json is only ever the old complete file or the new complete file — never the half-written
+// one. The plain writeFileSync this replaces could be interrupted (crash, OOM kill — this box has
+// 256 MB and holds the whole DB in memory while serialising a second copy of it, restart, full
+// disk) leaving invalid JSON, which is precisely what load() above used to wipe.
+function save(d) {
+  const tmp = DATA_FILE + '.tmp';
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeSync(fd, JSON.stringify(d, null, 2));
+    fs.fsyncSync(fd);                                        // on the platter before the rename
+  } finally { fs.closeSync(fd); }
+  fs.renameSync(tmp, DATA_FILE);
+}
+
+// A copy of the database as it was BEFORE this boot's migrations touch it. Migrations rewrite
+// data.json on every start, so this is the last point at which the previous state still exists.
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+const BACKUPS_KEPT = 10;
+function backupOnBoot() {
+  if (!fs.existsSync(DATA_FILE)) return null;                // nothing to lose yet
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const dest = path.join(BACKUP_DIR, `data-${stamp}.json`);
+    fs.copyFileSync(DATA_FILE, dest);
+    const kept = fs.readdirSync(BACKUP_DIR).filter(f => /^data-.*\.json$/.test(f)).sort();
+    for (const f of kept.slice(0, Math.max(0, kept.length - BACKUPS_KEPT))) {
+      try { fs.unlinkSync(path.join(BACKUP_DIR, f)); } catch (e) {}
+    }
+    console.log(`BACKUP ${dest} (${fs.statSync(dest).size} bytes, keeping ${BACKUPS_KEPT})`);
+    return dest;
+  } catch (e) {
+    // Deliberately not fatal: a failed backup should not take the app down, but it must be loud.
+    console.error('BACKUP FAILED — starting anyway:', e.message);
+    return null;
+  }
+}
 // One-time migration: old posts stored photos as huge base64 blobs in data.json
 // (truncated at 3,000,000 chars -> broken images, and re-uploaded on every Save -> very slow).
 // Convert stored base64 to real files on the volume; drop unrecoverable (truncated) ones.
@@ -87,7 +152,13 @@ function auth(req, res, next) {
   next();
 }
 
-app.get('/healthz', (req, res) => res.json({ ok: true }));
+// The deploy pipeline gates on this, so it has to assert something. A constant `{ok:true}` would
+// have passed over a wiped database. Counts are aggregate only — no names, no PINs.
+app.get('/healthz', (req, res) => {
+  if (!DB || typeof DB.users !== 'object' || typeof DB.sessions !== 'object')
+    return res.status(503).json({ ok: false, error: 'database not loaded' });
+  res.json({ ok: true, users: Object.keys(DB.users).length, sessions: Object.keys(DB.sessions).length });
+});
 app.get('/api/vapid', (req, res) => res.json({ publicKey: vapid.publicKey }));
 app.post('/api/register', (req, res) => {
   const { username, pin, displayName } = req.body || {};
@@ -1301,6 +1372,7 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
 // historical set at log time so a later library re-tag cannot rewrite it.
 // migrateMedia and migrateLoadTypes no-op once the data is in the new shape; rebuildAllPrs is a
 // full replay every boot by design, so PRs self-heal whenever the rule behind them changes.
+backupOnBoot();          // FIRST — after this line, everything below may rewrite data.json
 migrateMedia();
 rebuildAllPrs();
 migrateLoadTypes();
