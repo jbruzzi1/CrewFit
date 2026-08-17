@@ -561,6 +561,8 @@ async function addLogSet(){
   const seg=document.getElementById('logTypeSeg');
   const type=(seg&&seg.querySelector('.chip.on'))?seg.querySelector('.chip.on').getAttribute('data-t'):'normal';
   const s=await H.post(`/api/sessions/${LOGVIEW.sid}/log`,{exerciseId:LOGVIEW.exId,weight:w,reps:r,setType:type});
+  // Leave what was typed in the boxes if it did not save. They were cleared unconditionally, so
+  // a failed request threw the set away and you had to remember it and type it again.
   if(s.error){ alert(s.error); return; }
   LOGVIEW.sid && renderLogSets(s);
   document.getElementById('logW').value=''; document.getElementById('logR').value='';
@@ -822,8 +824,16 @@ async function saveWorkout(id){
   showRecap(id);          // the recap is the LAST thing, after saving — notes and photos are done
 }
 async function deleteSession(id){
-  if(!confirm('Delete this session? This removes it for everyone.')) return;
+  if(!confirm('Delete this workout?')) return;
   const r = await H.delete(`/api/sessions/${id}`);
+  // Someone else logged sets in it, so deleting would erase their training history too. Offer
+  // to take yourself out instead — the same shape as declining an invite, which removes only you.
+  if(r && r.canLeave){
+    if(!confirm(r.error + '\n\nRemove it from your profile instead? Your sets go with you; theirs stay.')) return;
+    const l = await H.post(`/api/sessions/${id}/leave`, {});
+    if(l && l.error){ alert(l.error); return; }
+    home(); return;
+  }
   if(r && r.error){ alert(r.error); return; }
   home();
 }

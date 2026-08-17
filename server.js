@@ -191,21 +191,75 @@ function noteLoginFail(key) {
   if (f.count >= LOGIN_MAX) f.until = Date.now() + LOGIN_LOCK_MS;
 }
 const app = express();
-app.use(express.json({ limit: '60mb' }));
+// 60mb let one request carry more than a phone ever sends, on a 1 GB volume shared by the
+// database, its ten backups and every photo. 30 leaves headroom over the 25 MB we accept.
+app.use(express.json({ limit: '30mb' }));
+// The app offered 4 photos; the server took 12, at any size, with no check at all.
+const MEDIA_MAX_ITEMS = 4;
+const MEDIA_MAX_PHOTO = 8 * 1024 * 1024;    // a normal iPhone photo is 2-5 MB
+const MEDIA_MAX_VIDEO = 25 * 1024 * 1024;   // roughly 15-20 seconds at iPhone quality
+const MEDIA_MAX_TOTAL = 25 * 1024 * 1024;
+const b64Bytes = b64 => Math.floor(String(b64 || '').length * 3 / 4);
+const mb = n => (n / 1048576).toFixed(1) + ' MB';
 app.use(express.static(path.join(__dirname, 'public')));
 // User-uploaded avatars live in the persistent volume so they survive redeploys.
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 app.use('/uploads', express.static(UPLOAD_DIR));
 
-// token -> userId  (in-memory for MVP; good enough for demo, survives while server runs)
-const SESSIONS_TOKEN = {}; // token -> userId
+// Logins are SIGNED, not remembered. They used to be a random string held in a plain object in
+// memory, so every restart forgot every login — and this app deploys several times a day, which
+// meant being thrown to the login screen mid-workout, losing the set being typed. A signed token
+// carries who you are and when it was issued, checked against a secret; nothing is stored, so
+// there is nothing to forget, nothing to grow, and nothing to corrupt.
+const TOKEN_TTL_DAYS = 90;
+const SECRET_FILE = path.join(DATA_DIR, 'auth-secret.json');
+let AUTH_SECRET = null;
+// Kept on the volume beside the data, never in the repo. Losing it logs everyone out once and
+// costs nothing else; rotating it deliberately is how you sign everybody out on purpose.
+function loadOrCreateSecret() {
+  try {
+    if (fs.existsSync(SECRET_FILE)) {
+      const v = JSON.parse(fs.readFileSync(SECRET_FILE, 'utf8'));
+      if (v && typeof v.secret === 'string' && v.secret.length >= 32) return (AUTH_SECRET = v.secret);
+    }
+  } catch (e) { console.error('auth secret unreadable, generating a new one:', e.message); }
+  AUTH_SECRET = crypto.randomBytes(48).toString('hex');
+  const tmp = SECRET_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify({ secret: AUTH_SECRET, at: new Date().toISOString() }, null, 2));
+  fs.renameSync(tmp, SECRET_FILE);
+  console.log('auth: generated a new signing secret — everyone signs in once more');
+  return AUTH_SECRET;
+}
+const b64u = b => Buffer.from(b).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+function signToken(userId) {
+  const body = b64u(JSON.stringify({ u: userId, t: Date.now() }));
+  const sig = b64u(crypto.createHmac('sha256', AUTH_SECRET).update(body).digest());
+  return body + '.' + sig;
+}
+function userIdFromToken(token) {
+  if (typeof token !== 'string' || token.indexOf('.') < 0) return null;
+  const [body, sig] = token.split('.');
+  if (!body || !sig) return null;
+  const want = b64u(crypto.createHmac('sha256', AUTH_SECRET).update(body).digest());
+  const a = Buffer.from(sig), b = Buffer.from(want);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;   // constant time
+  let payload;
+  try { payload = JSON.parse(Buffer.from(body.replace(/-/g,'+').replace(/_/g,'/'), 'base64').toString('utf8')); }
+  catch (e) { return null; }
+  if (!payload || !payload.u || !payload.t) return null;
+  if (Date.now() - payload.t > TOKEN_TTL_DAYS * 864e5) return null;          // expired
+  const u = DB.users[payload.u];
+  if (!u) return null;
+  // lets a single account be signed out everywhere, e.g. after a password change
+  if (u.tokensValidFrom && payload.t < Date.parse(u.tokensValidFrom)) return null;
+  return payload.u;
+}
 
 function auth(req, res, next) {
   const t = req.headers['authorization'] || '';
-  const token = t.replace(/^Bearer\s/, '');
-  const userId = SESSIONS_TOKEN[token];
-  if (!userId || !DB.users[userId]) return res.status(401).json({ error: 'unauthorized' });
+  const userId = userIdFromToken(t.replace(/^Bearer\s/, ''));
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
   req.userId = userId;
   next();
 }
@@ -229,9 +283,7 @@ app.post('/api/register', (req, res) => {
     displayName: String(displayName || username).trim(), friends: [], units: 'lb',
     createdAt: new Date().toISOString() }, hashPin(pin));
   save(DB);
-  const token = uid() + uid();
-  SESSIONS_TOKEN[token] = id;
-  res.json({ token, user: publicUser(id) });
+  res.json({ token: signToken(id), user: publicUser(id) });
 });
 // Live username availability check (used by the register popup as the user types)
 app.get('/api/register/check', (req, res) => {
@@ -249,9 +301,7 @@ app.post('/api/login', (req, res) => {
   const u = findUserByName(username);
   if (!u || !verifyPin(u, pin)) { noteLoginFail(key); return res.status(401).json({ error: 'bad credentials' }); }
   delete LOGIN_FAILS[key];
-  const token = uid() + uid();
-  SESSIONS_TOKEN[token] = u.id;
-  res.json({ token, user: publicUser(u.id) });
+  res.json({ token: signToken(u.id), user: publicUser(u.id) });
 });
 
 // ---- Password reset: DISABLED, deliberately ----
@@ -644,7 +694,7 @@ app.post('/api/sessions', auth, (req, res) => {
   const invites = [];
   if (Array.isArray(inviteUsernames)) {
     for (const un of inviteUsernames) {
-      const f = DB.users[req.userId].friends.find(fid => DB.users[fid].username === un);
+      const f = DB.users[req.userId].friends.find(fid => normUser(DB.users[fid] && DB.users[fid].username) === normUser(un));
       if (f) invites.push(f);
     }
   }
@@ -697,13 +747,58 @@ app.get('/api/sessions/:id', auth, (req, res) => {
 });
 
 // delete a session (creator only)
+// Who OTHER than me has logged sets in this workout.
+function othersWhoLogged(s, meId) {
+  return Object.keys(s.logs || {}).filter(uid => uid !== meId && (s.logs[uid] || []).length);
+}
+
 app.delete('/api/sessions/:id', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not yours' });
+  // Delete is creator-only, which sounds safe — but a workout holds EVERYONE's sets, so deleting
+  // it took a training partner's history with it, silently and with no undo. Declining an invite
+  // already removes only you; delete now behaves the same way once anyone else is involved.
+  const others = othersWhoLogged(s, req.userId);
+  if (others.length) {
+    const names = others.map(id => (DB.users[id] && (DB.users[id].displayName || DB.users[id].username)) || 'someone');
+    return res.status(409).json({
+      error: `${names.join(' and ')} logged sets in this workout. Deleting it would erase their training history too.`,
+      othersLogged: others.length, canLeave: true });
+  }
   delete DB.sessions[req.params.id];
+  rebuildAllPrs();     // the records were built from sets that no longer exist
   save(DB);
   res.json({ ok: true });
+});
+
+// Take yourself out of a shared workout without destroying it for the people still in it.
+// Removes your participation, your logged sets and your history row; theirs are untouched.
+app.post('/api/sessions/:id/leave', auth, (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  const me = req.userId;
+  const others = othersWhoLogged(s, me);
+  if (!others.length && s.creatorId === me)
+    return res.status(400).json({ error: 'Nobody else has logged in this workout — delete it instead.' });
+
+  if (s.logs) delete s.logs[me];
+  s.participants = (s.participants || []).filter(x => x !== me);
+  s.invited      = (s.invited || []).filter(x => x !== me);
+  s.history      = (s.history || []).filter(h => h.userId !== me);
+  if (s.attendance) delete s.attendance[me];
+  for (const exId of Object.keys(s.variations || {})) {
+    if (s.variations[exId]) delete s.variations[exId][me];
+  }
+  // If the creator walks away, the workout needs a new owner or nobody can ever finish or edit
+  // it. It goes to whoever else has actually logged in it.
+  if (s.creatorId === me) {
+    s.creatorId = others[0];
+    if (!s.participants.includes(others[0])) s.participants.push(others[0]);
+  }
+  rebuildAllPrs();
+  save(DB);
+  res.json({ ok: true, left: true });
 });
 
 // update a session (creator only): name/time/location/note/visibility/exercises/invites
@@ -729,7 +824,7 @@ app.put('/api/sessions/:id', auth, (req, res) => {
   if (Array.isArray(b.inviteUsernames)) {
   const invites = [];
   for (const un of b.inviteUsernames) {
-    const f = DB.users[req.userId].friends.find(fid => DB.users[fid].username === un);
+    const f = DB.users[req.userId].friends.find(fid => normUser(DB.users[fid] && DB.users[fid].username) === normUser(un));
     if (f) invites.push(f);
   }
   s.invited = invites;
@@ -1565,8 +1660,25 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator' });
   const { notes, media, visibility } = req.body || {};
   const vis = ['only_me','friends','public'].includes(visibility) ? visibility : 'only_me';
+  const incoming = Array.isArray(media) ? media : [];
+  if (incoming.length > MEDIA_MAX_ITEMS)
+    return res.status(413).json({ error: `Up to ${MEDIA_MAX_ITEMS} photos or videos per workout.` });
+  let total = 0;
+  for (const m of incoming) {
+    const dm = String(m && m.src || '').match(/^data:([^;]+);base64,(.+)$/);
+    if (!dm) continue;                                     // already a stored /uploads/ path
+    const bytes = b64Bytes(dm[2]);
+    const isVideo = dm[1].startsWith('video/');
+    const cap = isVideo ? MEDIA_MAX_VIDEO : MEDIA_MAX_PHOTO;
+    if (bytes > cap) return res.status(413).json({
+      error: `That ${isVideo ? 'video' : 'photo'} is ${mb(bytes)}. The limit is ${mb(cap)}.` });
+    total += bytes;
+  }
+  if (total > MEDIA_MAX_TOTAL)
+    return res.status(413).json({ error: `That is ${mb(total)} in one go. The limit is ${mb(MEDIA_MAX_TOTAL)}.` });
   // Persist media to disk on the volume (avoids huge/truncated base64 blobs in data.json).
-  const cleanMedia = Array.isArray(media) ? media.slice(0, 12).map(m => {
+  let writeFailed = null;
+  const cleanMedia = incoming.map(m => {
     const type = m.type === 'video' ? 'video' : 'image';
     let src = String(m.src || '');
     const dm = src.match(/^data:(image\/(?:png|jpeg|jpg|webp|gif)|video\/(?:mp4|webm|quicktime));base64,(.+)$/);
@@ -1578,10 +1690,18 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
         const fname = `post_${req.params.id}_${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
         fs.writeFileSync(path.join(UPLOAD_DIR, fname), Buffer.from(dm[2], 'base64'));
         src = `/uploads/${fname}`;
-      } catch (e) { console.error('MEDIA_WRITE_ERR', e && e.message); src = ''; }
+      } catch (e) {
+        // The write failed — disk full, permissions, a full volume. That is NOT a bad photo, and
+        // discarding it here silently lost a real one. Fail the whole request so the person still
+        // has the photo and can try again.
+        console.error('MEDIA_WRITE_ERR', e && e.message);
+        writeFailed = e && e.message;
+      }
     }
     return { type, src };
-  }).filter(m => m.src) : [];
+  }).filter(m => m.src);
+  if (writeFailed) return res.status(507).json({
+    error: 'Could not save that photo — the server is out of space. Your workout is not saved; please try again.' });
   s.post = {
     by: req.userId,
     at: new Date().toISOString(),
@@ -1609,6 +1729,7 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
 // migrateMedia and migrateLoadTypes no-op once the data is in the new shape; rebuildAllPrs is a
 // full replay every boot by design, so PRs self-heal whenever the rule behind them changes.
 backupOnBoot();          // FIRST — after this line, everything below may rewrite data.json
+loadOrCreateSecret();       // before anything can sign or verify a login
 migrateMedia();
 migratePasswords();
 migrateMergeDuplicateBrian();   // before the collision report, which it resolves

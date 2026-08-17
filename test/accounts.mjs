@@ -163,6 +163,27 @@ console.log('\nJeff can reset a password by hand while self-service reset is off
   ok(!readFileSync(f, 'utf8').includes('jeffSetThis'), 'and the plaintext did not survive the boot');
 }
 
+console.log('\na login survives a restart — it is signed, not remembered');
+{
+  const u = nm();
+  const r = await reg(u, 'pass1234', 'T').then(x => x.json());
+  const me = () => fetch(B + '/api/me/seeds', { headers: { Authorization: 'Bearer ' + r.token } });
+  ok((await me()).status < 400, 'the token works');
+  await stop(); await boot();
+  ok((await me()).status < 400, 'and it STILL works after the server restarts');
+  ok(r.token.includes('.'), 'it is a signed token, not a random string');
+
+  const forged = r.token.split('.')[0] + '.' + 'x'.repeat(43);
+  ok((await fetch(B + '/api/me/seeds', { headers: { Authorization: 'Bearer ' + forged } })).status === 401,
+     'a token with a faked signature is refused');
+  const tampered = Buffer.from(JSON.stringify({ u: 'someoneelse', t: Date.now() })).toString('base64url')
+                 + '.' + r.token.split('.')[1];
+  ok((await fetch(B + '/api/me/seeds', { headers: { Authorization: 'Bearer ' + tampered } })).status === 401,
+     'swapping in another user id is refused');
+  ok((await fetch(B + '/api/me/seeds', { headers: { Authorization: 'Bearer notatoken' } })).status === 401,
+     'nonsense is refused');
+}
+
 } finally { await stop(); rmSync(DIR, { recursive: true, force: true }); }
 
 console.log(fails ? `\n${fails} FAILURE(S)\n` : '\nall assertions passed\n');
