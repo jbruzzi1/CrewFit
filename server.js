@@ -61,11 +61,8 @@ function migrateMedia() {
   if (sessionsChanged) { save(DB); console.log(`MIGRATE media: sessions=${sessionsChanged} recovered=${recovered} dropped=${dropped}`); }
 }
 let DB = load();
-migrateMedia();
-// v148: rebuild PR tracking on boot — fixes any PRs recorded under the old per-session logic
-// (see rebuildAllPrs below) so existing users' data self-heals on next deploy, no manual migration.
-rebuildAllPrs();
-save(DB);
+// The boot migrations and the PR rebuild used to run HERE and have been moved to the end of
+// module evaluation — see the block above app.listen for why.
 const EX_LIB = JSON.parse(fs.readFileSync(LIB_FILE, 'utf8')).exercises;
 
 // ---- Auth (simple username + pin, no password hashing for MVP demo) ----
@@ -705,6 +702,16 @@ app.post('/api/sessions/:id/attendance', auth, (req, res) => {
 // keeps reading in kg. Comparisons convert to a canonical lb.
 const LB_PER_KG = 2.2046226218;
 function toLb(weight, unit) { return (Number(weight) || 0) * (unit === 'kg' ? LB_PER_KG : 1); }
+// A set is stored in the unit it was TYPED in. Everything shown back to the user has to be
+// converted into whatever unit they are on now, or switching to kg reprints 185 lb as "185 kg"
+// — a 408 lb bench — and one tap writes it into their history.
+function inUnit(weight, from, to) {
+  const lb = toLb(weight, from);
+  return Math.round((to === 'kg' ? lb / LB_PER_KG : lb) * 2) / 2;   // nearest half unit
+}
+// "the same weight" has to tolerate a unit round-trip: 100 kg is 220.462 lb, and the user who
+// typed 220.5 lb last week did not change the weight on the bar.
+function sameLoad(a, b) { return Math.abs(toLb(a.weight, a.unit) - toLb(b.weight, b.unit)) < 0.6; }
 
 app.post('/api/me/units', auth, (req, res) => {
   const u = (req.body || {}).units;
@@ -777,6 +784,10 @@ function recommendationsFor(userId) {
   // who told us what they lift gets advice after one real session instead of two. It is only
   // ever the older half of the pair — a seed alone can never trigger a recommendation.
   const seeds = seedsOf(userId);
+  // Counted BEFORE the seed goes in, so "how many sessions have I logged" stays a count of real
+  // sessions. The log sheet reads this to say what is coming; a seed is not a session.
+  const counts = {};
+  for (const name of Object.keys(byName)) counts[name] = byName[name].length;
   for (const name of Object.keys(seeds)) {
     const sd = seeds[name];
     if (!byName[name] || !byName[name].length) continue;      // never seed-only
@@ -786,28 +797,41 @@ function recommendationsFor(userId) {
              targetReps: sd.reps, targetRepsMax: sd.reps } });
   }
 
-  const ready = [], holds = [];
+  const ready = [], holds = [], soon = [];
   for (const name of Object.keys(byName)) {
     const hist = byName[name];                       // newest first
     if (hist.length < 2) continue;                   // need a previous session to compare against
     const [latest, prev] = hist;
     const lib = EX_LIB.find(x => x.name === name);
     const group = lib && ['push','pull','legs','core','cardio'].includes(lib.pattern) ? lib.pattern : 'other';
-    const base = { exercise: name, group, weight: Number(latest.top.weight) || 0, unit,
+    const base = { exercise: name, group, weight: inUnit(latest.top.weight, latest.top.unit, unit), unit,
+                   bodyweight: !(Number(latest.top.weight) > 0),
                    reps: Number(latest.top.reps) || 0,
                    targetRepsMax: Number(latest.top.targetRepsMax) || Number(latest.top.targetReps) || null,
                    at: latest.when };
-    if (toppedOut(latest) && toppedOut(prev)) {
+    // Logged before rep targets were stamped (pre-v154): there is nothing to judge the set
+    // against, so say nothing rather than render "8 of null reps last time".
+    if (!base.targetRepsMax) continue;
+    // Double progression is "top of the range TWICE AT THE SAME WEIGHT". Without this check a
+    // deload triggered it: miss 225x7, drop to 135x10, and the next 135x10 read as two clean
+    // sessions and told someone whose squat is 225 to try 140. Compared in lb so a user who
+    // switched units mid-cycle is not told their own weight changed.
+    if (toppedOut(latest) && toppedOut(prev) && sameLoad(latest.top, prev.top)) {
       const step = incrementFor(name, unit);
-      ready.push(Object.assign({}, base, { suggested: (Number(latest.top.weight) || 0) + step, step }));
+      ready.push(Object.assign({}, base, { suggested: base.weight + step, step }));
     } else if (!toppedOut(latest)) {
       holds.push(base);
+    } else {
+      // Topped out this session, but the one before either fell short or was a different weight.
+      // One more session like this one and it becomes a real suggestion — which is exactly what
+      // the log sheet promises, so the promise is now one the rule above actually keeps.
+      soon.push(base);
     }
   }
   const order = { legs: 0, push: 1, pull: 2, core: 3, cardio: 4, other: 5 };
-  ready.sort((a, b) => (order[a.group] - order[b.group]) || a.exercise.localeCompare(b.exercise));
-  holds.sort((a, b) => (order[a.group] - order[b.group]) || a.exercise.localeCompare(b.exercise));
-  return { unit, ready, holds };
+  const bySplit = (a, b) => (order[a.group] - order[b.group]) || a.exercise.localeCompare(b.exercise);
+  ready.sort(bySplit); holds.sort(bySplit); soon.sort(bySplit);
+  return { unit, ready, holds, soon, counts, seeded: seeds };
 }
 
 // Weeks of training, most recent last. Counts DISTINCT days with at least one working set,
@@ -969,10 +993,17 @@ function recordsFor(userId) {
 app.get('/api/progress/exercise/:name', auth, (req, res) => {
   const name = decodeURIComponent(req.params.name);
   const r = recommendationsFor(req.userId);
+  // `sessions` and `seeded` exist so the sheet can say what is COMING when there is nothing to
+  // advise yet — otherwise the one feature that tells you what to do next is only ever explained
+  // on a tab a new user has no reason to open. Both come out of the pass already done above
+  // rather than a second scan of every session in the database.
   res.json({
     unit: r.unit,
+    sessions: r.counts[name] || 0,
+    seeded: !!r.seeded[name],     // a seeded working weight counts as the first of the pair
     ready: r.ready.find(x => x.exercise === name) || null,
-    hold:  r.holds.find(x => x.exercise === name) || null
+    hold:  r.holds.find(x => x.exercise === name) || null,
+    soon:  r.soon.find(x => x.exercise === name) || null
   });
 });
 
@@ -987,6 +1018,7 @@ app.get('/api/progress', auth, (req, res) => {
     unit: rec.unit,
     ready: rec.ready,
     holds: rec.holds,
+    soon: rec.soon,     // one clean session away — the log sheet shows this, so Progress must too
     weeks: w,
     thisWeek: w.length ? w[w.length - 1].days : 0,
     avgPerWeek: w.length ? Number((trained / w.length).toFixed(1)) : 0,
@@ -1250,12 +1282,25 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
   res.json(s);
 });
 
-// v150: stamp loadType onto sets logged before the field existed, so the meaning of a
-// historical set is frozen at log time and a later library re-tag cannot rewrite it.
-// Runs here, at the end of module evaluation, because it reads EX_LIB and the lookup map —
-// both declared below the boot block, where const/let are still in the temporal dead zone.
-// Idempotent: entries already carrying the field are skipped, so it no-ops on later boots.
-if (migrateLoadTypes()) save(DB);
+// ---- Boot migrations ----
+// These ALL run here, at the end of module evaluation, never at the top of the file. Every one
+// of them reads a const declared further down — UPLOAD_DIR, LB_PER_KG, EX_LIB, the loadType
+// lookup map — so from the old call site near `load()` they executed inside the temporal dead
+// zone and threw before app.listen. The failures were invisible in testing because each is
+// conditional: migrateMedia only touches LEGACY base64 photos, and toLb only reads LB_PER_KG
+// when a set was typed in KILOGRAMS. One kg set in data.json was enough to stop the server
+// booting, permanently, until the file was hand-edited. Add new boot work to this block.
+//
+// v148: rebuild PR tracking — repairs PRs recorded under the old per-session logic, so
+// existing data self-heals on deploy with no manual migration.
+// v150: stamp loadType onto sets logged before the field existed, freezing the meaning of a
+// historical set at log time so a later library re-tag cannot rewrite it.
+// migrateMedia and migrateLoadTypes no-op once the data is in the new shape; rebuildAllPrs is a
+// full replay every boot by design, so PRs self-heal whenever the rule behind them changes.
+migrateMedia();
+rebuildAllPrs();
+migrateLoadTypes();
+save(DB);
 
 const server = app.listen(PORT, () => console.log('CrewFit on', PORT));
 module.exports = { app, server };

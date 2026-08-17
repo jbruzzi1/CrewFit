@@ -449,6 +449,11 @@ async function openLogSheet(sid, exId){
   const s = await H.get('/api/sessions/'+sid);
   if(!s || s.error){ alert(s && s.error ? s.error : 'Session not found'); return; }
   const e = s.exercises.find(x=>x.id===exId); if(!e) return;
+  // A swapped exercise logs under the swap, so the advice has to be looked up under the swap too.
+  // Asking about the template's name on a swapped lift returned "first time logging this" for
+  // someone with months of history on it.
+  const myVar = s.variations && s.variations[exId] && s.variations[exId][ME.id];
+  const recName = (myVar && myVar.swapTo) || e.name;
   const libEntry = (await libByName())[e.name];
   const loadType = libEntry && libEntry.loadType ? libEntry.loadType : '';
   LOGVIEW = { sid, exId, loadType };
@@ -485,20 +490,59 @@ async function openLogSheet(sid, exId){
   // The advice belongs HERE, at the moment the weight is chosen — not only on a tab the user
   // has to remember to open before leaving for the gym. Loaded after the sheet is on screen
   // so it never delays opening.
-  H.get('/api/progress/exercise/'+encodeURIComponent(e.name)).then(r=>{
+  H.get('/api/progress/exercise/'+encodeURIComponent(recName)).then(r=>{
     const box=document.getElementById('logRec'); if(!box||!r||r.error) return;
     const U=r.unit||'lb';
-    if(r.ready) box.innerHTML=`<div class="log-rec up" onclick="useSuggested(${r.ready.suggested})">
+    // A pull-up or dip stores weight 0 — "at 0 lb" reads as a bug, "at bodyweight" reads as English.
+    const W=w=>(Number(w)>0? `${w} ${U}` : 'bodyweight');
+    if(r.ready) box.innerHTML=`<div class="log-rec up" role="button" tabindex="0"
+        onclick="useSuggested(${r.ready.suggested})"
+        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();useSuggested(${r.ready.suggested});}">
         <span class="lr-ic" aria-hidden="true">↑</span>
-        <span class="lr-t">Try <b>${r.ready.suggested} ${U}</b> today</span>
-        <span class="lr-why">hit ${r.ready.targetRepsMax} reps at ${r.ready.weight} ${U}, last 2 sessions</span>
+        <span class="lr-t">${r.ready.bodyweight
+          ? `Add <b>${r.ready.step} ${U}</b> today`
+          : `Try <b>${r.ready.suggested} ${U}</b> today`}</span>
+        <span class="lr-why">hit ${r.ready.targetRepsMax} reps at ${W(r.ready.weight)}, last 2 sessions</span>
       </div>`;
     else if(r.hold) box.innerHTML=`<div class="log-rec hold">
         <span class="lr-ic" aria-hidden="true">–</span>
-        <span class="lr-t">Repeat <b>${r.hold.weight} ${U}</b></span>
+        <span class="lr-t">Repeat <b>${W(r.hold.weight)}</b></span>
         <span class="lr-why">${r.hold.reps} of ${r.hold.targetRepsMax} reps last time</span>
       </div>`;
+    // One clean session away. Dashed green, not solid: the same family as the real suggestion,
+    // visibly not yet the real suggestion, and — unlike the green box — not tappable.
+    else if(r.soon) box.innerHTML=`<div class="log-rec almost">
+        <span class="lr-ic" aria-hidden="true">⋯</span>
+        <span class="lr-t">One more like that</span>
+        <span class="lr-why">hit ${r.soon.targetRepsMax} reps at ${W(r.soon.weight)} again and the weight goes up</span>
+      </div>`;
+    // Nothing to advise yet. Say what is coming anyway — otherwise the one feature that tells you
+    // what to do next is only ever explained on a tab a new user has no reason to open. This is a
+    // catch-all on purpose: the box must never render empty, whatever shape the history is in.
+    else box.innerHTML=`<div class="log-rec soon">
+        <span class="lr-ic" aria-hidden="true">⋯</span>
+        <span class="lr-t">${logSoonTitle(r)}</span>
+        <span class="lr-why">${logSoonWhy(r)}</span>
+      </div>`;
   }).catch(()=>{});
+}
+// What the sheet says before it has anything to advise. Kept honest against the actual rule:
+// two sessions at the top of the rep range, at the SAME weight — except for someone who entered
+// a working weight at setup, where that entry is the first of the pair and one session finishes it.
+function logSoonTitle(r){
+  if(!r.sessions) return r.seeded ? 'Ready when you are' : 'First time logging this';
+  return r.sessions===1 ? 'One session logged' : 'Keep logging';
+}
+// One sentence, deliberately. `sessions` is a bare count — it does not know whether those
+// sessions topped out or at what weight — so anything more specific ("one more and…") would be
+// a promise this state cannot keep. The seeded line differs only because the entered working
+// weight really is the first half of the pair.
+function logSoonWhy(r){
+  if(!r.sessions && r.seeded)
+    return 'the weight you entered counts as your first session — hit the top of your rep range '
+         + 'at that weight and this box tells you what to add';
+  return 'hit the top of your rep range twice in a row at the same weight and this box tells you '
+       + 'what weight to add';
 }
 // One tap fills the weight box, so the advice is one action rather than something to memorise.
 function useSuggested(w){
@@ -1215,6 +1259,8 @@ async function progressScreen(){
   const d = await H.get('/api/progress?weeks='+PROG_WEEKS);
   if(!d || d.error){ $('app').innerHTML = `<div class="wrap"><h1>Progress</h1><div class="muted">Couldn\'t load progress.</div></div>`; return; }
   const U = d.unit || 'lb';
+  // Bodyweight lifts store weight 0; "at 0 lb" reads as a bug on every one of these rows.
+  const WL = w => (Number(w)>0 ? `${w} ${U}` : 'bodyweight');
 
   // --- add weight next time, grouped by training split ---
   let readyHtml = '';
@@ -1226,18 +1272,19 @@ async function progressScreen(){
         ${byGroup[g].map(r=>`<div class="rp">
           <div class="rp-ic" aria-hidden="true">↑</div>
           <div class="rp-main"><div class="rp-name">${esc(r.exercise)}</div>
-            <div class="rp-why">Hit ${r.targetRepsMax} reps at ${r.weight} ${U} · last 2 sessions</div></div>
-          <div class="rp-to"><div class="rp-new">${r.suggested} ${U}</div>
+            <div class="rp-why">Hit ${r.targetRepsMax} reps at ${WL(r.weight)} · last 2 sessions</div></div>
+          <div class="rp-to"><div class="rp-new">${r.bodyweight?`+${r.step} ${U}`:`${r.suggested} ${U}`}</div>
             <div class="rp-tag">▲ +${r.step}</div></div>
         </div>`).join('')}
       </div>`).join('');
-  } else {
-    // Show what a real recommendation looks like rather than describing it twice. The
-    // "How it works" footnote is suppressed below when empty — it repeated this sentence.
+  } else if(!(d.soon||[]).length && !d.holds.length){
+    // Only when the card would otherwise be blank. Printing "Nothing to add yet" above a
+    // populated "Almost" list — the single most likely state for a new user — had the card
+    // contradicting itself, with a faded example row sitting among real ones.
     readyHtml = `<div class="empty">
       <div class="empty-t">Nothing to add yet</div>
-      <div class="empty-b">Reach the top of your rep range on a lift <b>two sessions in a row</b>
-        and it appears here, with the weight to try next.</div>
+      <div class="empty-b">Reach the top of your rep range on a lift <b>two sessions in a row at the
+        same weight</b> and it appears here, with the weight to try next.</div>
       <div class="eg-wrap">
         <div class="eg-cap">Example</div>
         <div class="rp eg-row">
@@ -1248,13 +1295,24 @@ async function progressScreen(){
         </div>
       </div></div>`;
   }
+  // The log sheet shows this state on the exercise row; without it here the two screens
+  // contradicted each other — "one more like that" in the sheet, "nothing to add yet" on Progress.
+  let soonHtml = '';
+  if((d.soon||[]).length){
+    soonHtml = `<div class="hold-sec"><div class="hold-head">Almost — one more good session</div>
+      ${d.soon.map(h=>`<div class="hold">
+        <div class="hold-ic almost-ic" aria-hidden="true">⋯</div>
+        <div class="rp-main"><div class="rp-name">${esc(h.exercise)}</div>
+          <div class="rp-why">Hit ${h.targetRepsMax} reps at ${WL(h.weight)} again and the weight goes up</div></div>
+      </div>`).join('')}</div>`;
+  }
   let holdHtml = '';
   if(d.holds.length){
     holdHtml = `<div class="hold-sec"><div class="hold-head">Hold for now</div>
       ${d.holds.map(h=>`<div class="hold">
         <div class="hold-ic" aria-hidden="true">–</div>
         <div class="rp-main"><div class="rp-name">${esc(h.exercise)}</div>
-          <div class="rp-why">${h.reps} of ${h.targetRepsMax} reps at ${h.weight} ${U} — repeat it before adding</div></div>
+          <div class="rp-why">${h.reps} of ${h.targetRepsMax} reps at ${WL(h.weight)} — repeat it before adding</div></div>
       </div>`).join('')}</div>`;
   }
 
@@ -1306,10 +1364,10 @@ async function progressScreen(){
     ${nothingYet?`<button class="blue btn-new" onclick="createFlow()">+ New workout</button>`:''}
 
     <h2>Add weight next time</h2>
-    <div class="card">${readyHtml}${holdHtml}
-      ${(d.ready.length||d.holds.length)?`<div class="rulenote"><b>How it works:</b> reach the top of
-        your rep range two sessions in a row and the weight goes up. Warm-ups and drop sets
-        don\'t count.</div>`:''}
+    <div class="card">${readyHtml}${soonHtml}${holdHtml}
+      ${(d.ready.length||(d.soon||[]).length||d.holds.length)?`<div class="rulenote"><b>How it works:</b>
+        reach the top of your rep range two sessions in a row <b>at the same weight</b> and the weight
+        goes up. Warm-ups and drop sets don\'t count.</div>`:''}
     </div>
 
     <h2>Consistency</h2>
