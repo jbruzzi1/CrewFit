@@ -6,3 +6,6 @@ vapid.json
 uploads/
 .hermes/
 __pycache__/
+
+# local scratch — safe to delete
+_to_delete/

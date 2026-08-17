@@ -1,5 +1,5 @@
 {
-  "_note": "Comprehensive exercise library for any well-stocked commercial gym. pattern = movement category (push/pull/legs/core/cardio). muscle_groups drive conflict detection (Phase 3) and muscle-group filtering. equipment drives equipment-aware reorder (Phase 3) and filtering. is_compound + level added for smart filtering. Source: standard lifts across Hevy/Strong/Fitbod/Gravl, expanded to full commercial-gym coverage.",
+  "_note": "Comprehensive exercise library for any well-stocked commercial gym. pattern = movement category (push/pull/legs/core/cardio). muscle_groups drive conflict detection (Phase 3) and muscle-group filtering. equipment drives equipment-aware reorder (Phase 3) and filtering. is_compound + level added for smart filtering. Source: standard lifts across Hevy/Strong/Fitbod/Gravl, expanded to full commercial-gym coverage. loadType marks exercises where the entered weight is ambiguous: pair = two implements, number is per hand; single = one implement, number is the whole load; added = bodyweight movement, number is added weight only. Absent = unambiguous. Do NOT infer this from the equipment tags — they are inconsistent (Goblet Squat is tagged \"dumbbells\" but uses one).",
   "exercises": [
     {
       "name": "Barbell Back Squat",
@@ -73,7 +73,8 @@
         "bench"
       ],
       "is_compound": true,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "pair"
     },
     {
       "name": "Walking Lunge",
@@ -87,7 +88,8 @@
         "dumbbells"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Reverse Lunge",
@@ -101,7 +103,8 @@
         "dumbbells"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Romanian Deadlift",
@@ -301,7 +304,8 @@
         "kettlebell"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "single"
     },
     {
       "name": "Pistol Squat",
@@ -388,7 +392,8 @@
         "dumbbells"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Sissy Squat",
@@ -465,7 +470,8 @@
         "bench"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Incline Dumbbell Press",
@@ -481,7 +487,8 @@
         "incline bench"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Decline Dumbbell Press",
@@ -496,7 +503,8 @@
         "decline bench"
       ],
       "is_compound": true,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "pair"
     },
     {
       "name": "Machine Chest Press",
@@ -579,7 +587,8 @@
         "bench"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Chest Dip",
@@ -593,7 +602,8 @@
         "dip station"
       ],
       "is_compound": true,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "added"
     },
     {
       "name": "Push-Up",
@@ -624,7 +634,8 @@
         "weighted vest"
       ],
       "is_compound": true,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "added"
     },
     {
       "name": "Incline Push-Up",
@@ -652,7 +663,8 @@
         "plate"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "single"
     },
     {
       "name": "Landmine Press",
@@ -694,7 +706,8 @@
         "dumbbells"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Overhead Barbell Press",
@@ -722,7 +735,8 @@
         "dumbbells"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Arnold Press",
@@ -736,7 +750,8 @@
         "dumbbells"
       ],
       "is_compound": true,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "pair"
     },
     {
       "name": "Machine Shoulder Press",
@@ -765,7 +780,8 @@
         "bench"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Push Press",
@@ -794,7 +810,8 @@
         "dumbbells"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "single"
     },
     {
       "name": "Lateral Raise",
@@ -808,7 +825,8 @@
         "cable"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Cable Lateral Raise",
@@ -835,7 +853,8 @@
         "cable"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Rear Delt Fly",
@@ -850,7 +869,8 @@
         "rear delt machine"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Reverse Pec Deck",
@@ -907,7 +927,8 @@
         "trap machine"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Smith Machine Shoulder Press",
@@ -950,7 +971,8 @@
         "dip station"
       ],
       "is_compound": true,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "added"
     },
     {
       "name": "Overhead Dumbbell Extension",
@@ -963,7 +985,8 @@
         "dumbbells"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Skull Crusher",
@@ -978,7 +1001,8 @@
         "dumbbells"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Rope Pushdown",
@@ -1030,7 +1054,8 @@
         "dumbbells"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Machine Triceps Extension",
@@ -1058,7 +1083,8 @@
         "bodyweight"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "added"
     },
     {
       "name": "Pull-Up",
@@ -1072,7 +1098,8 @@
         "pull-up bar"
       ],
       "is_compound": true,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "added"
     },
     {
       "name": "Chin-Up",
@@ -1086,7 +1113,8 @@
         "pull-up bar"
       ],
       "is_compound": true,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "added"
     },
     {
       "name": "Lat Pulldown",
@@ -1188,7 +1216,8 @@
         "dumbbells"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Single-Arm Dumbbell Row",
@@ -1203,7 +1232,8 @@
         "bench"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "single"
     },
     {
       "name": "T-Bar Row",
@@ -1305,7 +1335,8 @@
         "dumbbells"
       ],
       "is_compound": true,
-      "level": "advanced"
+      "level": "advanced",
+      "loadType": "pair"
     },
     {
       "name": "Kroc Row",
@@ -1319,7 +1350,8 @@
         "dumbbells"
       ],
       "is_compound": true,
-      "level": "advanced"
+      "level": "advanced",
+      "loadType": "pair"
     },
     {
       "name": "Barbell Curl",
@@ -1345,7 +1377,8 @@
         "dumbbells"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Hammer Curl",
@@ -1359,7 +1392,8 @@
         "dumbbells"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Incline Dumbbell Curl",
@@ -1373,7 +1407,8 @@
         "incline bench"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Preacher Curl",
@@ -1388,7 +1423,8 @@
         "dumbbells"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Concentration Curl",
@@ -1401,7 +1437,8 @@
         "dumbbells"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "single"
     },
     {
       "name": "Cable Curl",
@@ -1442,7 +1479,8 @@
         "barbell"
       ],
       "is_compound": false,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "pair"
     },
     {
       "name": "Zottman Curl",
@@ -1456,7 +1494,8 @@
         "dumbbells"
       ],
       "is_compound": false,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "pair"
     },
     {
       "name": "EZ-Bar Curl",
@@ -1603,7 +1642,8 @@
         "plate"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "single"
     },
     {
       "name": "Hollow Body Hold",
@@ -1983,7 +2023,8 @@
         "dumbbell"
       ],
       "is_compound": true,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "pair"
     },
     {
       "name": "Wrist Curl",
@@ -1997,7 +2038,8 @@
         "bench"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Reverse Wrist Curl",
@@ -2011,7 +2053,8 @@
         "bench"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Farmer's Carry",
@@ -2025,7 +2068,8 @@
         "kettlebell"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Plate Pinch",
@@ -2038,7 +2082,8 @@
         "plate"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "single"
     },
     {
       "name": "Dead Hang",
@@ -2092,7 +2137,8 @@
         "dumbbell"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Barbell Shrug",
@@ -2161,7 +2207,8 @@
         "dumbbell"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "single"
     },
     {
       "name": "Calf Raise on Leg Press",
@@ -2244,7 +2291,8 @@
         "dumbbell"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "single"
     },
     {
       "name": "Back Extension",
@@ -2286,7 +2334,8 @@
         "kettlebell"
       ],
       "is_compound": true,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "single"
     },
     {
       "name": "Deficit Romanian Deadlift",
@@ -2330,7 +2379,8 @@
         "dumbbell"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Front Foot Elevated Split Squat",
@@ -2345,7 +2395,8 @@
         "plate"
       ],
       "is_compound": true,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "pair"
     },
     {
       "name": "Wall Sit",
@@ -2372,7 +2423,8 @@
         "dumbbell"
       ],
       "is_compound": true,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "pair"
     },
     {
       "name": "Cable Kickback",
@@ -2440,7 +2492,8 @@
         "dumbbell"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Deficit Push-Up",
@@ -2480,7 +2533,8 @@
         "plate"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "single"
     },
     {
       "name": "Machine Fly",
@@ -2547,7 +2601,8 @@
         "dumbbell"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Plate Raise",
@@ -2560,7 +2615,8 @@
         "plate"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "single"
     },
     {
       "name": "Barbell Front Raise",
@@ -2586,7 +2642,8 @@
         "dumbbell"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Y Raises",
@@ -2599,7 +2656,8 @@
         "dumbbell"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Turkish Get-Up",
@@ -2613,7 +2671,8 @@
         "kettlebell"
       ],
       "is_compound": true,
-      "level": "advanced"
+      "level": "advanced",
+      "loadType": "single"
     },
     {
       "name": "Bayesian Curl",
@@ -2627,7 +2686,8 @@
         "dumbbell"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Cross-Body Hammer Curl",
@@ -2641,7 +2701,8 @@
         "dumbbell"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Waiter Curl",
@@ -2654,7 +2715,8 @@
         "dumbbell"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "21s Curl",
@@ -2668,7 +2730,8 @@
         "dumbbell"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Reverse Curl",
@@ -2764,7 +2827,8 @@
         "dumbbell"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "pair"
     },
     {
       "name": "Triceps Pushdown (V-Bar)",
@@ -2817,7 +2881,8 @@
         "kettlebell"
       ],
       "is_compound": true,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "single"
     },
     {
       "name": "Step Mill",
