@@ -1096,6 +1096,8 @@ async function submitSession(){
 // side (/api/progress) from the last two sessions per lift, NOT from the week range — a
 // recommendation is about what to do next, so it must not change when the range is scrubbed.
 let PROG_WEEKS = 13;
+// Labelled the way people think about time, not in the raw week counts the API takes.
+const PROG_RANGES = [ {weeks:4, label:'Month'}, {weeks:13, label:'3 months'}, {weeks:26, label:'6 months'} ];
 const GROUP_LABEL = { legs:'Legs', push:'Push', pull:'Pull', core:'Core', cardio:'Cardio', other:'Other' };
 
 // A bodyweight best has no weight — "0 × 10" reads as broken. Show the reps, which is what
@@ -1185,7 +1187,7 @@ async function progressScreen(){
       <div class="kpi"><div>
         ${d.weeks.some(w=>w.days)
           ? `<div class="hero">${d.avgPerWeek}<span class="hero-u"> days/week average</span></div>
-             <div class="hero-cap">over ${d.weeks.length} weeks</div>`
+             <div class="hero-cap">over ${(PROG_RANGES.find(r=>r.weeks===d.weeks.length)||{label:d.weeks.length+' weeks'}).label.toLowerCase()}</div>`
           : `<div class="hero" style="font-size:17px">No workouts logged yet</div>`}
       </div>${d.streakWeeks>0?`<span class="streak">${d.streakWeeks}-week streak</span>`:''}</div>
       ${d.weeks.some(w=>w.days)
@@ -1194,7 +1196,7 @@ async function progressScreen(){
         : `<div class="muted" style="padding:14px 2px 6px;line-height:1.5">Your training weeks will
              chart here. Two or three a week is plenty to see a pattern.</div>`}
       <div class="seg wk-seg">
-        ${[4,13,26].map(w=>`<button class="${PROG_WEEKS===w?'on':''}" onclick="setProgWeeks(${w})">${w} weeks</button>`).join('')}
+        ${PROG_RANGES.map(r=>`<button class="${PROG_WEEKS===r.weeks?'on':''}" onclick="setProgWeeks(${r.weeks})">${r.label}</button>`).join('')}
       </div>
     </div>
 
