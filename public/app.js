@@ -399,11 +399,48 @@ const TYPE_CLASS = { normal:'t-normal', warmup:'t-warm', drop:'t-drop', failure:
 const TYPE_LABEL = { normal:'Normal', warmup:'Warm up', drop:'Drop', failure:'Failure' };
 let LOGVIEW = { sid:null, exId:null };
 
+// ---- Load type: what the number in the weight box actually means ----
+// The library tags exercises whose entered weight is ambiguous (see exercise-library.json):
+//   pair   two implements, the number is PER HAND  (70 → 70 each, 140 total)
+//   single one implement, the number is the whole load (goblet squat, Turkish get-up)
+//   added  bodyweight movement, the number is ADDED weight only (weighted pull-up)
+// Untagged exercises are unambiguous (barbell, cable, machine) and show no note.
+// Sessions store only the exercise NAME, so look the tag up in the library by name.
+let _LIBBYNAME = null;
+async function libByName(){
+  if(_LIBBYNAME) return _LIBBYNAME;
+  const lib = window._LIB2 || await H.get('/api/exercises');
+  if(!window._LIB2 && Array.isArray(lib)) window._LIB2 = lib;
+  _LIBBYNAME = {};
+  if(Array.isArray(lib)) for(const e of lib) _LIBBYNAME[e.name] = e;
+  return _LIBBYNAME;
+}
+const LOAD_LABEL = {
+  pair:   'per dumbbell',
+  single: 'total',
+  added:  'added weight',
+};
+// The live readout beside the weight box — this is what actually removes the ambiguity,
+// because the user never has to reason about which convention the app assumed.
+function loadHintText(loadType, w){
+  const n = Number(w)||0;
+  if(loadType==='pair')   return n ? `= ${n*2} lb total, both hands` : 'weight in each hand';
+  if(loadType==='single') return 'one dumbbell, total weight';
+  if(loadType==='added')  return n ? `${n} lb on top of bodyweight` : 'weight added, not bodyweight';
+  return '';
+}
+function updateLoadHint(){
+  const el=document.getElementById('logLoadHint'); if(!el) return;
+  const w=document.getElementById('logW'); if(!w) return;
+  el.textContent = loadHintText(el.dataset.load, w.value);
+}
 async function openLogSheet(sid, exId){
   const s = await H.get('/api/sessions/'+sid);
   if(!s || s.error){ alert(s && s.error ? s.error : 'Session not found'); return; }
   const e = s.exercises.find(x=>x.id===exId); if(!e) return;
-  LOGVIEW = { sid, exId };
+  const libEntry = (await libByName())[e.name];
+  const loadType = libEntry && libEntry.loadType ? libEntry.loadType : '';
+  LOGVIEW = { sid, exId, loadType };
   const mine = (s.logs && s.logs[ME.id]) || [];
   const exLogs = mine.filter(l=>l.exerciseId===exId);
   const bestLog = exLogs.slice().sort((a,b)=>((Number(b.weight)||0)*(Number(b.reps)||0))-((Number(a.weight)||0)*(Number(a.reps)||0)))[0];
@@ -418,10 +455,14 @@ async function openLogSheet(sid, exId){
         ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" data-t="${t.key}" onclick="logSetType('${t.key}')">${t.label}</div>`).join('')}
       </div>
       <div class="add-row">
-        <input id="logW" placeholder="lbs" type="number" inputmode="tel" pattern="[0-9]*">
+        <input id="logW" placeholder="${loadType==='pair'?'lbs each':'lbs'}" type="number" inputmode="tel" pattern="[0-9]*" oninput="updateLoadHint()">
         <input id="logR" placeholder="reps" type="number" inputmode="tel" pattern="[0-9]*">
         <button class="add-btn" onclick="addLogSet()">+ Add</button>
       </div>
+      ${loadType?`<div class="load-note">
+        <span class="load-chip">${LOAD_LABEL[loadType]}</span>
+        <span class="load-hint" id="logLoadHint" data-load="${loadType}">${loadHintText(loadType,'')}</span>
+      </div>`:''}
       <div id="logRest"></div>
       <div class="note">Tap a set to edit or delete it. Set # auto-fills.</div>
     </div>`;
@@ -439,9 +480,15 @@ function renderLogSets(s){
   const mine=(s.logs&&s.logs[ME.id])||[];
   const exLogs=mine.filter(l=>l.exerciseId===LOGVIEW.exId).sort((a,b)=>(a.set||0)-(b.set||0));
   if(!exLogs.length){ list.innerHTML='<div class="muted" style="padding:10px 2px">No sets logged yet.</div>'; return; }
+  // Prefer the loadType stamped on the set when it was logged; fall back to the exercise's
+  // current tag only for sets predating the stamp. Re-tagging an exercise must not change
+  // how sets already logged under the old meaning are displayed.
+  const fallback = (LOGVIEW && LOGVIEW.loadType) || '';
+  const suffixFor = l => { const t = l.loadType || fallback;
+    return t==='pair' ? ' each' : t==='added' ? ' added' : ''; };
   list.innerHTML = exLogs.map(l=>`<div class="set-row" onclick="editLogSet('${l.id}')">
       <div class="set-n">${l.set||'·'}</div>
-      <div class="set-vals"><b>${Number(l.weight)||0} lbs</b> · <span class="sub">${Number(l.reps)||0} reps</span></div>
+      <div class="set-vals"><b>${Number(l.weight)||0} lbs${suffixFor(l)}</b> · <span class="sub">${Number(l.reps)||0} reps</span></div>
       <span class="type-tag ${TYPE_CLASS[l.setType]||'t-normal'}">${TYPE_LABEL[l.setType]||'Normal'}</span>
       ${l.isPr?'<span class="type-tag pr">PR</span>':''}
     </div>`).join('');
@@ -466,7 +513,7 @@ async function editLogSet(logId){
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>Edit set</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
       <div class="ex-sub">Set ${l.set||''}</div>
-      <label class="muted" style="font-size:12px">Weight (lbs)</label>
+      <label class="muted" style="font-size:12px">Weight (lbs${(LOGVIEW&&LOGVIEW.loadType==='pair')?', each hand':(LOGVIEW&&LOGVIEW.loadType==='added')?' added':''})</label>
       <input id="edW" type="number" inputmode="tel" pattern="[0-9]*" value="${l.weight}">
       <label class="muted" style="font-size:12px">Reps</label>
       <input id="edR" type="number" inputmode="tel" pattern="[0-9]*" value="${l.reps}">

@@ -706,7 +706,9 @@ app.post('/api/sessions/:id/log', auth, (req, res) => {
   const w = Number(weight) || 0, r = Number(reps) || 0;
   const myExLogs = s.logs[req.userId].filter(l => l.exerciseId === exerciseId);
   const setNum = (set && Number(set)) || myExLogs.length + 1;
+  const lt = loadTypeForName(exerciseNameFor(s, exerciseId));
   const entry = { id: 'log_'+uid(), exerciseId, weight: w, reps: r, set: setNum, setType: setType || 'normal', isPr: false, at: new Date().toISOString() };
+  if (lt) entry.loadType = lt;   // omitted entirely for unambiguous lifts (barbell, cable, machine)
   s.logs[req.userId].push(entry);
   rebuildAllPrs();
   save(DB);
@@ -719,10 +721,38 @@ app.post('/api/sessions/:id/log', auth, (req, res) => {
 // This does a full, cheap replay of every log across every session — fine at this app's scale, and it
 // means edits/deletes to old sets always leave isPr flags and DB.prs in a provably correct state rather
 // than patching a single session in place and hoping nothing upstream drifted.
+// What the number in a logged set's `weight` field means for this exercise.
+// Stamped onto each set at log time so the meaning of a historical set can never be
+// changed retroactively by re-tagging the library (see exercise-library.json loadType).
+let _loadByName = null;
+function loadTypeForName(name) {
+  if (!_loadByName) {                       // built on first use, not at module load, so this
+    _loadByName = {};                       // cannot depend on where EX_LIB sits in the file
+    for (const e of EX_LIB) if (e.loadType) _loadByName[e.name] = e.loadType;
+  }
+  return _loadByName[name] || null;
+}
+
 function exerciseNameFor(session, exerciseId) {
   const e = session.exercises.find(x => x.id === exerciseId);
   return e ? e.name : exerciseId;
 }
+function migrateLoadTypes() {
+  let stamped = 0;
+  for (const sess of Object.values(DB.sessions)) {
+    if (!sess.logs) continue;
+    for (const userId of Object.keys(sess.logs)) {
+      for (const l of sess.logs[userId]) {
+        if (l.loadType) continue;                       // already stamped — never overwrite
+        const lt = loadTypeForName(exerciseNameFor(sess, l.exerciseId));
+        if (lt) { l.loadType = lt; stamped++; }
+      }
+    }
+  }
+  if (stamped) console.log('migrateLoadTypes: stamped ' + stamped + ' historical sets');
+  return stamped;
+}
+
 function rebuildAllPrs() {
   const groups = {}; // groups[userId][exerciseName] = [logEntry, ...]
   for (const s of Object.values(DB.sessions)) {
@@ -840,6 +870,13 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
   save(DB);
   res.json(s);
 });
+
+// v150: stamp loadType onto sets logged before the field existed, so the meaning of a
+// historical set is frozen at log time and a later library re-tag cannot rewrite it.
+// Runs here, at the end of module evaluation, because it reads EX_LIB and the lookup map —
+// both declared below the boot block, where const/let are still in the temporal dead zone.
+// Idempotent: entries already carrying the field are skipped, so it no-ops on later boots.
+if (migrateLoadTypes()) save(DB);
 
 const server = app.listen(PORT, () => console.log('CrewFit on', PORT));
 module.exports = { app, server };
