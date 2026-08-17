@@ -33,7 +33,7 @@ Jeff was burned (Aug 15, 2026: an agent deployed a profile thumbnail redesign **
 - Node `server.js` (Express, in-memory `DB` persisted via `save(DB)`). No ORM.
 - Frontend: `public/app.js` (vanilla, no build step) + `public/index.html`. Bump the `?v=` cache-bust on any frontend change (`app.js?v=144`).
 - Media: files → persistent `/data/uploads` volume → served as `/uploads/...`.
-- No test/lint/build suite. `package.json` scripts = `{ "start": "node server.js" }` + `playwright` devDep.
+- `npm test` runs `test/progression.mjs` — 34 assertions over the "add weight next time" rule, against a throwaway `DATA_DIR`. **Run it before and after anything that touches progression, PRs, units or the log sheet, and add to it.** Every assertion in there exists because something was actually broken. No lint/build step; `playwright` is a devDep used only by the render harness (§8).
 
 ## 4. SHIPPED VERSIONS (all live on main)
 - v138 — fix `server.js` `s.scheduledAt.slice` crash on numeric date (now `String(s.scheduledAt).slice(0,10)`)
@@ -44,6 +44,21 @@ Jeff was burned (Aug 15, 2026: an agent deployed a profile thumbnail redesign **
 - v143 — after Accept, session view hides Respond menu (`!isCreator && !s.post && !isParticipant`); transitions to joined state. Decline-from-banner verified clean; profile invites already correctly excluded.
 - v144 — Workouts tab gets the v140 treatment: muscle-group / exercise / search lists wrapped in elevated `.card`, h2-style category labels, more breathing room. Pure CSS + wrapper pass, no behavior change.
 - v145 — Workouts tab polish: stronger card elevation on `.pick-list > .card` (matches home), and fixed the exercise list scrolling under the bottom nav (`.pick-list` padding-bottom `84px + safe-area`, was 20px).
+- v146 — profile view-toggle active state (`.on` wasn't applying), equalised toggle button size/baseline, profile-head padding to the 14px edge
+- v149 — cross-session PR tracking (`rebuildAllPrs`), Recent Activity + Personal Records on Profile
+- v150 — the logger states what the weight NUMBER means per exercise (see `loadType`, §9)
+- v151 — a PR is the HEAVIEST set, not the most volume. Was `weight × reps`, so 225×8 outranked 315×3, and bodyweight lifts (weight 0) could never rank at all
+- v152 — kilograms as a per-user unit; every set stores the unit it was typed in
+- v153 — swapped lifts file under the swap; sessions order by training date, not the day they were typed; `scheduledAt` normalised (it is sometimes an epoch number)
+- v154 — rep targets became ranges (`defaultReps`–`defaultRepsMax`), snapshotted onto each set at log time so editing a finished workout cannot retroactively change whether a set hit its target
+- v155 — the Progress tab
+- v156 / v157 / v157.1 / v157.2 / v158 — Progress polish: compact range switch, readable axis dates, a useful empty state, months rather than raw week counts, no per-bar counts at 6 months, an example instead of explaining the rule twice
+- v159 — strength trend, per lift and overall
+- v160 — stop the bottom nav drifting while scrolling on iOS (compositor layer promotion; **not reproducible in headless Chromium — needs a real device**)
+- v161 — seed the lifts you already do (server + record states). The setup SCREEN is still not built
+- v162 — "add weight next time" moved onto the exercise row inside the workout, not just the Progress tab
+- v163 — the advice box gets a state for every point in the progression, so the feature explains itself from the screen the user is on. Shipped with the fixes in §9
+- v164 — the advice box stopped reporting a session count (correction #12)
 
 ## 5. INVITE / SESSION DATA MODEL (server.js)
 - Create: `participants:[creatorId]`, `invited:[...inviteeIds]`.
@@ -65,12 +80,18 @@ Jeff was burned (Aug 15, 2026: an agent deployed a profile thumbnail redesign **
 10. **ENV TRAP (agent infra, not product):** terminal can flip to broken Singularity/Apptainer mode → all tools fail 'apptainer not found'. Recovery: fully QUIT the agent app + NEW session. Shell bug prepends 'cd /root' → pass terminal `workdir` param. (Agent-specific; may not hit every environment, but good to know.)
 11. **Rendering a screenshot is not the same as SEEING it.** (Aug 16, 2026) An agent shipped a v144 Workouts pass with `.pick-list` bottom padding of 20px, so the exercise list scrolled under the bottom nav. It had rendered the page, screenshotted it, and sent Jeff the image with the nav sitting on top of the content — and still did not notice. Caught only because a second pass (v145) looked again. → A builder is the worst reviewer of its own change: it sees what it intended, not what is there. Use §8's cold-review step, and check the bottom ~90px of every full-page render specifically.
 
+12. **Don't report a status you can't stand behind.** (Aug 17, 2026) The v163 advice box told Jeff "One session logged" on a lift he had not logged — the count included the workout he was standing in. It was also unfixable in principle: a session count cannot know whether those sessions hit the top of the rep range, or at what weight, so no status built on it is reliably true. → v164 replaced four status messages with one that describes what the box is FOR and says nothing about the user. **General rule: if a sentence makes a claim about the user's own history, it has to be right every time, or it should not be a sentence.** Jeff caught this within a minute of it going live; a reviewer had flagged it and the agent judged it minor.
+
 ## 7. KNOWN-CORRECT AREAS (do NOT "fix" — already verified)
 - Decline flow (banner): removes invite, no error/zombie.
 - Profile "Your Workouts": correctly excludes pending invites.
 - Auth token key is `crewfit_token`.
 - `scheduledAt` must be `String()`-coerced before `.slice`.
 - Three-dots ⋯ menu renders ONLY when `isCreator`.
+- The boot block at the bottom of `server.js` (§9). It is down there on purpose. Moving it up re-breaks the app.
+- `sameLoad()` / `inUnit()` in `server.js` — the tolerance and the conversion are both deliberate, each with a test.
+- `perfDate()` — `scheduledAt` is sometimes an ISO string, sometimes epoch seconds, sometimes epoch ms.
+- Working sets are `normal` + `failure` only. Warm-ups and drop sets deliberately do not count (Jeff's call: a drop set is a finisher, outside the working range).
 
 ## 8. RENDER / VERIFY HARNESS (catch visual + logic bugs before deploy)
 Playwright vs local server. Seed realistically, screenshot 390×844 @2x, eyeball, check console `pageerror`.
@@ -97,18 +118,70 @@ the change you intended rather than the pixels in front of you — this has alre
   possible. Disclose that explicitly. Claude Code on Jeff's machine has working npm
   (`node_modules/` is already present) and runs the full harness.
 
-## 9. AGENT ROLE (how Jeff runs this)
+## 9. ENGINE RULES + TRAPS (server.js) — read before touching progression
+
+**Never put startup work at the top of `server.js`.** There is a marked *Boot migrations* block
+immediately above `app.listen` — everything that runs at startup goes there, nowhere else.
+
+This has now bitten three times, and it is invisible in testing every time. `migrateMedia()`,
+`rebuildAllPrs()` and `migrateLoadTypes()` each read a `const` declared further down the file
+(`UPLOAD_DIR`, `LB_PER_KG`, `EX_LIB`). Called from the top, those references sit in JavaScript's
+temporal dead zone and throw — killing the process before it can listen. What makes it lethal is
+that each failure is *conditional*, so normal data boots fine:
+
+- `toLb()` only evaluates `LB_PER_KG` when a set was typed in **kilograms**. One kg set in
+  `data.json` and the server never boots again — permanently, until the file is hand-edited.
+  Found Aug 17, 2026, dormant since v152 only because nobody had switched units.
+- `migrateMedia()` only touches **legacy base64 photos**, which is why that migration had
+  silently never run at all.
+
+If you add boot work, add it to that block and add a test that boots against data which
+exercises the conditional path.
+
+**Double progression means the same WEIGHT, not just the same reps.** `recommendationsFor()`
+requires `toppedOut(latest) && toppedOut(prev) && sameLoad(...)`. Without the weight check a
+deload satisfied it: miss 225×7, drop to 135×10, and the next 135×10 read as two clean sessions
+and told a 225 lb squatter to try 140. `sameLoad()` compares in lb with a 0.6 lb tolerance so a
+unit switch (100 kg = 220.46 lb) is not read as a weight change.
+
+**A set stores the unit it was typed in; anything shown back has to be converted.** Use
+`inUnit(weight, from, to)`. Printing the raw number next to the user's *current* unit turned a
+185 lb bench into "185 kg" — 408 lb — and one tap would have written it to their history.
+
+**Bodyweight lifts store weight 0.** They must never render "0 lb" or "Try 5 lb today". The
+`bodyweight` flag on a recommendation drives "at bodyweight" and "Add 5 lb today".
+
+**Ask about the lift the user is ACTUALLY doing.** A swapped exercise logs under
+`variations[exId][userId].swapTo`, not the template's name. `openLogSheet` resolves this before
+calling `/api/progress/exercise/:name`; `exerciseNameFor()` does it server-side.
+
+**`loadType` on the exercise library** (`pair` / `single` / `added`) marks the 65 exercises where
+the entered number is ambiguous. **It cannot be inferred from the `dumbbell`/`dumbbells` equipment
+tags — they are inconsistent** (Goblet Squat is tagged plural but uses one; Farmer's Carry is
+tagged singular but uses two). Generator + the 14 judgment calls: `_design/progress/tag_loadtype.py`.
+A wrong tag silently doubles someone's numbers.
+
+**Test against a COPY of real `data.json`, never the file itself.** `DATA_DIR=/tmp/... node
+server.js`, and checksum the real file before and after to prove it. Two bugs this session were
+found only that way and would have shipped silently otherwise.
+
+## 10. AGENT ROLE (how Jeff runs this)
 - **You (Claude Code)** = the build agent. Write code, run checks, render + verify the UI (use the harness in §8), commit locally.
 - **Loop:** Jeff gives a task → you build + render + verify → show Jeff the change (full-page screenshot) → wait for his explicit "go" → deploy.
 - **Hard:** never `fly deploy` without Jeff's explicit go. Owning the verify step is NOT owning the deploy decision — that stayed with Jeff. Render + show him the change FIRST (see §1).
 - **History:** a separate verify/render agent (Hermes) used to own §8. Jeff consolidated to Claude-only on Aug 16, 2026. Leave `.hermes/hermes-agent/` and `.hermes/memories/MEMORY.md` on disk regardless — retiring the workflow is not a reason to delete his files.
 
-## 10. OPEN / LIKELY NEXT WORK
+## 11. OPEN / LIKELY NEXT WORK
+- **The first-run setup screen is not built.** The server side landed in v161 (`GET/PUT/DELETE /api/me/seeds`, seeds as the older half of the progression pair, self-reported vs earned record states). The screen itself does not exist. Reference mockup: `_design/progress/03-setup-first-run.html`. **Jeff's decisions:** collect the WORKING weight only, not an all-time best (a working weight self-corrects within a week; a self-reported best is permanent and could block the first real PR forever); show it on first visit to Progress.
+- **PINs are stored in plaintext** in `data.json`. Must be fixed before there are real users.
+- **Two things can only be confirmed on a real iPhone**, never in headless Chromium: the v160 bottom-nav fix, and that the green "Try X lb today" box actually responds to a thumb.
+- **A paused bug hunt** left `_bughunt_api.mjs`, `_bughunt_api2.mjs`, `_bughunt_front.cjs` untracked in the repo. Jeff paused it; pick it up or delete them.
 - **Profile tab + New workout creation** still haven't had the v140 "open it up" visual pass — the main remaining consistency gap. (Workouts tab is done as of v144/v145.)
 - `confirm()` / `prompt()` native dialogs on Accept/Decline/Save-Routine work on iPhone but a custom modal is polish.
 - "Request Changes" / "Save This Routine" from pending Respond menu re-render but keep Accept/Decline (correct, but native `prompt()` UX).
 
-## 11. COMMANDS
+## 12. COMMANDS
+- Tests: `npm test` (run it before AND after touching progression / PRs / units / the log sheet)
 - Syntax: `node --check public/app.js && node --check server.js`
 - Local: `PORT=4700 node server.js` → http://localhost:4700
 - Pull: `git pull origin main`

@@ -46,6 +46,25 @@ Seeding pattern: register Jeff + friends, `/api/friends/request` + `/api/friends
 
 **You own this step — and rendering is not reviewing.** Before showing Jeff, have a subagent review the diff + screenshot cold, and check the edges specifically (bottom ~90px for nav overlap, top safe-area, side gutters). v145 exists because a v144 screenshot showed the list running under the nav and the agent that made it did not notice. Run against the real `server.js`; a static mock proves CSS only, not invites/accept/decline/logging. State anything you could not verify.
 
+## Progression engine — the rules that are easy to get wrong
+
+Full detail in `CLAUDE_HANDOFF.md` §9. The short version:
+
+- **All startup work lives in the *Boot migrations* block above `app.listen`, never at the top of
+  the file.** Those functions read `const`s declared further down (`UPLOAD_DIR`, `LB_PER_KG`,
+  `EX_LIB`); from the top they are in the temporal dead zone and the process dies before it
+  listens. Each failure is conditional, so ordinary data boots fine — one kilogram set in
+  `data.json` was enough to stop the server booting permanently.
+- **"Add weight" needs the top of the rep range twice AT THE SAME WEIGHT** (`sameLoad()`, 0.6 lb
+  tolerance so a unit switch is not a weight change). Reps alone let a deload trigger it.
+- **A set stores the unit it was typed in.** Convert with `inUnit()` before showing anything back.
+- **Bodyweight lifts store weight 0** — the `bodyweight` flag exists so nothing prints "0 lb".
+- **Swapped lifts** file under `variations[exId][userId].swapTo`, not the template name.
+- **Working sets are `normal` + `failure` only.** Warm-ups and drop sets are excluded by design.
+- **`npm test`** covers all of the above. Run it before and after, and extend it.
+- **Test against a COPY of `data.json`** with `DATA_DIR=/tmp/...`, and checksum the real file
+  before and after.
+
 ## Known-correct areas (do not "fix" — already verified)
 - Decline flow: declining from the home banner removes the invite, no error/zombie.
 - Profile "Your Workouts": correctly excludes pending invites.

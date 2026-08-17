@@ -11,6 +11,8 @@ This file is the short version — the rules that must never be missed.
 3. **Show the FULL page in ONE image** — never isolated single-feature snippets. Jeff validates by eye on an iPhone 16 Pro, portrait (max-width 480px).
 4. **Measure geometry** with `getBoundingClientRect` (x/y/w/h + baseline), not eyeballed widths. Paired buttons = equal size, same baseline.
 5. **Bump the `?v=` cache-bust in `public/index.html`** on ANY frontend change. No build step exists — this is the only cache control.
+6. **`npm test` before and after** anything touching progression, PRs, units or the log sheet — and add to it. Every assertion in `test/progression.mjs` exists because something was actually broken.
+7. **Never add startup work to the top of `server.js`.** Use the *Boot migrations* block above `app.listen`. Three separate crashes have come from this; see §9 of `CLAUDE_HANDOFF.md`. The failures are conditional, so they do not show up in testing — one kilogram set in `data.json` was enough to stop the server booting for good.
 
 ## Verifying your own work (you own this end to end)
 
@@ -40,6 +42,7 @@ because you wrote it.
 
 - Blue `--blue:#2563eb` is the brand color — CTAs and the active nav tab only. Green is the avatar accent, nothing more. No gradients on the header.
 - **Discoverability beats minimalism.** Never hide an empty state; a new user must be able to find the feature.
+- **But never state something about the user you can't stand behind.** v163 told Jeff "One session logged" on a lift he had not logged. Discoverable and wrong is worse than quiet. If a sentence claims something about their history, it has to be right every time.
 - Light theme, white cards on warm off-white, elevated rounded cards with soft shadows (the v140 language), bottom nav.
 
 ## Do NOT "fix" these — already verified correct
@@ -49,10 +52,13 @@ because you wrote it.
 - Auth token key is `crewfit_token`, not `token`.
 - `String(s.scheduledAt)` before `.slice` in `server.js`.
 - The three-dots ⋯ menu renders only when `isCreator`.
+- The boot block at the bottom of `server.js`, and `sameLoad()` / `inUnit()` / `perfDate()`.
+- Warm-ups and drop sets not counting as working sets — Jeff's call, deliberate.
 
 ## Commands
 
 ```bash
+npm test                                               # 34 assertions on the progression rule
 node --check public/app.js && node --check server.js   # syntax check
 PORT=4700 node server.js                               # local preview
 export PATH="$HOME/.fly/bin:$PATH"; fly deploy --app spotmeapp   # ONLY with Jeff's go
