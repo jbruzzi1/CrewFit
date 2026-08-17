@@ -347,6 +347,45 @@
        .soon (dashed grey, no fill) nothing to advise yet · .almost (dashed green) one session
        away · .up (solid green) go, and it is the only one that is tappable. No brand blue in
        any of them — blue is the CTA colour and none of these are CTAs. */
+    /* ---- workout recap (showRecap) — seen once after Log & Finish ---- */
+    .rc-wrap { padding-top:calc(18px + env(safe-area-inset-top)); }
+    .rc-h1 { font-size:22px; font-weight:700; margin:2px 0 2px; letter-spacing:-.2px; }
+    .rc-sub { font-size:13px; color:var(--muted); margin:0 0 14px; }
+    .rc-stats { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:0 0 14px; }
+    .rc-tile { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:11px 10px;
+               box-shadow:0 6px 18px rgba(20,24,31,.06); text-align:center; }
+    .rc-n { font-size:21px; font-weight:700; letter-spacing:-.4px; line-height:1.1; }
+    .rc-n small { font-size:11px; font-weight:600; color:var(--muted); margin-left:2px; }
+    .rc-l { font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; margin-top:3px; font-weight:600; }
+    .rc-pr { display:flex; align-items:flex-start; gap:10px; background:rgba(6,122,6,.07);
+             border:1px solid rgba(6,122,6,.22); border-radius:14px; padding:11px 12px; margin:0 0 14px; }
+    .rc-pr-ic { flex:0 0 auto; width:26px; height:26px; border-radius:8px; background:rgba(6,122,6,.15);
+                color:#067a06; display:flex; align-items:center; justify-content:center; font-size:14px; }
+    .rc-pr-t { font-size:14px; font-weight:700; }
+    .rc-pr-s { font-size:12px; color:var(--muted); margin-top:1px; line-height:1.5; }
+    .rc-ex { padding:11px 2px; border-bottom:1px solid var(--line); }
+    .rc-ex:last-child { border-bottom:none; }
+    .rc-ex-top { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
+    .rc-ex-n { font-size:14.5px; font-weight:600; }
+    .rc-ex-best { font-size:12px; color:var(--muted); flex:0 0 auto; }
+    .rc-chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
+    .rc-chip { font-size:12px; font-weight:600; padding:4px 9px; border-radius:8px; background:#f1f3f6; color:var(--fg); }
+    .rc-chip.top { background:rgba(6,122,6,.12); color:#067a06; }
+    .rc-chip.warm { background:transparent; border:1px dashed #d6dae1; color:var(--muted); font-weight:500; }
+    .rc-chip .star { margin-left:3px; }
+    .rc-note { font-size:11px; color:var(--muted); padding:9px 2px 0; }
+    .rc-next { padding:11px 2px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:11px; }
+    .rc-next:last-child { border-bottom:none; }
+    .rc-next-ic { flex:0 0 auto; width:27px; height:27px; border-radius:8px; background:rgba(6,122,6,.12);
+                  color:#067a06; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:800; }
+    .rc-next-m { flex:1; min-width:0; }
+    .rc-next-n { font-size:14px; font-weight:600; }
+    .rc-next-w { font-size:11.5px; color:var(--muted); margin-top:1px; }
+    .rc-next-to { font-size:15px; font-weight:700; color:#067a06; flex:0 0 auto; }
+    .rc-cta { display:flex; gap:10px; margin:18px 0 6px; }
+    .rc-cta button { margin:0; width:auto; min-height:48px; border-radius:12px; font-size:15px; font-weight:700; }
+    .rc-cta .rc-prim { flex:1 1 auto; background:var(--blue); color:#fff; }
+    .rc-cta .rc-done { flex:0 0 auto; padding:0 20px; background:var(--card); color:var(--fg); border:1px solid var(--line); font-weight:600; }
     .log-rec.soon   { background:transparent; border:1px dashed #ccd2db; cursor:default; }
     .log-rec.almost { background:transparent; border:1px dashed rgba(6,122,6,.45); cursor:default; }
     .log-rec.hold { background:#f4f6f9; border:1px solid var(--line); cursor:default; }
@@ -517,6 +556,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=164"></script>
+  <script src="app.js?v=165"></script>
 </body>
 </html>

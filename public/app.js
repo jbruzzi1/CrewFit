@@ -618,6 +618,125 @@ function startRest(){
   REST_TIMER=setInterval(()=>{ sec--; const el=document.getElementById('restN'); if(el) el.textContent=`${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`; if(sec<=0){ clearInterval(REST_TIMER); box.innerHTML=''; } },1000);
 }
 async function lock(id){ await H.post(`/api/sessions/${id}/lock`); showSavePage(id); }
+
+// The LAST screen of finishing a workout: Log & Finish -> save page (notes, photo, visibility)
+// -> here. Seen once, then gone. Jeff's call: this is a moment, not a record — the permanent copy
+// is already saved to the profile by the time this renders, so this screen is purely terminal and
+// nothing on it is the only place anything exists. It therefore also carries what is only true
+// RIGHT NOW ("Next time"), which must never appear on the saved copy.
+// fmtDate() carries a time, which reads as nonsense on a recap ("Aug 15, 12:00 AM"). The day is
+// the only part that means anything here.
+function rcDay(v){
+  const raw = String(v||'').slice(0,10);
+  const d = new Date(raw + 'T12:00:00');            // midday, so a timezone cannot shift the date
+  return isNaN(d) ? raw : d.toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'});
+}
+async function showRecap(id){
+  const s = await H.get('/api/sessions/'+id);
+  if(!s || s.error){ showSavePage(id); return; }          // never strand someone on an error
+  const lib = await libByName();
+  const mine = (s.logs && s.logs[ME.id]) || [];
+  const U = myUnit();
+  const nameFor = e => {
+    const v = s.variations && s.variations[e.id] && s.variations[e.id][ME.id];
+    return (v && v.swapTo) || e.name;
+  };
+  const isWorking = l => !l.setType || l.setType==='normal' || l.setType==='failure';
+
+  const LB_PER_KG = 2.2046226218;
+  const toUser = (w,from) => { const lb = (Number(w)||0) * (from==='kg' ? LB_PER_KG : 1);
+                               return U==='kg' ? lb/LB_PER_KG : lb; };
+  let sets=0, vol=0, anyBW=false, anyPair=false, anyAdded=false, anySingle=false;
+  const prs=[];
+  const rows=(s.exercises||[]).map(e=>{
+    const nm = nameFor(e);
+    const logged = mine.filter(l=>l.exerciseId===e.id)
+                       .sort((a,b)=>(Number(a.set)||0)-(Number(b.set)||0));
+    const lo0 = Number(e.defaultReps)||0, hi0 = Number(e.defaultRepsMax)||0;
+    const ceiling = (hi0 && hi0>=lo0) ? hi0 : lo0;      // same lo/hi clamp the server applies
+    const lt = lib[nm] && lib[nm].loadType;
+    const pair = lt==='pair';
+    // The heaviest working set is the one the progression rule judges, so it is the only one
+    // that can be green. Greening every set at or above the range would light up back-off sets
+    // and contradict the "Next time" block two cards below.
+    let top=null;
+    for(const l of logged){
+      if(!isWorking(l)) continue;
+      sets++;
+      const w=toUser(l.weight, unitOf(l)), r=Number(l.reps)||0;
+      if(w>0){ vol += w*r*(pair?2:1); if(pair) anyPair=true; if(lt==='added') anyAdded=true; if(lt==='single') anySingle=true; }
+      else anyBW=true;
+      if(!top || w>toUser(top.weight,unitOf(top)) || (w===toUser(top.weight,unitOf(top)) && r>(Number(top.reps)||0))) top=l;
+      if(l.isPr) prs.push(`${esc(nm)} — ${Number(l.weight)>0?Number(l.weight)+' '+unitOf(l):'bodyweight'} × ${r}`);
+    }
+    return {nm, logged, ceiling, top, range:repLabel(e), work:logged.filter(isWorking).length};
+  }).filter(r=>r.work);
+
+  // "Next time" is about where you are NOW, which is exactly why it belongs here and NOT on the
+  // saved copy — on a workout from three months ago it would name a weight you passed long ago.
+  let next=[];
+  try{
+    const p = await H.get('/api/progress?weeks=4');
+    const names = new Set(rows.map(r=>r.nm));
+    next = ((p && p.ready) || []).filter(x=>names.has(x.exercise));
+  }catch(e){}
+
+  // Finishing a workout you did not personally log is a real case (logged on paper, or only the
+  // other participant logged). "Nice work" over three zeros and an empty card is a lie.
+  if(!rows.length || !sets){ showTab('home'); return; }
+  const fmt = n => Math.round(n).toLocaleString('en-US');
+  let h = `<div class="wrap rc-wrap">
+    <div class="rc-h1">Nice work</div>
+    <div class="rc-sub">${esc(s.name||'Workout')} · ${rcDay(s.scheduledAt)}${
+      (s.participants||[]).length>1?` · with ${s.participants.length-1} other${s.participants.length>2?'s':''}`:''}</div>
+    <div class="rc-stats">
+      <div class="rc-tile"><div class="rc-n">${rows.length}</div><div class="rc-l">Exercises</div></div>
+      <div class="rc-tile"><div class="rc-n">${sets}</div><div class="rc-l">Working sets</div></div>
+      <div class="rc-tile"><div class="rc-n">${fmt(vol)}<small>${U}</small></div><div class="rc-l">Volume</div></div>
+    </div>`;
+  if(prs.length) h += `<div class="rc-pr"><div class="rc-pr-ic">★</div><div>
+      <div class="rc-pr-t">${prs.length} personal record${prs.length>1?'s':''}</div>
+      <div class="rc-pr-s">${prs.join('<br>')}</div></div></div>`;
+
+  h += `<h2>What you did</h2><div class="card">`;
+  for(const r of rows){
+    h += `<div class="rc-ex"><div class="rc-ex-top">
+        <div class="rc-ex-n">${esc(r.nm)}</div>
+        <div class="rc-ex-best">${r.range} rep target</div></div>
+      <div class="rc-chips">${r.logged.map(l=>{
+        const w=Number(l.weight)||0, rp=Number(l.reps)||0;
+        const warm = l.setType==='warmup', drop = l.setType==='drop';
+        // Green means HIT THE TOP OF THE RANGE — the thing that earns more weight. It must not
+        // mean "heaviest": a heavy set that fell short of its reps is not a set to celebrate.
+        // the target as it was AT LOG TIME; the session's current range is only a fallback
+        const cap = Number(l.targetRepsMax) || Number(l.targetReps) || r.ceiling;
+        const hit = l===r.top && cap && rp >= cap;
+        const cls = warm||drop ? ' warm' : (hit ? ' top' : '');
+        const tag = warm ? 'warm-up · ' : drop ? 'drop · ' : '';
+        return `<span class="rc-chip${cls}">${tag}${w>0?`${w} ${unitOf(l)} × ${rp}`:`${rp} reps`}${l.isPr?'<span class="star">★</span>':''}</span>`;
+      }).join('')}</div></div>`;
+  }
+  if(anyBW || anyPair || anyAdded || anySingle) h += `<div class="rc-note">${[
+      anyBW?"Bodyweight sets aren't counted in volume.":'',
+      anyPair?'Two-dumbbell sets count both hands.':'',
+      anySingle?'Single-implement lifts count the one weight.':'',
+      anyAdded?'Weighted bodyweight lifts count the added weight only.':''].filter(Boolean).join(' ')}</div>`;
+  h += `</div>`;
+
+  if(next.length){
+    h += `<h2>Next time</h2><div class="card">`;
+    for(const n of next){
+      h += `<div class="rc-next"><div class="rc-next-ic">↑</div>
+        <div class="rc-next-m"><div class="rc-next-n">${esc(n.exercise)}</div>
+          <div class="rc-next-w">${n.targetRepsMax} reps at ${n.weight>0?n.weight+' '+n.unit:'bodyweight'}, two sessions running</div></div>
+        <div class="rc-next-to">${n.bodyweight?`+${n.step} ${n.unit}`:`${n.suggested} ${n.unit}`}</div></div>`;
+    }
+    h += `</div>`;
+  }
+  h += `<div class="rc-cta"><button class="rc-prim" onclick="showTab('home')">Done</button></div></div>`;
+  $('app').innerHTML = h;
+  window.scrollTo(0,0);
+}
 async function showSavePage(id){
   const s = await H.get('/api/sessions/'+id);
   if(!s || s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
@@ -709,7 +828,7 @@ async function saveWorkout(id){
   const notes=document.getElementById('saveNotes').value;
   const r=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'only_me' });
   if(r && r.error){ alert(r.error); return; }
-  home();
+  showRecap(id);          // the recap is the LAST thing, after saving — notes and photos are done
 }
 async function deleteSession(id){
   if(!confirm('Delete this session? This removes it for everyone.')) return;
