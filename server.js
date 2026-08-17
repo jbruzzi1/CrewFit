@@ -773,6 +773,18 @@ function recommendationsFor(userId) {
   const unit = (DB.users[userId] && DB.users[userId].units) || 'lb';
   const byName = {};
   for (const e of sessionsForUser(userId)) (byName[e.name] = byName[e.name] || []).push(e);
+  // A seeded working weight counts as the session BEFORE their first logged one, so someone
+  // who told us what they lift gets advice after one real session instead of two. It is only
+  // ever the older half of the pair — a seed alone can never trigger a recommendation.
+  const seeds = seedsOf(userId);
+  for (const name of Object.keys(seeds)) {
+    const sd = seeds[name];
+    if (!byName[name] || !byName[name].length) continue;      // never seed-only
+    if (byName[name].length >= 2) continue;                   // real history wins
+    byName[name].push({ name, when: '1970-01-01', seeded: true,
+      top: { weight: sd.weight, reps: sd.reps, unit: sd.unit,
+             targetReps: sd.reps, targetRepsMax: sd.reps } });
+  }
 
   const ready = [], holds = [];
   for (const name of Object.keys(byName)) {
@@ -883,6 +895,74 @@ function trendFor(userId) {
   };
 }
 
+
+// ---- Lifts you already do (first-run seeding) ----------------------------------------------
+// A user arriving with years of training has bests and goals the app cannot know. Seeding them
+// makes Progress useful from workout one instead of week three.
+//
+// Stored SEPARATELY from earned PRs, never merged into DB.prs. Two reasons:
+//  1. A self-reported best that is never beaten would otherwise sit in the record list forever
+//     looking like an achievement, and would suppress the first REAL record — killing the
+//     moment the feature exists to create.
+//  2. A typo (1850 instead of 185) would be unbeatable and permanently poison the list.
+// Names must match the exercise library exactly, or a seeded "Bench Press" could never be
+// beaten by a logged "Flat Barbell Bench Press" (they group by name — see rebuildAllPrs).
+function seedsOf(userId) { return (DB.users[userId] && DB.users[userId].seeded) || {}; }
+
+app.get('/api/me/seeds', auth, (req, res) => res.json({ seeds: seedsOf(req.userId) }));
+
+app.put('/api/me/seeds', auth, (req, res) => {
+  // `weight`/`reps` are the user's CURRENT working set, not an all-time best. Jeff's call:
+  // a working weight is self-correcting (real logs replace it within a week) whereas a
+  // self-reported all-time best is permanent, may be unbeatable, and would block the first
+  // real record forever.
+  const { exercise, weight, reps, goal } = req.body || {};
+  if (!EX_LIB.some(e => e.name === exercise))
+    return res.status(400).json({ error: 'Pick an exercise from the library' });
+  const u = DB.users[req.userId];
+  u.seeded = u.seeded || {};
+  const w = Number(weight) || 0, r = Number(reps) || 0, g = Number(goal) || 0;
+  if (!w && !g) { delete u.seeded[exercise]; save(DB); return res.json({ seeds: u.seeded }); }
+  u.seeded[exercise] = {
+    exercise,
+    weight: w, reps: r || 1,
+    goal: g || null,
+    unit: u.units || 'lb',
+    at: new Date().toISOString()
+  };
+  save(DB);
+  res.json({ seeds: u.seeded });
+});
+
+app.delete('/api/me/seeds/:exercise', auth, (req, res) => {
+  const u = DB.users[req.userId];
+  if (u.seeded) delete u.seeded[decodeURIComponent(req.params.exercise)];
+  save(DB);
+  res.json({ seeds: u.seeded || {} });
+});
+
+// The record list the UI renders: earned records, plus seeded entries for lifts with none yet.
+// An earned record that has passed its seed is flagged so the UI can celebrate it once.
+function recordsFor(userId) {
+  const earned = (DB.prs && DB.prs[userId]) ? DB.prs[userId] : {};
+  const seeds = seedsOf(userId);
+  const out = [];
+  for (const name of Object.keys(earned)) {
+    const e = earned[name], seed = seeds[name];
+    out.push(Object.assign({}, e, {
+      source: 'earned',
+      beatSeed: !!(seed && toLb(e.weight, e.unit) > toLb(seed.weight, seed.unit)),
+      seedWeight: seed ? seed.weight : null, seedReps: seed ? seed.reps : null,
+      goal: seed && seed.goal ? seed.goal : null
+    }));
+  }
+  for (const name of Object.keys(seeds)) {
+    if (earned[name]) continue;                       // a real record supersedes the entry
+    out.push(Object.assign({}, seeds[name], { source: 'entered' }));
+  }
+  return out.sort((a, b) => new Date(b.at) - new Date(a.at));
+}
+
 app.get('/api/progress', auth, (req, res) => {
   const weeks = Math.min(52, Math.max(4, Number(req.query.weeks) || 13));
   const rec = recommendationsFor(req.userId);
@@ -899,8 +979,7 @@ app.get('/api/progress', auth, (req, res) => {
     avgPerWeek: w.length ? Number((trained / w.length).toFixed(1)) : 0,
     streakWeeks: streak,
     trend: trendFor(req.userId),
-    prs: (DB.prs && DB.prs[req.userId]) ? Object.values(DB.prs[req.userId])
-          .sort((a, b) => new Date(b.at) - new Date(a.at)) : []
+    prs: recordsFor(req.userId)
   });
 });
 

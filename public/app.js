@@ -1255,9 +1255,25 @@ async function progressScreen(){
 
   const nothingYet = !d.ready.length && !d.holds.length && !d.prs.length && !d.weeks.some(w=>w.days);
   const prHtml = d.prs.length
-    ? d.prs.slice(0,8).map(p=>`<div class="pr">
-        <div><div class="pr-n">${esc(p.exercise)}</div><div class="pr-d">${fmtDate(p.at)}</div></div>
-        <div class="pr-r"><div class="pr-w">${prLabel(p,U)}</div></div></div>`).join('')
+    ? d.prs.slice(0,10).map(p=>{
+        // Three states, deliberately distinct: what you typed in, what you earned, and the
+        // one-off moment real work passes a number you typed. Without the separation an
+        // imported history silently swallows the first-real-record moment.
+        if(p.source==='entered') return `<div class="pr pr-self">
+          <div><div class="pr-n">${esc(p.exercise)} <span class="self-tag">you entered</span></div>
+            <div class="pr-d">Starting best · beat it to set a record</div></div>
+          <div class="pr-r"><div class="pr-w">${prLabel(p,U)}</div>
+            ${p.goal?`<div class="pr-goal">goal ${p.goal} ${U}</div>`:''}</div></div>`;
+        if(p.beatSeed) return `<div class="pr pr-beat">
+          <div><div class="pr-n">${esc(p.exercise)}</div>
+            <div class="pr-beat-was">Beat the <b>${p.seedWeight} × ${p.seedReps}</b> you entered</div></div>
+          <div class="pr-r"><div class="pr-w">${prLabel(p,U)}</div>
+            <div class="beat-chip">▲ Record beaten</div></div></div>`;
+        return `<div class="pr">
+          <div><div class="pr-n">${esc(p.exercise)}</div><div class="pr-d">${fmtDate(p.at)}</div></div>
+          <div class="pr-r"><div class="pr-w">${prLabel(p,U)}</div>
+            ${p.goal?`<div class="pr-goal">goal ${p.goal} ${U}</div>`:''}</div></div>`;
+      }).join('')
     : `<div class="muted" style="padding:8px 2px">Log a workout — your first set of any exercise is a record.</div>`;
 
   $('app').innerHTML = `<div class="wrap">
