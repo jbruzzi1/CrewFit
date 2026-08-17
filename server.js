@@ -704,6 +704,9 @@ app.post('/api/sessions/:id/log', auth, (req, res) => {
   const { exerciseId, weight, reps, set, setType } = req.body || {};
   if (!s.logs[req.userId]) s.logs[req.userId] = [];
   const w = Number(weight) || 0, r = Number(reps) || 0;
+  // reps are what make a set a set. Storing reps:0 silently turned "225, forgot to type reps"
+  // into a zero-rep set, which reads downstream as a failed set.
+  if (!(r > 0)) return res.status(400).json({ error: 'Enter the number of reps for this set' });
   const myExLogs = s.logs[req.userId].filter(l => l.exerciseId === exerciseId);
   const setNum = (set && Number(set)) || myExLogs.length + 1;
   const lt = loadTypeForName(exerciseNameFor(s, exerciseId));
@@ -771,10 +774,17 @@ function rebuildAllPrs() {
   for (const userId of Object.keys(groups)) {
     for (const name of Object.keys(groups[userId])) {
       const chronological = groups[userId][name].slice().sort((a, b) => new Date(a.at) - new Date(b.at));
-      let best = 0, bestLog = null;
+      // "Best" = HEAVIEST, with reps only as a tiebreak at equal weight.
+      // Was weight*reps (volume), which meant 225x8 (1800) outranked 315x3 (945) — not what
+      // a lifter means by a PR, and not what the profile's PR card implies. It also made
+      // bodyweight work impossible to rank: a pull-up stores weight 0, so volume was always
+      // 0 and never cleared the `val > 0` gate. Comparing (weight, reps) lexicographically
+      // ranks bodyweight sets by reps, which is exactly how people compare them.
+      let bestW = -1, bestR = -1, bestLog = null;
       for (const l of chronological) {
-        const val = (Number(l.weight) || 0) * (Number(l.reps) || 0);
-        if (val > 0 && val > best) { best = val; bestLog = l; l.isPr = true; }
+        const w = Number(l.weight) || 0, r = Number(l.reps) || 0;
+        const better = r > 0 && (w > bestW || (w === bestW && r > bestR));
+        if (better) { bestW = w; bestR = r; bestLog = l; l.isPr = true; }
         else { l.isPr = false; }
       }
       if (bestLog) {
@@ -817,6 +827,9 @@ app.delete('/api/sessions/:id/log/:logId', auth, (req, res) => {
 app.post('/api/sessions/:id/lock', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator' });
+  // Idempotent: tapping "Log & Finish" twice used to push a SECOND history row for every
+  // participant, inflating workout counts, streaks and the weekly activity line.
+  if (s.completed) return res.json(s);
   s.completed = true;
   // record each participant's history
   for (const pid of s.participants) {

@@ -495,7 +495,9 @@ function renderLogSets(s){
 }
 async function addLogSet(){
   const w=document.getElementById('logW').value, r=document.getElementById('logR').value;
-  if(w==='' && r===''){ alert('Enter weight and/or reps'); return; }
+  // reps are required — a set with a weight and no reps used to save as reps:0, which then
+  // read as a failed set. Weight may legitimately be blank/0 for bodyweight movements.
+  if(!(Number(r) > 0)){ alert('How many reps did you do?'); return; }
   const seg=document.getElementById('logTypeSeg');
   const type=(seg&&seg.querySelector('.chip.on'))?seg.querySelector('.chip.on').getAttribute('data-t'):'normal';
   const s=await H.post(`/api/sessions/${LOGVIEW.sid}/log`,{exerciseId:LOGVIEW.exId,weight:w,reps:r,setType:type});
