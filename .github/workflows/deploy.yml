@@ -1,1 +1,78 @@
+# Test on every push and pull request. Deploy only when main moves, and only if the tests
+# passed — so a merge is the deploy, and nobody needs a terminal.
+#
+# Setup (one time, see DEPLOY.md):
+#   1. On the Mac:  fly tokens create deploy -x 8760h --app spotmeapp
+#   2. On GitHub:   Settings -> Secrets and variables -> Actions -> New repository secret
+#                   name FLY_API_TOKEN, value the token from step 1
+# Until that secret exists the deploy job runs and cleanly skips, so nothing goes red.
 
+name: test and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: npm test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # --omit=dev matches the Dockerfile, so this also proves the production dependency
+      # set is enough to run the app. The tests use only node built-ins and fetch.
+      - run: npm ci --omit=dev
+      - run: npm test
+
+  deploy:
+    name: deploy to fly
+    needs: test                       # a failing test blocks the deploy, full stop
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-production        # never two deploys at once onto one volume
+      cancel-in-progress: false
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No deploy token configured
+        if: env.FLY_API_TOKEN == ''
+        run: |
+          echo "::warning::FLY_API_TOKEN secret is not set — skipping the deploy."
+          echo "Add it under Settings -> Secrets and variables -> Actions. See DEPLOY.md."
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: env.FLY_API_TOKEN != ''
+
+      - name: fly deploy
+        if: env.FLY_API_TOKEN != ''
+        run: flyctl deploy --remote-only --app spotmeapp
+
+      # fly.toml also health-checks /healthz, which is what stops a broken machine being
+      # swapped in. This is the belt to that pair of braces: prove the app the internet can
+      # reach is serving, and print what it thinks it is holding.
+      - name: verify the live app is serving
+        if: env.FLY_API_TOKEN != ''
+        run: |
+          for i in $(seq 1 24); do
+            body=$(curl -fsS --max-time 5 https://spotmeapp.fly.dev/healthz || true)
+            if [ -n "$body" ]; then echo "healthz: $body"; fi
+            case "$body" in
+              *'"ok":true'*)
+                echo "live and serving"
+                case "$body" in
+                  *'"users":0'*) echo "::warning::the app reports ZERO users — if that is unexpected, see 'If a deploy goes wrong' in DEPLOY.md" ;;
+                esac
+                exit 0 ;;
+            esac
+            sleep 5
+          done
+          echo "::error::/healthz never reported ok after the deploy"
+          exit 1
