@@ -724,7 +724,7 @@ app.post('/api/sessions/:id/log', auth, (req, res) => {
   if (!(r > 0)) return res.status(400).json({ error: 'Enter the number of reps for this set' });
   const myExLogs = s.logs[req.userId].filter(l => l.exerciseId === exerciseId);
   const setNum = (set && Number(set)) || myExLogs.length + 1;
-  const lt = loadTypeForName(exerciseNameFor(s, exerciseId));
+  const lt = loadTypeForName(exerciseNameFor(s, exerciseId, req.userId));
   const unit = (DB.users[req.userId] && DB.users[req.userId].units) || 'lb';
   const entry = { id: 'log_'+uid(), exerciseId, weight: w, reps: r, set: setNum, setType: setType || 'normal', isPr: false, at: new Date().toISOString() };
   if (lt) entry.loadType = lt;   // omitted entirely for unambiguous lifts (barbell, cable, machine)
@@ -753,9 +753,35 @@ function loadTypeForName(name) {
   return _loadByName[name] || null;
 }
 
-function exerciseNameFor(session, exerciseId) {
+// scheduledAt is not consistently typed: some sessions store an ISO string, others an epoch
+// number (in seconds OR milliseconds). v138 already had to guard `.slice` on it. Normalise to
+// an ISO date string so ordering and displayed dates are correct for every shape.
+function perfDate(scheduledAt, fallback) {
+  if (scheduledAt == null || scheduledAt === '') return fallback || '1970-01-01T00:00:00.000Z';
+  const raw = String(scheduledAt);
+  if (/^\d+$/.test(raw)) {                      // pure digits => epoch
+    const n = Number(raw);
+    const ms = n < 1e12 ? n * 1000 : n;        // < 1e12 means seconds, not milliseconds
+    const d = new Date(ms);
+    return isNaN(d) ? (fallback || '1970-01-01T00:00:00.000Z') : d.toISOString();
+  }
+  const d = new Date(raw);
+  return isNaN(d) ? (fallback || '1970-01-01T00:00:00.000Z') : d.toISOString();
+}
+
+function exerciseNameFor(session, exerciseId, userId) {
   const e = session.exercises.find(x => x.id === exerciseId);
-  return e ? e.name : exerciseId;
+  if (!e) return exerciseId;
+  // A swap means the user did a DIFFERENT lift. Logs still carry the original exerciseId,
+  // so without this a Barbell Row swapped to Seated Cable Row was filed as a Barbell Row —
+  // producing PRs and recommendations for a lift that was never performed, and a cliff in
+  // the original lift's trend. /api/sessions/:id/lock already resolves swaps this way when
+  // building history, which is why history and PRs disagreed.
+  if (userId && session.variations && session.variations[exerciseId]) {
+    const v = session.variations[exerciseId][userId];
+    if (v && v.swapTo) return v.swapTo;
+  }
+  return e.name;
 }
 function migrateLoadTypes() {
   let stamped = 0;
@@ -764,7 +790,7 @@ function migrateLoadTypes() {
     for (const userId of Object.keys(sess.logs)) {
       for (const l of sess.logs[userId]) {
         if (l.loadType) continue;                       // already stamped — never overwrite
-        const lt = loadTypeForName(exerciseNameFor(sess, l.exerciseId));
+        const lt = loadTypeForName(exerciseNameFor(sess, l.exerciseId, userId));
         if (lt) { l.loadType = lt; stamped++; }
       }
     }
@@ -779,8 +805,14 @@ function rebuildAllPrs() {
     if (!s.logs) continue;
     for (const userId of Object.keys(s.logs)) {
       for (const l of s.logs[userId]) {
-        if (!l.at) l.at = String(s.scheduledAt || s.id || '1970-01-01'); // backfill legacy entries so ordering is stable
-        const name = exerciseNameFor(s, l.exerciseId);
+        // legacy entries with no `at`: fall back to the session date. NOT the session id —
+        // new Date('s_ab12cd34') is Invalid Date, which made the comparator return NaN and
+        // left the sort unstable.
+        if (!l.at) l.at = perfDate(s.scheduledAt);
+        // non-persisted: the training date, used for ordering only
+        Object.defineProperty(l, '_performedAt', {
+          value: perfDate(s.scheduledAt, l.at), enumerable: false, configurable: true });
+        const name = exerciseNameFor(s, l.exerciseId, userId);
         groups[userId] = groups[userId] || {};
         groups[userId][name] = groups[userId][name] || [];
         groups[userId][name].push(l);
@@ -790,7 +822,14 @@ function rebuildAllPrs() {
   DB.prs = {};
   for (const userId of Object.keys(groups)) {
     for (const name of Object.keys(groups[userId])) {
-      const chronological = groups[userId][name].slice().sort((a, b) => new Date(a.at) - new Date(b.at));
+      // Order by when the set was PERFORMED. `at` is stamped at log time — enter Monday's
+      // workout on Tuesday and it sorted after Tuesday's, so "your most recent" was wrong and
+      // PR dates showed the typing day. `performedAt` (the session's scheduledAt, attached in
+      // the grouping loop) is the training date; `at` only breaks ties within one session.
+      const chronological = groups[userId][name].slice().sort((a, b) => {
+        const d = new Date(a._performedAt) - new Date(b._performedAt);
+        return d || (new Date(a.at) - new Date(b.at));
+      });
       // "Best" = HEAVIEST, with reps only as a tiebreak at equal weight.
       // Was weight*reps (volume), which meant 225x8 (1800) outranked 315x3 (945) — not what
       // a lifter means by a PR, and not what the profile's PR card implies. It also made
@@ -807,7 +846,8 @@ function rebuildAllPrs() {
       }
       if (bestLog) {
         DB.prs[userId] = DB.prs[userId] || {};
-        DB.prs[userId][name] = { exercise: name, weight: Number(bestLog.weight) || 0, reps: Number(bestLog.reps) || 0, at: bestLog.at };
+        DB.prs[userId][name] = { exercise: name, weight: Number(bestLog.weight) || 0,
+          reps: Number(bestLog.reps) || 0, at: bestLog._performedAt || bestLog.at };
       }
     }
   }
