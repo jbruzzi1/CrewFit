@@ -820,6 +820,69 @@ function weeksFor(userId, count) {
   return out;
 }
 
+
+// ---- Strength trend -----------------------------------------------------------------------
+// Estimated max (Epley: w * (1 + reps/30)) converts every set to one comparable number, so a
+// heavy triple and a light set of ten sit on the same line. One point per session, taken from
+// that session's best working set.
+//
+// Bodyweight movements are excluded: they store weight 0, so Epley is 0 and the ratio maths
+// below would be 0/0. They still appear in Personal Records, ranked by reps (v151).
+function estMax(l) {
+  const w = toLb(l.weight, l.unit), r = Number(l.reps) || 0;
+  return (w > 0 && r > 0) ? w * (1 + r / 30) : 0;
+}
+
+function trendFor(userId) {
+  const byName = {};
+  for (const s of Object.values(DB.sessions)) {
+    const mine = s.logs && s.logs[userId];
+    if (!mine) continue;
+    const perEx = {};
+    for (const l of mine) {
+      if (!isWorkingSet(l)) continue;
+      const e = estMax(l);
+      if (!e) continue;                                  // bodyweight / incomplete
+      const name = exerciseNameFor(s, l.exerciseId, userId);
+      if (!perEx[name] || e > perEx[name].e) perEx[name] = { e, l };
+    }
+    for (const name of Object.keys(perEx)) {
+      (byName[name] = byName[name] || []).push({
+        at: perfDate(s.scheduledAt).slice(0, 10),
+        est: Math.round(perEx[name].e),
+        weight: Number(perEx[name].l.weight) || 0,
+        reps: Number(perEx[name].l.reps) || 0
+      });
+    }
+  }
+  const lifts = Object.keys(byName)
+    .map(name => ({ name, points: byName[name].sort((a, b) => a.at.localeCompare(b.at)) }))
+    .filter(x => x.points.length >= 2)                   // one point is not a trend
+    .sort((a, b) => b.points.length - a.points.length);
+
+  // Overall: each lift indexed to ITS OWN starting value, then averaged weighted by how heavy
+  // it is. Weighting stops a 15->20 lb lateral raise (+33%) outvoting a 45 lb squat gain, and
+  // requiring 2+ points stops a lift trained once diluting the average toward zero.
+  const dates = [...new Set(lifts.flatMap(l => l.points.map(p => p.at)))].sort();
+  const wsum = lifts.reduce((a, l) => a + l.points[0].est, 0);
+  const overall = !lifts.length ? [] : dates.map(d => {
+    let acc = 0;
+    for (const l of lifts) {
+      const upTo = l.points.filter(p => p.at <= d);
+      const cur = upTo.length ? upTo[upTo.length - 1].est : l.points[0].est;
+      acc += (cur / l.points[0].est) * (l.points[0].est / wsum);
+    }
+    return { at: d, pct: Number(((acc - 1) * 100).toFixed(1)) };
+  });
+  return {
+    lifts: lifts.map(l => ({
+      name: l.name, points: l.points,
+      changePct: Number(((l.points[l.points.length-1].est / l.points[0].est - 1) * 100).toFixed(1))
+    })),
+    overall
+  };
+}
+
 app.get('/api/progress', auth, (req, res) => {
   const weeks = Math.min(52, Math.max(4, Number(req.query.weeks) || 13));
   const rec = recommendationsFor(req.userId);
@@ -835,6 +898,7 @@ app.get('/api/progress', auth, (req, res) => {
     thisWeek: w.length ? w[w.length - 1].days : 0,
     avgPerWeek: w.length ? Number((trained / w.length).toFixed(1)) : 0,
     streakWeeks: streak,
+    trend: trendFor(req.userId),
     prs: (DB.prs && DB.prs[req.userId]) ? Object.values(DB.prs[req.userId])
           .sort((a, b) => new Date(b.at) - new Date(a.at)) : []
   });

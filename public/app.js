@@ -1112,6 +1112,81 @@ function prLabel(p,U){
   if(w===0) return `${p.reps} reps`;
   return `${w} ${U} × ${p.reps}`;
 }
+
+// Strength trend chart. Single series, so no legend — the chip above names it. Selective
+// labels only (never a number on every point). Values are reachable by tap, not hover only.
+let TREND_PICK = '__overall';
+function setTrendPick(k){ TREND_PICK=k; progressScreen(); }
+function trendChart(d, U){
+  const t = d.trend || {lifts:[], overall:[]};
+  if(!t.lifts.length) return `<h2>Strength trend</h2><div class="card"><div class="empty">
+    <div class="empty-t">Not enough history yet</div>
+    <div class="empty-b">Log the same lift <b>twice</b> and its strength line starts here.
+      Bodyweight moves are tracked in records instead.</div></div></div>`;
+
+  const isOverall = TREND_PICK==='__overall';
+  const lift = t.lifts.find(l=>l.name===TREND_PICK) || t.lifts[0];
+  const pts = isOverall ? t.overall.map(p=>({at:p.at, v:p.pct}))
+                        : lift.points.map(p=>({at:p.at, v:p.est, w:p.weight, r:p.reps}));
+  const chips = `<div class="chips">
+    <span class="chip ${isOverall?'on':''}" onclick="setTrendPick('__overall')">Overall</span>
+    ${t.lifts.slice(0,6).map(l=>`<span class="chip ${(!isOverall&&l.name===lift.name)?'on':''}"
+      onclick="setTrendPick('${esc(l.name).replace(/'/g,"\\'")}')">${esc(l.name.split(' ').slice(-2).join(' '))}</span>`).join('')}
+  </div>`;
+
+  if(pts.length<2) return `<h2>Strength trend</h2>${chips}<div class="card">
+    <div class="muted" style="padding:20px 4px;text-align:center">Only one session for this lift so far.</div></div>`;
+
+  const W=326,H=150,PL=36,PRr=12,PT=20,PB=24;
+  const vals=pts.map(p=>p.v);
+  let lo=Math.min(...vals), hi=Math.max(...vals);
+  if(isOverall){ lo=Math.min(0,lo)-1; hi=Math.max(hi,1)+2; }
+  else { const pad=Math.max(5,(hi-lo)*0.15); lo=Math.floor((lo-pad)/5)*5; hi=Math.ceil((hi+pad)/5)*5; }
+  if(hi===lo) hi=lo+1;
+  const xs=i=>PL+i*(W-PL-PRr)/(pts.length-1);
+  const ys=v=>PT+(hi-v)*(H-PT-PB)/(hi-lo);
+  const step=Math.max(1,Math.round((hi-lo)/4));
+  let grid='',lbl='';
+  for(let g=Math.ceil(lo/step)*step; g<=hi; g+=step){
+    const zero=isOverall&&g===0;
+    grid+=`<line x1="${PL}" y1="${ys(g)}" x2="${W-PRr}" y2="${ys(g)}" stroke="${zero?'#d8dde4':'#eef1f5'}" stroke-width="1"/>`;
+    lbl+=`<text x="${PL-7}" y="${ys(g)+3.5}" text-anchor="end" font-size="9.5" fill="#5c6470">${isOverall?((g>0?'+':'')+g+'%'):g}</text>`;
+  }
+  const poly=pts.map((p,i)=>`${xs(i)},${ys(p.v)}`).join(' ');
+  let dots='',hits='';
+  pts.forEach((p,i)=>{ const last=i===pts.length-1;
+    dots+=`<circle cx="${xs(i)}" cy="${ys(p.v)}" r="${last?5.5:4.2}" fill="${last?'#2563eb':'#fff'}" stroke="#2563eb" stroke-width="2"/>`;
+    hits+=`<circle cx="${xs(i)}" cy="${ys(p.v)}" r="15" fill="transparent"><title>${shortDate(p.at)}: ${isOverall?((p.v>=0?'+':'')+p.v+'% vs start'):`${p.w} ${U} × ${p.r} — est. max ${p.v} ${U}`}</title></circle>`;});
+  let xl='';
+  [[0,'start'],[pts.length-1,'end']].forEach(([i,a])=>{
+    xl+=`<text x="${xs(i)}" y="${H-7}" text-anchor="${a}" font-size="9.5" fill="#5c6470">${shortDate(pts[i].at)}</text>`;});
+  const lastV=pts[pts.length-1].v;
+  const head = isOverall
+    ? `<div><span class="ch-val">${lastV>=0?'+':''}${Math.round(lastV)}%</span> <span class="ch-unit">overall strength</span></div>`
+    : `<div><span class="ch-val">${Math.round(lastV)}</span> <span class="ch-unit">${U} estimated max</span></div>`;
+  const drivers = isOverall ? `<div class="drv-head">What's driving it</div>${
+    t.lifts.slice().sort((a,b)=>b.changePct-a.changePct).map(l=>`<div class="drv">
+      <div class="drv-n">${esc(l.name)}</div>
+      <div class="drv-w">${l.points[0].weight} → ${l.points[l.points.length-1].weight} ${U}</div>
+      <div class="drv-p ${l.changePct>0.5?'up':'flat'}">${l.changePct>0.5?'▲ '+Math.round(l.changePct)+'%':'—'}</div>
+    </div>`).join('')}` : '';
+
+  return `<h2>Strength trend</h2>${chips}<div class="card">
+    <div class="ch-head">${head}</div>
+    <div class="ch-note">${isOverall
+      ? `Each lift compared with where it started, weighted by how heavy it is`
+      : `${esc(lift.name)} · best working set per session`}</div>
+    <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible">
+      ${grid}<polyline points="${poly}" fill="none" stroke="#2563eb" stroke-width="2"
+        stroke-linejoin="round" stroke-linecap="round"/>${dots}${lbl}${xl}${hits}</svg>
+    ${drivers}
+    <div class="tblnote">${isOverall
+      ? 'Lifts you have trained at least twice. Tap a point for the exact figure.'
+      : `Estimated max is what your best set predicts for one all-out rep (weight × [1 + reps ÷ 30]),
+         so a heavy triple and a light set of ten compare fairly.`}</div>
+  </div>`;
+}
+
 async function progressScreen(){
   const d = await H.get('/api/progress?weeks='+PROG_WEEKS);
   if(!d || d.error){ $('app').innerHTML = `<div class="wrap"><h1>Progress</h1><div class="muted">Couldn\'t load progress.</div></div>`; return; }
@@ -1214,6 +1289,8 @@ async function progressScreen(){
         ${PROG_RANGES.map(r=>`<button class="${PROG_WEEKS===r.weeks?'on':''}" onclick="setProgWeeks(${r.weeks})">${r.label}</button>`).join('')}
       </div>
     </div>
+
+    ${trendChart(d,U)}
 
     <h2>Personal records</h2>
     <div class="card">${prHtml}</div>
