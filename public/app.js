@@ -461,6 +461,7 @@ async function openLogSheet(sid, exId){
     <div class="sheet log-sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>Log · ${esc(e.name)}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
       <div class="ex-sub">Last time: <b>${esc(last)}</b></div>
+      <div id="logRec"></div>
       <div id="logSetList"></div>
       <div class="seg" id="logTypeSeg">
         ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" data-t="${t.key}" onclick="logSetType('${t.key}')">${t.label}</div>`).join('')}
@@ -481,6 +482,29 @@ async function openLogSheet(sid, exId){
   document.body.appendChild(sheet);
   requestAnimationFrame(()=>sheet.classList.add('show'));
   renderLogSets(s);
+  // The advice belongs HERE, at the moment the weight is chosen — not only on a tab the user
+  // has to remember to open before leaving for the gym. Loaded after the sheet is on screen
+  // so it never delays opening.
+  H.get('/api/progress/exercise/'+encodeURIComponent(e.name)).then(r=>{
+    const box=document.getElementById('logRec'); if(!box||!r||r.error) return;
+    const U=r.unit||'lb';
+    if(r.ready) box.innerHTML=`<div class="log-rec up" onclick="useSuggested(${r.ready.suggested})">
+        <span class="lr-ic" aria-hidden="true">↑</span>
+        <span class="lr-t">Try <b>${r.ready.suggested} ${U}</b> today</span>
+        <span class="lr-why">hit ${r.ready.targetRepsMax} reps at ${r.ready.weight} ${U}, last 2 sessions</span>
+      </div>`;
+    else if(r.hold) box.innerHTML=`<div class="log-rec hold">
+        <span class="lr-ic" aria-hidden="true">–</span>
+        <span class="lr-t">Repeat <b>${r.hold.weight} ${U}</b></span>
+        <span class="lr-why">${r.hold.reps} of ${r.hold.targetRepsMax} reps last time</span>
+      </div>`;
+  }).catch(()=>{});
+}
+// One tap fills the weight box, so the advice is one action rather than something to memorise.
+function useSuggested(w){
+  const el=document.getElementById('logW'); if(!el) return;
+  el.value=w; updateLoadHint();
+  const box=document.getElementById('logRec'); if(box) box.classList.add('used');
 }
 function logSetType(key){
   const seg=document.getElementById('logTypeSeg'); if(!seg) return;

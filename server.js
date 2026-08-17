@@ -963,6 +963,19 @@ function recordsFor(userId) {
   return out.sort((a, b) => new Date(b.at) - new Date(a.at));
 }
 
+
+// The recommendation for ONE exercise, for the log sheet. /api/progress computes trends,
+// weeks and records too; opening a log sheet should not pay for any of that.
+app.get('/api/progress/exercise/:name', auth, (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const r = recommendationsFor(req.userId);
+  res.json({
+    unit: r.unit,
+    ready: r.ready.find(x => x.exercise === name) || null,
+    hold:  r.holds.find(x => x.exercise === name) || null
+  });
+});
+
 app.get('/api/progress', auth, (req, res) => {
   const weeks = Math.min(52, Math.max(4, Number(req.query.weeks) || 13));
   const rec = recommendationsFor(req.userId);
