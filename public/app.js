@@ -1133,11 +1133,21 @@ async function progressScreen(){
         </div>`).join('')}
       </div>`).join('');
   } else {
+    // Show what a real recommendation looks like rather than describing it twice. The
+    // "How it works" footnote is suppressed below when empty — it repeated this sentence.
     readyHtml = `<div class="empty">
-      <div class="empty-ic" aria-hidden="true">↑</div>
       <div class="empty-t">Nothing to add yet</div>
       <div class="empty-b">Reach the top of your rep range on a lift <b>two sessions in a row</b>
-        and it shows up here with the weight to try next.</div></div>`;
+        and it appears here, with the weight to try next.</div>
+      <div class="eg-wrap">
+        <div class="eg-cap">Example</div>
+        <div class="rp eg-row">
+          <div class="rp-ic" aria-hidden="true">↑</div>
+          <div class="rp-main"><div class="rp-name">Bench Press</div>
+            <div class="rp-why">Hit 10 reps at 135 ${U} · last 2 sessions</div></div>
+          <div class="rp-to"><div class="rp-new">140 ${U}</div><div class="rp-tag">▲ +5</div></div>
+        </div>
+      </div></div>`;
   }
   let holdHtml = '';
   if(d.holds.length){
@@ -1182,8 +1192,9 @@ async function progressScreen(){
 
     <h2>Add weight next time</h2>
     <div class="card">${readyHtml}${holdHtml}
-      <div class="rulenote"><b>How it works:</b> reach the top of your rep range two sessions in
-        a row and the weight goes up. Warm-ups and drop sets don\'t count.</div>
+      ${(d.ready.length||d.holds.length)?`<div class="rulenote"><b>How it works:</b> reach the top of
+        your rep range two sessions in a row and the weight goes up. Warm-ups and drop sets
+        don\'t count.</div>`:''}
     </div>
 
     <h2>Consistency</h2>
