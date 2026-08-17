@@ -25,3 +25,10 @@ backups/
 _*.mjs
 _*.cjs
 *.tgz
+
+# Security findings. This repo is PUBLIC. These describe unfixed holes in a live app in enough
+# detail to exploit them — publishing that before the fixes ship hands an attacker a map.
+# Keep them local; delete them once the findings they describe are closed.
+*FINDINGS*.md
+*findings*.md
+_bughunt*.md
