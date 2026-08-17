@@ -1251,15 +1251,21 @@ function rebuildAllPrs() {
       // bodyweight work impossible to rank: a pull-up stores weight 0, so volume was always
       // 0 and never cleared the `val > 0` gate. Comparing (weight, reps) lexicographically
       // ranks bodyweight sets by reps, which is exactly how people compare them.
+      // ONE set carries the PR flag per exercise: the current record holder, nothing else.
+      // This used to flag every set that beat the running best as it worked up the list, so a
+      // normal ascending session tagged three or four sets "PR" for the same lift — Jeff's
+      // Towel Pull-Up showed 45x8 PR and 79x8 PR in one workout. Only the 79 is a record. A
+      // badge that appears on almost every set stops meaning anything.
       let bestW = -1, bestR = -1, bestLog = null;
       for (const l of chronological) {
         // compare in lb regardless of what each set was typed in
         const w = toLb(l.weight, l.unit), r = Number(l.reps) || 0;
         const better = r > 0 && (w > bestW || (w === bestW && r > bestR));
-        if (better) { bestW = w; bestR = r; bestLog = l; l.isPr = true; }
-        else { l.isPr = false; }
+        if (better) { bestW = w; bestR = r; bestLog = l; }
+        l.isPr = false;                       // cleared for every set; the winner is set below
       }
       if (bestLog) {
+        bestLog.isPr = true;
         DB.prs[userId] = DB.prs[userId] || {};
         DB.prs[userId][name] = { exercise: name, weight: Number(bestLog.weight) || 0,
           reps: Number(bestLog.reps) || 0, at: bestLog._performedAt || bestLog.at };

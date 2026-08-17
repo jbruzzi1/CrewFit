@@ -281,6 +281,29 @@ console.log('\nswapping an exercise keeps its history');
      `history files under the swap, so the sheet must ask under the swap too (got ${underSwap.sessions})`);
 }
 
+console.log('\nexactly ONE set per lift wears the PR badge');
+{
+  const u = await newUser();
+  // an ordinary ascending session: work up, then the top set
+  const s1 = await log(u, 'Towel Pull-Up', '2026-08-15T18:00:00Z', 45, 8);
+  await fetch(B + `/api/sessions/${s1.id}/log`, { method: 'POST', headers: u.H,
+    body: JSON.stringify({ exerciseId: s1.exercises[0].id, weight: 79, reps: 8 }) });
+  let s = await fetch(B + '/api/sessions/' + s1.id, { headers: u.H }).then(x => x.json());
+  let logs = s.logs[Object.keys(s.logs)[0]];
+  let flagged = logs.filter(l => l.isPr);
+  ok(flagged.length === 1, `two sets, one record — got ${flagged.length} PR badge(s)`);
+  ok(flagged[0] && Number(flagged[0].weight) === 79, `the heavier set holds it (got ${flagged[0] && flagged[0].weight})`);
+
+  // and across sessions: beating it moves the badge, it does not add one
+  const s2 = await log(u, 'Towel Pull-Up', '2026-08-22T18:00:00Z', 90, 8);
+  const a = await fetch(B + '/api/sessions/' + s1.id, { headers: u.H }).then(x => x.json());
+  const b = await fetch(B + '/api/sessions/' + s2.id, { headers: u.H }).then(x => x.json());
+  const all = [...a.logs[Object.keys(a.logs)[0]], ...b.logs[Object.keys(b.logs)[0]]];
+  flagged = all.filter(l => l.isPr);
+  ok(flagged.length === 1 && Number(flagged[0].weight) === 90,
+     `after beating it, still one badge and it moved to 90 (got ${flagged.length} on ${flagged[0] && flagged[0].weight})`);
+}
+
 console.log('\n/api/progress agrees with the log sheet');
 {
   const u = await newUser();
