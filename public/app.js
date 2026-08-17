@@ -1162,6 +1162,7 @@ async function progressScreen(){
     if(i===0||cur) xlab+=`<text x="${cur?BW:0}" y="${BH-6}" text-anchor="${cur?'end':'start'}" font-size="9.5" fill="#5c6470">${cur?'this week':shortDate(w.weekOf)}</text>`;
   });
 
+  const nothingYet = !d.ready.length && !d.holds.length && !d.prs.length && !d.weeks.some(w=>w.days);
   const prHtml = d.prs.length
     ? d.prs.slice(0,8).map(p=>`<div class="pr">
         <div><div class="pr-n">${esc(p.exercise)}</div><div class="pr-d">${fmtDate(p.at)}</div></div>
@@ -1170,7 +1171,8 @@ async function progressScreen(){
 
   $('app').innerHTML = `<div class="wrap">
     <h1>Progress</h1>
-    <p class="sub">${d.thisWeek} day${d.thisWeek===1?'':'s'} trained this week</p>
+    <p class="sub">${nothingYet ? 'Log a workout and this fills in' : `${d.thisWeek} day${d.thisWeek===1?'':'s'} trained this week`}</p>
+    ${nothingYet?`<button class="blue btn-new" onclick="createFlow()">+ New workout</button>`:''}
 
     <h2>Add weight next time</h2>
     <div class="card">${readyHtml}${holdHtml}
@@ -1181,11 +1183,16 @@ async function progressScreen(){
     <h2>Consistency</h2>
     <div class="card">
       <div class="kpi"><div>
-        <div class="hero">${d.avgPerWeek}<span class="hero-u"> days/week average</span></div>
-        <div class="hero-cap">over ${d.weeks.length} weeks</div>
-      </div><span class="streak">${d.streakWeeks}-week streak</span></div>
-      <svg viewBox="0 0 ${BW} ${BH}" width="100%" style="display:block" role="img"
-        aria-label="Days trained per week over ${d.weeks.length} weeks. Most recent: ${d.thisWeek} days.">${bars}${xlab}${hits}</svg>
+        ${d.weeks.some(w=>w.days)
+          ? `<div class="hero">${d.avgPerWeek}<span class="hero-u"> days/week average</span></div>
+             <div class="hero-cap">over ${d.weeks.length} weeks</div>`
+          : `<div class="hero" style="font-size:17px">No workouts logged yet</div>`}
+      </div>${d.streakWeeks>0?`<span class="streak">${d.streakWeeks}-week streak</span>`:''}</div>
+      ${d.weeks.some(w=>w.days)
+        ? `<svg viewBox="0 0 ${BW} ${BH}" width="100%" style="display:block" role="img"
+             aria-label="Days trained per week over ${d.weeks.length} weeks. Most recent: ${d.thisWeek} days.">${bars}${xlab}${hits}</svg>`
+        : `<div class="muted" style="padding:14px 2px 6px;line-height:1.5">Your training weeks will
+             chart here. Two or three a week is plenty to see a pattern.</div>`}
       <div class="seg wk-seg">
         ${[4,13,26].map(w=>`<button class="${PROG_WEEKS===w?'on':''}" onclick="setProgWeeks(${w})">${w} weeks</button>`).join('')}
       </div>
