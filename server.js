@@ -98,7 +98,7 @@ app.post('/api/register', (req, res) => {
   const exists = Object.values(DB.users).find(u => u.username === username);
   if (exists) return res.status(409).json({ error: 'username taken' });
   const id = uid();
-  DB.users[id] = { id, username, pin, displayName: displayName || username, friends: [] };
+  DB.users[id] = { id, username, pin, displayName: displayName || username, friends: [], units: 'lb' };
   save(DB);
   const token = uid() + uid();
   SESSIONS_TOKEN[token] = id;
@@ -141,7 +141,7 @@ app.post('/api/reset', (req, res) => {
 
 function publicUser(id) {
   const u = DB.users[id];
-  return { id: u.id, username: u.username, displayName: u.displayName, bio: u.bio || '', avatar: u.avatar || '', followers: (u.followers || []).length, following: (u.friends || []).length };
+  return { id: u.id, username: u.username, displayName: u.displayName, bio: u.bio || '', avatar: u.avatar || '', followers: (u.followers || []).length, following: (u.friends || []).length, units: u.units || 'lb' };
 }
 
 // ---- Exercise library (136 base + user-created) ----
@@ -216,6 +216,7 @@ function profileOf(id, viewerId) {
     });
   return {
     ...publicUser(id),
+    units: (DB.users[id] && DB.users[id].units) || 'lb',
     workoutsCompleted: completed.size,
     myWorkouts,
     prCount: prs.length,
@@ -697,6 +698,20 @@ app.post('/api/sessions/:id/attendance', auth, (req, res) => {
 });
 
 // log an individual set
+// Weight units are per user. Sets store the number AS TYPED plus the unit it was typed in
+// (see the log endpoint), so switching preference never rewrites history — a set logged in kg
+// keeps reading in kg. Comparisons convert to a canonical lb.
+const LB_PER_KG = 2.2046226218;
+function toLb(weight, unit) { return (Number(weight) || 0) * (unit === 'kg' ? LB_PER_KG : 1); }
+
+app.post('/api/me/units', auth, (req, res) => {
+  const u = (req.body || {}).units;
+  if (u !== 'lb' && u !== 'kg') return res.status(400).json({ error: 'units must be lb or kg' });
+  DB.users[req.userId].units = u;
+  save(DB);
+  res.json({ units: u });
+});
+
 app.post('/api/sessions/:id/log', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s.participants.includes(req.userId) && !s.joinRequests.find(j=>j.userId===req.userId&&j.status==='approved'))
@@ -710,8 +725,10 @@ app.post('/api/sessions/:id/log', auth, (req, res) => {
   const myExLogs = s.logs[req.userId].filter(l => l.exerciseId === exerciseId);
   const setNum = (set && Number(set)) || myExLogs.length + 1;
   const lt = loadTypeForName(exerciseNameFor(s, exerciseId));
+  const unit = (DB.users[req.userId] && DB.users[req.userId].units) || 'lb';
   const entry = { id: 'log_'+uid(), exerciseId, weight: w, reps: r, set: setNum, setType: setType || 'normal', isPr: false, at: new Date().toISOString() };
   if (lt) entry.loadType = lt;   // omitted entirely for unambiguous lifts (barbell, cable, machine)
+  if (unit !== 'lb') entry.unit = unit;   // omitted when lb, so existing data stays byte-identical
   s.logs[req.userId].push(entry);
   rebuildAllPrs();
   save(DB);
@@ -782,7 +799,8 @@ function rebuildAllPrs() {
       // ranks bodyweight sets by reps, which is exactly how people compare them.
       let bestW = -1, bestR = -1, bestLog = null;
       for (const l of chronological) {
-        const w = Number(l.weight) || 0, r = Number(l.reps) || 0;
+        // compare in lb regardless of what each set was typed in
+        const w = toLb(l.weight, l.unit), r = Number(l.reps) || 0;
         const better = r > 0 && (w > bestW || (w === bestW && r > bestR));
         if (better) { bestW = w; bestR = r; bestLog = l; l.isPr = true; }
         else { l.isPr = false; }

@@ -321,7 +321,7 @@ async function viewPost(id){
   const exList = s.exercises.map(e=>{
     const sets = creatorLogs.filter(l=>l.exerciseId===e.id).sort((a,b)=>(Number(a.set)||0)-(Number(b.set)||0));
     const setsHtml = sets.length
-      ? `<div class="pp-sets">${sets.map(l=>`<div class="pp-set">${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} lbs × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr">PR</span>':''}</div>`).join('')}</div>`
+      ? `<div class="pp-sets">${sets.map(l=>`<div class="pp-set">${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr">PR</span>':''}</div>`).join('')}</div>`
       : `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">No sets logged</div>`;
     return `<div class="pp-ex"><div class="pp-ex-name">${esc(e.name)}</div></div>${setsHtml}`;
   }).join('');
@@ -415,6 +415,13 @@ async function libByName(){
   if(Array.isArray(lib)) for(const e of lib) _LIBBYNAME[e.name] = e;
   return _LIBBYNAME;
 }
+// Units. ME.units is set at login/boot from the server. Each logged set also carries the
+// unit it was typed in, so a set logged in kg keeps reading in kg after switching preference.
+function myUnit(){ return (ME && ME.units) || 'lb'; }
+function unitOf(entry){ return (entry && entry.unit) || 'lb'; }
+// Plate maths differs per unit: lb bars move in 5s, kg bars in 2.5s.
+const INCREMENTS = { lb:{upper:5, lower:10, machine:20}, kg:{upper:2.5, lower:5, machine:10} };
+
 const LOAD_LABEL = {
   pair:   'per dumbbell',
   single: 'total',
@@ -424,9 +431,10 @@ const LOAD_LABEL = {
 // because the user never has to reason about which convention the app assumed.
 function loadHintText(loadType, w){
   const n = Number(w)||0;
-  if(loadType==='pair')   return n ? `= ${n*2} lb total, both hands` : 'weight in each hand';
+  const U = myUnit();
+  if(loadType==='pair')   return n ? `= ${n*2} ${U} total, both hands` : 'weight in each hand';
   if(loadType==='single') return 'one dumbbell, total weight';
-  if(loadType==='added')  return n ? `${n} lb on top of bodyweight` : 'weight added, not bodyweight';
+  if(loadType==='added')  return n ? `${n} ${U} on top of bodyweight` : 'weight added, not bodyweight';
   return '';
 }
 function updateLoadHint(){
@@ -455,7 +463,7 @@ async function openLogSheet(sid, exId){
         ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" data-t="${t.key}" onclick="logSetType('${t.key}')">${t.label}</div>`).join('')}
       </div>
       <div class="add-row">
-        <input id="logW" placeholder="${loadType==='pair'?'lbs each':'lbs'}" type="number" inputmode="tel" pattern="[0-9]*" oninput="updateLoadHint()">
+        <input id="logW" placeholder="${loadType==='pair'? myUnit()+' each' : myUnit()}" type="number" inputmode="tel" pattern="[0-9]*" oninput="updateLoadHint()">
         <input id="logR" placeholder="reps" type="number" inputmode="tel" pattern="[0-9]*">
         <button class="add-btn" onclick="addLogSet()">+ Add</button>
       </div>
@@ -488,7 +496,7 @@ function renderLogSets(s){
     return t==='pair' ? ' each' : t==='added' ? ' added' : ''; };
   list.innerHTML = exLogs.map(l=>`<div class="set-row" onclick="editLogSet('${l.id}')">
       <div class="set-n">${l.set||'·'}</div>
-      <div class="set-vals"><b>${Number(l.weight)||0} lbs${suffixFor(l)}</b> · <span class="sub">${Number(l.reps)||0} reps</span></div>
+      <div class="set-vals"><b>${Number(l.weight)||0} ${unitOf(l)}${suffixFor(l)}</b> · <span class="sub">${Number(l.reps)||0} reps</span></div>
       <span class="type-tag ${TYPE_CLASS[l.setType]||'t-normal'}">${TYPE_LABEL[l.setType]||'Normal'}</span>
       ${l.isPr?'<span class="type-tag pr">PR</span>':''}
     </div>`).join('');
@@ -515,7 +523,7 @@ async function editLogSet(logId){
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>Edit set</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
       <div class="ex-sub">Set ${l.set||''}</div>
-      <label class="muted" style="font-size:12px">Weight (lbs${(LOGVIEW&&LOGVIEW.loadType==='pair')?', each hand':(LOGVIEW&&LOGVIEW.loadType==='added')?' added':''})</label>
+      <label class="muted" style="font-size:12px">Weight (${unitOf(l)}${(LOGVIEW&&LOGVIEW.loadType==='pair')?', each hand':(LOGVIEW&&LOGVIEW.loadType==='added')?' added':''})</label>
       <input id="edW" type="number" inputmode="tel" pattern="[0-9]*" value="${l.weight}">
       <label class="muted" style="font-size:12px">Reps</label>
       <input id="edR" type="number" inputmode="tel" pattern="[0-9]*" value="${l.reps}">
@@ -1370,10 +1378,30 @@ function openSettings(){
     <div class="sheet-list">
       <button class="sheet-row" onclick="closeSheet(); document.getElementById('av').click()">Edit photo</button>
       <button class="sheet-row" onclick="closeSheet(); editBio()">Edit bio</button>
+      <button class="sheet-row" onclick="closeSheet(); pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
       <button class="sheet-row red" onclick="closeSheet(); logout()">Log out</button>
     </div>
   </div>`;
   openSheetHtml(inner);
+}
+function pickUnits(){
+  const cur = myUnit();
+  const inner = `<div class="sheet"><div class="sheet-head"><h2>Weight units</h2>
+      <button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="sheet-list">
+      <button class="sheet-row" onclick="setUnits('lb')">Pounds (lb)${cur==='lb'?' <span class="row-val">✓</span>':''}</button>
+      <button class="sheet-row" onclick="setUnits('kg')">Kilograms (kg)${cur==='kg'?' <span class="row-val">✓</span>':''}</button>
+    </div>
+    <div class="note">Only changes what new sets are recorded in. Sets you've already logged
+      keep the units you logged them in.</div>
+  </div>`;
+  openSheetHtml(inner);
+}
+async function setUnits(u){
+  const r = await H.post('/api/me/units',{units:u});
+  if(r.error){ alert(r.error); return; }
+  ME.units = r.units;
+  closeSheet();
 }
 async function profileView(id){
   const p = await H.get('/api/profile/'+id);
