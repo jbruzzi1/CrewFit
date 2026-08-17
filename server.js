@@ -189,23 +189,25 @@ app.post('/api/login', (req, res) => {
   res.json({ token, user: publicUser(u.id) });
 });
 
-// ---- Forgot username / password (v1: in-app reset, no email yet) ----
-app.post('/api/forgot', (req, res) => {
-  const { username } = req.body || {};
-  const u = Object.values(DB.users).find(x => x.username === username);
-  // Don't reveal whether the username exists (avoid account enumeration), but for v1 demo we return found:true to drive the UI.
-  if (!u) return res.status(404).json({ error: 'No account with that username' });
-  res.json({ found: true, displayName: u.displayName });
-});
-app.post('/api/reset', (req, res) => {
-  const { username, newPin } = req.body || {};
-  if (!newPin || String(newPin).length < 1) return res.status(400).json({ error: 'new password required' });
-  const u = Object.values(DB.users).find(x => x.username === username);
-  if (!u) return res.status(404).json({ error: 'No account with that username' });
-  u.pin = String(newPin);
-  save(DB);
-  res.json({ ok: true });
-});
+// ---- Password reset: DISABLED, deliberately ----
+// These two shipped as a v1 placeholder and were a full account takeover for anyone on the
+// internet. /api/reset took a username and a new password and set it — no token, no login, no
+// proof of anything. /api/forgot then confirmed whether a username existed AND returned the
+// person's real name, so accounts could be discovered rather than guessed, and usernames are on
+// display in the app ("with @Brian +2").
+//
+// There is no email or phone in this system, so there is nothing to send a reset link to and no
+// honest way to prove identity. A reset flow that cannot verify who is asking is worse than no
+// reset flow, so both are off until there is a channel to verify through. Recovery today is
+// manual: Jeff edits the account.
+//
+// DO NOT re-enable these by restoring the old bodies. Whatever replaces them must prove the
+// requester controls the account before it changes a password.
+const RESET_DISABLED = {
+  error: 'Password reset is unavailable. Ask Jeff to reset it for you.'
+};
+app.post('/api/forgot', (req, res) => res.status(503).json(RESET_DISABLED));
+app.post('/api/reset',  (req, res) => res.status(503).json(RESET_DISABLED));
 
 function publicUser(id) {
   const u = DB.users[id];

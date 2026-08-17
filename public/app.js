@@ -44,7 +44,7 @@ function authScreen(){
       <input id="lp" placeholder="password" type="password">
       <button class="blue" onclick="doLogin()">Login</button>
       <div style="text-align:center;margin-top:10px"><button class="linkbtn" onclick="showReg()">Create new user</button></div>
-      <div style="text-align:center;margin-top:4px"><button class="linkbtn" onclick="forgotFlow()">Forgot username or password?</button></div>
+      <div style="text-align:center;margin-top:4px" class="muted sm-text">Forgot your password? Ask Jeff to reset it.</div>
       <div id="regbox" style="display:none;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
         <h2>New account</h2>
         <input id="rx" placeholder="username" autocomplete="off" oninput="checkUsername()">
@@ -71,17 +71,8 @@ async function checkUsername(){
     } catch(e){ hint.textContent=''; hint.style.color=''; btn.disabled=false; }
   }, 350);
 }
-async function forgotFlow(){
-  const uname = prompt('Enter your username to reset your password:');
-  if(!uname) return;
-  const r = await H.post('/api/forgot',{username:uname});
-  if(r.error){ alert(r.error); return; }
-  const np = prompt('Reset password for '+r.displayName+'. Enter a new password:');
-  if(!np) return;
-  const res = await H.post('/api/reset',{username:uname,newPin:np});
-  if(res.ok){ alert('Password reset. You can now log in with your new password.'); }
-  else alert(res.error||'reset failed');
-}
+// forgotFlow() is gone with the endpoints behind it — see the comment above /api/forgot in
+// server.js. It let anyone reset anyone's password from the login screen.
 async function doLogin(){ try { const r=await H.post('/api/login',{username:$('lx').value,pin:$('lp').value}); if(r.token){ setToken(r.token,r.user); home(); } else alert(r.error||'login failed'); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
 async function doReg(){ try {
   const btn = document.getElementById('regBtn');

@@ -304,6 +304,32 @@ console.log('\nexactly ONE set per lift wears the PR badge');
      `after beating it, still one badge and it moved to 90 (got ${flagged.length} on ${flagged[0] && flagged[0].weight})`);
 }
 
+console.log('\nnobody can reset a password they cannot prove they own');
+{
+  // /api/reset took a username and a new password and set it, with NO login of any kind, and
+  // /api/forgot confirmed a username existed and handed back the real name. Two anonymous
+  // requests took over any account. Both are off until there is a way to verify who is asking.
+  const u = await newUser();
+  const forgot = await fetch(B + '/api/forgot', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: u.username }) });
+  ok(forgot.status === 503, `/api/forgot is off (got ${forgot.status})`);
+  const body = await forgot.json();
+  ok(!JSON.stringify(body).includes(u.username) && !body.displayName,
+     'and it leaks neither the username nor the real name');
+
+  const reset = await fetch(B + '/api/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: u.username, newPin: '9999' }) });
+  ok(reset.status === 503, `/api/reset is off (got ${reset.status})`);
+
+  // the decisive one: the password must be UNCHANGED after that attempt
+  const stolen = await fetch(B + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: u.username, pin: '9999' }) }).then(x => x.json());
+  ok(!stolen.token, 'the attacker cannot log in with the password they tried to set');
+  const real = await fetch(B + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: u.username, pin: '1234' }) }).then(x => x.json());
+  ok(!!real.token, 'and the real owner is not locked out');
+}
+
 console.log('\n/api/progress agrees with the log sheet');
 {
   const u = await newUser();
