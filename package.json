@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/progression.mjs && node test/data-safety.mjs"
+    "test": "node test/progression.mjs && node test/data-safety.mjs && node test/accounts.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",

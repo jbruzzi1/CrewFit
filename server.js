@@ -2,6 +2,7 @@ const express = require('express');
 const webpush = require('web-push');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const DATA_FILE = path.join(DATA_DIR, 'data.json');
@@ -130,8 +131,65 @@ let DB = load();
 // module evaluation — see the block above app.listen for why.
 const EX_LIB = JSON.parse(fs.readFileSync(LIB_FILE, 'utf8')).exercises;
 
-// ---- Auth (simple username + pin, no password hashing for MVP demo) ----
+// ---- Accounts ----
 function uid() { return Math.random().toString(36).slice(2, 10); }
+
+// Passwords are stored as a scrypt hash with a per-user salt, never in the clear. They used to
+// be kept verbatim, so anyone holding data.json — or one of its backups, or a copy pulled to a
+// laptop — held every password in the app. scrypt is deliberately slow, so a stolen file is not
+// a password list. Node's own crypto; no dependency.
+function hashPin(pin) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return { pinSalt: salt, pinHash: crypto.scryptSync(String(pin), salt, 64).toString('hex') };
+}
+function verifyPin(u, pin) {
+  if (!u || !u.pinHash || !u.pinSalt) return false;
+  const got = crypto.scryptSync(String(pin), u.pinSalt, 64);
+  const want = Buffer.from(u.pinHash, 'hex');
+  return got.length === want.length && crypto.timingSafeEqual(got, want);   // constant time
+}
+
+// Usernames are matched case-insensitively everywhere. They were compared exactly, so "Brian"
+// and "brian" were two different accounts — which actually happened — and logging in with the
+// wrong capitalisation just said "bad credentials". The original casing is kept for display.
+const normUser = v => String(v == null ? '' : v).trim().toLowerCase();
+function findUserByName(username) {
+  const k = normUser(username);
+  if (!k) return null;
+  return Object.values(DB.users).find(u => normUser(u.username) === k) || null;
+}
+const USERNAME_RE = /^[a-zA-Z0-9._-]{3,20}$/;
+const RESERVED_USERNAMES = new Set(['admin','administrator','root','me','you','all','none','null',
+  'undefined','crewfit','spotme','support','help','system','api','settings','profile']);
+function usernameProblem(username) {
+  const raw = String(username == null ? '' : username).trim();
+  if (!USERNAME_RE.test(raw)) return 'Username must be 3-20 characters, letters, numbers, . _ or - only';
+  if (RESERVED_USERNAMES.has(normUser(raw))) return 'That username is reserved';
+  return null;
+}
+function pinProblem(pin) {
+  const p = String(pin == null ? '' : pin);
+  if (p.length < 4) return 'Password must be at least 4 characters';
+  if (p.length > 64) return 'Password must be 64 characters or fewer';
+  return null;
+}
+
+// Failed logins are counted per username, in memory. A 4-character password is guessable in
+// minutes if nothing slows the guessing down, and nothing did. Cleared on success.
+const LOGIN_FAILS = {};
+const LOGIN_MAX = 8, LOGIN_LOCK_MS = 10 * 60 * 1000;
+function loginLockedFor(key) {
+  const f = LOGIN_FAILS[key];
+  if (!f || f.count < LOGIN_MAX) return 0;
+  const left = f.until - Date.now();
+  if (left <= 0) { delete LOGIN_FAILS[key]; return 0; }
+  return Math.ceil(left / 1000);
+}
+function noteLoginFail(key) {
+  const f = LOGIN_FAILS[key] || (LOGIN_FAILS[key] = { count: 0, until: 0 });
+  f.count++;
+  if (f.count >= LOGIN_MAX) f.until = Date.now() + LOGIN_LOCK_MS;
+}
 const app = express();
 app.use(express.json({ limit: '60mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -163,10 +221,13 @@ app.get('/api/vapid', (req, res) => res.json({ publicKey: vapid.publicKey }));
 app.post('/api/register', (req, res) => {
   const { username, pin, displayName } = req.body || {};
   if (!username || !pin) return res.status(400).json({ error: 'username + pin required' });
-  const exists = Object.values(DB.users).find(u => u.username === username);
-  if (exists) return res.status(409).json({ error: 'username taken' });
+  const uProblem = usernameProblem(username); if (uProblem) return res.status(400).json({ error: uProblem });
+  const pProblem = pinProblem(pin);           if (pProblem) return res.status(400).json({ error: pProblem });
+  if (findUserByName(username)) return res.status(409).json({ error: 'username taken' });
   const id = uid();
-  DB.users[id] = { id, username, pin, displayName: displayName || username, friends: [], units: 'lb' };
+  DB.users[id] = Object.assign({ id, username: String(username).trim(),
+    displayName: String(displayName || username).trim(), friends: [], units: 'lb',
+    createdAt: new Date().toISOString() }, hashPin(pin));
   save(DB);
   const token = uid() + uid();
   SESSIONS_TOKEN[token] = id;
@@ -176,14 +237,18 @@ app.post('/api/register', (req, res) => {
 app.get('/api/register/check', (req, res) => {
   const username = (req.query.username || '').trim();
   if (!username) return res.json({ available: false });
-  const exists = Object.values(DB.users).find(u => u.username === username);
-  res.json({ available: !exists });
+  if (usernameProblem(username)) return res.json({ available: false });
+  res.json({ available: !findUserByName(username) });
 });
 
 app.post('/api/login', (req, res) => {
   const { username, pin } = req.body || {};
-  const u = Object.values(DB.users).find(x => x.username === username);
-  if (!u || u.pin !== pin) return res.status(401).json({ error: 'bad credentials' });
+  const key = normUser(username);
+  const locked = loginLockedFor(key);
+  if (locked) return res.status(429).json({ error: `Too many attempts. Try again in ${Math.ceil(locked/60)} minute(s).` });
+  const u = findUserByName(username);
+  if (!u || !verifyPin(u, pin)) { noteLoginFail(key); return res.status(401).json({ error: 'bad credentials' }); }
+  delete LOGIN_FAILS[key];
   const token = uid() + uid();
   SESSIONS_TOKEN[token] = u.id;
   res.json({ token, user: publicUser(u.id) });
@@ -364,12 +429,20 @@ app.post('/api/unfollow/:id', auth, (req, res) => {
 // friendRequests model: each user has incoming[] / outgoing[] of {from|to, status:'pending'}
 function ensureFriendArrays(u){ if(!u.incoming) u.incoming=[]; if(!u.outgoing) u.outgoing=[]; if(!u.friends) u.friends=[]; }
 app.get('/api/users/search', auth, (req, res) => {
-  const q = (req.query.q||'').trim().toLowerCase();
-  if(!q) return res.json([]);
+  const q = normUser(req.query.q);
+  // One letter returned twenty arbitrary strangers. Two is the shortest query that means anything.
+  if (q.length < 2) return res.json([]);
   const me = req.userId;
+  const score = u => {
+    const un = normUser(u.username), dn = normUser(u.displayName);
+    if (un === q || dn === q) return 0;                       // exact match first
+    if (un.startsWith(q) || dn.startsWith(q)) return 1;       // then "starts with"
+    return 2;                                                 // then anywhere in the name
+  };
   const hits = Object.values(DB.users).filter(u => u.id!==me && (
-    u.username.toLowerCase().includes(q) || (u.displayName||'').toLowerCase().includes(q)
-  )).slice(0,20).map(u => ({ ...publicUser(u.id), requestStatus:
+    normUser(u.username).includes(q) || normUser(u.displayName).includes(q)
+  )).sort((a,b) => score(a)-score(b) || normUser(a.username).localeCompare(normUser(b.username)))
+    .slice(0,20).map(u => ({ ...publicUser(u.id), requestStatus:
     (DB.users[me].outgoing||[]).some(r=>r.to===u.id&&r.status==='pending') ? 'sent' :
     (DB.users[me].friends||[]).includes(u.id) ? 'friends' : 'none'
   }));
@@ -377,7 +450,7 @@ app.get('/api/users/search', auth, (req, res) => {
 });
 app.post('/api/friends/request', auth, (req, res) => {
   const { username } = req.body || {};
-  const friend = Object.values(DB.users).find(u => u.username === username);
+  const friend = findUserByName(username);
   if (!friend) return res.status(404).json({ error: 'user not found' });
   if (friend.id === req.userId) return res.status(400).json({ error: 'cannot friend self' });
   const me = DB.users[req.userId]; ensureFriendArrays(me); ensureFriendArrays(friend);
@@ -1266,6 +1339,111 @@ function migrateExerciseNames() {
   return stamped;
 }
 
+// v168: replace every stored plaintext password with a scrypt hash. Runs once; after it the
+// clear password is gone from disk and from every future backup. There is no way back, which is
+// the point — and it is safe because we hold the plaintext at the moment of conversion.
+// It is also the documented way to reset a password by hand while self-service reset is off:
+// set `"pin": "theNewPassword"` on the account in data.json and restart. A plaintext pin is
+// always taken as an instruction to set that password, even over an existing hash, and is
+// erased in the same pass — so the clear text never survives a boot.
+function migratePasswords() {
+  let done = 0;
+  for (const u of Object.values(DB.users)) {
+    if (!u.pin) continue;
+    Object.assign(u, hashPin(u.pin));
+    delete u.pin;
+    done++;
+  }
+  if (done) console.log('migratePasswords: hashed ' + done + ' stored password(s)');
+  return done;
+}
+
+// v168: an account's creation date was never recorded. For accounts that predate this there is
+// no honest answer, so it is inferred from the earliest thing they actually did and marked as an
+// estimate. Accounts with no activity are left without a date rather than given a made-up one.
+function migrateCreatedAt() {
+  const earliest = {};
+  for (const s of Object.values(DB.sessions)) {
+    const when = perfDate(s.scheduledAt);
+    for (const id of Object.keys(s.logs || {})) {
+      if (!(s.logs[id] || []).length) continue;
+      if (!earliest[id] || when < earliest[id]) earliest[id] = when;
+    }
+    if (s.creatorId && (!earliest[s.creatorId] || when < earliest[s.creatorId])) earliest[s.creatorId] = when;
+  }
+  let done = 0;
+  for (const u of Object.values(DB.users)) {
+    if (u.createdAt || !earliest[u.id]) continue;
+    u.createdAt = earliest[u.id];
+    u.createdAtEstimated = true;              // inferred from first activity, not observed
+    done++;
+  }
+  if (done) console.log('migrateCreatedAt: estimated a join date for ' + done + ' account(s)');
+  return done;
+}
+
+// v168: usernames are now matched case-insensitively, so two accounts differing only by case
+// would both answer to the same login. Report any that exist; do NOT merge automatically —
+// choosing which account is the real one is a judgement call, not a migration.
+function reportUsernameCollisions() {
+  const byKey = {};
+  for (const u of Object.values(DB.users)) (byKey[normUser(u.username)] ||= []).push(u);
+  const clashes = Object.entries(byKey).filter(([, list]) => list.length > 1);
+  for (const [key, list] of clashes) {
+    console.log(`USERNAME COLLISION "${key}": ` + list.map(u => `${u.username}(${u.id})`).join(' + ') +
+      ' — both answer to the same login. Resolve manually.');
+  }
+  return clashes.length;
+}
+
+// v168, one-off: Jeff's account list held two Brians. "Brian" (3o09ct9a, shown as Brybrykeith)
+// is the real one — 8 workouts created, 10 sets logged. "brian" (f91omrrz) was an empty shell
+// holding 5 friend connections, created before usernames were case-insensitive.
+//
+// Every precondition is re-checked here rather than trusted, because this DELETES an account.
+// If anything does not match — the ids are absent, the empty one turns out to have logged
+// something, or it appears in any session — this does nothing at all and says so. Idempotent:
+// once the account is gone the whole thing is a no-op.
+const MERGE_KEEP = '3o09ct9a', MERGE_DROP = 'f91omrrz';
+function migrateMergeDuplicateBrian() {
+  const keep = DB.users[MERGE_KEEP], drop = DB.users[MERGE_DROP];
+  if (!keep || !drop) return 0;                                    // already done, or not this DB
+  for (const s of Object.values(DB.sessions)) {
+    const logged = ((s.logs || {})[MERGE_DROP] || []).length;
+    const involved = s.creatorId === MERGE_DROP ||
+      (s.participants || []).includes(MERGE_DROP) || (s.invited || []).includes(MERGE_DROP);
+    if (logged || involved) {
+      console.log(`MERGE ABORTED: ${MERGE_DROP} is referenced by session ${s.id} — not safe to remove.`);
+      return 0;
+    }
+  }
+  // hand the friendships over, in both directions, without duplicating
+  const add = (list, id) => { if (id && !list.includes(id)) list.push(id); };
+  ensureFriendArrays(keep);
+  for (const fid of (drop.friends || [])) {
+    if (fid === MERGE_KEEP) continue;
+    const other = DB.users[fid];
+    if (!other) continue;
+    ensureFriendArrays(other);
+    add(keep.friends, fid);
+    add(other.friends, MERGE_KEEP);
+    other.friends = other.friends.filter(x => x !== MERGE_DROP);
+  }
+  // and drop any dangling references to the removed account
+  for (const u of Object.values(DB.users)) {
+    if (u.id === MERGE_DROP) continue;
+    if (Array.isArray(u.friends))   u.friends   = u.friends.filter(x => x !== MERGE_DROP);
+    if (Array.isArray(u.followers)) u.followers = u.followers.filter(x => x !== MERGE_DROP);
+    if (Array.isArray(u.incoming))  u.incoming  = u.incoming.filter(r => r && r.from !== MERGE_DROP);
+    if (Array.isArray(u.outgoing))  u.outgoing  = u.outgoing.filter(r => r && r.to   !== MERGE_DROP);
+  }
+  delete DB.users[MERGE_DROP];
+  if (DB.prs) delete DB.prs[MERGE_DROP];
+  console.log(`MERGE: folded ${(drop.friends||[]).length} friendship(s) from "${drop.username}" into ` +
+    `"${keep.username}" and removed the empty duplicate.`);
+  return 1;
+}
+
 function rebuildAllPrs() {
   const groups = {}; // groups[userId][exerciseName] = [logEntry, ...]
   for (const s of Object.values(DB.sessions)) {
@@ -1432,6 +1610,10 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
 // full replay every boot by design, so PRs self-heal whenever the rule behind them changes.
 backupOnBoot();          // FIRST — after this line, everything below may rewrite data.json
 migrateMedia();
+migratePasswords();
+migrateMergeDuplicateBrian();   // before the collision report, which it resolves
+reportUsernameCollisions();
+migrateCreatedAt();
 migrateExerciseNames();     // before rebuildAllPrs, which groups by the name
 rebuildAllPrs();
 migrateLoadTypes();
