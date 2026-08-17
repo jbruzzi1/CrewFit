@@ -13,6 +13,7 @@ _to_delete/
 # Snapshots of live data. These contain every user's PIN IN PLAINTEXT — committing one
 # publishes them permanently. Pulled with: fly ssh sftp get /data/data.json ...
 live-backup.json
+live-*.json
 *-backup.json
 *backup*.json
 backups/
