@@ -21,6 +21,9 @@ const H = {
 };
 const $ = id => document.getElementById(id);
 function setToken(t,u){ TOKEN=t; localStorage.setItem('crewfit_token',t); ME=u; $('nav').classList.toggle('hidden', !t); }
+// "3 × 8–10" when a range is set, "3 × 10" when it's a single target
+function repLabel(e){ const lo=Number(e.defaultReps)||10, hi=Number(e.defaultRepsMax);
+  return (hi && hi>lo) ? `${lo}–${hi}` : `${lo}`; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 async function nameOf(id){
   if(id===ME.id) return 'You';
@@ -206,7 +209,7 @@ async function openSession(id){
     const cls = canEdit ? 'ex-card log-row' : 'ex-card';
     const cnt = (s.logs && s.logs[ME.id]) ? s.logs[ME.id].filter(l=>l.exerciseId===e.id).length : 0;
     const statusTag = canEdit ? (cnt ? `<span class="logged">✓ ${cnt} set${cnt>1?'s':''} logged</span>` : `<span class="log-hint">Tap to log sets →</span>`) : '';
-    let head = `<div class="ex-head"${tap}><div class="ex-main"><div class="ex-name">${name}</div>${statusTag}</div><div class="ex-meta"><span class="tag">${e.defaultSets} × ${e.defaultReps}</span></div></div>`;
+    let head = `<div class="ex-head"${tap}><div class="ex-main"><div class="ex-name">${name}</div>${statusTag}</div><div class="ex-meta"><span class="tag">${e.defaultSets} × ${repLabel(e)}</span></div></div>`;
     let sub = '';
     for(const ed of (editByEx[e.id]||[])){
       const byName = nameCache[ed.proposedBy] || ed.proposedBy;
@@ -355,7 +358,7 @@ async function deletePhoto(id, idx){
 async function acceptInvite(id){ await H.post(`/api/sessions/${id}/accept`,{}); openSession(id); }
 async function declineInvite(id){ if(!confirm('Decline this invite?')) return; await H.post(`/api/sessions/${id}/decline`,{}); home(); }
 async function requestChanges(id){ const t=prompt('What changes do you want?'); if(t) { await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+t}); openSession(id); } }
-async function saveRoutine(id){ const s=await H.get('/api/sessions/'+id); const r=await H.post('/api/templates',{name:prompt('Template name:','Saved routine')||'Saved routine',exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps}))}); alert('Saved as template: '+r.name); }
+async function saveRoutine(id){ const s=await H.get('/api/sessions/'+id); const r=await H.post('/api/templates',{name:prompt('Template name:','Saved routine')||'Saved routine',exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}))}); alert('Saved as template: '+r.name); }
 async function openChat(id){ document.getElementById('chatInput').focus(); }
 async function sendChat(id){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:t}); $('chatInput').value=''; openSession(id); }
 async function loadChat(s){
@@ -690,7 +693,8 @@ function renderWorkoutEdit(s){
       <div class="inex-top"><input class="inex-name" id="inex-name-${e.id}" value="${esc(e.name)}" oninput="markDirty()">
         <button class="sec sm red" onclick="removeInex('${e.id}')">Remove</button></div>
       <div class="inex-meta"><label class="muted">Sets</label><input class="inex-num" id="inex-sets-${e.id}" type="number" min="1" value="${e.defaultSets}" oninput="markDirty()">
-        <label class="muted">Reps</label><input class="inex-num" id="inex-reps-${e.id}" type="number" min="1" value="${e.defaultReps}" oninput="markDirty()"></div>
+        <label class="muted">Reps</label><input class="inex-num" id="inex-reps-${e.id}" type="number" min="1" value="${e.defaultReps}" oninput="markDirty()">
+        <span class="muted">to</span><input class="inex-num" id="inex-repsmax-${e.id}" type="number" min="1" placeholder="—" value="${e.defaultRepsMax||''}" oninput="markDirty()"></div>
     </div>`).join('');
   $('app').innerHTML = `<div class="wrap edit-mode">
     <div class="edit-banner">✎ Editing — tap Save when done</div>
@@ -741,7 +745,10 @@ async function saveWorkoutEdit(id){
   if(!s||s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
   const rows=[...document.querySelectorAll('.inex-row')];
   const exercises=rows.map(r=>{ const eid=r.dataset.ex;
-    return { id:eid, name:(document.getElementById('inex-name-'+eid)||{}).value||'Exercise', defaultSets:Number((document.getElementById('inex-sets-'+eid)||{}).value||3), defaultReps:Number((document.getElementById('inex-reps-'+eid)||{}).value||10) };
+    return { id:eid, name:(document.getElementById('inex-name-'+eid)||{}).value||'Exercise',
+      defaultSets:Number((document.getElementById('inex-sets-'+eid)||{}).value||3),
+      defaultReps:Number((document.getElementById('inex-reps-'+eid)||{}).value||10),
+      defaultRepsMax:Number((document.getElementById('inex-repsmax-'+eid)||{}).value)||undefined };
   });
   if(!exercises.length){ alert('Add at least one exercise'); return; }
   // Friend-set warning: exercises removed (or id changed) that ANY other user logged sets against
@@ -820,7 +827,7 @@ async function editSession(id){
   const friends = await H.get('/api/friends');
   const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
   const invitedUsernames = (s.invited||[]).map(fid=>{ const f=friendList.find(x=>x.id===fid); return f?f.username:''; }).filter(Boolean);
-  DRAFT = { exercises: s.exercises.map(e=>({ id:e.id, name:e.name, defaultSets:e.defaultSets, defaultReps:e.defaultReps })),
+  DRAFT = { exercises: s.exercises.map(e=>({ id:e.id, name:e.name, defaultSets:e.defaultSets, defaultReps:e.defaultReps, defaultRepsMax:e.defaultRepsMax })),
             inviteUsernames: invitedUsernames,
             name: s.name||'', location: s.location||'', lengthMin: s.lengthMin||'', creatorNote: s.creatorNote||'' };
   DRAFT._dt = s.scheduledAt ? toLocalInput(s.scheduledAt) : '';
@@ -865,7 +872,7 @@ async function tplEdit(id){
   const { mine } = await H.get('/api/templates');
   const t = mine.find(x=>x.id===id); if(!t) return;
   TPL_MODE.active=true; TPL_MODE.id=id; TPL_MODE.name=t.name;
-  DRAFT={ exercises:t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps})) };
+  DRAFT={ exercises:t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax})) };
   EDITING_TPL=id;
   templateExercises();
 }
@@ -904,7 +911,7 @@ async function tplUse(id){
   const { mine, shared } = await H.get('/api/templates');
   const t = [...mine,...shared].find(x=>x.id===id); if(!t) return;
   DRAFT = DRAFT || { exercises:[], inviteUsernames:[] };
-  DRAFT.exercises = t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps}));
+  DRAFT.exercises = t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}));
   EDITING_TPL = null;
   createFlow();
 }
@@ -930,7 +937,7 @@ async function tplQuickSaveConfirm(){
   alert('Template saved: '+n);
 }
 function toggleInvite(cb){ const u=cb.value; if(cb.checked){ if(!DRAFT.inviteUsernames.includes(u)) DRAFT.inviteUsernames.push(u);} else { DRAFT.inviteUsernames=DRAFT.inviteUsernames.filter(x=>x!==u);} }
-function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item draft-ex" data-idx="${i}"><div class="drag-handle" title="Drag to reorder"></div><div class="draft-main" onclick="editDraftEx(${i})"><span class="draft-name">${esc(e.name)}</span><span class="draft-chip">${e.defaultSets} x ${e.defaultReps}</span></div><button class="draft-rm" onclick="rmEx(${i})">Remove</button></div>`).join('') : '<div class="muted">None added.</div>';  const list=$('draftList'); if(list) dragReorder(list, DRAFT.exercises, ()=>renderDraft()); }
+function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item draft-ex" data-idx="${i}"><div class="drag-handle" title="Drag to reorder"></div><div class="draft-main" onclick="editDraftEx(${i})"><span class="draft-name">${esc(e.name)}</span><span class="draft-chip">${e.defaultSets} × ${repLabel(e)}</span></div><button class="draft-rm" onclick="rmEx(${i})">Remove</button></div>`).join('') : '<div class="muted">None added.</div>';  const list=$('draftList'); if(list) dragReorder(list, DRAFT.exercises, ()=>renderDraft()); }
 // Pointer-based drag reorder - works on mouse AND touch (iPhone). Reorders arr in place.
 function dragReorder(container, arr, onChange){
   let dragEl=null, ph=null, grabY=0, startY=0, startX=0, started=false, h=0;
@@ -989,11 +996,17 @@ function editDraftEx(i){
         <b id="dSets">${e.defaultSets}</b>
         <button class="stp" onclick="stepDraft(${i},'sets',1)">+</button>
       </div></div>
-      <div class="sheet-row"><span>Reps</span><div class="stepper">
+      <div class="sheet-row"><span>Reps (min)</span><div class="stepper">
         <button class="stp" onclick="stepDraft(${i},'reps',-1)">−</button>
         <b id="dReps">${e.defaultReps}</b>
         <button class="stp" onclick="stepDraft(${i},'reps',1)">+</button>
       </div></div>
+      <div class="sheet-row"><span>Reps (max)</span><div class="stepper">
+        <button class="stp" onclick="stepDraft(${i},'repsmax',-1)">−</button>
+        <b id="dRepsMax">${e.defaultRepsMax||e.defaultReps}</b>
+        <button class="stp" onclick="stepDraft(${i},'repsmax',1)">+</button>
+      </div></div>
+      <div class="note">Hit the max on your top set two sessions running and you'll be told to add weight.</div>
       <button class="red" style="margin-top:14px;width:100%" onclick="rmEx(${i}); closeSheet();">Remove exercise</button>
     </div>`;
   sheet.onclick=(e)=>{ if(e.target===sheet) closeSheet(); }; document.body.appendChild(sheet);
@@ -1001,11 +1014,17 @@ function editDraftEx(i){
 }
 function stepDraft(i, field, delta){
   const e = DRAFT.exercises[i]; if(!e) return;
-  const key = field==='sets' ? 'defaultSets' : 'defaultReps';
-  let v = (e[key]||0) + delta; if(v<1) v=1; if(v>99) v=99;
+  const key = field==='sets' ? 'defaultSets' : field==='repsmax' ? 'defaultRepsMax' : 'defaultReps';
+  const base = key==='defaultRepsMax' ? (e.defaultRepsMax || e.defaultReps || 0) : (e[key] || 0);
+  let v = base + delta; if(v<1) v=1; if(v>99) v=99;
   e[key] = v;
-  const lbl = field==='sets' ? 'dSets' : 'dReps';
+  // keep the range coherent: the ceiling can never sit below the floor
+  if(key==='defaultReps' && e.defaultRepsMax && e.defaultRepsMax < v) e.defaultRepsMax = v;
+  if(key==='defaultRepsMax' && v < (e.defaultReps||1)) { e.defaultRepsMax = e.defaultReps; v = e.defaultReps; }
+  const lbl = field==='sets' ? 'dSets' : field==='repsmax' ? 'dRepsMax' : 'dReps';
   const el = document.getElementById(lbl); if(el) el.textContent = v;
+  const mx = document.getElementById('dRepsMax');
+  if(mx && key!=='defaultRepsMax') mx.textContent = e.defaultRepsMax || e.defaultReps;
   renderDraft();
 }
 // ---- Shared exercise helpers (picker + library) ----
@@ -1053,7 +1072,7 @@ function addEx(name, el){
   if($('note')) DRAFT.creatorNote = $('note').value;
   const exists = DRAFT.exercises.find(e=>e.name===name);
   if(exists){ DRAFT.exercises = DRAFT.exercises.filter(e=>e.name!==name); }
-  else DRAFT.exercises.push({name,defaultSets:3,defaultReps:10});
+  else DRAFT.exercises.push({name,defaultSets:3,defaultReps:8,defaultRepsMax:10});
   if(el){ const on=DRAFT.exercises.find(e=>e.name===name); el.classList.toggle('ex-on', !!on); el.querySelector('.ex-add').textContent = on?'✓':'+'; }
 }
 function closePick(){ createFlow(); }
@@ -1293,7 +1312,7 @@ async function useTpl(id){
   const { mine, shared } = await H.get('/api/templates');
   const t = [...mine, ...shared].find(x=>x.id===id);
   if(!t) return;
-  DRAFT.exercises = t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps}));
+  DRAFT.exercises = t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}));
   createFlow();
 }
 

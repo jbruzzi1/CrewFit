@@ -410,7 +410,7 @@ app.post('/api/templates', auth, (req, res) => {
   const { name, exercises } = req.body || {};
   if (!name || !Array.isArray(exercises) || !exercises.length) return res.status(400).json({ error: 'name + exercises required' });
   const id = 't_' + uid();
-  const t = { id, ownerId: req.userId, name, exercises: exercises.map(e => ({ name: e.name, defaultSets: e.defaultSets || 3, defaultReps: e.defaultReps || 10 })) };
+  const t = { id, ownerId: req.userId, name, exercises: exercises.map(e => ({ name: e.name, defaultSets: e.defaultSets || 3, defaultReps: e.defaultReps || 10, defaultRepsMax: Number(e.defaultRepsMax) || undefined })) };
   if (!DB.templates) DB.templates = {};
   DB.templates[id] = t;
   save(DB);
@@ -422,7 +422,7 @@ app.put('/api/templates/:id', auth, (req, res) => {
   if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
   const { name, exercises } = req.body || {};
   if (name) t.name = name;
-  if (Array.isArray(exercises) && exercises.length) t.exercises = exercises.map(e => ({ name: e.name, defaultSets: e.defaultSets || 3, defaultReps: e.defaultReps || 10 }));
+  if (Array.isArray(exercises) && exercises.length) t.exercises = exercises.map(e => ({ name: e.name, defaultSets: e.defaultSets || 3, defaultReps: e.defaultReps || 10, defaultRepsMax: Number(e.defaultRepsMax) || undefined }));
   save(DB);
   res.json(t);
 });
@@ -495,7 +495,8 @@ app.post('/api/sessions', auth, (req, res) => {
     name: e.name,
     order: i,
     defaultSets: e.defaultSets || 3,
-    defaultReps: e.defaultReps || 10
+    defaultReps: e.defaultReps || 10,
+    defaultRepsMax: Number(e.defaultRepsMax) || undefined
   }));
   const invites = [];
   if (Array.isArray(inviteUsernames)) {
@@ -578,7 +579,8 @@ app.put('/api/sessions/:id', auth, (req, res) => {
     s.exercises = b.exercises.map((e, i) => ({
       id: (e.id && s.exercises.find(x => x.id === e.id)) ? e.id : 'e_' + uid(),
       name: e.name, order: i,
-      defaultSets: e.defaultSets || 3, defaultReps: e.defaultReps || 10
+      defaultSets: e.defaultSets || 3, defaultReps: e.defaultReps || 10,
+      defaultRepsMax: Number(e.defaultRepsMax) || undefined
     }));
   }
   if (Array.isArray(b.inviteUsernames)) {
@@ -726,9 +728,15 @@ app.post('/api/sessions/:id/log', auth, (req, res) => {
   const setNum = (set && Number(set)) || myExLogs.length + 1;
   const lt = loadTypeForName(exerciseNameFor(s, exerciseId, req.userId));
   const unit = (DB.users[req.userId] && DB.users[req.userId].units) || 'lb';
+  // Snapshot the rep target AT LOG TIME. defaultReps/defaultRepsMax live on the session and
+  // PUT /api/sessions/:id rewrites them in place, so without this, editing a finished workout
+  // would retroactively change whether a set hit its target.
+  const exDef = s.exercises.find(x => x.id === exerciseId);
+  const rr = exDef ? repRange(exDef) : null;
   const entry = { id: 'log_'+uid(), exerciseId, weight: w, reps: r, set: setNum, setType: setType || 'normal', isPr: false, at: new Date().toISOString() };
   if (lt) entry.loadType = lt;   // omitted entirely for unambiguous lifts (barbell, cable, machine)
   if (unit !== 'lb') entry.unit = unit;   // omitted when lb, so existing data stays byte-identical
+  if (rr) { entry.targetReps = rr.lo; if (rr.hi !== rr.lo) entry.targetRepsMax = rr.hi; }
   s.logs[req.userId].push(entry);
   rebuildAllPrs();
   save(DB);
@@ -756,6 +764,24 @@ function loadTypeForName(name) {
 // scheduledAt is not consistently typed: some sessions store an ISO string, others an epoch
 // number (in seconds OR milliseconds). v138 already had to guard `.slice` on it. Normalise to
 // an ISO date string so ordering and displayed dates are correct for every shape.
+// Rep targets are a RANGE, not a single number. Programs are written "3 x 8-10", and reps
+// naturally drop across sets from fatigue even at a fixed weight — grading against one number
+// marks a textbook 10/9/8 session as two misses. defaultReps is the floor (every working set
+// should reach it); defaultRepsMax is the ceiling that triggers adding weight. When max is
+// absent or equal it behaves exactly as the old single target did.
+// A working set is what progression is judged on. Warm-ups are deliberately lighter and drop
+// sets are finishers taken past failure at reduced weight — counting either would read as a
+// failed set on a session the user actually completed. Confirmed with Jeff, Aug 17.
+const WORKING_SET_TYPES = new Set(['normal', 'failure']);
+function isWorkingSet(l) { return WORKING_SET_TYPES.has(l.setType || 'normal'); }
+
+function repRange(e) {
+  const lo = Number(e && e.defaultReps) || 10;
+  const hiRaw = Number(e && e.defaultRepsMax);
+  const hi = hiRaw && hiRaw >= lo ? hiRaw : lo;
+  return { lo, hi };
+}
+
 function perfDate(scheduledAt, fallback) {
   if (scheduledAt == null || scheduledAt === '') return fallback || '1970-01-01T00:00:00.000Z';
   const raw = String(scheduledAt);
