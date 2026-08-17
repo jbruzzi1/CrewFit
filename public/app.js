@@ -33,6 +33,12 @@ async function nameOf(id){
   return hit ? hit.displayName : 'friend';
 }
 function fmtDate(s){ const d=new Date(s); return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
+// The heading for a workout, and the line under it. ALL THREE views of a workout use these —
+// openSession, viewPost and the edit screen — because a workout you opened as "Push Day" that
+// retitles itself to a date the moment you tap Edit reads like you opened the wrong one.
+// .trim() matters: a name of "   " is truthy and used to render a completely blank <h1>.
+function sessTitle(s){ const n = (s && s.name || '').trim(); return n ? esc(n) : fmtDate(s.scheduledAt); }
+function sessSub(s){ const n = (s && s.name || '').trim(); return n ? fmtDate(s.scheduledAt) + ' · ' : ''; }
 
 // ---- Auth screens ----
 function authScreen(){
@@ -113,11 +119,17 @@ async function home(){
     html += `<div class="inv-banner">`;
     for(const s of pending){
       const creatorName = await friendName(s.creatorId);
-      html += `<div class="inv-row">
-        <div class="inv-info"><b>${esc(creatorName)}</b> invited you<div class="tag">${esc(s.name||'Workout')} · ${s.exercises.length} exercises</div></div>
-        <div class="row" style="justify-content:flex-end; gap:6px;">
-          <button class="sm blue" onclick="event.stopPropagation();acceptInvite('${s.id}')">Accept</button>
-          <button class="sm gray" onclick="event.stopPropagation();declineInvite('${s.id}')">Decline</button>
+      // The row is TAPPABLE. It had no handler at all, so a pending invite could only be accepted
+      // or declined blind — there was no way to look at the workout first, and tapping it did
+      // nothing: no spinner, no error, nothing. That is the bug Jeff reported on Aug 17.
+      // stopPropagation sits on the button WRAPPER, not just the buttons, so the 6px gap between
+      // Accept and Decline is not a stray "open the workout" tap target.
+      html += `<div class="inv-card" onclick="openSession('${s.id}')">
+        <div class="inv-info"><b>${esc(creatorName)}</b> invited you<div class="tag">${esc(s.name||'Workout')} · ${s.exercises.length} exercises</div>
+          <div class="inv-open">See the workout →</div></div>
+        <div class="row inv-actions" onclick="event.stopPropagation()">
+          <button class="sm blue" onclick="acceptInvite('${s.id}')">Accept</button>
+          <button class="sm gray" onclick="declineInvite('${s.id}')">Decline</button>
         </div>
       </div>`;
     }
@@ -142,7 +154,7 @@ async function home(){
   html += `</div>`;
 
   // Friend's Activity (lighter strip, in an elevated card to match Your Sessions)
-  html += `<h2 class="light">Friend's Activity</h2><div class="card feed-strip">`;
+  html += `<h2 class="light">Friends' Activity</h2><div class="card feed-strip">`;
   if(feed.length){
     for(const f of feed){
       const who = await friendName(f.by);
@@ -239,8 +251,8 @@ async function openSession(id){
     }
   }
   let html = `<div class="wrap"><button class="sec sm" onclick="showTab('home')">← Back</button>
-    <h1 class="sess-date">${fmtDate(s.scheduledAt)}</h1>
-    <div class="muted sess-meta">${s.visibility==='friends'?'Friends-only · joinable':'Private'} · ${s.participants.length} ${s.participants.length===1?'person':'people'}</div>
+    <h1 class="sess-date">${sessTitle(s)}</h1>
+    <div class="muted sess-meta">${sessSub(s)}${s.visibility==='friends'?'Friends-only · joinable':'Private'} · ${s.participants.length} ${s.participants.length===1?'person':'people'}</div>
     ${s.location?`<div class="tag">📍 ${esc(s.location)}</div>`:''}
     ${s.lengthMin?`<div class="tag">⏱ ${esc(s.lengthMin)} min</div>`:''}
     ${s.creatorNote?`<div class="card muted">"${esc(s.creatorNote)}" — ${isCreator?'you':esc(s.creatorId)}</div>`:''}`;
@@ -322,7 +334,7 @@ async function viewPost(id){
   const photos = media.length ? `<h2>Photos</h2><div class="pp-photos">${media.map((m,i)=>`<div class="pp-photo">${m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`}${isCreator?`<button class="pp-photo-x" onclick="deletePhoto('${id}',${i})" aria-label="Delete photo">✕</button>`:''}</div>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
   const notes = post.notes ? esc(post.notes) : '<span class="muted">How\'d it go?</span>';
   const dots = isCreator ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none"><button onclick="enterWorkoutEdit('${id}')">Edit session</button><button class="danger" onclick="deleteSession('${id}')">Delete session</button></div>` : '';
-  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="showTab('home')">← Back</button>${dots}</div>\n    <h1 class="sess-date">${fmtDate(s.scheduledAt)}</h1>\n    <div class="muted sess-meta">${s.visibility==='friends'?'Friends-only':'Private'}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    <h2>Notes</h2><div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}')">Send</button></div></div>`;
+  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="showTab('home')">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${s.visibility==='friends'?'Friends-only':'Private'}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    <h2>Notes</h2><div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}')">Send</button></div></div>`;
   $('app').innerHTML = html;
   if(media.length>1){
     const strip=document.querySelector('.pp-photos');
@@ -876,7 +888,8 @@ function renderWorkoutEdit(s){
     </div>`).join('');
   $('app').innerHTML = `<div class="wrap edit-mode">
     <div class="edit-banner">✎ Editing — tap Save when done</div>
-    <h1 class="sess-date">${fmtDate(s.scheduledAt)}</h1>
+    <h1 class="sess-date">${sessTitle(s)}</h1>
+    ${sessSub(s) ? `<div class="muted sess-meta">${fmtDate(s.scheduledAt)}</div>` : ''}
     <h2>Workout</h2>
     <div id="inexList">${exRows}</div>
     <button class="sec" onclick="addInex()">+ Add exercise</button>

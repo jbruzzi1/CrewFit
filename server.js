@@ -707,7 +707,8 @@ app.post('/api/sessions', auth, (req, res) => {
     location: location || '',
     lengthMin: lengthMin || null,
     creatorNote: creatorNote || '',
-    name: name || '',
+    // trimmed: a name of "   " is truthy, so it would title the workout with a blank heading
+    name: String(name == null ? '' : name).trim(),
     exercises: ex,
     participants: [req.userId],
     invited: invites,
@@ -807,7 +808,7 @@ app.put('/api/sessions/:id', auth, (req, res) => {
   if (!s) return res.status(404).json({ error: 'not found' });
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not yours' });
   const b = req.body || {};
-  if (typeof b.name === 'string') s.name = b.name;
+  if (typeof b.name === 'string') s.name = b.name.trim();
   if (b.scheduledAt) s.scheduledAt = b.scheduledAt;
   if (typeof b.location === 'string') s.location = b.location;
   if ('lengthMin' in b) s.lengthMin = b.lengthMin || null;
