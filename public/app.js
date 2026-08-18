@@ -25,12 +25,21 @@ function setToken(t,u){ TOKEN=t; localStorage.setItem('crewfit_token',t); ME=u; 
 function repLabel(e){ const lo=Number(e.defaultReps)||10, hi=Number(e.defaultRepsMax);
   return (hi && hi>lo) ? `${lo}–${hi}` : `${lo}`; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+// "I cannot resolve this person" — you only ever see your own friends. It is a REAL WORD on
+// purpose: this value flows into a dozen `name || fallback` expressions written long before it
+// existed, and every one of them prints it. A sentinel nobody can read (a null byte, say) turns
+// those into garbage on screen. Declared above its first use because "used before it is declared"
+// is the shape of every boot crash this project has had.
+const UNKNOWN_NAME = 'Someone';
+const isUnknownName = n => !n || n === UNKNOWN_NAME;
 async function nameOf(id){
   if(id===ME.id) return 'You';
   const f = (await H.get('/api/friends'));
   const arr = (f && f.friends) ? f.friends : (Array.isArray(f)?f:[]);
   const hit = arr.find(x=>x.id===id);
-  return hit ? hit.displayName : 'friend';
+  // NOT a name. This is "I could not resolve this person" — you only see your own friends. It used
+  // to render straight into the page as "with @friend, @friend", so callers must check for it.
+  return hit ? hit.displayName : UNKNOWN_NAME;
 }
 function fmtDate(s){ const d=new Date(s); return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
 // The heading for a workout, and the line under it. ALL THREE views of a workout use these —
@@ -88,9 +97,25 @@ async function doReg(){ try {
   const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value}); if(r.token){ setToken(r.token,r.user); home(); } else alert(r.error||'register failed'); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
 
 // ---- Nav ----
-function showTab(tab){
+// keepModes is passed ONLY by the two places that deliberately open the library in a mode:
+// openAddExercises (adding to a draft) and openSwapPicker (choosing a replacement). Every other
+// route here is a person tapping the bottom nav, and that has to be an escape hatch — SWAP_MODE
+// was otherwise never cleared by navigating away, so the Workouts tab stayed stuck in "Pick
+// replacement" forever and later taps filed swaps against a workout you had long since left.
+function showTab(tab, keepModes){
+  if(!keepModes) resetTransientModes();
   document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
   if(tab==='home') home(); else if(tab==='progress') progressScreen(); else if(tab==='lib') library(); else if(tab==='templates') templates(); else if(tab==='friends') friends(); else if(tab==='me') meScreen();
+}
+// Everything here is a half-finished intention. None of it should survive walking away from the
+// screen that started it, and each one caused a real bug by doing so.
+function resetTransientModes(){
+  SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;   // stuck "Pick replacement" library
+  LIB_ADDMODE = false;                                        // stuck "Done (n)" library
+  EDITING_SESSION = null;                                     // next new workout saved over the edited one
+  EDITING_ID = null;                                          // stuck inline-edit on a posted workout
+  EDITING_TPL = null;                                         // stuck template edit
+  if(typeof TPL_MODE === 'object' && TPL_MODE) { TPL_MODE.active = false; TPL_MODE.id = null; TPL_MODE.name = ''; }
 }
 
 // ---- Home / sessions (Option B: split sections) ----
@@ -99,7 +124,7 @@ async function home(){
   const feed = await H.get('/api/feed');
   const _fr = await H.get('/api/friends');
   const myFriends = (_fr && _fr.friends) ? _fr.friends : (Array.isArray(_fr) ? _fr : []);
-  const friendName = async (id)=> myFriends.find(f=>f.id===id)?.displayName || 'friend';
+  const friendName = async (id)=> myFriends.find(f=>f.id===id)?.displayName || 'A friend';   // reads as a phrase, not as someone's name
   const initial = ((ME&&(ME.displayName||ME.username))||'?')[0]||'?';
   const first = ((ME.displayName||ME.username||'there').split(' ')[0]);
   const HYPE = ['Time to crush it','Let\'s get after it','Show up. Lift heavy'];
@@ -139,7 +164,7 @@ async function home(){
   }
 
   // Primary action (compact)
-  html += `<button class="blue btn-new" onclick="createFlow()">+ New workout</button>`;
+  html += `<button class="blue btn-new" onclick="newWorkout()">+ New workout</button>`;
 
   // Your Sessions (prime spot) — only sessions you've accepted/joined (exclude pending invites)
   const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)));
@@ -180,6 +205,8 @@ async function openSession(id){
   // Inline edit mode for a saved (posted) workout: render the whole page editable.
   if(EDITING_ID===id && isCreator && s.post){ renderWorkoutEdit(s); return; }
   const isParticipant = s.participants.includes(ME.id);
+  // "in the workout" = you are actually part of it, not merely allowed to look at it
+  const inTheWorkout = isParticipant || s.creatorId === ME.id || (Array.isArray(s.invited) && s.invited.includes(ME.id));
   const approvedJoin = s.joinRequests.find(j=>j.userId===ME.id&&j.status==='approved');
   const canEdit = s.post ? isCreator : (isParticipant || approvedJoin);
   // suggested edits, keyed by target exercise id (compact one-line inline row, C style)
@@ -193,6 +220,8 @@ async function openSession(id){
   for(const ed of s.suggestedEdits){ await nameOfCached(ed.proposedBy); }
   for(const j of s.joinRequests){ await nameOfCached(j.userId); }
   for(const pid of s.participants){ await nameOfCached(pid); }
+  // ...and for anyone who logged sets here, who may no longer be a participant (they left)
+  for(const pid of Object.keys(s.logs||{})){ if((s.logs[pid]||[]).length) await nameOfCached(pid); }
   // my variation view (each exercise = its own card tile; swap suggestion nested inside)
   const myEx = s.exercises.map(e=>{
     const v = s.variations[e.id] && s.variations[e.id][ME.id];
@@ -212,12 +241,27 @@ async function openSession(id){
     const cls = canEdit ? 'ex-card log-row' : 'ex-card';
     const cnt = (s.logs && s.logs[ME.id]) ? s.logs[ME.id].filter(l=>l.exerciseId===e.id).length : 0;
     const statusTag = canEdit ? (cnt ? `<span class="logged">✓ ${cnt} set${cnt>1?'s':''} logged</span>` : `<span class="log-hint">Tap to log sets →</span>`) : '';
-    let head = `<div class="ex-head"${tap}><div class="ex-main"><div class="ex-name">${name}</div>${statusTag}</div><div class="ex-meta"><span class="tag">${e.defaultSets} × ${repLabel(e)}</span></div></div>`;
+    // Who ELSE has worked this lift. Without it a shared workout shows you nothing your partner
+    // did — you invite someone, they train, and the screen looks the same as if you were alone.
+    // Gated on inTheWorkout: GET /api/sessions/:id hands the FULL logs of every participant to any
+    // friend of the creator, so a friend-of-a-friend who never joined would otherwise be shown
+    // Brian's sets — sets Brian never agreed to publish to them. Do not widen this without asking.
+    const crew = !inTheWorkout ? [] : Object.keys(s.logs||{})
+      .filter(pid => pid !== ME.id && (s.logs[pid]||[]).some(l=>l.exerciseId===e.id))
+      .map(pid => {
+        const n = (s.logs[pid]||[]).filter(l=>l.exerciseId===e.id).length;
+        // each entry carries its own "set/sets" — "Brian 2 · Sam 3 sets" would read as though
+        // the count applied to the pair of them
+        const who = isUnknownName(nameCache[pid]) ? 'Someone' : String(nameCache[pid]).split(' ')[0];
+        return `${esc(who)} ${n} set${n===1?'':'s'}`;
+      });
+    const crewLine = crew.length ? `<div class="ex-crew">${crew.join(' · ')}</div>` : '';
+    let head = `<div class="ex-head"${tap}><div class="ex-main"><div class="ex-name">${name}</div>${statusTag}${crewLine}</div><div class="ex-meta"><span class="tag">${e.defaultSets} × ${repLabel(e)}</span></div></div>`;
     let sub = '';
     for(const ed of (editByEx[e.id]||[])){
       const byName = nameCache[ed.proposedBy] || ed.proposedBy;
       if(ed.status==='pending'){
-        sub += `<div class="req"><div class="rc">${esc(byName)} suggests ${esc(e.name)} → ${esc(ed.swapTo)}</div>`;
+        sub += `<div class="req"><div class="rc">${esc(byName)} suggest${byName==='You'?'':'s'} ${esc(e.name)} → ${esc(ed.swapTo)}</div>`;
         if(isCreator) sub += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
         else sub += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
         sub += `</div>`;
@@ -232,7 +276,7 @@ async function openSession(id){
     if(editByEx[ed.exerciseId]) continue; // already shown inline above
     const byName = nameCache[ed.proposedBy] || ed.proposedBy;
     if(ed.status==='pending'){
-      edits += `<div class="card"><div class="req"><div class="rc">${esc(byName)} suggests → ${esc(ed.swapTo)}</div>`;
+      edits += `<div class="card"><div class="req"><div class="rc">${esc(byName)} suggest${byName==='You'?'':'s'} → ${esc(ed.swapTo)}</div>`;
       if(isCreator) edits += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
       else edits += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
       edits += `</div></div>`;
@@ -321,15 +365,61 @@ async function viewPost(id){
   // resolve collaborator display names (participants excluding creator)
   const nm = {};
   for(const pid of s.participants){ if(pid!==s.creatorId) nm[pid]= await nameOf(pid); }
-  const collabNames = Object.values(nm).filter(Boolean);
-  const collab = collabNames.length ? `<div class="pp-collab">with ${collabNames.map(n=>'@'+esc(n.split(' ')[0])).join(', ')}</div>` : '';
-  const creatorLogs = (s.logs && s.logs[s.creatorId]) || [];
+  // names for EVERYONE who logged here — including the creator, and including anyone who has
+  // since left the workout. Their sets are still part of what happened that day.
+  const logNames = {};
+  for(const pid of Object.keys(s.logs||{})){ if((s.logs[pid]||[]).length) logNames[pid] = nm[pid] || await nameOf(pid); }
+  // "with @friend, @friend" is what this printed for anyone who could not see those people's
+  // names. Name the ones you know, count the ones you do not.
+  const allCollab = Object.values(nm);
+  const known = allCollab.filter(n => !isUnknownName(n));
+  const unknown = allCollab.length - known.length;
+  const parts = known.map(n => '@' + esc(String(n).split(' ')[0]));
+  if(unknown) parts.push(`${unknown} other${unknown>1?'s':''}`);
+  const collab = parts.length ? `<div class="pp-collab">with ${parts.join(', ')}</div>` : '';
+  // THE SHARED RESULT. This used to read s.logs[s.creatorId] and nothing else, so a training
+  // partner's sets were stored, counted toward their own PRs, and displayed to precisely nobody.
+  //
+  // Who sees whose: if you were IN the workout you see everyone in it; if you are just a friend
+  // scrolling someone's profile you see the creator's sets, exactly as before. GET
+  // /api/sessions/:id hands every participant's logs to any friend of the creator, so without
+  // this gate a friend-of-a-friend would be shown a partner's sets that partner never agreed to
+  // publish to them. Do not widen this without asking Jeff.
+  const inTheWorkout = (s.participants||[]).includes(ME.id) || s.creatorId === ME.id;
+  const logged = Object.keys(s.logs||{})
+    .filter(pid => (s.logs[pid]||[]).length && (inTheWorkout || pid === s.creatorId))
+    .sort((x,y) => (x===s.creatorId ? -1 : y===s.creatorId ? 1 : String(logNames[x]||'').localeCompare(String(logNames[y]||''))));
+  const setRows = ls => `<div class="pp-sets">${ls.map(l=>`<div class="pp-set">${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr">PR</span>':''}</div>`).join('')}</div>`;
+  // An approved swap replaces the exercise for the session, and openSession already titles the
+  // card with the swapped-in name. This screen said the original, so the two disagreed about what
+  // the lift even was. Same resolution here, so they agree.
+  const approvedFor = {};
+  // FIRST wins, not last — openSession uses .find(), and the two screens naming the same lift
+  // differently is exactly the bug this block was added to fix.
+  for(const ed of (s.suggestedEdits||[]))
+    if(ed.status==='approved' && !(ed.exerciseId in approvedFor)) approvedFor[ed.exerciseId] = ed.swapTo;
   const exList = s.exercises.map(e=>{
-    const sets = creatorLogs.filter(l=>l.exerciseId===e.id).sort((a,b)=>(Number(a.set)||0)-(Number(b.set)||0));
-    const setsHtml = sets.length
-      ? `<div class="pp-sets">${sets.map(l=>`<div class="pp-set">${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr">PR</span>':''}</div>`).join('')}</div>`
-      : `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">No sets logged</div>`;
-    return `<div class="pp-ex"><div class="pp-ex-name">${esc(e.name)}</div></div>${setsHtml}`;
+    const heading = approvedFor[e.id] || e.name;
+    const blocks = logged.map(pid => {
+      const ls = (s.logs[pid]||[]).filter(l=>l.exerciseId===e.id).sort((a,b)=>(Number(a.set)||0)-(Number(b.set)||0));
+      if(!ls.length) return '';
+      // Each set carries the lift's name AS IT WAS when it was logged. If someone's sets predate a
+      // swap, say so next to their name rather than filing them under a lift they never did.
+      // ONLY when a swap actually happened. Editing a workout keeps exercise ids and can change
+      // names, so without this guard fixing a typo permanently annotated your own sets with the
+      // misspelling — on solo workouts too.
+      const theirs = approvedFor[e.id] ? ls.find(l => l.exerciseName && l.exerciseName !== heading) : null;
+      const note = theirs ? `<span class="pp-who-note">logged as ${esc(theirs.exerciseName)}</span>` : '';
+      // Label when it is not obvious whose these are: more than one person logged THIS lift, or
+      // the one person who did is not you. A lone "YOU" over your own sets is noise.
+      const needLabel = logged.length > 1 && (pid !== ME.id || logged.some(o => o !== pid && (s.logs[o]||[]).some(l => l.exerciseId===e.id)));
+      const nmRaw = pid===ME.id ? 'You' : logNames[pid];
+      const label = needLabel ? esc(isUnknownName(nmRaw) ? 'Someone' : String(nmRaw).split(' ')[0]) : '';
+      const who = (label || note) ? `<div class="pp-who">${[label, note].filter(Boolean).join(' ')}</div>` : '';
+      return who + setRows(ls);
+    }).filter(Boolean).join('');
+    const setsHtml = blocks || `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">No sets logged</div>`;
+    return `<div class="pp-ex"><div class="pp-ex-name">${esc(heading)}</div></div>${setsHtml}`;
   }).join('');
   const photos = media.length ? `<h2>Photos</h2><div class="pp-photos">${media.map((m,i)=>`<div class="pp-photo">${m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`}${isCreator?`<button class="pp-photo-x" onclick="deletePhoto('${id}',${i})" aria-label="Delete photo">✕</button>`:''}</div>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
   const notes = post.notes ? esc(post.notes) : '<span class="muted">How\'d it go?</span>';
@@ -394,6 +484,41 @@ async function swapPick(name){
   if(r.error) alert(r.error); else openSession(id || '');
 }
 async function suggest(id){ const r=await H.post(`/api/sessions/${id}/suggest`,{exerciseId:$('swEx').value,swapTo:$('swTo').value}); if(r.error)alert(r.error); else openSession(id); }
+
+// ---- The collaborate half: five buttons that called functions nobody ever wrote ----
+// Approve/Reject on a suggested swap, Approve/Reject on a join request, and the door into the
+// swap picker. Every server endpoint below already existed, worked and was tested; the other half
+// of the swap flow (swapPick/swapCancel, just above) was already written too. Only these five
+// wrappers were missing — so the buttons rendered, looked exactly like live ones, and did nothing.
+// A dead button is indistinguishable from a working one until you press it.
+async function approve(id, editId){
+  const r = await H.post(`/api/sessions/${id}/suggest/${editId}/approve`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else openSession(id);
+}
+async function reject(id, editId){
+  const r = await H.post(`/api/sessions/${id}/suggest/${editId}/reject`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else openSession(id);
+}
+async function approveJoin(id, reqId){
+  const r = await H.post(`/api/sessions/${id}/join/${reqId}/approve`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else openSession(id);
+}
+async function rejectJoin(id, reqId){
+  const r = await H.post(`/api/sessions/${id}/join/${reqId}/reject`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else openSession(id);
+}
+// Opens the Workouts library in "pick a replacement" mode. library() already renders a
+// "Pick replacement" header when SWAP_MODE is set, and tapping an exercise there already calls
+// swapPick. This is the entry point that was never fitted.
+function openSwapPicker(id){
+  const sel = $('swEx');
+  const exerciseId = sel ? sel.value : '';
+  if(!exerciseId) return alert('Add an exercise first, then pick which one to swap.');
+  SWAP_MODE = true; SWAP_SESSION = id; SWAP_FROM = exerciseId;
+  LIB_ADDMODE = false;   // exRowHtml tests SWAP_MODE first, so leaving this set makes "+ Add
+                         // exercise" silently file swap suggestions against the old workout
+  showTab('lib', true);
+}
 // ---------- Per-exercise set logger (Hevy/Strong style) ----------
 const SET_TYPES = [
   { key:'normal', label:'Normal' },
@@ -987,7 +1112,12 @@ async function createFlow(){
     <div class="row"><div><label class="muted">Length (min)</label><input id="len" type="number" inputmode="tel" pattern="[0-9]*" placeholder="60" value="${DRAFT.lengthMin||''}"></div></div>
     <label class="muted">Note to friends</label><input id="note" placeholder="let's hit legs hard" value="${esc(DRAFT.creatorNote||'')}">
     <label class="muted">Visibility</label>
-    <select id="vis"><option value="private">Private (invite only)</option><option value="friends">Friends-only (joinable)</option></select>
+    <!-- selected= matters: without it this box always opened on Private, so saving an edit
+         silently made a Friends-only workout private and dropped it out of your friends' reach -->
+    <select id="vis">
+      <option value="private"${(DRAFT.visibility||'private')==='private'?' selected':''}>Private (invite only)</option>
+      <option value="friends"${DRAFT.visibility==='friends'?' selected':''}>Friends-only (joinable)</option>
+    </select>
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="openAddExercises()">+ Add exercise</button>
     <div class="tpl-actions">
@@ -998,18 +1128,39 @@ async function createFlow(){
     ${EDITING_SESSION ? '<button class="blue" onclick="submitSession()">Save changes</button>' : '<button class="blue" onclick="submitSession()">Create workout</button>'}</div>`;
   renderDraft();
 }
+// This function was written TWICE, at two places in this file. The second one silently replaced
+// the first — and the second could only ever create, so "Save changes" on an edited workout made
+// a duplicate and threw the edit away. The two were not identical, so this is a deliberate merge
+// rather than "keep the first": the edit branch comes from one, the template offer from the other.
 async function submitSession(){
   const dt=$('dt').value; const vis=$('vis').value;
   const location=$('loc').value; const lengthMin=$('len').value; const creatorNote=$('note').value; const name=$('wname').value;
   if(!DRAFT.exercises.length) return alert('Add at least one exercise');
   const scheduledAt = dt? new Date(dt).toISOString() : new Date().toISOString();
   const payload={scheduledAt,visibility:vis,name,exercises:DRAFT.exercises,inviteUsernames:DRAFT.inviteUsernames,location,lengthMin:lengthMin?Number(lengthMin):null,creatorNote};
-  const r = EDITING_SESSION
-    ? await H.put('/api/sessions/'+EDITING_SESSION, payload)
+  const editing = EDITING_SESSION;                 // captured: it is cleared before we navigate
+  const r = editing
+    ? await H.put('/api/sessions/'+editing, payload)
     : await H.post('/api/sessions', payload);
-  if(r.error) alert(r.error); else home();
+  if(r.error) return alert(r.error);
+  // MUST be cleared. Nothing cleared it on success before, so the next "+ New workout" would have
+  // saved itself over the workout you had just edited.
+  EDITING_SESSION = null;
+  // only offered when creating — you do not re-save a template every time you fix a typo
+  if(!editing && confirm('Save this as a template for next time?')){
+    await H.post('/api/templates',{name:prompt('Template name:',name||'My workout')||'My workout',exercises:DRAFT.exercises});
+  }
+  home();
 }
 let EDITING_SESSION = null;
+// A NEW workout starts empty. createFlow() cannot do this itself — it is also where you land
+// coming back from the exercise picker, and clearing there would throw away what you just added.
+// Without this, "+ New workout" opened pre-filled with the last workout you edited.
+function newWorkout(){
+  DRAFT = { exercises:[], inviteUsernames:[] };
+  EDITING_SESSION = null; EDITING_TPL = null; EDITING_ID = null;
+  createFlow();
+}
 function cancelCreate(){ EDITING_SESSION=null; EDITING_TPL=null; home(); }
 async function editSession(id){
   const s = await H.get('/api/sessions/'+id);
@@ -1020,6 +1171,7 @@ async function editSession(id){
   const invitedUsernames = (s.invited||[]).map(fid=>{ const f=friendList.find(x=>x.id===fid); return f?f.username:''; }).filter(Boolean);
   DRAFT = { exercises: s.exercises.map(e=>({ id:e.id, name:e.name, defaultSets:e.defaultSets, defaultReps:e.defaultReps, defaultRepsMax:e.defaultRepsMax })),
             inviteUsernames: invitedUsernames,
+            visibility: s.visibility || 'private',
             name: s.name||'', location: s.location||'', lengthMin: s.lengthMin||'', creatorNote: s.creatorNote||'' };
   DRAFT._dt = s.scheduledAt ? toLocalInput(s.scheduledAt) : '';
   EDITING_SESSION = id; EDITING_TPL=null;
@@ -1267,19 +1419,6 @@ function addEx(name, el){
   if(el){ const on=DRAFT.exercises.find(e=>e.name===name); el.classList.toggle('ex-on', !!on); el.querySelector('.ex-add').textContent = on?'✓':'+'; }
 }
 function closePick(){ createFlow(); }
-async function submitSession(){
-  const dt=$('dt').value; const vis=$('vis').value;
-  const location=$('loc').value; const lengthMin=$('len').value; const creatorNote=$('note').value; const name=$('wname').value;
-  if(!DRAFT.exercises.length) return alert('Add at least one exercise');
-  const scheduledAt = dt? new Date(dt).toISOString() : new Date().toISOString();
-  const r = await H.post('/api/sessions',{scheduledAt,visibility:vis,name,exercises:DRAFT.exercises,inviteUsernames:DRAFT.inviteUsernames,location,lengthMin:lengthMin?Number(lengthMin):null,creatorNote});
-  if(r.error) alert(r.error); else {
-    if(confirm('Save this as a template for next time?')){
-      await H.post('/api/templates',{name:prompt('Template name:',name||'My workout')||'My workout',exercises:DRAFT.exercises});
-    }
-    home();
-  }
-}
 
 
 // ---- Progress tab ------------------------------------------------------------------------
@@ -1540,7 +1679,8 @@ function openAddExercises(){
   if($('note')) DRAFT.creatorNote = $('note').value;
   if($('wname')) DRAFT.name = $('wname').value;
   LIB_ADDMODE = true;
-  showTab('lib');   // identical to tapping the bottom Workouts tab
+  SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;   // never both at once
+  showTab('lib', true);   // identical to tapping the bottom Workouts tab
 }
 function libDone(){ LIB_ADDMODE = false; TPL_MODE.active ? templateExercises() : createFlow(); }
 async function library(){
