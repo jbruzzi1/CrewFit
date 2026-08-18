@@ -131,6 +131,87 @@ let DB = load();
 // module evaluation — see the block above app.listen for why.
 const EX_LIB = JSON.parse(fs.readFileSync(LIB_FILE, 'utf8')).exercises;
 
+// ---- What to aim for on an exercise nobody has configured -----------------------------------
+// Every one of the 203 library exercises used to get the same target: 3 sets of 8-10 when added
+// from the library, 3 x 10 anywhere else. So the app prescribed ten-rep deadlifts, and it
+// prescribed a REP COUNT for planks and treadmill runs, where reps are not the unit at all.
+//
+// These rules are DERIVED from fields the library already carries — pattern, is_compound,
+// equipment, category — so an exercise added next month inherits a sensible target with no list
+// to maintain. That constraint is Jeff's and it is the right one: a hand-curated table of 203
+// rows goes stale the first time someone edits the library.
+//
+// The numbers follow ACSM's 2026 position stand on resistance training (Med Sci Sports Exerc,
+// April 2026 — 137 studies, 30,000+ participants):
+//   strength      >=80% 1RM, 2-3 sets, ~3-6 reps
+//   hypertrophy   anywhere from ~8 to 30 reps provided effort is near failure; volume is a
+//                 WEEKLY target (>=10 sets per muscle) rather than a per-exercise one
+// Hence three sets everywhere — volume comes from how many exercises you pick — and the reps vary
+// only where being wrong actually costs something.
+//
+// They are a starting point, not a prescription: the user edits them, and Progress is built from
+// what they actually lifted, never from these.
+const TIMED_HOLD = /^(plank|side plank|wall sit|hollow body hold|dead hang|plate pinch)$/i;
+const CARRY_LIKE = /(carry|sled (push|pull))/i;
+const CARDIO_MACHINE = /(treadmill|bike|erg|elliptical|stair|ski|ladder|rope|sled|step mill|rowing machine|shadow boxing)/i;
+
+function defaultTargetFor(nameOrEx) {
+  const e = typeof nameOrEx === 'string'
+    ? EX_LIB.find(x => String(x.name).toLowerCase() === String(nameOrEx).toLowerCase())
+    : nameOrEx;
+  if (!e) return { sets: 3, reps: 8, repsMax: 10 };          // custom exercise, no library entry
+  const name = String(e.name || '');
+  const p = e.pattern, cat = String(e.category || '').toLowerCase(), comp = !!e.is_compound;
+  const equip = (e.equipment || []).map(x => String(x).toLowerCase());
+
+  // Reps are the WRONG UNIT for these, not merely a bad number. Until the app can hold a time,
+  // it says nothing rather than something false — "Plank 3 x 10" is the kind of wrong that costs
+  // you the reader. sets survives so the shape of the workout still reads.
+  if (p === 'cardio' && (CARDIO_MACHINE.test(name) || equip.some(x => CARDIO_MACHINE.test(x))))
+    return { sets: 3, timed: true };
+  if (TIMED_HOLD.test(name) || CARRY_LIKE.test(name)) return { sets: 3, timed: true };
+
+  // a burpee or a kettlebell swing is counted, even though the library files it under cardio
+  if (p === 'cardio') return { sets: 3, reps: 12, repsMax: 20 };
+
+  if (comp && equip.some(x => x.includes('barbell'))) {
+    // Loaded hinge and squat sit in ACSM's strength band. A set of ten near-maximal deadlifts is
+    // where form goes — and that is exactly what the old blanket default prescribed.
+    return p === 'legs' ? { sets: 3, reps: 5 } : { sets: 3, reps: 6, repsMax: 8 };
+  }
+  if (comp) return { sets: 3, reps: 8, repsMax: 12 };
+  // small muscles take more reps before they are worth anything, and cheat less for it
+  if (p === 'core' || cat === 'shoulders' || cat === 'calves' || cat === 'forearms'
+      || /raise|face pull|reverse fly|rear delt/i.test(name))
+    return { sets: 3, reps: 12, repsMax: 20 };
+  return { sets: 3, reps: 10, repsMax: 15 };
+}
+
+// One exercise as it should be stored: whatever the user actually chose wins, and anything they
+// left alone is derived. `|| 10` used to sit here, which is how a plank ended up with ten reps.
+function withDefaults(e) {
+  const d = defaultTargetFor(e.name);
+  const reps = Number(e.defaultReps) || d.reps;
+  const max  = Number(e.defaultRepsMax) || d.repsMax;
+  return {
+    name: e.name,
+    defaultSets: Number(e.defaultSets) || d.sets,
+    defaultReps: reps || undefined,                 // undefined on a timed exercise, not 10
+    defaultRepsMax: (max && max !== reps) ? max : undefined,
+  };
+}
+
+// Attach the derived target to a library entry for the client, without mutating EX_LIB.
+function withTarget(e) {
+  const d = defaultTargetFor(e);
+  return Object.assign({}, e, {
+    defaultSets: d.sets,
+    defaultReps: d.reps,
+    defaultRepsMax: d.repsMax,
+    timed: !!d.timed,
+  });
+}
+
 // ---- Accounts ----
 function uid() { return Math.random().toString(36).slice(2, 10); }
 
@@ -332,7 +413,9 @@ function publicUser(id) {
 // ---- Exercise library (136 base + user-created) ----
 app.get('/api/exercises', (req, res) => {
   const custom = Object.values(DB.customExercises || {}).flat();
-  res.json(EX_LIB.concat(custom));
+  // computed per request, never at boot — 203 entries is nothing, and startup work in this file
+  // has crashed the server three times
+  res.json(EX_LIB.concat(custom).map(withTarget));
 });
 app.post('/api/exercises/custom', auth, (req, res) => {
   const { name, muscle_groups, equipment, level, is_compound, pattern } = req.body || {};
@@ -603,7 +686,7 @@ app.post('/api/templates', auth, (req, res) => {
   const { name, exercises } = req.body || {};
   if (!name || !Array.isArray(exercises) || !exercises.length) return res.status(400).json({ error: 'name + exercises required' });
   const id = 't_' + uid();
-  const t = { id, ownerId: req.userId, name, exercises: exercises.map(e => ({ name: e.name, defaultSets: e.defaultSets || 3, defaultReps: e.defaultReps || 10, defaultRepsMax: Number(e.defaultRepsMax) || undefined })) };
+  const t = { id, ownerId: req.userId, name, exercises: exercises.map(withDefaults) };
   if (!DB.templates) DB.templates = {};
   DB.templates[id] = t;
   save(DB);
@@ -615,7 +698,7 @@ app.put('/api/templates/:id', auth, (req, res) => {
   if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
   const { name, exercises } = req.body || {};
   if (name) t.name = name;
-  if (Array.isArray(exercises) && exercises.length) t.exercises = exercises.map(e => ({ name: e.name, defaultSets: e.defaultSets || 3, defaultReps: e.defaultReps || 10, defaultRepsMax: Number(e.defaultRepsMax) || undefined }));
+  if (Array.isArray(exercises) && exercises.length) t.exercises = exercises.map(withDefaults);
   save(DB);
   res.json(t);
 });
@@ -683,14 +766,7 @@ app.post('/api/sessions', auth, (req, res) => {
   const { scheduledAt, visibility, equipment, exercises, inviteUsernames, location, lengthMin, creatorNote, name } = req.body || {};
   if (!Array.isArray(exercises) || !exercises.length) return res.status(400).json({ error: 'needs exercises' });
   const id = newSessionId();
-  const ex = exercises.map((e, i) => ({
-    id: 'e_' + uid(),
-    name: e.name,
-    order: i,
-    defaultSets: e.defaultSets || 3,
-    defaultReps: e.defaultReps || 10,
-    defaultRepsMax: Number(e.defaultRepsMax) || undefined
-  }));
+  const ex = exercises.map((e, i) => Object.assign({ id: 'e_' + uid(), order: i }, withDefaults(e)));
   const invites = [];
   if (Array.isArray(inviteUsernames)) {
     for (const un of inviteUsernames) {
@@ -815,12 +891,10 @@ app.put('/api/sessions/:id', auth, (req, res) => {
   if (typeof b.creatorNote === 'string') s.creatorNote = b.creatorNote;
   if (b.visibility) s.visibility = b.visibility === 'friends' ? 'friends' : 'private';
   if (Array.isArray(b.exercises)) {
-    s.exercises = b.exercises.map((e, i) => ({
+    s.exercises = b.exercises.map((e, i) => Object.assign({
       id: (e.id && s.exercises.find(x => x.id === e.id)) ? e.id : 'e_' + uid(),
-      name: e.name, order: i,
-      defaultSets: e.defaultSets || 3, defaultReps: e.defaultReps || 10,
-      defaultRepsMax: Number(e.defaultRepsMax) || undefined
-    }));
+      order: i,
+    }, withDefaults(e)));
   }
   if (Array.isArray(b.inviteUsernames)) {
   const invites = [];

@@ -22,7 +22,8 @@ const H = {
 const $ = id => document.getElementById(id);
 function setToken(t,u){ TOKEN=t; localStorage.setItem('crewfit_token',t); ME=u; $('nav').classList.toggle('hidden', !t); }
 // "3 × 8–10" when a range is set, "3 × 10" when it's a single target
-function repLabel(e){ const lo=Number(e.defaultReps)||10, hi=Number(e.defaultRepsMax);
+function repLabel(e){ const lo=Number(e.defaultReps), hi=Number(e.defaultRepsMax);
+  if(!lo) return '';                    // timed exercise: no rep target, so claim none
   return (hi && hi>lo) ? `${lo}–${hi}` : `${lo}`; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 // "I cannot resolve this person" — you only ever see your own friends. It is a REAL WORD on
@@ -258,12 +259,23 @@ async function openSession(id){
     // What tapping a card means depends on what you can do right now. If you can log, it logs.
     // If you are still holding an invitation you cannot log yet — so the card is the way to say
     // "this one, not that one", which is the thing the app is actually for.
+    // Once a swap is on the table for this lift, the card stops inviting another one — a second
+    // proposal on the same exercise is noise for whoever has to decide, and the card should be
+    // telling you what is already happening instead.
+    const pendingSwap = (editByEx[e.id]||[]).find(ed=>ed.status==='pending');
+    const offerSwap = canSuggest && !pendingSwap;
     const tap = canEdit ? ` onclick="openLogSheet('${s.id}','${e.id}')"`
-              : (canSuggest ? ` onclick="openSwapPicker('${s.id}','${e.id}')"` : '');
-    const cls = (canEdit || canSuggest) ? 'ex-card log-row' : 'ex-card';
+              : (offerSwap ? ` onclick="openSwapPicker('${s.id}','${e.id}')"` : '');
+    const cls = (canEdit || offerSwap) ? 'ex-card log-row' : 'ex-card';
     const cnt = (s.logs && s.logs[ME.id]) ? s.logs[ME.id].filter(l=>l.exerciseId===e.id).length : 0;
-    const statusTag = canEdit ? (cnt ? `<span class="logged">✓ ${cnt} set${cnt>1?'s':''} logged</span>` : `<span class="log-hint">Tap to log sets →</span>`)
-                     : (canSuggest ? `<span class="log-hint">Suggest a swap →</span>` : '');
+    const swapBy = pendingSwap
+      ? (() => { const n = nameCache[pendingSwap.proposedBy];
+                 return n === 'You' ? 'you' : (isUnknownName(n) ? 'someone' : String(n).split(' ')[0]); })()
+      : '';
+    // A pending swap outranks everything else this line could say. It is the state of the lift.
+    const statusTag = pendingSwap ? `<span class="swap-pending">Swap suggested by ${esc(swapBy)}</span>`
+                     : canEdit ? (cnt ? `<span class="logged">✓ ${cnt} set${cnt>1?'s':''} logged</span>` : `<span class="log-hint">Tap to log sets →</span>`)
+                     : (offerSwap ? `<span class="log-hint">Suggest a swap →</span>` : '');
     // Who ELSE has worked this lift. Without it a shared workout shows you nothing your partner
     // did — you invite someone, they train, and the screen looks the same as if you were alone.
     // Gated on inTheWorkout: GET /api/sessions/:id hands the FULL logs of every participant to any
@@ -279,16 +291,16 @@ async function openSession(id){
         return `${esc(who)} ${n} set${n===1?'':'s'}`;
       });
     const crewLine = crew.length ? `<div class="ex-crew">${crew.join(' · ')}</div>` : '';
-    // The "4 x 6-8" target is an INSTRUCTION — it belongs on a card you can log into. On a workout
-    // you are only reading (an invite you have not accepted, someone else's posted session) it is
-    // noise: you want to know what the exercises are, not the prescription. Jeff's call, Aug 18.
-    const meta = canEdit ? `<div class="ex-meta"><span class="tag">${e.defaultSets} × ${repLabel(e)}</span></div>` : '';
-    let head = `<div class="ex-head"${tap}><div class="ex-main"><div class="ex-name">${name}</div>${statusTag}${crewLine}</div>${meta}</div>`;
+    // No "4 x 6-8" on the list at all — Jeff's call, twice. The workout list answers one question,
+    // which is what you are doing; the prescription is an instruction and it now lives in the log
+    // sheet, where you read it at the moment you act on it rather than four lifts in advance.
+    let head = `<div class="ex-head"${tap}><div class="ex-main"><div class="ex-name">${name}</div>${statusTag}${crewLine}</div></div>`;
     let sub = '';
     for(const ed of (editByEx[e.id]||[])){
       const byName = nameCache[ed.proposedBy] || ed.proposedBy;
       if(ed.status==='pending'){
-        sub += `<div class="req"><div class="rc">${byName==='You' ? 'You suggested' : esc(byName)+' suggests'} ${esc(e.name)} → ${esc(ed.swapTo)}</div>`;
+        // the status line above already named who; this row is for WHAT and what happens next
+        sub += `<div class="req"><div class="rc">${esc(e.name)} → <b>${esc(ed.swapTo)}</b></div>`;
         if(isCreator) sub += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
         else sub += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
         sub += `</div>`;
@@ -678,7 +690,7 @@ async function openLogSheet(sid, exId){
   sheet.innerHTML = `
     <div class="sheet log-sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>Log · ${esc(e.name)}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
-      <div class="ex-sub">Last time: <b>${esc(last)}</b></div>
+      <div class="ex-sub">${repLabel(e) ? `Target: <b>${e.defaultSets} × ${repLabel(e)}</b> · ` : ''}Last time: <b>${esc(last)}</b></div>
       <div id="logRec"></div>
       <div id="logSetList"></div>
       <div class="seg" id="logTypeSeg">
@@ -1500,7 +1512,13 @@ function addEx(name, el){
   if($('note')) DRAFT.creatorNote = $('note').value;
   const exists = DRAFT.exercises.find(e=>e.name===name);
   if(exists){ DRAFT.exercises = DRAFT.exercises.filter(e=>e.name!==name); }
-  else DRAFT.exercises.push({name,defaultSets:3,defaultReps:8,defaultRepsMax:10});
+  else {
+    // the library entry now carries a target derived from what the exercise IS, so stop
+    // hard-coding one shape for all 203 of them
+    const lib = (window._LIB2 || []).find(x => x.name === name) || {};
+    DRAFT.exercises.push({ name, defaultSets: lib.defaultSets || 3,
+                           defaultReps: lib.defaultReps, defaultRepsMax: lib.defaultRepsMax });
+  }
   if(el){ const on=DRAFT.exercises.find(e=>e.name===name); el.classList.toggle('ex-on', !!on); el.querySelector('.ex-add').textContent = on?'✓':'+'; }
 }
 function closePick(){ createFlow(); }
