@@ -190,12 +190,13 @@ function defaultTargetFor(nameOrEx) {
 // One exercise as it should be stored: whatever the user actually chose wins, and anything they
 // left alone is derived. `|| 10` used to sit here, which is how a plank ended up with ten reps.
 function withDefaults(e) {
-  const d = defaultTargetFor(e.name);
-  const reps = Number(e.defaultReps) || d.reps;
-  const max  = Number(e.defaultRepsMax) || d.repsMax;
+  const name = capStr(e && e.name, 80);             // another user's exercise name renders in your app
+  const d = defaultTargetFor(name);
+  const reps = numIn(e.defaultReps, 10000) || d.reps;
+  const max  = numIn(e.defaultRepsMax, 10000) || d.repsMax;
   return {
-    name: e.name,
-    defaultSets: Number(e.defaultSets) || d.sets,
+    name,
+    defaultSets: numIn(e.defaultSets, 100) || d.sets,
     defaultReps: reps || undefined,                 // undefined on a timed exercise, not 10
     defaultRepsMax: (max && max !== reps) ? max : undefined,
   };
@@ -283,6 +284,15 @@ const MEDIA_MAX_ITEMS = 4;
 const MEDIA_MAX_PHOTO = 8 * 1024 * 1024;    // a normal iPhone photo is 2-5 MB
 const MEDIA_MAX_VIDEO = 25 * 1024 * 1024;   // roughly 15-20 seconds at iPhone quality
 const MEDIA_MAX_TOTAL = 25 * 1024 * 1024;
+const ALLOWED_MEDIA = /^data:(image\/(?:png|jpeg|jpg|webp|gif)|video\/(?:mp4|webm|quicktime));base64,(.+)$/;
+
+// Input caps. Every write below persists into ONE data.json that save() rewrites whole on every
+// request, so an uncapped field is a way to bloat that file past the box's RAM and wedge all writes
+// permanently. capStr also coerces — a non-string reaching .trim()/.slice() would 500 the route.
+// numIn blocks NaN and Infinity (Infinity serialises to null and became a permanent all-time PR)
+// and clamps to a sane, non-negative magnitude.
+const capStr = (v, max) => String(v == null ? '' : v).slice(0, max);
+const numIn = (v, max) => { const n = Number(v); return Number.isFinite(n) ? Math.min(Math.max(0, n), max) : 0; };
 const b64Bytes = b64 => Math.floor(String(b64 || '').length * 3 / 4);
 const mb = n => (n / 1048576).toFixed(1) + ' MB';
 app.use(express.static(path.join(__dirname, 'public')));
@@ -364,7 +374,7 @@ app.post('/api/register', (req, res) => {
   if (findUserByName(username)) return res.status(409).json({ error: 'username taken' });
   const id = uid();
   DB.users[id] = Object.assign({ id, username: String(username).trim(),
-    displayName: String(displayName || username).trim(), friends: [], units: 'lb',
+    displayName: capStr(displayName || username, 80).trim(), friends: [], units: 'lb',
     createdAt: new Date().toISOString() }, hashPin(pin));
   save(DB);
   res.json({ token: signToken(id), user: publicUser(id) });
@@ -464,17 +474,22 @@ app.post('/api/exercises/custom', auth, (req, res) => {
   const equip = (Array.isArray(equipment) ? equipment : [])
     .filter(x => typeof x === 'string').map(x => x.slice(0, 40)).slice(0, 8);
   const ex = {
-    name: String(name).slice(0, 80),
-    pattern: pattern || (muscle_groups[0] || 'other'),
-    category: muscle_groups[0] || 'other',
+    name: capStr(name, 80),
+    pattern: capStr(pattern, 40) || (mg[0] || 'other'),
+    category: mg[0] || 'other',                         // a validated group, never raw req.body
     muscle_groups: mg,
     equipment: equip,
     is_compound: !!is_compound,
-    level: level || 'beginner',
+    level: capStr(level, 20) || 'beginner',
     defaultSets: 3, defaultReps: 10,
     custom: true, ownerId: req.userId
   };
   DB.customExercises[req.userId] = DB.customExercises[req.userId] || [];
+  // Every custom exercise persists into the one data.json AND is served to every user, so an
+  // unbounded push is a slow wedge. 500 is far past any real athlete's own library (the built-in
+  // one is 203).
+  if (DB.customExercises[req.userId].length >= 500)
+    return res.status(400).json({ error: 'You have reached the limit of custom exercises.' });
   DB.customExercises[req.userId].push(ex);
   save(DB);
   res.json(ex);
@@ -755,7 +770,7 @@ app.post('/api/templates', auth, (req, res) => {
   const { name, exercises } = req.body || {};
   if (!name || !Array.isArray(exercises) || !exercises.length) return res.status(400).json({ error: 'name + exercises required' });
   const id = 't_' + uid();
-  const t = { id, ownerId: req.userId, name, exercises: exercises.map(withDefaults) };
+  const t = { id, ownerId: req.userId, name: capStr(name, 80), exercises: exercises.map(withDefaults) };
   if (!DB.templates) DB.templates = {};
   DB.templates[id] = t;
   save(DB);
@@ -766,7 +781,7 @@ app.put('/api/templates/:id', auth, (req, res) => {
   if (!t) return res.status(404).json({ error: 'not found' });
   if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
   const { name, exercises } = req.body || {};
-  if (name) t.name = name;
+  if (name) t.name = capStr(name, 80);
   if (Array.isArray(exercises) && exercises.length) t.exercises = exercises.map(withDefaults);
   save(DB);
   res.json(t);
@@ -799,7 +814,7 @@ app.post('/api/sessions/:id/comments', auth, (req, res) => {
   // were not allowed to read, and notify everyone in it.
   const tier = sessionTier(s, req.userId);
   if (tier !== 'member' && tier !== 'invited') return res.status(403).json({ error: 'forbidden' });
-  const text = (req.body || {}).text || '';
+  const text = capStr((req.body || {}).text, 2000);   // coerce + cap: an object here used to 500 on .trim()
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
   const c = { id: 'c_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
   if (!s.comments) s.comments = [];
@@ -811,7 +826,19 @@ app.post('/api/sessions/:id/comments', auth, (req, res) => {
 
 // ---- Push subscribe ----
 app.post('/api/push/subscribe', auth, (req, res) => {
-  DB.pushSubs[req.userId] = req.body && req.body.subscription;
+  // Was stored verbatim and uncapped — a single POST with a 10 MB `subscription` ballooned
+  // data.json, and a dozen free accounts doing it wedged every write on the box. A real Web Push
+  // subscription is a small fixed shape; store only the fields web-push needs, bounded, and refuse
+  // anything else.
+  const sub = (req.body || {}).subscription;
+  if (!isObj(sub) || typeof sub.endpoint !== 'string' || !sub.endpoint || sub.endpoint.length > 1024)
+    return res.status(400).json({ error: 'invalid subscription' });
+  const keys = isObj(sub.keys) ? sub.keys : {};
+  DB.pushSubs[req.userId] = {
+    endpoint: sub.endpoint,
+    expirationTime: (typeof sub.expirationTime === 'number') ? sub.expirationTime : null,
+    keys: { p256dh: capStr(keys.p256dh, 256), auth: capStr(keys.auth, 256) },
+  };
   save(DB);
   res.json({ ok: true });
 });
@@ -853,15 +880,15 @@ app.post('/api/sessions', auth, (req, res) => {
   }
   const session = {
     id, creatorId: req.userId,
-    scheduledAt: scheduledAt || new Date().toISOString(),
+    scheduledAt: capStr(scheduledAt, 40) || new Date().toISOString(),
     status: 'draft',
     visibility: visibility === 'friends' ? 'friends' : 'private',
-    equipment: equipment || [],
-    location: location || '',
-    lengthMin: lengthMin || null,
-    creatorNote: creatorNote || '',
+    equipment: Array.isArray(equipment) ? equipment.filter(x => typeof x === 'string').slice(0, 20).map(x => capStr(x, 40)) : [],
+    location: capStr(location, 120),
+    lengthMin: numIn(lengthMin, 1440) || null,
+    creatorNote: capStr(creatorNote, 2000),
     // trimmed: a name of "   " is truthy, so it would title the workout with a blank heading
-    name: String(name == null ? '' : name).trim(),
+    name: capStr(name, 80).trim(),
     exercises: ex,
     participants: [req.userId],
     invited: invites,
@@ -1163,11 +1190,11 @@ app.put('/api/sessions/:id', auth, (req, res) => {
   ensureSessionShape(s);
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not yours' });
   const b = req.body || {};
-  if (typeof b.name === 'string') s.name = b.name.trim();
-  if (b.scheduledAt) s.scheduledAt = b.scheduledAt;
-  if (typeof b.location === 'string') s.location = b.location;
-  if ('lengthMin' in b) s.lengthMin = b.lengthMin || null;
-  if (typeof b.creatorNote === 'string') s.creatorNote = b.creatorNote;
+  if (typeof b.name === 'string') s.name = capStr(b.name, 80).trim();
+  if (b.scheduledAt) s.scheduledAt = capStr(b.scheduledAt, 40);
+  if (typeof b.location === 'string') s.location = capStr(b.location, 120);
+  if ('lengthMin' in b) s.lengthMin = numIn(b.lengthMin, 1440) || null;
+  if (typeof b.creatorNote === 'string') s.creatorNote = capStr(b.creatorNote, 2000);
   if (b.visibility) s.visibility = b.visibility === 'friends' ? 'friends' : 'private';
   if (Array.isArray(b.exercises)) {
     s.exercises = b.exercises.map((e, i) => Object.assign({
@@ -1225,7 +1252,8 @@ app.post('/api/sessions/:id/suggest', auth, (req, res) => {
   const approvedJoin = s.joinRequests.find(j => j.userId === req.userId && j.status === 'approved');
   const invited = Array.isArray(s.invited) && s.invited.includes(req.userId);
   if (!isParticipant && !approvedJoin && !invited) return res.status(403).json({ error: 'not a participant' });
-  const { exerciseId, swapTo } = req.body || {};
+  const exerciseId = capStr((req.body || {}).exerciseId, 64);
+  const swapTo = capStr((req.body || {}).swapTo, 80);
   const edit = { id: 'se_' + uid(), exerciseId, proposedBy: req.userId, swapTo, status: 'pending' };
   s.suggestedEdits.push(edit);
   save(DB);
@@ -1290,7 +1318,7 @@ app.post('/api/sessions/:id/join', auth, (req, res) => {
   if (s.creatorId !== req.userId && !myFriends.includes(s.creatorId))
     return res.status(403).json({ error: 'forbidden' });
   if (s.joinRequests.find(j => j.userId === req.userId)) return res.status(400).json({ error: 'already requested' });
-  s.joinRequests.push({ id: 'jr_' + uid(), userId: req.userId, note: (req.body||{}).note || '', status: 'pending' });
+  s.joinRequests.push({ id: 'jr_' + uid(), userId: req.userId, note: capStr((req.body||{}).note, 500), status: 'pending' });
   save(DB);
   notify(s.creatorId, { title: 'Join request', body: `${DB.users[req.userId].displayName} wants to join your workout` });
   res.json({ ok: true, requested: true });     // the answer to "may I join" is not the workout
@@ -1327,7 +1355,7 @@ app.post('/api/sessions/:id/attendance', auth, (req, res) => {
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   if (!s.participants.includes(req.userId)) return res.status(403).json({ error: 'forbidden' });
-  s.attendance[req.userId] = (req.body||{}).status || 'in';
+  s.attendance[req.userId] = capStr((req.body||{}).status, 20) || 'in';
   save(DB);
   res.json(sessionView(s, req.userId));
 });
@@ -1581,7 +1609,7 @@ app.put('/api/me/seeds', auth, (req, res) => {
     return res.status(400).json({ error: 'Pick an exercise from the library' });
   const u = DB.users[req.userId];
   u.seeded = u.seeded || {};
-  const w = Number(weight) || 0, r = Number(reps) || 0, g = Number(goal) || 0;
+  const w = numIn(weight, 1e6), r = numIn(reps, 1e6), g = numIn(goal, 1e6);
   if (!w && !g) { delete u.seeded[exercise]; save(DB); return res.json({ seeds: u.seeded }); }
   u.seeded[exercise] = {
     exercise,
@@ -1676,12 +1704,12 @@ app.post('/api/sessions/:id/log', auth, (req, res) => {
     return res.status(403).json({ error: 'forbidden' });
   const { exerciseId, weight, reps, set, setType } = req.body || {};
   if (!s.logs[req.userId]) s.logs[req.userId] = [];
-  const w = Number(weight) || 0, r = Number(reps) || 0;
+  const w = numIn(weight, 1e6), r = numIn(reps, 1e6);
   // reps are what make a set a set. Storing reps:0 silently turned "225, forgot to type reps"
   // into a zero-rep set, which reads downstream as a failed set.
   if (!(r > 0)) return res.status(400).json({ error: 'Enter the number of reps for this set' });
   const myExLogs = s.logs[req.userId].filter(l => l.exerciseId === exerciseId);
-  const setNum = (set && Number(set)) || myExLogs.length + 1;
+  const setNum = numIn(set, 1e6) || myExLogs.length + 1;
   const lt = loadTypeForName(exerciseNameFor(s, exerciseId, req.userId));
   const unit = (DB.users[req.userId] && DB.users[req.userId].units) || 'lb';
   // Snapshot the rep target AT LOG TIME. defaultReps/defaultRepsMax live on the session and
@@ -1991,10 +2019,10 @@ app.put('/api/sessions/:id/log/:logId', auth, (req, res) => {
   const log = arr.find(l => l.id === req.params.logId);
   if (!log) return res.status(404).json({ error:'log not found' });
   const { weight, reps, setType, set } = req.body || {};
-  if (weight!==undefined) log.weight = Number(weight)||0;
-  if (reps!==undefined) log.reps = Number(reps)||0;
+  if (weight!==undefined) log.weight = numIn(weight, 1e6);
+  if (reps!==undefined) log.reps = numIn(reps, 1e6);
   if (setType!==undefined) log.setType = setType || 'normal';
-  if (set!==undefined) log.set = Number(set)||log.set;
+  if (set!==undefined) log.set = numIn(set, 1e6) || log.set;
   rebuildAllPrs();
   save(DB);
   res.json(sessionView(s, req.userId));
@@ -2052,10 +2080,17 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
   const incoming = Array.isArray(media) ? media : [];
   if (incoming.length > MEDIA_MAX_ITEMS)
     return res.status(413).json({ error: `Up to ${MEDIA_MAX_ITEMS} photos or videos per workout.` });
+  // A media src may only be a data: URL of an allowed image/video type (written to disk below) or a
+  // well-formed /uploads/ path from a prior save. Anything else is refused here rather than stored:
+  // an application/octet-stream data URL used to skip the disk-write regex and land raw in
+  // data.json; an off-site https URL would make every viewer's browser fetch it (an IP/tracking
+  // leak); a /uploads/../ path is traversal.
   let total = 0;
   for (const m of incoming) {
-    const dm = String(m && m.src || '').match(/^data:([^;]+);base64,(.+)$/);
-    if (!dm) continue;                                     // already a stored /uploads/ path
+    const src = String(m && m.src || '');
+    if (/^\/uploads\/[\w.-]+$/.test(src)) continue;         // already on disk from a prior save
+    const dm = src.match(ALLOWED_MEDIA);
+    if (!dm) return res.status(415).json({ error: 'Only photos and videos can be attached.' });
     const bytes = b64Bytes(dm[2]);
     const isVideo = dm[1].startsWith('video/');
     const cap = isVideo ? MEDIA_MAX_VIDEO : MEDIA_MAX_PHOTO;
@@ -2070,7 +2105,7 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
   const cleanMedia = incoming.map(m => {
     const type = m.type === 'video' ? 'video' : 'image';
     let src = String(m.src || '');
-    const dm = src.match(/^data:(image\/(?:png|jpeg|jpg|webp|gif)|video\/(?:mp4|webm|quicktime));base64,(.+)$/);
+    const dm = src.match(ALLOWED_MEDIA);
     if (dm) {
       try {
         const sub = dm[1];
