@@ -42,12 +42,25 @@ async function nameOf(id){
   return hit ? hit.displayName : UNKNOWN_NAME;
 }
 function fmtDate(s){ const d=new Date(s); return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
+// "Aug 19, 5:30 PM" does not answer the question you are actually asking about an invitation,
+// which is whether you can make it. Today / Tomorrow / Yesterday do. Anything further out keeps
+// the date, because "in 9 days" is not how anyone thinks about next Thursday.
+function fmtWhen(iso){
+  const d = new Date(iso); if(isNaN(d)) return fmtDate(iso);
+  const time = d.toLocaleString(undefined,{hour:'numeric',minute:'2-digit'});
+  const midnight = x => { const y = new Date(x); y.setHours(0,0,0,0); return y; };
+  const days = Math.round((midnight(d) - midnight(new Date())) / 86400000);
+  if(days === 0)  return `Today, ${time}`;
+  if(days === 1)  return `Tomorrow, ${time}`;
+  if(days === -1) return `Yesterday, ${time}`;
+  return fmtDate(iso);
+}
 // The heading for a workout, and the line under it. ALL THREE views of a workout use these —
 // openSession, viewPost and the edit screen — because a workout you opened as "Push Day" that
 // retitles itself to a date the moment you tap Edit reads like you opened the wrong one.
 // .trim() matters: a name of "   " is truthy and used to render a completely blank <h1>.
-function sessTitle(s){ const n = (s && s.name || '').trim(); return n ? esc(n) : fmtDate(s.scheduledAt); }
-function sessSub(s){ const n = (s && s.name || '').trim(); return n ? fmtDate(s.scheduledAt) + ' · ' : ''; }
+function sessTitle(s){ const n = (s && s.name || '').trim(); return n ? esc(n) : fmtWhen(s.scheduledAt); }
+function sessSub(s){ const n = (s && s.name || '').trim(); return n ? fmtWhen(s.scheduledAt) + ' · ' : ''; }
 
 // ---- Auth screens ----
 function authScreen(){
@@ -173,7 +186,7 @@ async function home(){
     for(const s of yours){
       const label = s.name;
       html += `<div class="lib-item" onclick="openSession('${s.id}')">
-        <div><b>${esc(label)} · ${s.exercises.length} exercises</b><div class="tag">${fmtDate(s.scheduledAt)}</div></div></div>`;
+        <div><b>${esc(label)} · ${s.exercises.length} exercises</b><div class="tag">${fmtWhen(s.scheduledAt)}</div></div></div>`;
     }
   } else html += `<div class="muted">No sessions yet.</div>`;
   html += `</div>`;
@@ -209,6 +222,11 @@ async function openSession(id){
   const inTheWorkout = isParticipant || s.creatorId === ME.id || (Array.isArray(s.invited) && s.invited.includes(ME.id));
   const approvedJoin = s.joinRequests.find(j=>j.userId===ME.id&&j.status==='approved');
   const canEdit = s.post ? isCreator : (isParticipant || approvedJoin);
+  // Suggesting is for everyone EXCEPT the creator, who does not need to suggest anything — they
+  // have Edit. It rendered only for the creator, which is exactly backwards: the person holding
+  // an invitation, the one with a reason to say "not Barbell Row", never saw it at all.
+  const canSuggest = !isCreator && !s.post && !canEdit
+    && Array.isArray(s.invited) && s.invited.includes(ME.id);
   // suggested edits, keyed by target exercise id (compact one-line inline row, C style)
   const editByEx = {};
   for(const ed of s.suggestedEdits){
@@ -237,10 +255,15 @@ async function openSession(id){
     } else {
       name = esc(e.name);
     }
-    const tap = canEdit ? ` onclick="openLogSheet('${s.id}','${e.id}')"` : '';
-    const cls = canEdit ? 'ex-card log-row' : 'ex-card';
+    // What tapping a card means depends on what you can do right now. If you can log, it logs.
+    // If you are still holding an invitation you cannot log yet — so the card is the way to say
+    // "this one, not that one", which is the thing the app is actually for.
+    const tap = canEdit ? ` onclick="openLogSheet('${s.id}','${e.id}')"`
+              : (canSuggest ? ` onclick="openSwapPicker('${s.id}','${e.id}')"` : '');
+    const cls = (canEdit || canSuggest) ? 'ex-card log-row' : 'ex-card';
     const cnt = (s.logs && s.logs[ME.id]) ? s.logs[ME.id].filter(l=>l.exerciseId===e.id).length : 0;
-    const statusTag = canEdit ? (cnt ? `<span class="logged">✓ ${cnt} set${cnt>1?'s':''} logged</span>` : `<span class="log-hint">Tap to log sets →</span>`) : '';
+    const statusTag = canEdit ? (cnt ? `<span class="logged">✓ ${cnt} set${cnt>1?'s':''} logged</span>` : `<span class="log-hint">Tap to log sets →</span>`)
+                     : (canSuggest ? `<span class="log-hint">Suggest a swap →</span>` : '');
     // Who ELSE has worked this lift. Without it a shared workout shows you nothing your partner
     // did — you invite someone, they train, and the screen looks the same as if you were alone.
     // Gated on inTheWorkout: GET /api/sessions/:id hands the FULL logs of every participant to any
@@ -256,12 +279,16 @@ async function openSession(id){
         return `${esc(who)} ${n} set${n===1?'':'s'}`;
       });
     const crewLine = crew.length ? `<div class="ex-crew">${crew.join(' · ')}</div>` : '';
-    let head = `<div class="ex-head"${tap}><div class="ex-main"><div class="ex-name">${name}</div>${statusTag}${crewLine}</div><div class="ex-meta"><span class="tag">${e.defaultSets} × ${repLabel(e)}</span></div></div>`;
+    // The "4 x 6-8" target is an INSTRUCTION — it belongs on a card you can log into. On a workout
+    // you are only reading (an invite you have not accepted, someone else's posted session) it is
+    // noise: you want to know what the exercises are, not the prescription. Jeff's call, Aug 18.
+    const meta = canEdit ? `<div class="ex-meta"><span class="tag">${e.defaultSets} × ${repLabel(e)}</span></div>` : '';
+    let head = `<div class="ex-head"${tap}><div class="ex-main"><div class="ex-name">${name}</div>${statusTag}${crewLine}</div>${meta}</div>`;
     let sub = '';
     for(const ed of (editByEx[e.id]||[])){
       const byName = nameCache[ed.proposedBy] || ed.proposedBy;
       if(ed.status==='pending'){
-        sub += `<div class="req"><div class="rc">${esc(byName)} suggest${byName==='You'?'':'s'} ${esc(e.name)} → ${esc(ed.swapTo)}</div>`;
+        sub += `<div class="req"><div class="rc">${byName==='You' ? 'You suggested' : esc(byName)+' suggests'} ${esc(e.name)} → ${esc(ed.swapTo)}</div>`;
         if(isCreator) sub += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
         else sub += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
         sub += `</div>`;
@@ -276,7 +303,7 @@ async function openSession(id){
     if(editByEx[ed.exerciseId]) continue; // already shown inline above
     const byName = nameCache[ed.proposedBy] || ed.proposedBy;
     if(ed.status==='pending'){
-      edits += `<div class="card"><div class="req"><div class="rc">${esc(byName)} suggest${byName==='You'?'':'s'} → ${esc(ed.swapTo)}</div>`;
+      edits += `<div class="card"><div class="req"><div class="rc">${byName==='You' ? 'You suggested' : esc(byName)+' suggests'} → ${esc(ed.swapTo)}</div>`;
       if(isCreator) edits += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
       else edits += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
       edits += `</div></div>`;
@@ -294,12 +321,41 @@ async function openSession(id){
       jr += `<div class="card"><div class="req"><div class="av">${esc((await nameOf(j.userId)||'?')[0]||'?')}</div><div class="rc"><b>${esc(await nameOf(j.userId))}</b> wants to join${j.note?` — <i>"${esc(j.note)}"</i>`:''}</div><div class="ra"><button class="sm ok" onclick="approveJoin('${s.id}','${j.id}')">Approve</button><button class="sm no" onclick="rejectJoin('${s.id}','${j.id}')">Reject</button></div></div></div>`;
     }
   }
-  let html = `<div class="wrap"><button class="sec sm" onclick="showTab('home')">← Back</button>
+  // Back goes BACK. It was wired to Home, so arriving from a profile or the feed dumped you
+  // somewhere you had never been. There is no router here, so the tab you were on IS the answer.
+  const backTab = (document.querySelector('.nav button.active') || {}).dataset
+    ? document.querySelector('.nav button.active').dataset.tab : 'home';
+
+  // A pending invitee does not need a head count — "1 person" counts the creator alone and reads
+  // like an empty workout. What is actually true is that everyone is waiting on you.
+  const pendingMe = !isCreator && !isParticipant && Array.isArray(s.invited) && s.invited.includes(ME.id);
+  const vis = s.visibility==='friends' ? (pendingMe ? 'Friends-only' : 'Friends-only · joinable') : 'Private';
+  const who = pendingMe ? 'waiting on you'
+            : `${s.participants.length} ${s.participants.length===1?'person':'people'}`;
+  // one line, no emoji standing in for icons
+  const facts = [s.location ? esc(s.location) : '', s.lengthMin ? esc(s.lengthMin)+' min' : ''].filter(Boolean).join(' · ');
+
+  // Has anyone else started? ONLY on an invitation you have not answered yet. It exists to help
+  // you decide; once you have accepted you are going to train regardless, and the same sentence
+  // stops being information and starts being a nag. Jeff's call, Aug 18.
+  const startedBy = pendingMe && !s.post
+    ? Object.keys(s.logs||{}).filter(pid => pid!==ME.id && (s.logs[pid]||[]).length) : [];
+  const startedSets = startedBy.reduce((n,pid) => n + (s.logs[pid]||[]).length, 0);
+  const firstName = pid => { const n = nameCache[pid]; return isUnknownName(n) ? 'Someone' : String(n).split(' ')[0]; };
+  const startedLine = !startedBy.length ? '' : (() => {
+    const names = startedBy.map(firstName);
+    const label = names.length===1 ? `${esc(names[0])}'s already started`
+                : names.length===2 ? `${esc(names[0])} and ${esc(names[1])} have already started`
+                : `${esc(names[0])} and ${names.length-1} others have already started`;
+    return `<div class="sess-started">${label} — ${startedSets} set${startedSets===1?'':'s'} in</div>`;
+  })();
+
+  let html = `<div class="wrap"><button class="sec sm" onclick="showTab('${backTab}')">← Back</button>
     <h1 class="sess-date">${sessTitle(s)}</h1>
-    <div class="muted sess-meta">${sessSub(s)}${s.visibility==='friends'?'Friends-only · joinable':'Private'} · ${s.participants.length} ${s.participants.length===1?'person':'people'}</div>
-    ${s.location?`<div class="tag">📍 ${esc(s.location)}</div>`:''}
-    ${s.lengthMin?`<div class="tag">⏱ ${esc(s.lengthMin)} min</div>`:''}
-    ${s.creatorNote?`<div class="card muted">"${esc(s.creatorNote)}" — ${isCreator?'you':esc(s.creatorId)}</div>`:''}`;
+    <div class="muted sess-meta">${sessSub(s)}${vis} · ${who}</div>
+    ${facts?`<div class="tag">${facts}</div>`:''}
+    ${startedLine}
+    ${s.creatorNote?`<div class="sess-note">${esc(s.creatorNote)}</div>`:''}`;
   if(isCreator){
     html += `<div class="sess-actions">`;
     if(s.post){
@@ -312,6 +368,7 @@ async function openSession(id){
   }
   html += `<h2>Workout</h2>${myEx}`;
   if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div>`;
+  else if(canSuggest) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Not feeling one of these? Tap it to propose a replacement — ${esc(isUnknownName(nameCache[s.creatorId])?'the host':String(nameCache[s.creatorId]).split(' ')[0])} approves it.</div>`;
   if(jr) html += `<h2 class="pt">Join requests</h2>${jr}`;
   if(s.post){
     // Completed/saved workout: Photos (where swap slot was), then Notes
@@ -326,28 +383,54 @@ async function openSession(id){
       </div>`;
     }
     html += `<h2>Notes</h2><div class="notes-box">${s.post.notes ? esc(s.post.notes) : '<span class="muted">How\'d it go?</span>'}</div>`;
-  } else if(isCreator){
-    // Unsaved ACTIVE draft: Suggest a swap (only place it appears)
+  } else if(!isCreator && canEdit){
+    // You have joined and can log, so tapping a card logs — which means the cards are taken and
+    // suggesting needs its own door. The creator does NOT get this: they have Edit, and a creator
+    // suggesting a swap to themselves and then approving it is a loop, not a feature.
     html += `<h2 class="sep">Suggest a swap</h2><div class="card">
+      <div class="muted" style="font-size:12.5px;margin:2px 2px 8px">Not feeling one of these? Propose a replacement — ${esc(isUnknownName(nameCache[s.creatorId])?'the host':String(nameCache[s.creatorId]).split(' ')[0])} approves it.</div>
       <select id="swEx" style="margin-bottom:10px">${s.exercises.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
       <button class="sec sm" style="background:#f0f1f3; margin-bottom:5px" onclick="openSwapPicker('${s.id}')">Pick replacement from Workouts →</button>
     </div>`;
   }
-  // Invitee action menu (non-creator, active/unsaved session, AND not yet accepted)
-  if(!isCreator && !s.post && !isParticipant){
-    html += `<h2>Respond</h2><div class="card">
-      <button class="blue" onclick="acceptInvite('${s.id}')">Accept</button>
-      <button class="sec" onclick="requestChanges('${s.id}')">Request Changes</button>
-      <button class="sec" onclick="saveRoutine('${s.id}')">Save This Routine</button>
-      <button class="sec" onclick="openChat('${s.id}')">Message Host</button>
-      <button class="sec red" onclick="declineInvite('${s.id}')">Decline</button>
-    </div>`;
-  }
-  // Comments panel (public thread on a saved workout; crew chat while active)
   const isPosted = !!s.post;
-  html += `<h2>${isPosted?'Comments':'Chat'}</h2><div class="card"><div id="chatbox" class="scrolllist"></div>
+  const respondHere = !isCreator && !s.post && !isParticipant;
+
+  // Chat comes BEFORE the answer for someone deciding. Brian messages from the rack — "at the gym,
+  // rack 3" — and that used to sit below the exercises AND below the buttons, so the most
+  // time-sensitive thing on the screen was the last thing you saw. Read the plan, hear from him,
+  // then answer.
+  const chatBlock = `<h2>${isPosted?'Comments':'Chat'}</h2><div class="card"><div id="chatbox" class="scrolllist"></div>
     <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="${isPosted?'Add a comment…':'Message the crew'}"><button class="sm chat-send" onclick="sendChat('${s.id}')">Send</button></div></div>`;
-  html += `${(s.participants.filter(p=>p!==ME.id).length)?`<h2>Friends joined</h2><div class="chips mini">${s.participants.filter(p=>p!==ME.id).map(pid=>`<div class="fav"><div class="fav-av" style="background:${avatarColor(nameCache[pid]||pid)};color:#fff">${esc((nameCache[pid]||pid||'?')[0])}</div><span>${esc(nameCache[pid]||pid)}</span></div>`).join('')}</div>`:''}`;
+
+  // "Friends joined" was wrong for the creator, who did not join anything. It DOES list everyone
+  // else in the workout, which is worth keeping — it was the name that was off.
+  const crewBlock = (s.participants.filter(p=>p!==ME.id).length)
+    ? `<h2>Who's in</h2><div class="chips mini">${s.participants.filter(p=>p!==ME.id).map(pid=>{
+        const known = !isUnknownName(nameCache[pid]);
+        const label = known ? String(nameCache[pid]) : 'A friend';
+        return `<div class="fav"><div class="fav-av" style="background:${avatarColor(label)};color:#fff">${esc(label[0])}</div><span>${esc(label)}</span></div>`;
+      }).join('')}</div>`
+    : '';
+
+  if(respondHere){
+    html += crewBlock + chatBlock;
+    // Two answers, weighted, in the flow. NOT a pinned bar: this page is barely longer than one
+    // screen and you see it once per invite, so 68px of permanent chrome on top of the 60px nav
+    // buys nothing and crowds the reply box. Request Changes and Message Host were the same act —
+    // messaging the host — and Save This Routine was never a response at all.
+    const host = isUnknownName(nameCache[s.creatorId]) ? 'the host' : String(nameCache[s.creatorId]).split(' ')[0];
+    html += `<h2>Respond</h2>
+      <button class="btn-answer" onclick="acceptInvite('${s.id}')">Accept</button>
+      <button class="btn-answer quiet" onclick="declineInvite('${s.id}')">Decline</button>
+      <div class="answer-aside">
+        <button class="linkbtn" onclick="openChat('${s.id}')">Message ${esc(host)}</button>
+        <span class="aside-dot">·</span>
+        <button class="linkbtn" onclick="saveRoutine('${s.id}')">Save this routine</button>
+      </div>`;
+  } else {
+    html += crewBlock + chatBlock;
+  }
   html += `</div>`;
   $('app').innerHTML = html;
   loadChat(s);
@@ -510,9 +593,11 @@ async function rejectJoin(id, reqId){
 // Opens the Workouts library in "pick a replacement" mode. library() already renders a
 // "Pick replacement" header when SWAP_MODE is set, and tapping an exercise there already calls
 // swapPick. This is the entry point that was never fitted.
-function openSwapPicker(id){
-  const sel = $('swEx');
-  const exerciseId = sel ? sel.value : '';
+function openSwapPicker(id, exerciseId){
+  // exerciseId is passed when you tap the exercise itself; otherwise fall back to the picker's
+  // dropdown. Tapping the lift you want changed is the natural gesture — you do not want to swap
+  // "a workout", you want to swap Barbell Row.
+  if(!exerciseId){ const sel = $('swEx'); exerciseId = sel ? sel.value : ''; }
   if(!exerciseId) return alert('Add an exercise first, then pick which one to swap.');
   SWAP_MODE = true; SWAP_SESSION = id; SWAP_FROM = exerciseId;
   LIB_ADDMODE = false;   // exRowHtml tests SWAP_MODE first, so leaving this set makes "+ Add
@@ -1014,7 +1099,7 @@ function renderWorkoutEdit(s){
   $('app').innerHTML = `<div class="wrap edit-mode">
     <div class="edit-banner">✎ Editing — tap Save when done</div>
     <h1 class="sess-date">${sessTitle(s)}</h1>
-    ${sessSub(s) ? `<div class="muted sess-meta">${fmtDate(s.scheduledAt)}</div>` : ''}
+    ${sessSub(s) ? `<div class="muted sess-meta">${fmtWhen(s.scheduledAt)}</div>` : ''}
     <h2>Workout</h2>
     <div id="inexList">${exRows}</div>
     <button class="sec" onclick="addInex()">+ Add exercise</button>

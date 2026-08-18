@@ -862,10 +862,13 @@ app.post('/api/sessions/:id/decline', auth, (req, res) => {
 app.post('/api/sessions/:id/suggest', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
-  // must be participant OR approved join-requester
+  // Participant, approved join-requester, OR someone still holding an invitation. That last one
+  // is the whole point: "I'll come if we swap Barbell Row" is a thing you say BEFORE you accept,
+  // and until now the server refused it, so the answer was accept-blind-then-ask.
   const isParticipant = s.participants.includes(req.userId);
   const approvedJoin = s.joinRequests.find(j => j.userId === req.userId && j.status === 'approved');
-  if (!isParticipant && !approvedJoin) return res.status(403).json({ error: 'not a participant' });
+  const invited = Array.isArray(s.invited) && s.invited.includes(req.userId);
+  if (!isParticipant && !approvedJoin && !invited) return res.status(403).json({ error: 'not a participant' });
   const { exerciseId, swapTo } = req.body || {};
   const edit = { id: 'se_' + uid(), exerciseId, proposedBy: req.userId, swapTo, status: 'pending' };
   s.suggestedEdits.push(edit);
