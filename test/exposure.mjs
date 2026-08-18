@@ -340,6 +340,71 @@ console.log('\nrows stored before the write checks existed are cleaned on the wa
      `and the one real equipment entry in a poisoned list survives (${JSON.stringify(b && b.equipment)})`);
 }
 
+console.log('\na session row missing its containers cannot 500 a whole workout for everyone in it');
+{
+  // This app has a documented history of hand-editing data.json to fix real accounts
+  // (migrateMergeDuplicateBrian, the PIN-reset instructions in DEPLOY.md), and nothing checks that
+  // a hand-edited or pre-schema row still has every key a modern session assumes (logs, exercises,
+  // attendance, comments, suggestedEdits, variations, joinRequests, history). Write it straight
+  // into the store, which is what such a row looks like, then hit every write route against it.
+  //
+  // Two shapes, not one: a MISSING key (the obvious mistake) and a WRONG-TYPED one (the plausible
+  // one — every other container in this schema really is [], so logs/attendance/variations as []
+  // instead of {} is an easy hand-edit slip). A review caught that the missing-key guard alone
+  // let the wrong-typed case through: logs as [] doesn't throw, it silently drops the set instead
+  // — `s.logs[userId]=[...]` sets a non-index property on an array, which JSON.stringify never
+  // serializes. That is worse than the crash it replaced, so it is asserted here explicitly.
+  const DATA = join(DIR, 'data.json');
+  await stop();
+  const raw = JSON.parse(readFileSync(DATA, 'utf8'));
+  raw.sessions['s_legacy2'] = { id: 's_legacy2', creatorId: alice.id, scheduledAt: new Date().toISOString(),
+    status: 'draft', visibility: 'private', name: 'Legacy Row', participants: [alice.id, bob.id], invited: [] };
+  raw.sessions['s_legacy3'] = { id: 's_legacy3', creatorId: alice.id, scheduledAt: new Date().toISOString(),
+    status: 'draft', visibility: 'private', name: 'Wrong-Typed Row', participants: [alice.id, bob.id],
+    invited: [], logs: [], attendance: [], variations: [] };
+  // participants is present and well-formed on both rows above, which never exercises that half of
+  // the guard — a review caught that gap. This third row omits it entirely: the comments route's
+  // notify loop (`for (const pid of s.participants)`) is the one place that would throw on it, AFTER
+  // the comment is already saved, so the failure mode is a 500 the caller sees despite the write
+  // having actually succeeded — worth its own row rather than folding into the others.
+  raw.sessions['s_legacy4'] = { id: 's_legacy4', creatorId: alice.id, scheduledAt: new Date().toISOString(),
+    status: 'draft', visibility: 'private', name: 'No Participants Row', invited: [] };
+  writeFileSync(DATA, JSON.stringify(raw));
+  const up = await boot();
+  ok(up.started, `the server boots with a legacy row missing logs/exercises/etc${up.started ? '' : ' — ' + String(up.err).slice(0, 160)}`);
+
+  const checks = [
+    ['attendance', () => fetch(B + '/api/sessions/s_legacy2/attendance', { method: 'POST', headers: bob.H, body: JSON.stringify({ status: 'in' }) })],
+    ['a suggested swap', () => fetch(B + '/api/sessions/s_legacy2/suggest', { method: 'POST', headers: bob.H, body: JSON.stringify({ exerciseId: 'e1', swapTo: 'Cable Fly' }) })],
+    ['a logged set', () => fetch(B + '/api/sessions/s_legacy2/log', { method: 'POST', headers: bob.H, body: JSON.stringify({ exerciseId: 'e1', weight: 100, reps: 8 }) })],
+    ['locking (creator)', () => fetch(B + '/api/sessions/s_legacy2/lock', { method: 'POST', headers: alice.H, body: '{}' })],
+  ];
+  for (const [label, fn] of checks) {
+    const r = await fn();
+    ok(r.status !== 500, `${label} does not 500 (got ${r.status})`);
+  }
+
+  // The comments route has always had its own inline `if (!s.comments) s.comments = [];` guard, so
+  // asserting "does not 500" here would pass with or without ensureSessionShape — not a real check
+  // of this fix. What ensureSessionShape adds on top is participants, needed two lines later by the
+  // notify loop (`for (const pid of s.participants)`) — assert THAT specifically.
+  const cr = await fetch(B + '/api/sessions/s_legacy2/comments', { method: 'POST', headers: bob.H, body: JSON.stringify({ text: 'hey' }) });
+  ok(cr.status !== 500, `a comment does not 500 (got ${cr.status})`);
+
+  // s_legacy4 has no participants at all. Its creator is the only account allowed to comment on it
+  // (sessionTier requires membership), so post as alice.
+  const cr2 = await fetch(B + '/api/sessions/s_legacy4/comments', { method: 'POST', headers: alice.H, body: JSON.stringify({ text: 'hey' }) });
+  ok(cr2.status !== 500, `a comment on a row with NO participants key does not 500 (got ${cr2.status})`);
+
+  // The array-mistyped row: does not merely avoid a 500, the set has to actually be THERE after.
+  const lg = await fetch(B + '/api/sessions/s_legacy3/log', { method: 'POST', headers: bob.H, body: JSON.stringify({ exerciseId: 'e1', weight: 100, reps: 8 }) });
+  ok(lg.status !== 500, `logging against a row with logs:[] (wrong-typed, not missing) does not 500 (got ${lg.status})`);
+  const after = JSON.parse(readFileSync(DATA, 'utf8'));
+  const stored = after.sessions['s_legacy3'];
+  ok(!Array.isArray(stored.logs) && stored.logs[bob.id] && stored.logs[bob.id].length === 1,
+     `and the set actually survives on disk, not silently dropped by an array standing in for {} (${JSON.stringify(stored.logs)})`);
+}
+
 } finally { await stop(); rmSync(DIR, { recursive: true, force: true }); }
 
 console.log(fails ? `\n${fails} FAILURE(S)\n` : '\nall assertions passed\n');

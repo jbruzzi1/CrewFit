@@ -794,6 +794,7 @@ app.get('/api/sessions/:id/comments', auth, (req, res) => {
 app.post('/api/sessions/:id/comments', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   // Same gate as the read path directly above. These disagreed: you could post into a thread you
   // were not allowed to read, and notify everyone in it.
   const tier = sessionTier(s, req.userId);
@@ -917,6 +918,35 @@ app.get('/api/sessions/:id', auth, (req, res) => {
 //   invited       has an invitation they have not answered. Gets the plan, plus the chat, because
 //                 deciding whether to come means being able to ask. Still nobody's sets.
 //   member        a participant or the creator. Gets everything.
+// A session has always been CREATED with the full modern shape (participants:[], exercises:[],
+// logs:{}, attendance:{}, comments:[], suggestedEdits:[], variations:{}, joinRequests:[],
+// history:[]) — but this file has a documented history of accounts fixed by hand-editing
+// data.json (migrateMergeDuplicateBrian, the PIN-reset note in DEPLOY.md), and nothing checks
+// that a hand-edited or pre-schema row still has every key. The READ paths (sessionView and
+// friends) were already hardened with ||[]/||{} fallbacks; this is the same guarantee for every
+// route that WRITES to a session, called once right after the 404 check and before anything
+// touches a container. Without it, a session missing e.g. `logs` 500s on the very next set
+// logged in it — for every participant, permanently, until someone edits data.json by hand
+// again. It mutates the object in place, so the very next save() heals the row for good.
+// typeof [] === 'object' and [] is truthy, so `typeof x !== 'object'` alone does NOT catch an
+// array standing in for a plain object here — and it is a plausible mistake, since every OTHER
+// container in this same schema genuinely is []. That gap is not academic: `s.logs[userId] = [...]`
+// on an array silently sets a non-index property that JSON.stringify then drops on save — a loud
+// 500 replaced by a quiet 200 that erases the set forever. isObj() rejects arrays explicitly.
+const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+function ensureSessionShape(s) {
+  if (!Array.isArray(s.participants)) s.participants = [];
+  if (!Array.isArray(s.exercises)) s.exercises = [];
+  if (!isObj(s.logs)) s.logs = {};
+  if (!isObj(s.attendance)) s.attendance = {};
+  if (!Array.isArray(s.comments)) s.comments = [];
+  if (!Array.isArray(s.suggestedEdits)) s.suggestedEdits = [];
+  if (!isObj(s.variations)) s.variations = {};
+  if (!Array.isArray(s.joinRequests)) s.joinRequests = [];
+  if (!Array.isArray(s.history)) s.history = [];
+  return s;
+}
+
 function sessionTier(s, viewerId) {
   if (!s || !viewerId) return 'stranger';
   if (s.creatorId === viewerId) return 'member';
@@ -1026,6 +1056,7 @@ function othersWhoLogged(s, meId) {
 app.delete('/api/sessions/:id', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not yours' });
   // Delete is creator-only, which sounds safe — but a workout holds EVERYONE's sets, so deleting
   // it took a training partner's history with it, silently and with no undo. Declining an invite
@@ -1048,6 +1079,7 @@ app.delete('/api/sessions/:id', auth, (req, res) => {
 app.post('/api/sessions/:id/leave', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   // You can only leave something you are in. Without this, any account could name any session id
   // and trigger a full PR rebuild and a whole-database write.
   if (!(s.participants || []).includes(req.userId) && s.creatorId !== req.userId)
@@ -1080,6 +1112,7 @@ app.post('/api/sessions/:id/leave', auth, (req, res) => {
 app.put('/api/sessions/:id', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not yours' });
   const b = req.body || {};
   if (typeof b.name === 'string') s.name = b.name.trim();
@@ -1111,6 +1144,7 @@ app.put('/api/sessions/:id', auth, (req, res) => {
 app.post('/api/sessions/:id/accept', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   if (!Array.isArray(s.invited) || !s.invited.includes(req.userId)) return res.status(403).json({ error: 'not invited' });
   s.invited = s.invited.filter(x => x !== req.userId);
   if (!s.participants.includes(req.userId)) s.participants.push(req.userId);
@@ -1123,6 +1157,7 @@ app.post('/api/sessions/:id/accept', auth, (req, res) => {
 app.post('/api/sessions/:id/decline', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   if (!Array.isArray(s.invited) || !s.invited.includes(req.userId)) return res.status(403).json({ error: 'not invited' });
   s.invited = s.invited.filter(x => x !== req.userId);
   save(DB);
@@ -1134,6 +1169,7 @@ app.post('/api/sessions/:id/decline', auth, (req, res) => {
 app.post('/api/sessions/:id/suggest', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   // Participant, approved join-requester, OR someone still holding an invitation. That last one
   // is the whole point: "I'll come if we swap Barbell Row" is a thing you say BEFORE you accept,
   // and until now the server refused it, so the answer was accept-blind-then-ask.
@@ -1153,6 +1189,7 @@ app.post('/api/sessions/:id/suggest', auth, (req, res) => {
 app.post('/api/sessions/:id/suggest/:editId/approve', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   const edit = s.suggestedEdits.find(e => e.id === req.params.editId);
   if (!edit) return res.status(404).json({ error: 'edit not found' });
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator approves' });
@@ -1179,6 +1216,7 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, (req, res) => {
 app.post('/api/sessions/:id/suggest/:editId/reject', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   const edit = s.suggestedEdits.find(e => e.id === req.params.editId);
   if (!edit) return res.status(404).json({ error: 'edit not found' });
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator approves' });
@@ -1191,6 +1229,7 @@ app.post('/api/sessions/:id/suggest/:editId/reject', auth, (req, res) => {
 app.post('/api/sessions/:id/join', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   // "not joinable" tested a property of the WORKOUT and never asked anything about the caller, so
   // any logged-in account could ask to join any friends-visibility workout and the reply handed
   // back the entire thing — everyone's sets, the whole chat, the post, the invite list, and other
@@ -1212,6 +1251,7 @@ app.post('/api/sessions/:id/join', auth, (req, res) => {
 app.post('/api/sessions/:id/join/:reqId/approve', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   const jr = s.joinRequests.find(j => j.id === req.params.reqId);
   if (!jr || s.creatorId !== req.userId) return res.status(403).json({ error: 'forbidden' });
   jr.status = 'approved';
@@ -1224,6 +1264,7 @@ app.post('/api/sessions/:id/join/:reqId/approve', auth, (req, res) => {
 app.post('/api/sessions/:id/join/:reqId/reject', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   const jr = s.joinRequests.find(j => j.id === req.params.reqId);
   if (!jr || s.creatorId !== req.userId) return res.status(403).json({ error: 'forbidden' });
   jr.status = 'rejected';
@@ -1236,6 +1277,7 @@ app.post('/api/sessions/:id/join/:reqId/reject', auth, (req, res) => {
 app.post('/api/sessions/:id/attendance', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   if (!s.participants.includes(req.userId)) return res.status(403).json({ error: 'forbidden' });
   s.attendance[req.userId] = (req.body||{}).status || 'in';
   save(DB);
@@ -1581,6 +1623,7 @@ app.get('/api/progress', auth, (req, res) => {
 app.post('/api/sessions/:id/log', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   if (!s.participants.includes(req.userId) && !s.joinRequests.find(j=>j.userId===req.userId&&j.status==='approved'))
     return res.status(403).json({ error: 'forbidden' });
   const { exerciseId, weight, reps, set, setType } = req.body || {};
@@ -1895,6 +1938,7 @@ function rebuildAllPrs() {
 app.put('/api/sessions/:id/log/:logId', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error:'not found' });
+  ensureSessionShape(s);
   const arr = s.logs[req.userId] || [];
   const log = arr.find(l => l.id === req.params.logId);
   if (!log) return res.status(404).json({ error:'log not found' });
@@ -1911,6 +1955,7 @@ app.put('/api/sessions/:id/log/:logId', auth, (req, res) => {
 app.delete('/api/sessions/:id/log/:logId', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error:'not found' });
+  ensureSessionShape(s);
   const arr = s.logs[req.userId] || [];
   const idx = arr.findIndex(l => l.id === req.params.logId);
   if (idx<0) return res.status(404).json({ error:'log not found' });
@@ -1924,6 +1969,7 @@ app.delete('/api/sessions/:id/log/:logId', auth, (req, res) => {
 app.post('/api/sessions/:id/lock', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator' });
   // Idempotent: tapping "Log & Finish" twice used to push a SECOND history row for every
   // participant, inflating workout counts, streaks and the weekly activity line.
@@ -1951,6 +1997,7 @@ app.post('/api/sessions/:id/lock', auth, (req, res) => {
 app.post('/api/sessions/:id/post', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator' });
   const { notes, media, visibility } = req.body || {};
   const vis = ['only_me','friends','public'].includes(visibility) ? visibility : 'only_me';
