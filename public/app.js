@@ -1020,7 +1020,12 @@ async function showSavePage(id){
   const s = await H.get('/api/sessions/'+id);
   if(!s || s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
   const exNames = (s.exercises||[]).map(e=>(s.variations&&s.variations[e.id]&&s.variations[e.id][ME.id]?s.variations[e.id][ME.id].swapTo:e.name));
-  const when = s.scheduledAt ? fmtDate(s.scheduledAt.slice(0,10)) : '';
+  // rcDay already does String(v||'').slice — this was the one place that did not, and scheduledAt
+  // is stored exactly as sent. A creator who posts a number here killed the Save screen for every
+  // participant who opens it, not just their own. This stops the crash; it does not make the date
+  // right — a value that is not an ISO string still reads "Invalid Date" in the line below. Making
+  // it read correctly means changing what this screen shows, so it is not smuggled in here.
+  const when = s.scheduledAt ? fmtDate(String(s.scheduledAt).slice(0,10)) : '';
   const post = s.post || {};
   const vis = post.visibility || 'only_me';
   const visHint = vis==='only_me'?'Only you can see this on your profile.' : vis==='friends'?'Friends can see this on your profile.' : 'Anyone can see this on your profile.';
@@ -1529,8 +1534,23 @@ const EQ_FAMILY = [
   { key:'machine', label:'Machine', match:['machine','bench','incline bench','decline bench','preacher bench','leg press','hack squat','pec deck','leg curl','leg extension','calf raise','ghr','sissy squat','chest press','incline press','shoulder press','rear delt','triceps extension','t-bar','chest-supported','row machine','lat pulldown','dip station'] },
   { key:'cardio', label:'Cardio', match:['treadmill','bike','rower','assault bike','stair climber','elliptical','skierg','jacobs ladder','sled'] },
 ];
+// A custom exercise is authored by ANOTHER USER and renders in your library, so its fields are
+// their input arriving in your browser.
+//
+// eqList is the one that matters: without it, a single non-string entry threw inside .map() and
+// took the whole muscle group down for everyone. The server drops those on write now, but only for
+// rows written since — it cannot clean what is already stored, and one guard is not a guard.
+// Note the two ends are NOT identical: the server's read path coerces (String(x).toLowerCase() in
+// defaultTargetFor), while this drops. Coercing here would let ["barbell"] silently become the
+// barbell family, so dropping is the stricter half; a row that disagrees just gets no family.
+//
+// exName is honest belt-and-braces, not a live fix: the custom-exercise route has always stored
+// String(name), so no stored exercise can have a non-string name today. It is here so that a future
+// write path cannot make .toLowerCase() and .localeCompare() throw in a list render.
+function eqList(e){ const q = e && e.equipment; return (Array.isArray(q)?q:[]).filter(x=>typeof x==='string'); }
+function exName(e){ return String((e && e.name) || ''); }
 function eqFamilies(e){
-  const eq=(e.equipment||[]).map(x=>x.toLowerCase());
+  const eq=eqList(e).map(x=>x.toLowerCase());
   const fams=new Set();
   for(const f of EQ_FAMILY){ if(eq.some(x=>f.match.some(m=>x.includes(m)))) fams.add(f.key); }
   return [...fams];
@@ -1545,14 +1565,24 @@ function exBadges(e){
 // ---- Muscle-group icons (mannequin crops w/ red highlight) ----
 // Map muscle-group key -> png in public/muscle-icons/.
 const MG_IMG = {
+  // No prototype: MG_IMG is the whole vocabulary of icons that exist, and a plain object also
+  // answers to 'constructor', 'toString' and '__proto__' — which would have put a native function's
+  // source into the image URL. A closed vocabulary has to actually be closed.
+  __proto__: null,
   chest:'chest', lats:'lats', traps:'traps', biceps:'biceps', triceps:'triceps',
   core:'core', quads:'quads', hamstrings:'hamstrings', calves:'calves',
   shoulders:'shoulders', forearms:'forearms', glutes:'glutes', cardio:'cardio',
   abdominals:'core'
 };
 function mgIcon(mg){
-  const key = MG_IMG[mg] || mg;
-  return `<img class="mg-img" src="muscle-icons/${key}.png" alt="${esc(mg)}" loading="lazy">`;
+  // MG_IMG is the whole vocabulary of icons that exist. Falling back to the raw group used to build
+  // the src from it UNESCAPED — and a custom exercise's muscle group is another user's text, so a
+  // group of  x" onerror="..."  ended the attribute and ran their code in your browser when you
+  // opened the exercise. v177 stopped new ones being stored; it could not clean the ones already
+  // there, and the sink stayed open. An unknown group has no icon by definition, so there is
+  // nothing to interpolate: show the neutral one.
+  const key = MG_IMG[mg];
+  return `<img class="mg-img" src="muscle-icons/${key || 'core'}.png" alt="${esc(mg)}" loading="lazy">`;
 }
 function exThumb(e){
   const mg = (e.muscle_groups&&e.muscle_groups[0]) || 'abdominals';
@@ -1869,10 +1899,10 @@ function renderLibGroups(){
   const q = LIB_STATE.q;
   if(q){
     const matches = lib.filter(e =>
-      e.name.toLowerCase().includes(q) ||
+      exName(e).toLowerCase().includes(q) ||
       (e.muscle_groups||[]).join(' ').toLowerCase().includes(q) ||
-      (e.equipment||[]).join(' ').toLowerCase().includes(q)
-    ).sort((a,b)=>a.name.localeCompare(b.name));
+      eqList(e).join(' ').toLowerCase().includes(q)
+    ).sort((a,b)=>exName(a).localeCompare(exName(b)));
     $('lib2').innerHTML = matches.length ? `<div class="card">${matches.map(exRowHtml).join('')}</div>`
       : '<div class="muted" style="padding:20px;text-align:center">No exercises found.</div>';
     return;
@@ -1966,8 +1996,8 @@ function renderLibExercises(){
   const list = window._LIB2.filter(e=>
     (e.muscle_groups||[]).includes(muscle) &&
     (!eq || eqFamilies(e).includes(eq)) &&
-    (!q || e.name.toLowerCase().includes(q) || (e.muscle_groups||[]).join(' ').includes(q))
-  ).sort((a,b)=>a.name.localeCompare(b.name));
+    (!q || exName(e).toLowerCase().includes(q) || (e.muscle_groups||[]).join(' ').includes(q))
+  ).sort((a,b)=>exName(a).localeCompare(exName(b)));
   $('lib2').innerHTML = list.length ? `<div class="card">${list.map(exRowHtml).join('')}</div>`
     : '<div class="muted" style="padding:20px;text-align:center">No exercises here.</div>';
 }
@@ -1999,7 +2029,7 @@ async function submitCreateEx(){
 function exDetail(name){
   const e = window._LIB2.find(x=>x.name===name); if(!e) return;
   const sets = e.defaultSets||3, reps=e.defaultReps||10;
-  const eqs = (e.equipment||[]).map(x=>esc(x)).join(', ')||'—';
+  const eqs = eqList(e).map(x=>esc(x)).join(', ')||'—';
   const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>${esc(e.name)}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>

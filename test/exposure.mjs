@@ -13,7 +13,7 @@
 //   carol   a friend of alice's, in no workout — the "friend" tier
 //   mallory a logged-in account related to nobody — the "stranger" tier
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -253,6 +253,12 @@ console.log('\none bad custom exercise cannot break the library for everyone');
   const mine = lib.find(e => e.name === 'Odd Lift');
   ok(mine && mine.equipment.every(x => typeof x === 'string'),
      `but every equipment entry is a string — the client lowercases these (${JSON.stringify(mine && mine.equipment)})`);
+
+  // The reading half of this rule is asserted in test/client-hostile.mjs, which loads the real
+  // public/app.js and calls the real render functions against this kind of row. Source-text checks
+  // were tried here first and reviews defeated every version of them, so the client half is tested
+  // by execution instead. (The jsq checks further down this file are the remaining source checks;
+  // they assert which escaper a handler uses, which is a fact about the text.)
 }
 
 console.log('\nthe library is a shared surface, so it is treated as hostile input');
@@ -298,6 +304,40 @@ console.log('\nids are not guessable');
   // Math.random() ids came out of a PRNG whose state is recoverable from observed output. This is
   // a smoke test, not a proof: what it can catch is a sequence or a shared prefix.
   ok(new Set(ids.map(i => i.slice(0, 3))).size > ids.length / 2, `and not clustered (${ids.slice(0,4).join(', ')})`);
+}
+
+console.log('\nrows stored before the write checks existed are cleaned on the way out');
+{
+  // The POST route validates new rows, but nothing migrates old ones — so the read path is the only
+  // place that can protect against what is already in the database. These write straight into the
+  // store, which is exactly what a pre-v177 POST left behind.
+  const DATA = join(DIR, 'data.json');
+  await stop();                      // the row has to be in the file before the server reads it
+  const raw = JSON.parse(readFileSync(DATA, 'utf8'));
+  const owner = Object.keys(raw.users)[0];
+  raw.customExercises[owner] = [
+    { name: 'Legacy Junk', muscle_groups: ['x" onerror="alert(1)" z="', 'biceps'], equipment: 42,
+      level: { a: 1 }, pattern: [], is_compound: 'yes' },
+    { name: 99, muscle_groups: 'biceps', equipment: [{}, 'cable', 7] },
+  ];
+  writeFileSync(DATA, JSON.stringify(raw));
+  const up = await boot();
+  ok(up.started, `the server boots with those rows in the database${up.started ? '' : ' — ' + String(up.err).slice(0, 160)}`);
+
+  const r = await fetch(B + '/api/exercises');
+  ok(r.status === 200, `the library still loads at all (got ${r.status}) — a non-array equipment used to 500 this route for everyone`);
+  const lib = r.status === 200 ? await r.json() : [];
+  const a = lib.find(e => e.name === 'Legacy Junk'), b = lib.find(e => e.name === '99');
+  ok(!!a && !!b, 'both legacy rows are still returned, not silently dropped');
+  ok(a && !a.muscle_groups.some(m => /onerror/.test(m)),
+     `the payload group is gone at the source, not just at the sink (${JSON.stringify(a && a.muscle_groups)})`);
+  ok(a && Array.isArray(a.equipment) && !a.equipment.length, `a non-array equipment becomes an empty list (${JSON.stringify(a && a.equipment)})`);
+  ok(b && Array.isArray(b.muscle_groups), `a string muscle_groups becomes an array — the client .forEach's this (${JSON.stringify(b && b.muscle_groups)})`);
+  ok(b && typeof b.name === 'string', `a numeric name becomes a string (${JSON.stringify(b && b.name)})`);
+  ok(a && typeof a.level === 'string' && typeof a.pattern === 'string',
+     `level and pattern are strings (${JSON.stringify([a && a.level, a && a.pattern])})`);
+  ok(b && b.equipment.every(x => typeof x === 'string') && b.equipment.length === 1,
+     `and the one real equipment entry in a poisoned list survives (${JSON.stringify(b && b.equipment)})`);
 }
 
 } finally { await stop(); rmSync(DIR, { recursive: true, force: true }); }

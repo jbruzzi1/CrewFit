@@ -417,11 +417,40 @@ function publicUser(id) {
 app.get('/api/exercises', (req, res) => {
   // ownerId is stripped: this route needs no login, and it was handing out a real user id beside
   // every custom exercise name to anyone who asked.
-  const custom = Object.values(DB.customExercises || {}).flat().map(({ ownerId, ...rest }) => rest);
+  const custom = Object.values(DB.customExercises || {}).flat().map(({ ownerId, ...rest }) => sanitizeExercise(rest));
   // computed per request, never at boot — 203 entries is nothing, and startup work in this file
   // has crashed the server three times
   res.json(EX_LIB.concat(custom).map(withTarget));
 });
+// Custom exercises written before the POST route validated anything are still in the database, and
+// nothing migrates them — so the write-side checks protect new rows only. This is the read side:
+// every row is normalised on the way OUT, which is the one place that covers rows already stored.
+//
+// It is not defence in depth for its own sake. Two live faults, both verified:
+//   - a non-array `equipment` threw inside defaultTargetFor's .map, so this whole route 500'd and
+//     NOBODY could load the exercise library until the row was removed by hand;
+//   - a non-array `muscle_groups` threw inside the client's .forEach, killing the Workouts tab.
+// And filtering groups to the known vocabulary here retires the stored-XSS risk at its source
+// rather than only at the sink that renders it.
+function sanitizeExercise(e) {
+  const strs = (v, cap, max) => (Array.isArray(v) ? v : [])
+    .filter(x => typeof x === 'string').map(x => x.slice(0, cap)).slice(0, max);
+  const KNOWN_MG = sanitizeExercise._mg || (sanitizeExercise._mg =
+    new Set(EX_LIB.flatMap(x => x.muscle_groups || [])));
+  const mg = strs(e.muscle_groups, 40, 8).filter(m => KNOWN_MG.has(m));
+  return Object.assign({}, e, {
+    name: String(e.name == null ? '' : e.name).slice(0, 80),
+    // No fake bucket for a row whose groups were ALL junk: 'other' is not a muscle the app has a
+    // list for, so parking it there would look like a fix while changing nothing. It named no real
+    // muscle, so it appears under no muscle — which is the truth about it.
+    muscle_groups: mg,
+    equipment: strs(e.equipment, 40, 8),
+    level: typeof e.level === 'string' ? e.level.slice(0, 20) : 'beginner',
+    pattern: typeof e.pattern === 'string' ? e.pattern.slice(0, 40) : 'other',
+    category: typeof e.category === 'string' ? e.category.slice(0, 40) : (mg[0] || 'other'),  // category is a label, not a list
+    is_compound: !!e.is_compound,
+  });
+}
 app.post('/api/exercises/custom', auth, (req, res) => {
   const { name, muscle_groups, equipment, level, is_compound, pattern } = req.body || {};
   if (!name || !Array.isArray(muscle_groups) || !muscle_groups.length) return res.status(400).json({ error: 'name + muscle_groups required' });
