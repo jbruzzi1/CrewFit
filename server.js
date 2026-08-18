@@ -113,7 +113,7 @@ function migrateMedia() {
           const mime = (src.slice(5, comma).match(/^(image\/\w+|video\/\w+)/) || [])[1] || 'image/jpeg';
           const b64 = src.slice(comma + 1);
           const ext = ({ 'image/png':'png','image/jpeg':'jpg','image/jpg':'jpg','image/webp':'webp','image/gif':'gif','video/mp4':'mp4','video/webm':'webm','video/quicktime':'mov' })[mime] || (mime.startsWith('video') ? 'mp4' : 'jpg');
-          const fname = `post_mig_${s.id}_${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
+          const fname = `post_mig_${s.id}_${Date.now()}_${uid()}.${ext}`;
           fs.writeFileSync(path.join(UPLOAD_DIR, fname), Buffer.from(b64, 'base64'));
           keep.push({ type: m.type === 'video' ? 'video' : 'image', src: `/uploads/${fname}` });
           recovered++; touched = true;
@@ -213,7 +213,10 @@ function withTarget(e) {
 }
 
 // ---- Accounts ----
-function uid() { return Math.random().toString(36).slice(2, 10); }
+// crypto, not Math.random(). Photo URLs and session ids are only private because they are hard to
+// guess, and V8's PRNG state is recoverable from a handful of observed outputs — which this app
+// hands out freely. Same length and alphabet, so nothing that stores or matches an id notices.
+function uid() { return crypto.randomBytes(12).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8); }
 
 // Passwords are stored as a scrypt hash with a per-user salt, never in the clear. They used to
 // be kept verbatim, so anyone holding data.json — or one of its backups, or a copy pulled to a
@@ -412,7 +415,9 @@ function publicUser(id) {
 
 // ---- Exercise library (136 base + user-created) ----
 app.get('/api/exercises', (req, res) => {
-  const custom = Object.values(DB.customExercises || {}).flat();
+  // ownerId is stripped: this route needs no login, and it was handing out a real user id beside
+  // every custom exercise name to anyone who asked.
+  const custom = Object.values(DB.customExercises || {}).flat().map(({ ownerId, ...rest }) => rest);
   // computed per request, never at boot — 203 entries is nothing, and startup work in this file
   // has crashed the server three times
   res.json(EX_LIB.concat(custom).map(withTarget));
@@ -420,12 +425,21 @@ app.get('/api/exercises', (req, res) => {
 app.post('/api/exercises/custom', auth, (req, res) => {
   const { name, muscle_groups, equipment, level, is_compound, pattern } = req.body || {};
   if (!name || !Array.isArray(muscle_groups) || !muscle_groups.length) return res.status(400).json({ error: 'name + muscle_groups required' });
+  // A custom exercise is shown to every other user, so treat these as hostile. Muscle groups are
+  // a closed vocabulary — there is no reason to accept anything outside it.
+  const KNOWN_MG = new Set(EX_LIB.flatMap(x => x.muscle_groups || []));
+  const mg = muscle_groups.filter(m => typeof m === 'string' && KNOWN_MG.has(m));
+  if (!mg.length) return res.status(400).json({ error: 'muscle_groups must be from the library' });
+  // Equipment is read back with .toLowerCase() on the client, so a single non-string here threw on
+  // every render of that muscle group — for every user, permanently, from one bad POST.
+  const equip = (Array.isArray(equipment) ? equipment : [])
+    .filter(x => typeof x === 'string').map(x => x.slice(0, 40)).slice(0, 8);
   const ex = {
     name: String(name).slice(0, 80),
     pattern: pattern || (muscle_groups[0] || 'other'),
     category: muscle_groups[0] || 'other',
-    muscle_groups,
-    equipment: Array.isArray(equipment) ? equipment : [],
+    muscle_groups: mg,
+    equipment: equip,
     is_compound: !!is_compound,
     level: level || 'beginner',
     defaultSets: 3, defaultReps: 10,
@@ -450,20 +464,41 @@ function profileOf(id, viewerId) {
   }
   const prs = (DB.prs && DB.prs[id]) ? Object.values(DB.prs[id]) : [];
   const viewerIsFriend = viewerId && id !== viewerId && (DB.users[viewerId].friends||[]).includes(id);
+  // Delegates. This used to be a second, independently-written copy of the same rule, keyed on
+  // whose profile you are looking at instead of who WROTE the post — so a friend of a participant
+  // was handed the creator's friends-only notes and photo URLs on a profile, while the session
+  // route correctly refused them. One rule, one place.
   const canSeePost = (post) => {
     if (!post) return false;
-    if (id === viewerId) return true;                     // own profile: always
-    if (post.visibility === 'public') return true;
-    if (post.visibility === 'friends' && viewerIsFriend) return true;
-    return false;                                          // 'only_me' or non-friend
+    if (id === viewerId && (post.by || id) === viewerId) return true;   // your own post
+    const owner = Object.values(DB.sessions).find(x => x.post === post);
+    return canSeePostOf(owner || { post, creatorId: post.by }, viewerId);
+  };
+  // A profile listed EVERY workout the person had done, including private ones, to any logged-in
+  // stranger: the name, the date, the first three exercises, and the usernames of everyone
+  // participating OR still holding an unanswered invitation. sessionView goes to the trouble of
+  // withholding the invite list from non-invitees; this route handed the same names to anybody.
+  //
+  // A workout appears on a profile only if the viewer could legitimately reach it: their own, a
+  // post whose own visibility admits them, or a workout they were actually part of.
+  const viewerCanSee = s => {
+    if (id === viewerId) return true;
+    if (s.post && canSeePost(s.post)) return true;
+    const t = sessionTier(s, viewerId);
+    return t === 'member' || t === 'invited';
   };
   const myWorkouts = Object.values(DB.sessions)
     .filter(s => (s.post && s.post.by === id) || (s.history || []).some(h => h.userId === id))
+    .filter(viewerCanSee)
     .sort((a,b)=> new Date(b.scheduledAt||0) - new Date(a.scheduledAt||0))
     .map(s => {
       const post = canSeePost(s.post) ? s.post : null;
       // collaborators = other participants (and invited) who aren't the profile owner
-      const others = new Set([...(s.participants||[]), ...(s.invited||[])].filter(x=>x && x!==id));
+      // who ELSE was there — participants only. Someone still holding an unanswered invitation has
+      // not agreed to be listed anywhere, and "invited" is not a fact about the workout, it is a
+      // fact about them.
+      const inIt = (id === viewerId) || ['member', 'invited'].includes(sessionTier(s, viewerId));
+      const others = inIt ? new Set((s.participants||[]).filter(x=>x && x!==id)) : new Set();
       const collaborators = [...others].map(uid=>DB.users[uid]).filter(Boolean).map(u=>({username:u.username, name:u.displayName||u.username}));
       return {
         id: s.id,
@@ -482,6 +517,10 @@ function profileOf(id, viewerId) {
         } : null
       };
     });
+  // Your training is for you and the people you train with. A logged-in stranger who happens to
+  // know your id got the whole record: every lift, every best, and what you did last week. The
+  // headline counts stay — a profile has to be worth opening — but the detail is for friends.
+  const closeEnough = id === viewerId || viewerIsFriend;
   return {
     ...publicUser(id),
     units: (DB.users[id] && DB.users[id].units) || 'lb',
@@ -490,9 +529,10 @@ function profileOf(id, viewerId) {
     prCount: prs.length,
     // v148: full PR list (name, best weight×reps, when it was set), most recent first — powers the
     // profile's "Personal Records" section. prCount above still just needs the length.
-    prs: prs.slice().sort((a,b)=> new Date(b.at) - new Date(a.at)),
+    prs: closeEnough ? prs.slice().sort((a,b)=> new Date(b.at) - new Date(a.at)) : [],
     streak: currentStreak(id),
-    recentActivity: buildActivityFor(id)
+    recentActivity: closeEnough ? buildActivityFor(id) : [],
+    limited: !closeEnough        // so the profile can say why it is thin rather than look empty
   };
 }
 // Recent activity for a single user: PRs, weekly completions, streaks (most recent first)
@@ -715,13 +755,20 @@ app.delete('/api/templates/:id', auth, (req, res) => {
 app.get('/api/sessions/:id/comments', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  // There was no check here at all. Any logged-in account could read any workout's entire chat by
+  // id — including after their join request was rejected, and after declining an invitation. The
+  // WRITE path five lines below has always been guarded; the read path simply never was.
+  const tier = sessionTier(s, req.userId);
+  if (tier !== 'member' && tier !== 'invited') return res.status(403).json({ error: 'forbidden' });
   res.json(s.comments || []);
 });
 app.post('/api/sessions/:id/comments', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
-  if (!s.participants.includes(req.userId) && !(s.visibility==='friends' && DB.users[req.userId].friends.includes(s.creatorId)))
-    return res.status(403).json({ error: 'forbidden' });
+  // Same gate as the read path directly above. These disagreed: you could post into a thread you
+  // were not allowed to read, and notify everyone in it.
+  const tier = sessionTier(s, req.userId);
+  if (tier !== 'member' && tier !== 'invited') return res.status(403).json({ error: 'forbidden' });
   const text = (req.body || {}).text || '';
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
   const c = { id: 'c_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
@@ -729,7 +776,7 @@ app.post('/api/sessions/:id/comments', auth, (req, res) => {
   s.comments.push(c);
   save(DB);
   for (const pid of s.participants) if (pid !== req.userId) notify(pid, { title: 'New message', body: `${DB.users[req.userId].displayName}: ${text.slice(0,40)}` });
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 // ---- Push subscribe ----
@@ -804,24 +851,142 @@ app.post('/api/sessions', auth, (req, res) => {
 });
 
 // list sessions visible to me: mine, invited to, or friends-visibility from friends
+// THE HOME SCREEN. This runs on every single app open, and it used to return raw sessions — so
+// merely being a friend of the creator delivered every participant's sets, the whole chat, and
+// the notes and photo URLs of an "only me" post, to your phone, unasked, several times a day.
 app.get('/api/sessions', auth, (req, res) => {
-  const myFriends = DB.users[req.userId].friends;
-  const out = Object.values(DB.sessions).filter(s => {
-    if (s.participants.includes(req.userId)) return true;
-    if (Array.isArray(s.invited) && s.invited.includes(req.userId)) return true;
-    if (s.visibility === 'friends' && myFriends.includes(s.creatorId)) return true;
-    return false;
-  }).sort((a,b)=> new Date(a.scheduledAt) - new Date(b.scheduledAt));
+  const out = Object.values(DB.sessions)
+    .map(s => sessionView(s, req.userId))     // tier decides the fields; stranger yields null
+    .filter(Boolean)
+    .sort((a,b)=> new Date(a.scheduledAt) - new Date(b.scheduledAt));
   res.json(out);
 });
 
 app.get('/api/sessions/:id', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
-  if (!s.participants.includes(req.userId) && !(Array.isArray(s.invited) && s.invited.includes(req.userId)) && !(s.visibility==='friends' && DB.users[req.userId].friends.includes(s.creatorId)))
-    return res.status(403).json({ error: 'forbidden' });
-  res.json(s);
+  const view = sessionView(s, req.userId);      // one rule for who, and for which fields
+  if (!view) return res.status(403).json({ error: 'forbidden' });
+  res.json(view);
 });
+
+// ---- WHO SEES WHAT ---------------------------------------------------------------------------
+// Every route in this file used to answer one question — "may you touch this workout at all?" —
+// and then hand back the raw object with `res.json(s)`. It did that at eighteen separate places.
+// So a friend of the creator opening the home screen received every participant's logged sets,
+// the entire chat thread, and the notes and photo URLs of a post marked "only me". The permission
+// model had no concept of WHICH FIELDS a given person may see, only of whether the door opened.
+//
+// This is that concept. One function, one place to reason about, and every route returns through
+// it. Adding a field to a session now means deciding, here, who it belongs to.
+//
+// The tiers, narrowest first:
+//   stranger      not related to this workout at all -> nothing. Routes refuse before reaching here.
+//   friend        a friend of the creator, on a friends-visibility workout, who is not in it.
+//                 Gets the PLAN — what the workout is — and the creator's post only if the post's
+//                 own visibility allows it. Never anyone's sets. Never the chat.
+//   invited       has an invitation they have not answered. Gets the plan, plus the chat, because
+//                 deciding whether to come means being able to ask. Still nobody's sets.
+//   member        a participant or the creator. Gets everything.
+function sessionTier(s, viewerId) {
+  if (!s || !viewerId) return 'stranger';
+  if (s.creatorId === viewerId) return 'member';
+  if ((s.participants || []).includes(viewerId)) return 'member';
+  if (Array.isArray(s.invited) && s.invited.includes(viewerId)) return 'invited';
+  const u = DB.users[viewerId];
+  const friends = (u && Array.isArray(u.friends)) ? u.friends : [];
+  if (s.visibility === 'friends' && friends.includes(s.creatorId)) return 'friend';
+  // A PUBLISHED workout is its own thing. Sharing is the point of posting, and session visibility
+  // defaults to 'private' — so gating the published record behind it meant a post shared publicly
+  // could not be opened by the people it was shared with. The post's own visibility decides.
+  if (canSeePostOf(s, viewerId)) return 'reader';
+  return 'stranger';
+}
+
+// A post carries its OWN visibility, chosen when it was published, and it is not the same setting
+// as the workout's. "only me" has to mean only me even to people who were in the workout — the
+// creator wrote those notes for themselves.
+function canSeePostOf(s, viewerId) {
+  const p = s && s.post;
+  if (!p) return false;
+  // The AUTHOR, not whoever holds creatorId today. Leaving a shared workout transfers creatorId to
+  // someone else (see /leave), so keying on it meant the person who wrote "only me" notes lost
+  // them and the other participant inherited them — and could republish them publicly.
+  const author = p.by || s.creatorId;
+  if (author === viewerId) return true;
+  if (p.visibility === 'public') return true;
+  if (p.visibility === 'friends') {
+    const u = DB.users[viewerId];
+    return !!(u && Array.isArray(u.friends) && u.friends.includes(author));
+  }
+  return false;                                    // 'only_me', or no visibility recorded
+}
+
+// Only the viewer's own entry survives from a per-user map.
+function pickMine(map, viewerId) {
+  const out = {};
+  for (const [k, v] of Object.entries(map || {})) {
+    if (v && typeof v === 'object' && v[viewerId] !== undefined) out[k] = { [viewerId]: v[viewerId] };
+  }
+  return out;
+}
+
+function sessionView(s, viewerId) {
+  if (!s) return null;
+  const tier = sessionTier(s, viewerId);
+  if (tier === 'member') {
+    // still not automatic: an "only me" post belongs to whoever wrote it
+    if (s.post && !canSeePostOf(s, viewerId)) {
+      const { post, ...rest } = s;
+      return Object.assign({}, rest, { post: { hidden: true, visibility: s.post.visibility } });
+    }
+    return s;
+  }
+  if (tier === 'stranger') return null;
+
+  // The plan, and nothing that belongs to the people doing it.
+  const view = {
+    id: s.id, creatorId: s.creatorId, scheduledAt: s.scheduledAt, status: s.status,
+    visibility: s.visibility, name: s.name, location: s.location, lengthMin: s.lengthMin,
+    creatorNote: s.creatorNote, equipment: s.equipment || [],
+    exercises: s.exercises || [], participants: s.participants || [],
+    // You are told about YOURSELF and nobody else. Emptying this entirely also erased the fact
+    // that the viewer is invited, which is what the whole invitation screen keys on — "waiting on
+    // you", the Respond block, and being able to suggest a swap before accepting all vanished.
+    // Everyone else who was asked and has not answered is a fact about them, not about you.
+    invited: (Array.isArray(s.invited) && s.invited.includes(viewerId)) ? [viewerId] : [],
+    // who proposed swapping what is a conversation between the people in the workout
+    suggestedEdits: (tier === 'invited' || tier === 'reader') ? (s.suggestedEdits || []) : [],
+    // your OWN swap comes back; nobody else's
+    variations: pickMine(s.variations, viewerId),
+    attendance: {}, history: [],
+    joinRequests: [],                    // other people's requests, and their notes, are not yours
+    logs: {},                            // NOBODY else's sets — see the reader case below
+    comments: tier === 'invited' ? (s.comments || []) : [],
+  };
+  // A published workout IS the author's sets. That is what was shared, and stripping them rendered
+  // an empty record to exactly the people it was published for.
+  if (tier === 'reader' && canSeePostOf(s, viewerId)) {
+    const author = (s.post && s.post.by) || s.creatorId;
+    if (s.logs && s.logs[author]) view.logs = { [author]: s.logs[author] };
+  }
+  // "Brian's already started - 2 sets in" is the fact that decides an invitation, and it survives
+  // this change. It does not need Brian's SETS to say so, only how many there were: no weights,
+  // no reps, nothing that belongs on his record. Counts only, and only for someone deciding.
+  if (tier === 'invited') {
+    const counts = {};
+    for (const [pid, arr] of Object.entries(s.logs || {})) {
+      if (!Array.isArray(arr) || !arr.length) continue;
+      const per = {};
+      for (const l of arr) per[l.exerciseId] = (per[l.exerciseId] || 0) + 1;
+      counts[pid] = per;
+    }
+    view.logCounts = counts;
+  }
+  if (canSeePostOf(s, viewerId)) view.post = s.post;
+  else if (s.post) view.post = { hidden: true, visibility: s.post.visibility };
+  return view;
+}
 
 // delete a session (creator only)
 // Who OTHER than me has logged sets in this workout.
@@ -854,6 +1019,10 @@ app.delete('/api/sessions/:id', auth, (req, res) => {
 app.post('/api/sessions/:id/leave', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
+  // You can only leave something you are in. Without this, any account could name any session id
+  // and trigger a full PR rebuild and a whole-database write.
+  if (!(s.participants || []).includes(req.userId) && s.creatorId !== req.userId)
+    return res.status(403).json({ error: 'not in this workout' });
   const me = req.userId;
   const others = othersWhoLogged(s, me);
   if (!others.length && s.creatorId === me)
@@ -906,7 +1075,7 @@ app.put('/api/sessions/:id', auth, (req, res) => {
   }
   s.updatedAt = new Date().toISOString();
   save(DB);
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 // accept an invite (move from invited[] to participants[])
@@ -918,7 +1087,7 @@ app.post('/api/sessions/:id/accept', auth, (req, res) => {
   if (!s.participants.includes(req.userId)) s.participants.push(req.userId);
   save(DB);
   notify(s.creatorId, { title: 'Invite accepted', body: `${DB.users[req.userId].displayName} joined your workout` });
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 // decline an invite (remove from invited[], do not join)
@@ -929,7 +1098,7 @@ app.post('/api/sessions/:id/decline', auth, (req, res) => {
   s.invited = s.invited.filter(x => x !== req.userId);
   save(DB);
   notify(s.creatorId, { title: 'Invite declined', body: `${DB.users[req.userId].displayName} declined your workout` });
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 // suggest a swap (any participant; also join-requester after approval)
@@ -949,11 +1118,12 @@ app.post('/api/sessions/:id/suggest', auth, (req, res) => {
   save(DB);
   // notify creator
   notify(s.creatorId, { title: 'Swap suggested', body: `${DB.users[req.userId].displayName} suggested swapping to ${swapTo}` });
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 app.post('/api/sessions/:id/suggest/:editId/approve', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
   const edit = s.suggestedEdits.find(e => e.id === req.params.editId);
   if (!edit) return res.status(404).json({ error: 'edit not found' });
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator approves' });
@@ -974,58 +1144,73 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, (req, res) => {
   if (renamed) rebuildAllPrs();            // the records are grouped by that name
   save(DB);
   notify(edit.proposedBy, { title: 'Swap approved', body: `${DB.users[s.creatorId].displayName} approved your swap to ${edit.swapTo}` });
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 app.post('/api/sessions/:id/suggest/:editId/reject', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
   const edit = s.suggestedEdits.find(e => e.id === req.params.editId);
   if (!edit) return res.status(404).json({ error: 'edit not found' });
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator approves' });
   edit.status = 'rejected';
   save(DB);
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 // join request (friends-visibility sessions)
 app.post('/api/sessions/:id/join', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  // "not joinable" tested a property of the WORKOUT and never asked anything about the caller, so
+  // any logged-in account could ask to join any friends-visibility workout and the reply handed
+  // back the entire thing — everyone's sets, the whole chat, the post, the invite list, and other
+  // people's join requests with their notes. Rejecting them afterwards changed nothing; they
+  // already had it. Asking to join is now something only the creator's friends can do, and the
+  // reply says nothing except that the request was filed.
   if (!s || s.visibility !== 'friends') return res.status(400).json({ error: 'not joinable' });
+  const me = DB.users[req.userId];
+  const myFriends = (me && Array.isArray(me.friends)) ? me.friends : [];
+  if (s.creatorId !== req.userId && !myFriends.includes(s.creatorId))
+    return res.status(403).json({ error: 'forbidden' });
   if (s.joinRequests.find(j => j.userId === req.userId)) return res.status(400).json({ error: 'already requested' });
   s.joinRequests.push({ id: 'jr_' + uid(), userId: req.userId, note: (req.body||{}).note || '', status: 'pending' });
   save(DB);
   notify(s.creatorId, { title: 'Join request', body: `${DB.users[req.userId].displayName} wants to join your workout` });
-  res.json(s);
+  res.json({ ok: true, requested: true });     // the answer to "may I join" is not the workout
 });
 
 app.post('/api/sessions/:id/join/:reqId/approve', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
   const jr = s.joinRequests.find(j => j.id === req.params.reqId);
   if (!jr || s.creatorId !== req.userId) return res.status(403).json({ error: 'forbidden' });
   jr.status = 'approved';
   if (!s.participants.includes(jr.userId)) s.participants.push(jr.userId);
   save(DB);
   notify(jr.userId, { title: 'Join approved', body: `${DB.users[s.creatorId].displayName} approved your join request` });
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 app.post('/api/sessions/:id/join/:reqId/reject', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
   const jr = s.joinRequests.find(j => j.id === req.params.reqId);
   if (!jr || s.creatorId !== req.userId) return res.status(403).json({ error: 'forbidden' });
   jr.status = 'rejected';
   save(DB);
   notify(jr.userId, { title: 'Join declined', body: `${DB.users[s.creatorId].displayName} declined your join request` });
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 // attendance
 app.post('/api/sessions/:id/attendance', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
   if (!s.participants.includes(req.userId)) return res.status(403).json({ error: 'forbidden' });
   s.attendance[req.userId] = (req.body||{}).status || 'in';
   save(DB);
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 // log an individual set
@@ -1366,6 +1551,7 @@ app.get('/api/progress', auth, (req, res) => {
 
 app.post('/api/sessions/:id/log', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
   if (!s.participants.includes(req.userId) && !s.joinRequests.find(j=>j.userId===req.userId&&j.status==='approved'))
     return res.status(403).json({ error: 'forbidden' });
   const { exerciseId, weight, reps, set, setType } = req.body || {};
@@ -1396,7 +1582,7 @@ app.post('/api/sessions/:id/log', auth, (req, res) => {
   s.logs[req.userId].push(entry);
   rebuildAllPrs();
   save(DB);
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 // v148: PRs are tracked per exercise NAME across a user's entire history, not per exercise-instance-id
@@ -1690,7 +1876,7 @@ app.put('/api/sessions/:id/log/:logId', auth, (req, res) => {
   if (set!==undefined) log.set = Number(set)||log.set;
   rebuildAllPrs();
   save(DB);
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 app.delete('/api/sessions/:id/log/:logId', auth, (req, res) => {
@@ -1702,16 +1888,17 @@ app.delete('/api/sessions/:id/log/:logId', auth, (req, res) => {
   arr.splice(idx,1);
   rebuildAllPrs();
   save(DB);
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 // lock session (mark done) -> record history for conflict detection
 app.post('/api/sessions/:id/lock', auth, (req, res) => {
   const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator' });
   // Idempotent: tapping "Log & Finish" twice used to push a SECOND history row for every
   // participant, inflating workout counts, streaks and the weekly activity line.
-  if (s.completed) return res.json(s);
+  if (s.completed) return res.json(sessionView(s, req.userId));
   s.completed = true;
   // record each participant's history
   for (const pid of s.participants) {
@@ -1728,7 +1915,7 @@ app.post('/api/sessions/:id/lock', auth, (req, res) => {
     s.history.push({ userId: pid, date: new Date().toISOString().slice(0,10), muscleGroups: [...mgs], exercises: exNames });
   }
   save(DB);
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 // Save a post for a locked session (notes + media + visibility)
@@ -1765,7 +1952,7 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
         const sub = dm[1];
         const ext = sub.includes('png') ? 'png' : sub.includes('webp') ? 'webp' : sub.includes('gif') ? 'gif'
                   : sub.includes('mp4') ? 'mp4' : sub.includes('webm') ? 'webm' : sub.includes('quicktime') ? 'mov' : 'jpg';
-        const fname = `post_${req.params.id}_${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
+        const fname = `post_${req.params.id}_${Date.now()}_${uid()}.${ext}`;
         fs.writeFileSync(path.join(UPLOAD_DIR, fname), Buffer.from(dm[2], 'base64'));
         src = `/uploads/${fname}`;
       } catch (e) {
@@ -1788,7 +1975,7 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
     visibility: vis
   };
   save(DB);
-  res.json(s);
+  res.json(sessionView(s, req.userId));
 });
 
 // ---- Boot migrations ----

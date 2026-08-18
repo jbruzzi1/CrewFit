@@ -25,7 +25,34 @@ function setToken(t,u){ TOKEN=t; localStorage.setItem('crewfit_token',t); ME=u; 
 function repLabel(e){ const lo=Number(e.defaultReps), hi=Number(e.defaultRepsMax);
   if(!lo) return '';                    // timed exercise: no rep target, so claim none
   return (hi && hi>lo) ? `${lo}–${hi}` : `${lo}`; }
-function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+// Escapes for HTML. The QUOTES are the point: this handled & < > only, and almost every value in
+// this file lands inside a single-quoted onclick or a double-quoted attribute, so an apostrophe
+// ended the attribute early. That is two separate bugs wearing one hat.
+//
+//   1. Captain's Chair Leg Raise, Jacob's Ladder and Farmer's Carry were inert EVERYWHERE — you
+//      could not tap them, add them to a workout, or pick one as a swap. Their apostrophe broke
+//      the handler they were sitting in.
+//   2. Anything a person types — a username, a custom exercise name, a photo caption — could close
+//      the attribute and open an event handler of its own. That runs in every viewer's browser and
+//      the first thing worth stealing is the login token, which IS the security model here.
+//
+// One function, five characters, both closed.
+const ESC_MAP = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' };
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ESC_MAP[c]); }
+
+// For a value that lands INSIDE A JS STRING INSIDE AN HTML ATTRIBUTE — onclick="fn('HERE')".
+//
+// esc() alone is not merely insufficient there, it is actively harmful: the HTML parser decodes
+// &#39; back into a real apostrophe BEFORE the JavaScript is parsed, so the quote arrives intact
+// and closes the string. A name of  Zed');alert(1);//  becomes a live statement. Escaping harder
+// for HTML cannot fix it, because the decode happens first.
+//
+// The order is what matters. Escape for JavaScript FIRST — backslash, then quote — and only then
+// escape for HTML. The parser decodes the entity back to a BACKSLASHED quote, which the JS parser
+// then reads as one character of a string. This is also, finally, what makes Captain's Chair Leg
+// Raise, Jacob's Ladder and Farmer's Carry tappable: their apostrophe arrives as \' rather than
+// as a string terminator.
+function jsq(s){ return esc(String(s==null?'':s).replace(/\\/g, '\\\\').replace(/'/g, "\\'")); }
 // "I cannot resolve this person" — you only ever see your own friends. It is a REAL WORD on
 // purpose: this value flows into a dozen `name || fallback` expressions written long before it
 // existed, and every one of them prints it. A sentinel nobody can read (a null byte, say) turns
@@ -215,6 +242,19 @@ async function openSession(id){
   s.suggestedEdits = s.suggestedEdits || [];
   s.joinRequests = s.joinRequests || [];
   s.variations = s.variations || {};
+  // Someone holding an invitation is given COUNTS, not sets — the server will not hand a
+  // non-participant another person's logged weights, only how many there were. These read
+  // whichever of the two the server sent.
+  const setsOn = (pid, exId) => (s.logs && s.logs[pid])
+    ? s.logs[pid].filter(l => l.exerciseId === exId).length
+    : (((s.logCounts || {})[pid] || {})[exId] || 0);
+  const setsTotal = pid => (s.logs && s.logs[pid])
+    ? s.logs[pid].length
+    : Object.values((s.logCounts || {})[pid] || {}).reduce((a, b) => a + b, 0);
+  const whoLogged = () => {
+    const ids = new Set([...Object.keys(s.logs || {}), ...Object.keys(s.logCounts || {})]);
+    return [...ids].filter(pid => setsTotal(pid) > 0);
+  };
   const isCreator = s.creatorId===ME.id;
   // Inline edit mode for a saved (posted) workout: render the whole page editable.
   if(EDITING_ID===id && isCreator && s.post){ renderWorkoutEdit(s); return; }
@@ -281,10 +321,10 @@ async function openSession(id){
     // Gated on inTheWorkout: GET /api/sessions/:id hands the FULL logs of every participant to any
     // friend of the creator, so a friend-of-a-friend who never joined would otherwise be shown
     // Brian's sets — sets Brian never agreed to publish to them. Do not widen this without asking.
-    const crew = !inTheWorkout ? [] : Object.keys(s.logs||{})
-      .filter(pid => pid !== ME.id && (s.logs[pid]||[]).some(l=>l.exerciseId===e.id))
+    const crew = !inTheWorkout ? [] : whoLogged()
+      .filter(pid => pid !== ME.id && setsOn(pid, e.id) > 0)
       .map(pid => {
-        const n = (s.logs[pid]||[]).filter(l=>l.exerciseId===e.id).length;
+        const n = setsOn(pid, e.id);
         // each entry carries its own "set/sets" — "Brian 2 · Sam 3 sets" would read as though
         // the count applied to the pair of them
         const who = isUnknownName(nameCache[pid]) ? 'Someone' : String(nameCache[pid]).split(' ')[0];
@@ -350,9 +390,8 @@ async function openSession(id){
   // Has anyone else started? ONLY on an invitation you have not answered yet. It exists to help
   // you decide; once you have accepted you are going to train regardless, and the same sentence
   // stops being information and starts being a nag. Jeff's call, Aug 18.
-  const startedBy = pendingMe && !s.post
-    ? Object.keys(s.logs||{}).filter(pid => pid!==ME.id && (s.logs[pid]||[]).length) : [];
-  const startedSets = startedBy.reduce((n,pid) => n + (s.logs[pid]||[]).length, 0);
+  const startedBy = pendingMe && !s.post ? whoLogged().filter(pid => pid !== ME.id) : [];
+  const startedSets = startedBy.reduce((n,pid) => n + setsTotal(pid), 0);
   const firstName = pid => { const n = nameCache[pid]; return isUnknownName(n) ? 'Someone' : String(n).split(' ')[0]; };
   const startedLine = !startedBy.length ? '' : (() => {
     const names = startedBy.map(firstName);
@@ -391,7 +430,7 @@ async function openSession(id){
           <svg class="am-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg>
           <span class="am-plus"></span></div>
           <span class="ml-text">Add a photo / video</span></div>
-        ${postMedia.length?`<div class="thumbs">${postMedia.map(m=>`<div class="thumb">${m.type==='image'?`<img src="${m.src}">`:`<video src="${m.src}" muted></video>`}</div>`).join('')}</div>`:''}
+        ${postMedia.length?`<div class="thumbs">${postMedia.map(m=>`<div class="thumb">${m.type==='image'?`<img src="${esc(m.src)}">`:`<video src="${esc(m.src)}" muted></video>`}</div>`).join('')}</div>`:''}
       </div>`;
     }
     html += `<h2>Notes</h2><div class="notes-box">${s.post.notes ? esc(s.post.notes) : '<span class="muted">How\'d it go?</span>'}</div>`;
@@ -412,8 +451,11 @@ async function openSession(id){
   // rack 3" — and that used to sit below the exercises AND below the buttons, so the most
   // time-sensitive thing on the screen was the last thing you saw. Read the plan, hear from him,
   // then answer.
+  // Only people in the workout can post, so only they are offered the box. Rendering an input
+  // that the server will refuse is a promise the app cannot keep.
+  const canChat = isCreator || isParticipant || pendingMe;
   const chatBlock = `<h2>${isPosted?'Comments':'Chat'}</h2><div class="card"><div id="chatbox" class="scrolllist"></div>
-    <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="${isPosted?'Add a comment…':'Message the crew'}"><button class="sm chat-send" onclick="sendChat('${s.id}')">Send</button></div></div>`;
+    ${canChat ? `<div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="${isPosted?'Add a comment…':'Message the crew'}"><button class="sm chat-send" onclick="sendChat('${s.id}')">Send</button></div>` : ''}</div>`;
 
   // "Friends joined" was wrong for the creator, who did not join anything. It DOES list everyone
   // else in the workout, which is worth keeping — it was the name that was off.
@@ -548,10 +590,20 @@ async function declineInvite(id){ if(!confirm('Decline this invite?')) return; a
 async function requestChanges(id){ const t=prompt('What changes do you want?'); if(t) { await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+t}); openSession(id); } }
 async function saveRoutine(id){ const s=await H.get('/api/sessions/'+id); const r=await H.post('/api/templates',{name:prompt('Template name:','Saved routine')||'Saved routine',exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}))}); alert('Saved as template: '+r.name); }
 async function openChat(id){ document.getElementById('chatInput').focus(); }
-async function sendChat(id){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:t}); $('chatInput').value=''; openSession(id); }
+async function sendChat(id){
+  const t=$('chatInput').value; if(!t.trim()) return;
+  const r = await H.post(`/api/sessions/${id}/comments`,{text:t});
+  // this used to throw the response away, so a refused message simply disappeared and the box
+  // cleared as though it had sent
+  if(!r || r.error){ alert((r && r.error) === 'forbidden' ? 'Only people in this workout can post here.' : ((r && r.error) || 'That did not send. Try again.')); return; }
+  $('chatInput').value=''; openSession(id);
+}
 async function loadChat(s){
   const box=$('chatbox'); if(!box) return;
   const cs=await H.get(`/api/sessions/${s.id}/comments`);
+  // A refusal is not an empty thread. This reported "No comments yet" on a 403, which is a claim
+  // about the workout that happens to be false.
+  if(!Array.isArray(cs)){ box.innerHTML='<div class="muted">Only people in this workout can see the chat.</div>'; return; }
   if(!cs.length){ box.innerHTML='<div class="muted">No comments yet. Be the first to comment.</div>'; return; }
   const nm={};
   for(const c of cs){ if(!(c.userId in nm)) nm[c.userId]= await nameOf(c.userId); }
@@ -1564,7 +1616,7 @@ function trendChart(d, U){
   const chips = `<div class="chips">
     <span class="chip ${isOverall?'on':''}" onclick="setTrendPick('__overall')">Overall</span>
     ${t.lifts.slice(0,6).map(l=>`<span class="chip ${(!isOverall&&l.name===lift.name)?'on':''}"
-      onclick="setTrendPick('${esc(l.name).replace(/'/g,"\\'")}')">${esc(l.name.split(' ').slice(-2).join(' '))}</span>`).join('')}
+      onclick="setTrendPick('${jsq(l.name)}')">${esc(l.name.split(' ').slice(-2).join(' '))}</span>`).join('')}
   </div>`;
 
   if(pts.length<2) return `<h2>Strength trend</h2>${chips}<div class="card">
@@ -1876,10 +1928,10 @@ function applyLibSearch(){
 }
 function exRowHtml(e){
   if(SWAP_MODE){
-    return `<div class="ex-row" onclick="swapPick('${esc(e.name)}')">
+    return `<div class="ex-row" onclick="swapPick('${jsq(e.name)}')">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}${e.custom?' · your exercise':''}</div>
+          <div class="ex-mg">${esc((e.muscle_groups||[]).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
         </div>
         <div class="ex-badges">${exBadges(e)}</div>
         <div class="mg-chev">›</div>
@@ -1887,19 +1939,19 @@ function exRowHtml(e){
   }
   const added = DRAFT.exercises.find(x=>x.name===e.name);
   if(LIB_ADDMODE){
-    return `<div class="ex-row ${added?'ex-on':''}" onclick="libToggle('${esc(e.name)}', this)">
+    return `<div class="ex-row ${added?'ex-on':''}" onclick="libToggle('${jsq(e.name)}', this)">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}${e.custom?' · your exercise':''}</div>
+          <div class="ex-mg">${esc((e.muscle_groups||[]).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
         </div>
         <div class="ex-badges">${exBadges(e)}</div>
         <div class="ex-add">${added?'✓':'+'}</div>
       </div>`;
   }
-  return `<div class="ex-row" onclick="exDetail('${esc(e.name)}')">
+  return `<div class="ex-row" onclick="exDetail('${jsq(e.name)}')">
       <div class="ex-main">
         <div class="ex-name">${esc(e.name)}</div>
-        <div class="ex-mg">${(e.muscle_groups||[]).slice(0,2).join(' · ')}${e.custom?' · your exercise':''}</div>
+        <div class="ex-mg">${esc((e.muscle_groups||[]).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
       </div>
       <div class="ex-badges">${exBadges(e)}</div>
       <div class="mg-chev">›</div>
@@ -1951,8 +2003,8 @@ function exDetail(name){
   const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>${esc(e.name)}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
-      <div class="sheet-thumb">${exThumb(e)}<span class="sheet-thumb-cap">${(e.muscle_groups||[])[0]||'abdominals'}</span></div>
-      <div class="sheet-mg">${(e.muscle_groups||[]).join(' · ')}</div>
+      <div class="sheet-thumb">${exThumb(e)}<span class="sheet-thumb-cap">${esc((e.muscle_groups||[])[0]||'abdominals')}</span></div>
+      <div class="sheet-mg">${esc((e.muscle_groups||[]).join(' · '))}</div>
       <div class="ex-badges" style="margin:8px 0">${exBadges(e)}</div>
       <div class="sheet-row"><span>Equipment</span><b>${eqs}</b></div>
       <div class="sheet-row"><span>Pattern</span><b>${esc(e.pattern||'—')}</b></div>

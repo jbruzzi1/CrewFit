@@ -17,8 +17,13 @@ import { readFileSync } from 'node:fs';
 let fails = 0;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fails++; };
 
-const src = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+// Comments are stripped before scanning. A comment that SHOWS you the shape of a handler —
+// `onclick="fn('HERE')"` — is documentation, not markup, and reporting fn() as a dead button is a
+// false positive that would block a deploy. Only whole comment lines go: a `//` inside a string or
+// a URL keeps its line.
+const stripComments = t => t.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+const src = stripComments(readFileSync(new URL('../public/app.js', import.meta.url), 'utf8'));
+const html = stripComments(readFileSync(new URL('../public/index.html', import.meta.url), 'utf8'));
 
 // things that are not app functions and are expected inside a handler
 // This list exists so the test cannot fail on correct code. A false positive here blocks a
