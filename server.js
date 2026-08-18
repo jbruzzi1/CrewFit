@@ -274,11 +274,57 @@ function noteLoginFail(key) {
   const f = LOGIN_FAILS[key] || (LOGIN_FAILS[key] = { count: 0, until: 0 });
   f.count++;
   if (f.count >= LOGIN_MAX) f.until = Date.now() + LOGIN_LOCK_MS;
+  const ks = Object.keys(LOGIN_FAILS);        // bound the map: sweep expired locks, then evict oldest
+  if (ks.length > 10000) {
+    const now = Date.now();
+    for (const k of ks) { const e = LOGIN_FAILS[k]; if (e.until && now >= e.until) delete LOGIN_FAILS[k]; }
+    let over = Object.keys(LOGIN_FAILS).length - 10000;
+    if (over > 0) for (const k of Object.keys(LOGIN_FAILS)) { delete LOGIN_FAILS[k]; if (--over <= 0) break; }
+  }
 }
+// Real client IP, as set by Fly's proxy (Fly OVERWRITES any client-supplied value, so it cannot be
+// spoofed). null when there is no proxy header — a loopback health check or a local test — which we
+// do not rate-limit. Fly is the only ingress in production, so a null IP never reaches here from a
+// real external client, and the caps below apply to everyone who is actually on the internet.
+const clientIp = req => {
+  const h = req.headers['fly-client-ip'] || String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return h ? h.slice(0, 64) : null;
+};
+// A tiny in-memory fixed-window limiter (single machine — fine at this scale). BOUNDED on purpose:
+// the per-username LOGIN_FAILS map grew one entry per distinct name tried, so a flood of made-up
+// names was itself a memory-exhaustion vector. Here expired entries are swept and the map is hard-
+// capped, evicting the oldest, so a flood of spoofed keys can never grow it without limit.
+const RL = new Map();
+const RL_MAX = 50000;
+function overLimit(key, max, windowMs) {
+  const now = Date.now();
+  let e = RL.get(key);
+  if (!e || now >= e.reset) { RL.delete(key); e = { count: 0, reset: now + windowMs }; RL.set(key, e); }
+  e.count++;
+  if (RL.size > RL_MAX) {
+    for (const [k, v] of RL) if (now >= v.reset) RL.delete(k);
+    while (RL.size > RL_MAX) RL.delete(RL.keys().next().value);
+  }
+  return e.count > max;
+}
+// Read/'increment'/clear a counter in the same bounded RL map, for a rolling per-window count where
+// we act on the count ourselves (the per-account failed-login ceiling) rather than a fixed cap.
+function failCount(key) { const e = RL.get(key); return (e && Date.now() < e.reset) ? e.count : 0; }
+function bumpFail(key, windowMs) { overLimit(key, Infinity, windowMs); }   // increment within window; bounded; never self-trips
+function clearFail(key) { RL.delete(key); }
+
 const app = express();
 // 60mb let one request carry more than a phone ever sends, on a 1 GB volume shared by the
 // database, its ten backups and every photo. 30 leaves headroom over the 25 MB we accept.
-app.use(express.json({ limit: '30mb' }));
+// Only the two routes carrying a base64 image/video need a large body; everything else is small
+// JSON. A 30 mb limit applied to EVERY route on a 256 mb box was a needless OOM surface — a few
+// concurrent large posts to any endpoint could exhaust RAM. Route the big parser only where media
+// legitimately flows; cap everything else at 1 mb (far above any real non-media payload).
+const jsonSmall = express.json({ limit: '1mb' });
+const jsonLarge = express.json({ limit: '30mb' });
+const BIG_BODY = [/^\/api\/sessions\/[^/]+\/post$/, /^\/api\/me\/avatar$/];
+app.use((req, res, next) =>
+  (req.method === 'POST' && BIG_BODY.some(re => re.test(req.path)) ? jsonLarge : jsonSmall)(req, res, next));
 // The app offered 4 photos; the server took 12, at any size, with no check at all.
 const MEDIA_MAX_ITEMS = 4;
 const MEDIA_MAX_PHOTO = 8 * 1024 * 1024;    // a normal iPhone photo is 2-5 MB
@@ -367,6 +413,9 @@ app.get('/healthz', (req, res) => {
 });
 app.get('/api/vapid', (req, res) => res.json({ publicKey: vapid.publicKey }));
 app.post('/api/register', (req, res) => {
+  const ip = clientIp(req);
+  if (ip && overLimit('reg:' + ip, 20, 60 * 60 * 1000))
+    return res.status(429).json({ error: 'Too many sign-ups from here. Please try again later.' });
   const { username, pin, displayName } = req.body || {};
   if (!username || !pin) return res.status(400).json({ error: 'username + pin required' });
   const uProblem = usernameProblem(username); if (uProblem) return res.status(400).json({ error: uProblem });
@@ -389,12 +438,31 @@ app.get('/api/register/check', (req, res) => {
 
 app.post('/api/login', (req, res) => {
   const { username, pin } = req.body || {};
-  const key = normUser(username);
-  const locked = loginLockedFor(key);
-  if (locked) return res.status(429).json({ error: `Too many attempts. Try again in ${Math.ceil(locked/60)} minute(s).` });
+  const ip = clientIp(req);
+  if (ip && overLimit('login:' + ip, 60, 60 * 1000))
+    return res.status(429).json({ error: 'Too many attempts. Please wait a minute.' });
+  const uname = normUser(username);
+  // Two ceilings, because neither alone is enough for a 4-char PIN:
+  //   per (IP, account) 8 / 10 min — stops one IP brute-forcing an account, and being per-IP it
+  //     CANNOT lock the real user out. The old lock was per username alone: 8 wrong guesses from
+  //     anywhere froze the real user for 10 minutes (a trivial griefing vector).
+  //   per account across ALL IPs 40 / hour — the per-IP lock gives no aggregate cap, so a proxy pool
+  //     could still grind a PIN; this bounds that. It counts failures only (a normal login never
+  //     trips it), and reaching it costs ~5 IPs since each is capped at 8 — far dearer to grief than
+  //     the old single-IP lock, while restoring a real distributed-brute-force ceiling.
+  const ipKey = (ip || 'local') + '|' + uname;
+  const ipLock = loginLockedFor(ipKey);
+  if (ipLock) return res.status(429).json({ error: `Too many attempts. Try again in ${Math.ceil(ipLock/60)} minute(s).` });
+  if (failCount('acct:' + uname) >= 40)
+    return res.status(429).json({ error: 'This account is temporarily locked after too many failed attempts. Try again later.' });
   const u = findUserByName(username);
-  if (!u || !verifyPin(u, pin)) { noteLoginFail(key); return res.status(401).json({ error: 'bad credentials' }); }
-  delete LOGIN_FAILS[key];
+  if (!u || !verifyPin(u, pin)) {
+    noteLoginFail(ipKey);
+    bumpFail('acct:' + uname, 60 * 60 * 1000);
+    return res.status(401).json({ error: 'bad credentials' });
+  }
+  delete LOGIN_FAILS[ipKey];
+  clearFail('acct:' + uname);
   res.json({ token: signToken(u.id), user: publicUser(u.id) });
 });
 
@@ -612,6 +680,7 @@ app.post('/api/me/avatar', auth, (req, res) => {
   if (!data || !/^data:image\/(png|jpeg|jpg|webp);base64,/.test(data)) return res.status(400).json({ error: 'image data required' });
   const ext = (type === 'image/png' ? 'png' : 'jpg');
   const b64 = data.split(',')[1];
+  if (b64Bytes(b64) > MEDIA_MAX_PHOTO) return res.status(413).json({ error: `That image is too large (limit ${mb(MEDIA_MAX_PHOTO)}).` });
   const fname = `avatar_${req.userId}.${ext}`;
   fs.writeFileSync(path.join(UPLOAD_DIR, fname), Buffer.from(b64, 'base64'));
   const u = DB.users[req.userId];

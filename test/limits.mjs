@@ -35,11 +35,11 @@ const exId = sess.exercises[0].id;
 
 console.log('\npush/subscribe cannot store an unbounded blob');
 {
-  const blob = 'x'.repeat(5 * 1024 * 1024);            // 5 MB
+  const blob = 'x'.repeat(900 * 1024);                 // ~0.9 MB: under the 1mb body cap, so it reaches the route
   const r = await post('/api/push/subscribe', { subscription: { endpoint: 'https://push.example/1', junk: blob } }, alice.token);
-  // endpoint is valid, but the 5MB junk field must not ride along into storage
+  // endpoint is valid, but the junk field must not ride along into storage (route-level strip)
   const stored = db().pushSubs[alice.user.id];
-  ok(JSON.stringify(stored).length < 4096, `a 5 MB junk field is not persisted (stored ${JSON.stringify(stored).length} bytes)`);
+  ok(JSON.stringify(stored).length < 4096, `a large junk field is stripped by the route (stored ${JSON.stringify(stored).length} bytes)`);
   ok(stored && stored.endpoint === 'https://push.example/1' && !('junk' in stored), 'only endpoint/keys/expirationTime are kept');
 
   const r2 = await post('/api/push/subscribe', { subscription: 'not-an-object' }, bob.token);
@@ -170,6 +170,17 @@ console.log('\nthe three vectors a second review caught are closed too');
   let last;
   for (let i = 0; i < 501; i++) last = await post('/api/exercises/custom', { name: 'X' + i, muscle_groups: ['chest'] }, cap.token);
   ok(last.status === 400, `the 501st custom exercise from one account is refused (got ${last.status})`);
+}
+
+console.log('\nthe request-body size cap is small everywhere except the media routes');
+{
+  const twoMB = 'z'.repeat(2 * 1024 * 1024);
+  // a 2 MB body to a normal route is refused by the 1mb global parser (413), before any handler
+  const reg = await fetch(B + '/api/register', { method: 'POST', headers: J, body: JSON.stringify({ username: 'x', pin: 'pass1234', displayName: twoMB }) });
+  ok(reg.status === 413, `a 2 MB body to /api/register is rejected by the body cap (got ${reg.status})`);
+  // the same size to the avatar route (which legitimately carries images) is NOT rejected by the parser
+  const av = await fetch(B + '/api/me/avatar', { method: 'POST', headers: H(alice.token), body: JSON.stringify({ data: 'data:image/png;base64,' + 'A'.repeat(2 * 1024 * 1024), type: 'image/png' }) });
+  ok(av.status !== 413 && av.status !== 400, `a 2 MB image to /api/me/avatar is accepted by the large parser (got ${av.status})`);
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
