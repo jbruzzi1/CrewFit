@@ -934,17 +934,65 @@ app.get('/api/sessions/:id', auth, (req, res) => {
 // on an array silently sets a non-index property that JSON.stringify then drops on save — a loud
 // 500 replaced by a quiet 200 that erases the set forever. isObj() rejects arrays explicitly.
 const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+// Coerce to an array of objects: a non-array becomes [], and any null/primitive slot is dropped.
+// A null LOG entry crashes a boot migration (`l.exerciseName` on null); a null HISTORY or COMMENT
+// row crashes a read path (`h.userId` in profileOf). A null slot holds no data, so dropping it
+// loses nothing. Returns the SAME array reference when the input is already clean, so this stays a
+// true no-op on well-formed data.
+const objArray = a => !Array.isArray(a) ? []
+  : (a.some(x => !x || typeof x !== 'object') ? a.filter(x => x && typeof x === 'object') : a);
 function ensureSessionShape(s) {
-  if (!Array.isArray(s.participants)) s.participants = [];
-  if (!Array.isArray(s.exercises)) s.exercises = [];
+  if (!Array.isArray(s.participants)) s.participants = [];   // participants and invited are id STRINGS,
+  if (!Array.isArray(s.invited)) s.invited = [];             // not objects — array-checked, never element-cleaned
+  s.exercises = objArray(s.exercises);
   if (!isObj(s.logs)) s.logs = {};
+  else for (const uid of Object.keys(s.logs)) s.logs[uid] = objArray(s.logs[uid]);  // each user's set list
   if (!isObj(s.attendance)) s.attendance = {};
-  if (!Array.isArray(s.comments)) s.comments = [];
-  if (!Array.isArray(s.suggestedEdits)) s.suggestedEdits = [];
+  s.comments = objArray(s.comments);
+  s.suggestedEdits = objArray(s.suggestedEdits);
   if (!isObj(s.variations)) s.variations = {};
-  if (!Array.isArray(s.joinRequests)) s.joinRequests = [];
-  if (!Array.isArray(s.history)) s.history = [];
+  s.joinRequests = objArray(s.joinRequests);
+  s.history = objArray(s.history);
   return s;
+}
+
+// Run ONCE at boot, before any migration or read path that walks a session's containers. Heals a
+// hand-edited or pre-schema row in memory, closing two distinct failure modes:
+//   - BOOT CRASH: a non-array logs[uid], a null set slot, or a non-array `invited` throws inside a
+//     boot migration (migrateExerciseNames/LoadTypes/rebuildAllPrs walk logs; migrateMergeDuplicate-
+//     Brian reads invited). Those run before app.listen with no try/catch, so one bad row stops the
+//     server starting AT ALL, for everyone, until the file is hand-fixed.
+//   - READ 500: a non-array `history` (or a null history row) throws in profileOf/currentStreak,
+//     taking the Profile and feed tabs down for everyone who loads them.
+// Healing every row here, and re-healing on each write via ensureSessionShape, closes both. It is
+// itself defensive: a session that will not read as an object is dropped (backupOnBoot has already
+// snapshotted the pre-migration file), and any unexpected throw is caught so no single row can
+// block boot. save() at the end of the boot block persists the healed rows.
+function shapeFingerprint(s) {
+  const t = v => Array.isArray(v) ? 'a' + v.length
+    : (v && typeof v === 'object' ? 'o' + Object.keys(v).length : String(typeof v));
+  let f = [s.participants, s.invited, s.exercises, s.logs, s.attendance, s.comments,
+           s.suggestedEdits, s.variations, s.joinRequests, s.history].map(t).join('|');
+  if (isObj(s.logs)) for (const uid of Object.keys(s.logs)) f += ':' + t(s.logs[uid]);
+  return f;
+}
+function migrateSessionShapes() {
+  if (!isObj(DB.sessions)) { DB.sessions = {}; return 0; }
+  let healed = 0, dropped = 0;
+  for (const id of Object.keys(DB.sessions)) {
+    const s = DB.sessions[id];
+    if (!isObj(s)) { delete DB.sessions[id]; dropped++; continue; }
+    try {
+      const before = shapeFingerprint(s);
+      ensureSessionShape(s);
+      if (shapeFingerprint(s) !== before) healed++;
+    } catch (e) {
+      console.error('migrateSessionShapes: could not heal session ' + id + ' — ' + (e && e.message));
+    }
+  }
+  if (healed || dropped) console.log('migrateSessionShapes: healed ' + healed + ' malformed session(s)'
+    + (dropped ? ', dropped ' + dropped + ' unreadable' : ''));
+  return healed;
 }
 
 function sessionTier(s, viewerId) {
@@ -2071,6 +2119,7 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
 // full replay every boot by design, so PRs self-heal whenever the rule behind them changes.
 backupOnBoot();          // FIRST — after this line, everything below may rewrite data.json
 loadOrCreateSecret();       // before anything can sign or verify a login
+migrateSessionShapes();     // heal malformed session rows BEFORE any migration below walks them
 migrateMedia();
 migratePasswords();
 migrateMergeDuplicateBrian();   // before the collision report, which it resolves
