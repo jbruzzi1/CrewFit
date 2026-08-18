@@ -74,6 +74,10 @@ for (const [bad, why] of [['ab', 'too short'], ['x'.repeat(21), 'too long'],
 {
   const r = await reg(nm(), '123', 'X');
   ok(r.status === 400, `a 3-character password is refused (got ${r.status})`);
+  const five = await reg(nm(), '12345', 'X');
+  ok(five.status === 400, `a 5-character password is refused — the minimum is now 6 (got ${five.status})`);
+  const six = await reg(nm(), 'abc123', 'X');
+  ok(six.status === 200, `a 6-character password is accepted (got ${six.status})`);
   const long = await reg(nm(), 'x'.repeat(65), 'X');
   ok(long.status === 400, `a 65-character password is refused (got ${long.status})`);
 }

@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/wiring.mjs && node test/progression.mjs && node test/data-safety.mjs && node test/accounts.mjs && node test/sharing.mjs && node test/targets.mjs && node test/exposure.mjs && node test/client-hostile.mjs && node test/boot-shape.mjs && node test/limits.mjs && node test/ratelimit.mjs"
+    "test": "node test/wiring.mjs && node test/progression.mjs && node test/data-safety.mjs && node test/accounts.mjs && node test/sharing.mjs && node test/targets.mjs && node test/exposure.mjs && node test/client-hostile.mjs && node test/boot-shape.mjs && node test/limits.mjs && node test/ratelimit.mjs && node test/follow.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",

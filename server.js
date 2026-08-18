@@ -254,7 +254,7 @@ function usernameProblem(username) {
 }
 function pinProblem(pin) {
   const p = String(pin == null ? '' : pin);
-  if (p.length < 4) return 'Password must be at least 4 characters';
+  if (p.length < 6) return 'Password must be at least 6 characters';
   if (p.length > 64) return 'Password must be 64 characters or fewer';
   return null;
 }
@@ -488,7 +488,7 @@ app.post('/api/reset',  (req, res) => res.status(503).json(RESET_DISABLED));
 
 function publicUser(id) {
   const u = DB.users[id];
-  return { id: u.id, username: u.username, displayName: u.displayName, bio: u.bio || '', avatar: u.avatar || '', followers: (u.followers || []).length, following: (u.friends || []).length, units: u.units || 'lb' };
+  return { id: u.id, username: u.username, displayName: u.displayName, bio: u.bio || '', avatar: u.avatar || '', followers: (u.followers || []).length, following: (u.following || []).length, units: u.units || 'lb' };
 }
 
 // ---- Exercise library (136 base + user-created) ----
@@ -575,7 +575,9 @@ function profileOf(id, viewerId) {
     else if (s.post && s.post.by === id) completed.add(s.id);
   }
   const prs = (DB.prs && DB.prs[id]) ? Object.values(DB.prs[id]) : [];
-  const viewerIsFriend = viewerId && id !== viewerId && (DB.users[viewerId].friends||[]).includes(id);
+  // v184: profile detail is gated on APPROVED FOLLOWER now, not friendship. Anyone sees the public
+  // counts; only you and people you've approved to follow you see the workouts/PRs/streak/activity.
+  const isApproved = id === viewerId || ((u.followers || []).includes(viewerId));
   // Delegates. This used to be a second, independently-written copy of the same rule, keyed on
   // whose profile you are looking at instead of who WROTE the post — so a friend of a participant
   // was handed the creator's friends-only notes and photo URLs on a profile, while the session
@@ -594,7 +596,7 @@ function profileOf(id, viewerId) {
   // A workout appears on a profile only if the viewer could legitimately reach it: their own, a
   // post whose own visibility admits them, or a workout they were actually part of.
   const viewerCanSee = s => {
-    if (id === viewerId) return true;
+    if (id === viewerId || isApproved) return true;
     if (s.post && canSeePost(s.post)) return true;
     const t = sessionTier(s, viewerId);
     return t === 'member' || t === 'invited';
@@ -631,20 +633,25 @@ function profileOf(id, viewerId) {
     });
   // Your training is for you and the people you train with. A logged-in stranger who happens to
   // know your id got the whole record: every lift, every best, and what you did last week. The
-  // headline counts stay — a profile has to be worth opening — but the detail is for friends.
-  const closeEnough = id === viewerId || viewerIsFriend;
+  // headline counts stay — a profile has to be worth opening — but the detail is for people
+  // you've approved as a follower (or yourself).
   return {
     ...publicUser(id),
     units: (DB.users[id] && DB.users[id].units) || 'lb',
     workoutsCompleted: completed.size,
+    // the follow button's state, and whether they follow you back
+    youFollow: id === viewerId ? 'self'
+      : ((u.followers || []).includes(viewerId) ? 'following'
+      : ((u.followReqs || []).includes(viewerId) ? 'requested' : 'none')),
+    followsYou: !!(viewerId && id !== viewerId && (DB.users[viewerId].followers || []).includes(id)),
     myWorkouts,
-    prCount: prs.length,
-    // v148: full PR list (name, best weight×reps, when it was set), most recent first — powers the
-    // profile's "Personal Records" section. prCount above still just needs the length.
-    prs: closeEnough ? prs.slice().sort((a,b)=> new Date(b.at) - new Date(a.at)) : [],
-    streak: currentStreak(id),
-    recentActivity: closeEnough ? buildActivityFor(id) : [],
-    limited: !closeEnough        // so the profile can say why it is thin rather than look empty
+    // Below the line — approved followers (and you) only. The workout count and follower/following
+    // counts from publicUser above stay public.
+    prCount: isApproved ? prs.length : null,
+    prs: isApproved ? prs.slice().sort((a,b)=> new Date(b.at) - new Date(a.at)) : [],
+    streak: isApproved ? currentStreak(id) : null,
+    recentActivity: isApproved ? buildActivityFor(id) : [],
+    limited: !isApproved        // so the profile can say why it is thin rather than look empty
   };
 }
 // Recent activity for a single user: PRs, weekly completions, streaks (most recent first)
@@ -694,26 +701,78 @@ app.post('/api/me/bio', auth, (req, res) => {
   save(DB);
   res.json({ bio: DB.users[req.userId].bio });
 });
+// Following is a REQUEST now, not an instant grant. It stays pending until the target accepts.
 app.post('/api/follow/:id', auth, (req, res) => {
   const target = DB.users[req.params.id];
   if (!target) return res.status(404).json({ error: 'user not found' });
   if (req.params.id === req.userId) return res.status(400).json({ error: 'cannot follow self' });
-  if (!target.followers) target.followers = [];
-  if (!target.followers.includes(req.userId)) target.followers.push(req.userId);
-  save(DB);
-  res.json({ followers: target.followers.length });
+  ensureFollowArrays(target); ensureFollowArrays(DB.users[req.userId]);
+  if (target.followers.includes(req.userId)) return res.json({ status: 'following' });
+  if (!target.followReqs.includes(req.userId)) {
+    target.followReqs.push(req.userId);
+    save(DB);
+    notify(target.id, { title: 'New follow request', body: `${DB.users[req.userId].displayName} wants to follow you` });
+  }
+  res.json({ status: 'requested' });
 });
 app.post('/api/unfollow/:id', auth, (req, res) => {
   const target = DB.users[req.params.id];
-  if (!target || !target.followers) return res.json({ followers: 0 });
-  target.followers = target.followers.filter(x => x !== req.userId);
+  if (!target) return res.json({ status: 'none' });
+  ensureFollowArrays(target); const me = DB.users[req.userId]; ensureFollowArrays(me);
+  target.followers = target.followers.filter(x => x !== req.userId);   // stop being an approved follower
+  target.followReqs = target.followReqs.filter(x => x !== req.userId); // or cancel a pending request
+  me.following = me.following.filter(x => x !== req.params.id);
   save(DB);
-  res.json({ followers: target.followers.length });
+  res.json({ status: 'none', followers: target.followers.length });
+});
+// The target approves or rejects a pending follow request. :id is the requester.
+app.post('/api/follow-requests/:id/accept', auth, (req, res) => {
+  const me = DB.users[req.userId]; ensureFollowArrays(me);
+  const fromId = req.params.id;
+  if (!me.followReqs.includes(fromId)) return res.status(404).json({ error: 'no such request' });
+  me.followReqs = me.followReqs.filter(x => x !== fromId);
+  if (!me.followers.includes(fromId)) me.followers.push(fromId);
+  const from = DB.users[fromId];
+  if (from) { ensureFollowArrays(from); if (!from.following.includes(req.userId)) from.following.push(req.userId); }
+  save(DB);
+  if (from) notify(fromId, { title: 'Follow request accepted', body: `${me.displayName} accepted your follow request` });
+  res.json({ ok: true });
+});
+app.post('/api/follow-requests/:id/reject', auth, (req, res) => {
+  const me = DB.users[req.userId]; ensureFollowArrays(me);
+  me.followReqs = me.followReqs.filter(x => x !== req.params.id);
+  save(DB);
+  res.json({ ok: true });
 });
 
 // ---- Friends ----
 // friendRequests model: each user has incoming[] / outgoing[] of {from|to, status:'pending'}
 function ensureFriendArrays(u){ if(!u.incoming) u.incoming=[]; if(!u.outgoing) u.outgoing=[]; if(!u.friends) u.friends=[]; }
+// v184: following is now approval-based (Instagram/Strava private-account style). followers[] =
+// people approved to see my private profile; following[] = accounts I follow that approved me;
+// followReqs[] = incoming pending requests. Friends (mutual) stay separate, for workout collaboration.
+function ensureFollowArrays(u){ if(!Array.isArray(u.followers)) u.followers=[]; if(!Array.isArray(u.following)) u.following=[]; if(!Array.isArray(u.followReqs)) u.followReqs=[]; }
+// One-time: friends already saw each other's detail, so they become mutual APPROVED followers (no
+// visibility changes for anyone). Old one-directional follows granted nothing, so under the new
+// approval rule they become pending requests the target can accept or ignore — nobody silently
+// gains access they were never granted. Idempotent via the DB flag; runs before app.listen.
+function migrateFollowApproval() {
+  if (DB.followApprovalV1) return 0;
+  for (const u of Object.values(DB.users)) ensureFollowArrays(u);
+  let pending = 0;
+  for (const u of Object.values(DB.users)) {
+    const old = u.followers.slice();
+    const friends = new Set((Array.isArray(u.friends) ? u.friends : []).filter(f => DB.users[f] && f !== u.id));
+    u.followers = [...friends];
+    for (const f of old) if (DB.users[f] && f !== u.id && !friends.has(f) && !u.followReqs.includes(f)) { u.followReqs.push(f); pending++; }
+  }
+  for (const u of Object.values(DB.users)) u.following = [];
+  for (const u of Object.values(DB.users)) for (const f of u.followers) if (DB.users[f]) DB.users[f].following.push(u.id);
+  for (const u of Object.values(DB.users)) u.following = [...new Set(u.following)];
+  DB.followApprovalV1 = true;
+  console.log('migrateFollowApproval: friends became approved followers; ' + pending + ' old follows became pending requests');
+  return pending;
+}
 app.get('/api/users/search', auth, (req, res) => {
   const q = normUser(req.query.q);
   // One letter returned twenty arbitrary strangers. Two is the shortest query that means anything.
@@ -771,11 +830,12 @@ app.post('/api/friends/reject', auth, (req, res) => {
   res.json({ ok:true });
 });
 app.get('/api/friends', auth, (req, res) => {
-  const me = DB.users[req.userId]; ensureFriendArrays(me);
+  const me = DB.users[req.userId]; ensureFriendArrays(me); ensureFollowArrays(me);
   res.json({
     friends: me.friends.map(id => ({ ...publicUser(id), streak: currentStreak(id) })),
     incoming: me.incoming.filter(r=>r.status==='pending').map(r=>({ ...publicUser(r.from), reqId:r.from })),
-    outgoing: me.outgoing.filter(r=>r.status==='pending').map(r=>({ ...publicUser(r.to), reqId:r.to }))
+    outgoing: me.outgoing.filter(r=>r.status==='pending').map(r=>({ ...publicUser(r.to), reqId:r.to })),
+    followRequests: (me.followReqs || []).map(id => DB.users[id] ? publicUser(id) : null).filter(Boolean)
   });
 });
 
@@ -2229,6 +2289,7 @@ migratePasswords();
 migrateMergeDuplicateBrian();   // before the collision report, which it resolves
 reportUsernameCollisions();
 migrateCreatedAt();
+migrateFollowApproval();    // friends -> approved followers; old follows -> pending requests
 migrateExerciseNames();     // before rebuildAllPrs, which groups by the name
 rebuildAllPrs();
 migrateLoadTypes();

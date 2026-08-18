@@ -39,7 +39,7 @@ async function seed(dir) {
   if (!r.started) throw new Error('could not seed: ' + r.err);
   const h = { 'Content-Type': 'application/json' };
   const u = await fetch(B + '/api/register', { method: 'POST', headers: h,
-    body: JSON.stringify({ username: 'u' + Math.floor(Math.random() * 1e9), pin: '1234', displayName: 'T' }) }).then(x => x.json());
+    body: JSON.stringify({ username: 'u' + Math.floor(Math.random() * 1e9), pin: 'pass12', displayName: 'T' }) }).then(x => x.json());
   const H = { ...h, Authorization: 'Bearer ' + u.token };
   const s = await fetch(B + '/api/sessions', { method: 'POST', headers: H,
     body: JSON.stringify({ name: 'Push', visibility: 'private', scheduledAt: '2026-08-12T18:00:00Z',
@@ -52,7 +52,7 @@ async function seed(dir) {
 // Tokens live in memory only, so every restart invalidates them — log back in.
 async function login(username) {
   const r = await fetch(B + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, pin: '1234' }) }).then(x => x.json());
+    body: JSON.stringify({ username, pin: 'pass12' }) }).then(x => x.json());
   if (!r.token) throw new Error('login failed after restart: ' + JSON.stringify(r));
   return { 'Content-Type': 'application/json', Authorization: 'Bearer ' + r.token };
 }

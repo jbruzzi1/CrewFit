@@ -32,7 +32,7 @@ const stop = () => new Promise(r => { if (!srv) return r(); srv.on('exit', r); s
 async function newUser() {
   const u = 'u' + Math.floor(Math.random() * 1e9);
   const r = await fetch(B + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: u, pin: '1234', displayName: 'T' }) }).then(x => x.json());
+    body: JSON.stringify({ username: u, pin: 'pass12', displayName: 'T' }) }).then(x => x.json());
   if (!r.token) throw new Error('register failed: ' + JSON.stringify(r));
   return { H: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + r.token }, username: u };
 }
@@ -191,7 +191,7 @@ console.log('\nsets logged before rep targets were recorded (pre-v154 data)');
   writeFileSync(f, JSON.stringify(d, null, 2));
   await boot();
   const r = await fetch(B + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: u.username, pin: '1234' }) }).then(x => x.json());
+    body: JSON.stringify({ username: u.username, pin: 'pass12' }) }).then(x => x.json());
   const u2 = { H: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + r.token } };
   const a = await ask(u2, 'Leg Press');
   ok(!a.hold, 'no "8 of null reps" hold invented from a set with no target');
@@ -336,15 +336,15 @@ console.log('\nnobody can reset a password they cannot prove they own');
      'and it leaks neither the username nor the real name');
 
   const reset = await fetch(B + '/api/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: u.username, newPin: '9999' }) });
+    body: JSON.stringify({ username: u.username, newPin: 'pass99' }) });
   ok(reset.status === 503, `/api/reset is off (got ${reset.status})`);
 
   // the decisive one: the password must be UNCHANGED after that attempt
   const stolen = await fetch(B + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: u.username, pin: '9999' }) }).then(x => x.json());
+    body: JSON.stringify({ username: u.username, pin: 'pass99' }) }).then(x => x.json());
   ok(!stolen.token, 'the attacker cannot log in with the password they tried to set');
   const real = await fetch(B + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: u.username, pin: '1234' }) }).then(x => x.json());
+    body: JSON.stringify({ username: u.username, pin: 'pass12' }) }).then(x => x.json());
   ok(!!real.token, 'and the real owner is not locked out');
 }
 

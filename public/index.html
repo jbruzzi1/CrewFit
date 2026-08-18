@@ -151,6 +151,14 @@
     .card > .lib-item:last-child, .scrolllist > .lib-item:last-child { border-bottom:none; }
     .mw-thumb { width:52px; height:52px; border-radius:10px; object-fit:cover; flex:0 0 auto; background:#e9edf2; }
     .badge { background:var(--blue); color:#fff; border-radius:999px; padding:2px 8px; font-size:11px; }
+    /* A count badge sitting beside an <h1> (e.g. pending follow requests on Friends): the
+       heading text and a tiny pill don't share a baseline by default, so this row centers
+       them on the cross-axis and gives the pill real proportions instead of a squashed
+       inline span riding low next to 19px text. */
+    .h1-row { display:flex; align-items:center; gap:8px; margin:4px 0 2px; }
+    .h1-row h1 { margin:0; }
+    .h1-row .badge { min-width:20px; height:20px; padding:0 6px; font-size:12px; font-weight:700;
+      display:inline-flex; align-items:center; justify-content:center; box-sizing:border-box; }
     .chips { display:flex; flex-wrap:wrap; gap:5px; align-items:center; margin:8px 0 4px; }
     .chips .lbl { color:var(--muted); font-size:11px; margin-right:2px; }
     .chip { background:#eef1f5; color:var(--fg); border:1px solid var(--line); border-radius:999px; padding:5px 10px; font-size:12px; cursor:pointer; }
@@ -603,6 +611,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=179"></script>
+  <script src="app.js?v=183"></script>
 </body>
 </html>

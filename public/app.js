@@ -105,7 +105,7 @@ function authScreen(){
         <h2>New account</h2>
         <input id="rx" placeholder="username" autocomplete="off" oninput="checkUsername()">
         <div id="rxHint" class="muted" style="font-size:12px;margin:4px 0 0;min-height:14px"></div>
-        <input id="rp" placeholder="password" type="password">
+        <input id="rp" placeholder="password (6+ characters)" type="password">
         <input id="rn" placeholder="display name (optional)">
         <button id="regBtn" onclick="doReg()">Create account</button>
       </div>
@@ -135,6 +135,7 @@ async function doReg(){ try {
   if(btn && btn.disabled) return;
   const u=($('rx').value||'').trim().toLowerCase();
   if(u){ try { const c=await H.get('/api/register/check?username='+encodeURIComponent(u)); if(c && c.available===false){ alert('username taken'); return; } } catch(e){} }
+  if(($('rp').value||'').length < 6){ alert('Password must be at least 6 characters.'); return; }
   const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value}); if(r.token){ setToken(r.token,r.user); home(); } else alert(r.error||'register failed'); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
 
 // ---- Nav ----
@@ -2072,7 +2073,7 @@ async function useTpl(id){
 
 async function friends(){
   const data = await H.get('/api/friends');
-  const f = data.friends||[]; const inc = data.incoming||[]; const out = data.outgoing||[];
+  const f = data.friends||[]; const inc = data.incoming||[]; const out = data.outgoing||[]; const freq = data.followRequests||[];
   const flame = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>';
   const friendRows = f.length ? f.map(x=>`
     <div class="friend-row" onclick="profileView('${x.id}')" style="cursor:pointer">
@@ -2094,16 +2095,27 @@ async function friends(){
       </div>
     </div>`).join('')
     : '<div class="muted" style="padding:4px 0">No pending requests.</div>';
-  const badge = inc.length ? `<span class="badge">${inc.length}</span>` : '';
+  const followReqRows = freq.length ? freq.map(x=>`
+    <div class="req">
+      <div class="av" style="background:${avatarColor(x.username)};color:#fff">${esc((x.displayName||x.username||'?')[0]||'?')}</div>
+      <div class="rc"><b>${esc(x.displayName||x.username)}</b> wants to follow you</div>
+      <div class="ra">
+        <button class="sm ok" onclick="acceptFollow('${x.id}')">Approve</button>
+        <button class="sm no" onclick="rejectFollow('${x.id}')">Reject</button>
+      </div>
+    </div>`).join('') : '';
+  const pending = inc.length + freq.length;
+  const badge = pending ? `<span class="badge">${pending}</span>` : '';
   $('app').innerHTML = `<div class="wrap">
-    <h1>Friends ${badge}</h1>
+    <div class="h1-row"><h1>Friends</h1>${badge}</div>
     <div class="card">
       <div class="add-row">
         <input id="fu" placeholder="Search people by name or @username" autocomplete="off" oninput="friendSearch()">
-        <button class="sm blue" onclick="friendSearch()">Search</button>
+        <button class="add-btn" onclick="friendSearch()">Search</button>
       </div>
       <div id="fresults"></div>
     </div>
+    ${freq.length?`<h2>Follow requests</h2><div class="card" style="padding:6px 12px">${followReqRows}</div>`:''}
     ${inc.length?`<h2>Friend requests</h2><div class="card" style="padding:6px 12px">${reqRows}</div>`:''}
     <h2>Friends</h2>
     <div class="card" style="padding:6px 12px">${friendRows}</div>
@@ -2120,7 +2132,7 @@ async function friendSearch(){
     box.innerHTML = hits.map(x=>{
       const btn = x.requestStatus==='friends' ? `<button class="sm" disabled style="background:#f0f1f3;border-color:transparent;color:var(--muted)">Friends</button>`
         : x.requestStatus==='sent' ? `<button class="sm" disabled style="background:#f0f1f3;border-color:transparent;color:var(--muted)">Requested</button>`
-        : `<button class="sm sec" onclick="sendRequest('${esc(x.username)}', this)">Add</button>`;
+        : `<button class="sm sec" onclick="sendRequest('${jsq(x.username)}', this)">Add</button>`;
       return `<div class="user-row"><div class="avatar" style="background:${avatarColor(x.username)};color:#fff">${esc((x.displayName||x.username||'?')[0]||'?')}</div><div class="meta"><div class="name">${esc(x.displayName||x.username)}</div><div class="handle">@${esc(x.username)}</div></div>${btn}</div>`;
     }).join('');
   } catch(e){ if(box) box.innerHTML=''; }
@@ -2137,6 +2149,14 @@ async function acceptRequest(id){
 async function rejectRequest(id){
   const r = await H.post('/api/friends/reject',{from:id});
   if(r.error) alert(r.error); else friends();
+}
+async function acceptFollow(id){
+  const r = await H.post('/api/follow-requests/'+id+'/accept',{});
+  if(r && r.error) alert(r.error); else friends();
+}
+async function rejectFollow(id){
+  const r = await H.post('/api/follow-requests/'+id+'/reject',{});
+  if(r && r.error) alert(r.error); else friends();
 }
 function avatarColor(seed){
   const colors=['#16a34a','#2563eb','#dc2626','#9333ea','#ea580c','#0891b2','#db2777','#65a30d'];
@@ -2185,7 +2205,7 @@ async function profileView(id){
   const stats = `
     <div class="pstats">
       <div class="pstat"><b>${p.workoutsCompleted}</b><span>Workouts</span></div>
-      <div class="pstat"><b>${p.following}</b><span>Friends</span></div>
+      <div class="pstat"><b>${p.following}</b><span>Following</span></div>
       <div class="pstat"><b>${p.followers}</b><span>Followers</span></div>
     </div>`;
   const bioBlock = isMe
@@ -2198,7 +2218,11 @@ async function profileView(id){
        </label>`
     : avatar;
   const settingsBtn = isMe ? `<button class="profile-set" title="Settings" onclick="openSettings()">${gearSvg()}</button>` : '';
-  const action = isMe ? '' : `<button class="sm ${p.followers>0&&false?'':'blue'}" id="followBtn" onclick="toggleFollow('${p.id}')">Follow</button>`;
+  const FOLLOW_LABEL = { none: ['Follow','blue'], requested: ['Requested','sec'], following: ['Following','sec'] };
+  const [flabel, fcls] = FOLLOW_LABEL[p.youFollow] || FOLLOW_LABEL.none;
+  const action = (isMe || p.youFollow === 'self') ? ''
+    : `<button class="sm ${fcls}" id="followBtn" onclick="toggleFollow('${p.id}','${p.youFollow || 'none'}')">${flabel}</button>`
+      + (p.followsYou ? `<span class="muted" style="margin-left:8px;font-size:12px">Follows you</span>` : '');
   const actHtml = action?`<div style="margin:10px 0">${action}</div>`:'';
   // v147: surface recentActivity (PRs / weekly completions / streaks) — server already computes
   // this (buildActivityFor in server.js) but the profile page never rendered it. Reuses the same
@@ -2244,6 +2268,12 @@ async function profileView(id){
   const listHtml = workouts.length
     ? `<div class="wgrid wlist">` + workouts.map(w=>woCard(w)).join('') + `</div>`
     : '<div class="muted" style="padding:14px 0;text-align:center">No workouts logged yet.</div>';
+  const isPrivate = p.limited && !isMe;
+  const privateBlock = `<div class="card" style="text-align:center;padding:26px 16px;margin-top:10px">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" style="color:var(--muted)"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+      <div style="font-weight:700;margin-top:8px">This profile is private</div>
+      <div class="muted" style="margin-top:4px;font-size:13px">Follow ${esc(p.displayName||p.username)} to see ${workouts.length?'the rest of their':'their'} workouts, PRs and activity.</div>
+    </div>`;
   const wview = (window.__wview||'grid');
   $('app').innerHTML = `<div class="wrap">
     <div class="profile-head">
@@ -2258,14 +2288,12 @@ async function profileView(id){
     ${stats}
     ${actHtml}
     ${bioBlock}
-    ${activityBlock}
-    ${prsBlock}
+    ${activityBlock}${prsBlock}
     <div class="sec-head"><h2>My Workouts</h2><div class="view-toggle"><button class="${wview==='grid'?'on':''}" id="vtGrid" onclick="setWorkoutView('grid')">▦ Grid</button><button class="${wview==='list'?'on':''}" id="vtList" onclick="setWorkoutView('list')">☰ List</button></div></div>
     <div style="margin:8px 0 14px" id="workoutView">${wview==='grid'?gridHtml:listHtml}</div>
+    ${isPrivate ? privateBlock : ''}
     ${isMe?`<button class="sec" style="margin-top:18px" onclick="logout()">Log out</button>`:''}
   </div>`;
-  // reflect follow state
-  if(!isMe) reflectFollow(p);
 }
 function setWorkoutView(v){
   window.__wview = v;
@@ -2273,20 +2301,13 @@ function setWorkoutView(v){
   if(g){ g.className = v==='grid'?'on':''; l.className = v==='list'?'on':''; }
   if(ME&&ME.id) profileView(ME.id);
 }
-async function reflectFollow(p){
-  const me = await H.get('/api/profile/me');
-  const btn = document.getElementById('followBtn');
-  if(!btn) return;
-  const following = (me.followers!==undefined); // placeholder; server drives count
-  btn.textContent = 'Follow';
-  btn.onclick = ()=>toggleFollow(p.id);
-}
-async function toggleFollow(id){
-  const r = await H.post('/api/follow/'+id,{});
-  if(r.error){ alert(r.error); return; }
-  const btn = document.getElementById('followBtn');
-  if(btn){ btn.textContent = 'Following'; btn.classList.remove('blue'); }
-  profileView(id);
+async function toggleFollow(id, state){
+  // none -> request to follow; requested -> cancel the request; following -> unfollow
+  const r = (state === 'none' || !state)
+    ? await H.post('/api/follow/'+id,{})
+    : await H.post('/api/unfollow/'+id,{});
+  if(r && r.error){ alert(r.error); return; }
+  profileView(id);   // re-render from the server's fresh youFollow so the button is always right
 }
 function editBio(){
   const cur = (ME.bio)||'';

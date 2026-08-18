@@ -49,6 +49,11 @@ const befriend = async (a, b) => {
   await fetch(B + '/api/friends/request', { method: 'POST', headers: a.H, body: JSON.stringify({ username: b.username }) });
   await fetch(B + '/api/friends/accept', { method: 'POST', headers: b.H, body: JSON.stringify({ from: a.id }) });
 };
+// a follows b, and b approves — a is now an approved follower who can see b's private profile
+const follow = async (a, b) => {
+  await fetch(B + '/api/follow/' + b.id, { method: 'POST', headers: a.H });
+  await fetch(B + '/api/follow-requests/' + a.id + '/accept', { method: 'POST', headers: b.H });
+};
 const get = (u, p) => fetch(B + p, { headers: u.H });
 const post = (u, p, b) => fetch(B + p, { method: 'POST', headers: u.H, body: JSON.stringify(b || {}) });
 
@@ -222,6 +227,7 @@ console.log('\na profile does not leak what the session route refuses');
   const host = await user('Host'), guest = await user('Guest'), vic = await user('Vic');
   await befriend(host, guest);
   await befriend(guest, vic);                       // Vic knows the guest, not the host
+  await follow(vic, guest);                         // and follows the guest, approved — sees the guest's profile
   const hs = await fetch(B + '/api/sessions', { method: 'POST', headers: host.H,
     body: JSON.stringify({ name: 'Host Day', visibility: 'friends', scheduledAt: '2026-08-24T18:00:00Z',
       inviteUsernames: [guest.username], exercises: [{ name: 'Front Squat' }] }) }).then(x => x.json());
@@ -236,7 +242,7 @@ console.log('\na profile does not leak what the session route refuses');
   ok(!/felt awful, do not tell anyone/.test(prof), "and the host's private write-up does not travel via the guest's profile");
   ok(!/post_[a-z0-9_]+\.(png|jpg)/.test(prof), 'nor any photo URL from it');
   // the guest's OWN best lift is the guest's to show their own friend — that is what a profile is
-  ok(/487/.test(prof), "while the guest's own PR still shows to the guest's friend");
+  ok(/487/.test(prof), "while the guest's own PR shows to an approved follower of the guest");
 
   const stranger = await user('Nobody');
   const thin = await get(stranger, `/api/profile/${guest.id}`).then(x => x.json());
