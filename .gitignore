@@ -20,11 +20,16 @@ backups/
 
 # Agent scratch. Probe scripts written to poke at a running server during a bug hunt or a
 # render check — throwaway by nature, and often belonging to a session other than yours, so
-# never commit or delete them. Tracked code never matches these (checked): _design/ is a
-# directory, and no tracked file is a root-level _*.mjs / _*.cjs.
+# never commit or delete them. NOTE: a slash-less pattern like _*.mjs matches at every directory
+# level, not just the repo root (an earlier version of this comment claimed otherwise — wrong).
 _*.mjs
 _*.cjs
 *.tgz
+# test/_pgtestdb.mjs is a real, load-bearing test helper (every Postgres-backed test file imports
+# it), not an agent-scratch probe — the leading underscore is a naming collision with the rule
+# above, not an indication it's throwaway. Caught once already: it was silently never committed
+# because of this, which would have made `npm ci && npm test` fail in CI with no local sign of it.
+!test/_pgtestdb.mjs
 
 # Security findings. This repo is PUBLIC. These describe unfixed holes in a live app in enough
 # detail to exploit them — publishing that before the fixes ship hands an attacker a map.

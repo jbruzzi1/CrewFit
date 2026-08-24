@@ -5,19 +5,22 @@
 // approved followers (so nothing changes for current users) and old one-directional follows into
 // pending requests (nobody silently gains access).
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
+import { freshTestDb } from './_pgtestdb.mjs';
+import { PgConnection, parseConnString } from '../pgmini.js';
 
 let fails = 0;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fails++; };
 const J = { 'Content-Type': 'application/json' };
 const CWD = new URL('..', import.meta.url).pathname;
+const normUser = v => String(v == null ? '' : v).trim().toLowerCase();
 
-function boot(port, dir) {
+function boot(port, dir, databaseUrl) {
   return new Promise(res => {
-    const srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: dir, PORT: String(port) }, cwd: CWD, stdio: ['ignore','pipe','pipe'] });
+    const srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: dir, DATABASE_URL: databaseUrl, PORT: String(port) }, cwd: CWD, stdio: ['ignore','pipe','pipe'] });
     let out=''; srv.stdout.on('data', d => { out+=d; if (String(d).includes('CrewFit on')) res({ srv, out }); });
     srv.on('exit', ()=>res({ srv:null, out }));
     setTimeout(()=>res({ srv, out }), 8000);
@@ -27,8 +30,9 @@ function boot(port, dir) {
 // ---------- live flow ----------
 {
   const DIR = mkdtempSync(join(tmpdir(), 'follow-'));
+  const testDb = await freshTestDb('follow1');
   const PORT = 4990, B = `http://localhost:${PORT}`;
-  const { srv } = await boot(PORT, DIR);
+  const { srv } = await boot(PORT, DIR, testDb.url);
   const H = t => ({ ...J, Authorization: 'Bearer ' + t });
   const reg = n => fetch(B+'/api/register', { method:'POST', headers:J, body:JSON.stringify({ username:n, pin:'pass1234', displayName:n }) }).then(r=>r.json());
   const prof = (who, id) => fetch(B+`/api/profile/${id}`, { headers:H(who.token) }).then(r=>r.json());
@@ -81,26 +85,41 @@ function boot(port, dir) {
   const fr2 = await fetch(B+'/api/friends', { headers:H(bob.token) }).then(r=>r.json());
   ok(!(fr2.followRequests||[]).some(u=>u.id===carol.user.id), 'and the rejected request is gone from the list');
 
-  try { srv && srv.kill(); } catch {} rmSync(DIR, { recursive:true, force:true });
+  try { srv && srv.kill(); } catch {} rmSync(DIR, { recursive:true, force:true }); await testDb.drop();
 }
 
 // ---------- migration ----------
 {
   const DIR = mkdtempSync(join(tmpdir(), 'followmig-'));
+  const testDb = await freshTestDb('follow2');
   const PORT = 4989;
   const u = (id, extra) => Object.assign({ id, username: id, displayName: id, friends: [], units: 'lb', createdAt: '2026-01-01T00:00:00.000Z', pinHash: 'x', pinSalt: 'y' }, extra);
-  writeFileSync(join(DIR, 'data.json'), JSON.stringify({
-    users: {
-      u1: u('u1', { friends: ['u2'] }),                 // u1 & u2 are mutual friends
-      u2: u('u2', { friends: ['u1'], followers: ['u3'] }), // u3 followed u2 the OLD way, not a friend
-      u3: u('u3', {}),
-      u4: u('u4', { friends: 'oops' }),  // a hand-edited row — friends is not even an array
-    },
-    sessions: {}, prs: {}, pushSubs: {}, templates: {}, seeds: {}, customExercises: {}, friendships: {},
-  }));
-  const { srv, out } = await boot(PORT, DIR);
+  const users = {
+    u1: u('u1', { friends: ['u2'] }),                 // u1 & u2 are mutual friends
+    u2: u('u2', { friends: ['u1'], followers: ['u3'] }), // u3 followed u2 the OLD way, not a friend
+    u3: u('u3', {}),
+    u4: u('u4', { friends: 'oops' }),  // a hand-edited row — friends is not even an array
+  };
+  // Seed directly via Postgres, bypassing the app — the schema needs to exist first, so borrow
+  // db.js's ensureSchema() (one source of truth for the schema, same as every other conversion).
+  const dbmod = (await import('../db.js')).default;
+  process.env.DATABASE_URL = testDb.url;
+  await dbmod.ensureSchema();
+  dbmod.close();
+  const seedPg = new PgConnection(parseConnString(testDb.url));
+  for (const uu of Object.values(users)) {
+    await seedPg.query('INSERT INTO users (id, username_lower, data) VALUES ($1, $2, $3::jsonb)', [uu.id, normUser(uu.username), JSON.stringify(uu)]);
+  }
+  seedPg.close();
+  const { srv, out } = await boot(PORT, DIR, testDb.url);
   ok(!!srv, 'server boots on pre-migration data, including a row with a non-array friends field');
-  const db = JSON.parse(readFileSync(join(DIR, 'data.json'), 'utf8'));
+  const readPg = new PgConnection(parseConnString(testDb.url));
+  const rows = await readPg.query('SELECT id, data FROM users');
+  const state = await readPg.query('SELECT key, value FROM app_state');
+  readPg.close();
+  const db = { users: {}, followApprovalV1: undefined };
+  for (const row of rows.rows) db.users[row.id] = JSON.parse(row.data);
+  for (const row of state.rows) if (row.key === 'followApprovalV1') db.followApprovalV1 = JSON.parse(row.value);
   console.log('\nthe migration grandfathers friends and pends old follows');
   ok(db.users.u1.followers.includes('u2') && db.users.u2.followers.includes('u1'), 'mutual friends became mutual approved followers');
   ok(!db.users.u2.followers.includes('u3'), 'the old one-directional follower is NOT auto-approved');
@@ -108,7 +127,29 @@ function boot(port, dir) {
   ok(db.users.u1.following.includes('u2'), 'following is rebuilt from approved followers');
   ok(Array.isArray(db.users.u4.followers) && db.users.u4.followers.length === 0, 'the malformed friends row is treated as having none, not a crash');
   ok(db.followApprovalV1 === true, 'and the migration marks itself done (idempotent)');
-  try { srv && srv.kill(); } catch {} rmSync(DIR, { recursive:true, force:true });
+
+  console.log('\nand it STAYS done across a restart — the flag actually persists, not just within one boot');
+  {
+    // Directly grant u3 a real approved follow of u1 (bypassing the app), then reboot on the SAME
+    // already-migrated database. If followApprovalV1 were not actually persisted, this reboot would
+    // re-run the migration and silently demote u3's real approved follow back to a pending request.
+    const midPg = new PgConnection(parseConnString(testDb.url));
+    const u1row = await midPg.query('SELECT data FROM users WHERE id = $1', ['u1']);
+    const u1 = JSON.parse(u1row.rows[0].data);
+    if (!u1.followers.includes('u3')) u1.followers.push('u3');
+    await midPg.query('UPDATE users SET data = $1::jsonb WHERE id = $2', [JSON.stringify(u1), 'u1']);
+    midPg.close();
+    try { srv && srv.kill(); } catch {}
+    await new Promise(r => setTimeout(r, 300));
+    const { srv: srv2 } = await boot(PORT, DIR, testDb.url);
+    ok(!!srv2, 'reboots cleanly on the same already-migrated database');
+    const finalPg = new PgConnection(parseConnString(testDb.url));
+    const u1final = JSON.parse((await finalPg.query('SELECT data FROM users WHERE id = $1', ['u1'])).rows[0].data);
+    finalPg.close();
+    ok(u1final.followers.includes('u3'), `u3's genuine approved follow of u1 survives the restart (followers: ${JSON.stringify(u1final.followers)})`);
+    try { srv2 && srv2.kill(); } catch {}
+  }
+  rmSync(DIR, { recursive:true, force:true }); await testDb.drop();
 }
 
 // ---------- client render: a private profile still shows workouts you legitimately share ----------

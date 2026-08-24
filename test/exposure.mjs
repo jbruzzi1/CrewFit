@@ -13,20 +13,46 @@
 //   carol   a friend of alice's, in no workout — the "friend" tier
 //   mallory a logged-in account related to nobody — the "stranger" tier
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freshTestDb } from './_pgtestdb.mjs';
+import { PgConnection, parseConnString } from '../pgmini.js';
 
 const PORT = process.env.TEST_PORT6 || 4961;
 const B = `http://localhost:${PORT}`;
 const DIR = mkdtempSync(join(tmpdir(), 'crewfit-exposure-'));
+const testDb = await freshTestDb('exposure');
 let fails = 0, srv = null, srvDead = true;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fails++; };
 const J = { 'Content-Type': 'application/json' };
 
+async function firstUserId() {
+  const pg = new PgConnection(parseConnString(testDb.url));
+  const r = await pg.query('SELECT id FROM users LIMIT 1');
+  pg.close();
+  return r.rows[0] && r.rows[0].id;
+}
+async function putCustomExercises(ownerId, value) {
+  const pg = new PgConnection(parseConnString(testDb.url));
+  await pg.query('INSERT INTO custom_exercises (owner_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (owner_id) DO UPDATE SET data = EXCLUDED.data', [ownerId, JSON.stringify(value)]);
+  pg.close();
+}
+async function putSessionRaw(id, value) {
+  const pg = new PgConnection(parseConnString(testDb.url));
+  await pg.query('INSERT INTO sessions (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data', [id, JSON.stringify(value)]);
+  pg.close();
+}
+async function readSessionRaw(id) {
+  const pg = new PgConnection(parseConnString(testDb.url));
+  const r = await pg.query('SELECT data FROM sessions WHERE id = $1', [id]);
+  pg.close();
+  return r.rows[0] ? JSON.parse(r.rows[0].data) : undefined;
+}
+
 function boot() {
   return new Promise(res => {
-    srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: DIR, PORT: String(PORT) },
+    srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: DIR, DATABASE_URL: testDb.url, PORT: String(PORT) },
       cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'pipe'] });
     srvDead = false;
     let err = '', done = false;
@@ -317,16 +343,13 @@ console.log('\nrows stored before the write checks existed are cleaned on the wa
   // The POST route validates new rows, but nothing migrates old ones — so the read path is the only
   // place that can protect against what is already in the database. These write straight into the
   // store, which is exactly what a pre-v177 POST left behind.
-  const DATA = join(DIR, 'data.json');
-  await stop();                      // the row has to be in the file before the server reads it
-  const raw = JSON.parse(readFileSync(DATA, 'utf8'));
-  const owner = Object.keys(raw.users)[0];
-  raw.customExercises[owner] = [
+  await stop();                      // the row has to be in the database before the server reads it
+  const owner = await firstUserId();
+  await putCustomExercises(owner, [
     { name: 'Legacy Junk', muscle_groups: ['x" onerror="alert(1)" z="', 'biceps'], equipment: 42,
       level: { a: 1 }, pattern: [], is_compound: 'yes' },
     { name: 99, muscle_groups: 'biceps', equipment: [{}, 'cable', 7] },
-  ];
-  writeFileSync(DATA, JSON.stringify(raw));
+  ]);
   const up = await boot();
   ok(up.started, `the server boots with those rows in the database${up.started ? '' : ' — ' + String(up.err).slice(0, 160)}`);
 
@@ -360,22 +383,19 @@ console.log('\na session row missing its containers cannot 500 a whole workout f
   // let the wrong-typed case through: logs as [] doesn't throw, it silently drops the set instead
   // — `s.logs[userId]=[...]` sets a non-index property on an array, which JSON.stringify never
   // serializes. That is worse than the crash it replaced, so it is asserted here explicitly.
-  const DATA = join(DIR, 'data.json');
   await stop();
-  const raw = JSON.parse(readFileSync(DATA, 'utf8'));
-  raw.sessions['s_legacy2'] = { id: 's_legacy2', creatorId: alice.id, scheduledAt: new Date().toISOString(),
-    status: 'draft', visibility: 'private', name: 'Legacy Row', participants: [alice.id, bob.id], invited: [] };
-  raw.sessions['s_legacy3'] = { id: 's_legacy3', creatorId: alice.id, scheduledAt: new Date().toISOString(),
+  await putSessionRaw('s_legacy2', { id: 's_legacy2', creatorId: alice.id, scheduledAt: new Date().toISOString(),
+    status: 'draft', visibility: 'private', name: 'Legacy Row', participants: [alice.id, bob.id], invited: [] });
+  await putSessionRaw('s_legacy3', { id: 's_legacy3', creatorId: alice.id, scheduledAt: new Date().toISOString(),
     status: 'draft', visibility: 'private', name: 'Wrong-Typed Row', participants: [alice.id, bob.id],
-    invited: [], logs: [], attendance: [], variations: [] };
+    invited: [], logs: [], attendance: [], variations: [] });
   // participants is present and well-formed on both rows above, which never exercises that half of
   // the guard — a review caught that gap. This third row omits it entirely: the comments route's
   // notify loop (`for (const pid of s.participants)`) is the one place that would throw on it, AFTER
   // the comment is already saved, so the failure mode is a 500 the caller sees despite the write
   // having actually succeeded — worth its own row rather than folding into the others.
-  raw.sessions['s_legacy4'] = { id: 's_legacy4', creatorId: alice.id, scheduledAt: new Date().toISOString(),
-    status: 'draft', visibility: 'private', name: 'No Participants Row', invited: [] };
-  writeFileSync(DATA, JSON.stringify(raw));
+  await putSessionRaw('s_legacy4', { id: 's_legacy4', creatorId: alice.id, scheduledAt: new Date().toISOString(),
+    status: 'draft', visibility: 'private', name: 'No Participants Row', invited: [] });
   const up = await boot();
   ok(up.started, `the server boots with a legacy row missing logs/exercises/etc${up.started ? '' : ' — ' + String(up.err).slice(0, 160)}`);
 
@@ -405,13 +425,12 @@ console.log('\na session row missing its containers cannot 500 a whole workout f
   // The array-mistyped row: does not merely avoid a 500, the set has to actually be THERE after.
   const lg = await fetch(B + '/api/sessions/s_legacy3/log', { method: 'POST', headers: bob.H, body: JSON.stringify({ exerciseId: 'e1', weight: 100, reps: 8 }) });
   ok(lg.status !== 500, `logging against a row with logs:[] (wrong-typed, not missing) does not 500 (got ${lg.status})`);
-  const after = JSON.parse(readFileSync(DATA, 'utf8'));
-  const stored = after.sessions['s_legacy3'];
+  const stored = await readSessionRaw('s_legacy3');
   ok(!Array.isArray(stored.logs) && stored.logs[bob.id] && stored.logs[bob.id].length === 1,
-     `and the set actually survives on disk, not silently dropped by an array standing in for {} (${JSON.stringify(stored.logs)})`);
+     `and the set actually survives in the database, not silently dropped by an array standing in for {} (${JSON.stringify(stored.logs)})`);
 }
 
-} finally { await stop(); rmSync(DIR, { recursive: true, force: true }); }
+} finally { await stop(); rmSync(DIR, { recursive: true, force: true }); await testDb.drop(); }
 
 console.log(fails ? `\n${fails} FAILURE(S)\n` : '\nall assertions passed\n');
 process.exit(fails ? 1 : 0);

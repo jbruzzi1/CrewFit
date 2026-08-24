@@ -4,24 +4,38 @@
 // serialises to null and became a permanent all-time PR). Everything is asserted against what
 // actually LANDS IN data.json, since that file is the resource being protected.
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freshTestDb } from './_pgtestdb.mjs';
+import { PgConnection, parseConnString } from '../pgmini.js';
 
 const PORT = 4998, B = `http://localhost:${PORT}`;
 const DIR = mkdtempSync(join(tmpdir(), 'limits-'));
-const DATA = join(DIR, 'data.json');
+const testDb = await freshTestDb('limits');
 const J = { 'Content-Type': 'application/json' };
 let srv, fails = 0;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fails++; };
 const H = t => ({ ...J, Authorization: 'Bearer ' + t });
 const post = (p, b, t) => fetch(B + p, { method: 'POST', headers: t ? H(t) : J, body: JSON.stringify(b) });
 const put  = (p, b, t) => fetch(B + p, { method: 'PUT', headers: H(t), body: JSON.stringify(b) });
-const db = () => JSON.parse(readFileSync(DATA, 'utf8'));
+// Reassembles the same {users, sessions, pushSubs, templates, customExercises} shape the old
+// data.json read gave — reads straight from Postgres. customExercises stays an array PER USER
+// (matching db()['customExercises'][id] being an array in server.js), same as it always was.
+async function db() {
+  const pg = new PgConnection(parseConnString(testDb.url));
+  const out = { users: {}, sessions: {}, pushSubs: {}, templates: {}, customExercises: {} };
+  for (const [table, key, col] of [['users','id','users'], ['sessions','id','sessions'], ['push_subs','user_id','pushSubs'], ['templates','id','templates'], ['custom_exercises','owner_id','customExercises']]) {
+    const r = await pg.query(`SELECT ${key}, data FROM ${table}`);
+    for (const row of r.rows) out[col][row[key]] = JSON.parse(row.data);
+  }
+  pg.close();
+  return out;
+}
 process.on('exit', () => { try { srv && srv.kill(); } catch {} try { rmSync(DIR, { recursive: true, force: true }); } catch {} });
 
 await new Promise(res => {
-  srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: DIR, PORT: String(PORT) }, cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'pipe'] });
+  srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: DIR, DATABASE_URL: testDb.url, PORT: String(PORT) }, cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'pipe'] });
   srv.stdout.on('data', d => { if (String(d).includes('CrewFit on')) res(); });
   setTimeout(res, 8000);
 });
@@ -38,39 +52,39 @@ console.log('\npush/subscribe cannot store an unbounded blob');
   const blob = 'x'.repeat(900 * 1024);                 // ~0.9 MB: under the 1mb body cap, so it reaches the route
   const r = await post('/api/push/subscribe', { subscription: { endpoint: 'https://push.example/1', junk: blob } }, alice.token);
   // endpoint is valid, but the junk field must not ride along into storage (route-level strip)
-  const stored = db().pushSubs[alice.user.id];
+  const stored = (await db()).pushSubs[alice.user.id];
   ok(JSON.stringify(stored).length < 4096, `a large junk field is stripped by the route (stored ${JSON.stringify(stored).length} bytes)`);
   ok(stored && stored.endpoint === 'https://push.example/1' && !('junk' in stored), 'only endpoint/keys/expirationTime are kept');
 
   const r2 = await post('/api/push/subscribe', { subscription: 'not-an-object' }, bob.token);
   ok(r2.status === 400, `a non-object subscription is refused (got ${r2.status})`);
-  ok(!(bob.user.id in db().pushSubs), 'and nothing is stored for it');
+  ok(!(bob.user.id in (await db()).pushSubs), 'and nothing is stored for it');
 
   const r3 = await post('/api/push/subscribe', { subscription: { endpoint: 'x'.repeat(5000), keys: {} } }, bob.token);
   ok(r3.status === 400, `an over-long endpoint is refused (got ${r3.status})`);
 
   const good = await post('/api/push/subscribe', { subscription: { endpoint: 'https://push.example/bob', expirationTime: null, keys: { p256dh: 'abc', auth: 'def' } } }, bob.token);
-  ok(good.status === 200 && db().pushSubs[bob.user.id].endpoint === 'https://push.example/bob', 'a real subscription is accepted and stored');
+  ok(good.status === 200 && (await db()).pushSubs[bob.user.id].endpoint === 'https://push.example/bob', 'a real subscription is accepted and stored');
 }
 
 console.log('\nstored strings are length-capped');
 {
   const huge = 'z'.repeat(100000);
   await post(`/api/sessions/${sess.id}/comments`, { text: huge }, alice.token);
-  const c = db().sessions[sess.id].comments.slice(-1)[0];
+  const c = (await db()).sessions[sess.id].comments.slice(-1)[0];
   ok(c && c.text.length === 2000, `a 100k-char comment is capped at 2000 (stored ${c && c.text.length})`);
 
   const n = await post(`/api/sessions/${sess.id}/comments`, { text: 12345 }, alice.token);
   ok(n.status !== 500, `a non-string comment does not 500 (got ${n.status})`);
-  ok(db().sessions[sess.id].comments.slice(-1)[0].text === '12345', 'it is coerced to a string');
+  ok((await db()).sessions[sess.id].comments.slice(-1)[0].text === '12345', 'it is coerced to a string');
 
   await post(`/api/sessions/${sess.id}/suggest`, { exerciseId: 'x'.repeat(100000), swapTo: 'z'.repeat(100000) }, alice.token);
-  const e = db().sessions[sess.id].suggestedEdits.slice(-1)[0];
+  const e = (await db()).sessions[sess.id].suggestedEdits.slice(-1)[0];
   ok(e && e.swapTo.length === 80, `a 100k-char swapTo is capped at 80 (stored ${e && e.swapTo.length})`);
   ok(e && e.exerciseId.length === 64, `a 100k-char exerciseId is capped at 64 (stored ${e && e.exerciseId.length})`);
 
   await post(`/api/sessions/${sess.id}/join`, { note: 'y'.repeat(100000) }, bob.token);
-  const jr = db().sessions[sess.id].joinRequests.slice(-1)[0];
+  const jr = (await db()).sessions[sess.id].joinRequests.slice(-1)[0];
   ok(jr && jr.note.length === 500, `a 100k-char join note is capped at 500 (stored ${jr && jr.note.length})`);
 }
 
@@ -84,24 +98,24 @@ console.log('\nlogged numbers stay finite and non-negative');
   const rawPut  = (p, body, t) => fetch(B + p, { method: 'PUT',  headers: H(t), body });
 
   await rawPost(`/api/sessions/${sess.id}/log`, `{"exerciseId":"${exId}","weight":1e400,"reps":5}`, alice.token);
-  let sets = db().sessions[sess.id].logs[alice.user.id];
+  let sets = (await db()).sessions[sess.id].logs[alice.user.id];
   ok(Number.isFinite(sets.slice(-1)[0].weight), `weight 1e400 sent over the wire is stored finite, not null (${sets.slice(-1)[0].weight})`);
 
   await post(`/api/sessions/${sess.id}/log`, { exerciseId: exId, weight: -500, reps: 5 }, alice.token);
-  sets = db().sessions[sess.id].logs[alice.user.id];
+  sets = (await db()).sessions[sess.id].logs[alice.user.id];
   ok(sets.slice(-1)[0].weight >= 0, `negative weight is clamped to >= 0 (${sets.slice(-1)[0].weight})`);
 
   await post(`/api/sessions/${sess.id}/log`, { exerciseId: exId, weight: 1e300, reps: 5 }, alice.token);
-  sets = db().sessions[sess.id].logs[alice.user.id];
+  sets = (await db()).sessions[sess.id].logs[alice.user.id];
   ok(sets.slice(-1)[0].weight <= 1e6, `an absurd finite weight is capped at 1e6 (${sets.slice(-1)[0].weight})`);
 
   // the edit route (PUT) carries the same clamp — both the floor and the Infinity path
   const logId = sets.slice(-1)[0].id;
   await put(`/api/sessions/${sess.id}/log/${logId}`, { weight: -999 }, alice.token);
-  let edited = db().sessions[sess.id].logs[alice.user.id].find(l => l.id === logId);
+  let edited = (await db()).sessions[sess.id].logs[alice.user.id].find(l => l.id === logId);
   ok(edited.weight >= 0, `editing a set to a negative weight clamps to >= 0 (${edited.weight})`);
   await rawPut(`/api/sessions/${sess.id}/log/${logId}`, `{"weight":1e400}`, alice.token);
-  edited = db().sessions[sess.id].logs[alice.user.id].find(l => l.id === logId);
+  edited = (await db()).sessions[sess.id].logs[alice.user.id].find(l => l.id === logId);
   ok(Number.isFinite(edited.weight), `editing a set to Infinity over the wire stays finite (${edited.weight})`);
 }
 
@@ -110,11 +124,12 @@ console.log('\nevery other user-controlled field is bounded too (not just the ro
   const huge = 'q'.repeat(100000);
 
   const dave = await post('/api/register', { username: 'dave', pin: 'pass1234', displayName: huge }).then(r => r.json());
-  ok(db().users[dave.user.id].displayName.length <= 80, `register displayName is capped (stored ${db().users[dave.user.id].displayName.length})`);
+  let d = await db();
+  ok(d.users[dave.user.id].displayName.length <= 80, `register displayName is capped (stored ${d.users[dave.user.id].displayName.length})`);
 
   const big = await post('/api/sessions', { name: huge, location: huge, creatorNote: huge, scheduledAt: huge,
     visibility: 'private', exercises: [{ name: huge }] }, alice.token).then(r => r.json());
-  const bs = db().sessions[big.id];
+  const bs = (await db()).sessions[big.id];
   ok(bs.name.length <= 80, `session name capped (${bs.name.length})`);
   ok(bs.location.length <= 120, `session location capped (${bs.location.length})`);
   ok(bs.creatorNote.length <= 2000, `session creatorNote capped (${bs.creatorNote.length})`);
@@ -124,18 +139,21 @@ console.log('\nevery other user-controlled field is bounded too (not just the ro
   // creatorNote sent as an OBJECT must not persist a raw nested blob — bounded string only
   const obj = await post('/api/sessions', { name: 'x', creatorNote: { nested: huge }, scheduledAt: '2026-08-20T18:00:00Z',
     visibility: 'private', exercises: [{ name: 'Squat' }] }, alice.token).then(r => r.json());
-  ok(typeof db().sessions[obj.id].creatorNote === 'string' && db().sessions[obj.id].creatorNote.length <= 2000,
+  d = await db();
+  ok(typeof d.sessions[obj.id].creatorNote === 'string' && d.sessions[obj.id].creatorNote.length <= 2000,
      'an object creatorNote is coerced to a bounded string, not stored raw');
 
   const tpl = await post('/api/templates', { name: huge, exercises: [{ name: 'Squat' }] }, alice.token).then(r => r.json());
-  ok(db().templates[tpl.id].name.length <= 80, `template create name capped (${db().templates[tpl.id].name.length})`);
+  d = await db();
+  ok(d.templates[tpl.id].name.length <= 80, `template create name capped (${d.templates[tpl.id].name.length})`);
   await put(`/api/templates/${tpl.id}`, { name: huge }, alice.token);
-  ok(db().templates[tpl.id].name.length <= 80, `template edit (PUT) name capped too (${db().templates[tpl.id].name.length})`);
+  d = await db();
+  ok(d.templates[tpl.id].name.length <= 80, `template edit (PUT) name capped too (${d.templates[tpl.id].name.length})`);
 
   // the POST log `set` number has the same Infinity->null path as weight, sent over the wire
   await fetch(B + `/api/sessions/${sess.id}/log`, { method: 'POST', headers: H(alice.token),
     body: `{"exerciseId":"${exId}","weight":100,"reps":5,"set":1e400}` });
-  const last = db().sessions[sess.id].logs[alice.user.id].slice(-1)[0];
+  const last = (await db()).sessions[sess.id].logs[alice.user.id].slice(-1)[0];
   ok(Number.isFinite(last.set), `a set number of 1e400 stays finite, not null (${last.set})`);
 }
 
@@ -145,11 +163,13 @@ console.log('\nthe three vectors a second review caught are closed too');
 
   // attendance status
   await post(`/api/sessions/${sess.id}/attendance`, { status: huge }, alice.token);
-  ok(db().sessions[sess.id].attendance[alice.user.id].length <= 20, `attendance status is capped (${db().sessions[sess.id].attendance[alice.user.id].length})`);
+  let d = await db();
+  ok(d.sessions[sess.id].attendance[alice.user.id].length <= 20, `attendance status is capped (${d.sessions[sess.id].attendance[alice.user.id].length})`);
 
   // custom exercise pattern/level fields (stored raw before), and category from a validated group
   await post('/api/exercises/custom', { name: 'Capped', muscle_groups: ['chest'], pattern: huge, level: huge, category: huge }, alice.token);
-  const cx = Object.values(db().customExercises).flat().find(e => e.name === 'Capped');
+  d = await db();
+  const cx = Object.values(d.customExercises).flat().find(e => e.name === 'Capped');
   ok(cx && cx.pattern.length <= 40, `custom exercise pattern capped (${cx && cx.pattern.length})`);
   ok(cx && cx.level.length <= 20, `custom exercise level capped (${cx && cx.level.length})`);
   ok(cx && cx.category === 'chest', `category comes from the validated group, not raw input (${cx && cx.category})`);
@@ -159,7 +179,8 @@ console.log('\nthe three vectors a second review caught are closed too');
         octet = 'data:application/octet-stream;base64,' + 'A'.repeat(4 * 1024 * 1024),
         offsite = 'https://evil.example/track.gif';
   const okImg = await post(`/api/sessions/${sess.id}/post`, { visibility: 'friends', media: [{ type: 'image', src: png }] }, alice.token);
-  ok(okImg.status === 200 && /^\/uploads\//.test(db().sessions[sess.id].post.media[0].src), 'a real image is accepted and written to disk (src becomes /uploads/…)');
+  d = await db();
+  ok(okImg.status === 200 && /^\/uploads\//.test(d.sessions[sess.id].post.media[0].src), 'a real image is accepted and written to disk (src becomes /uploads/…)');
   const badMime = await post(`/api/sessions/${sess.id}/post`, { visibility: 'friends', media: [{ type: 'image', src: octet }] }, alice.token);
   ok(badMime.status === 415, `an application/octet-stream blob is refused, not stored raw (got ${badMime.status})`);
   const offRes = await post(`/api/sessions/${sess.id}/post`, { visibility: 'friends', media: [{ type: 'image', src: offsite }] }, alice.token);
@@ -184,4 +205,5 @@ console.log('\nthe request-body size cap is small everywhere except the media ro
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
+await testDb.drop();
 process.exit(fails ? 1 : 0);

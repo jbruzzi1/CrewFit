@@ -6,21 +6,54 @@
 // stored in the clear, "Brian" and "brian" were two different accounts, and nothing slowed down
 // guessing a 4-character password.
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freshTestDb } from './_pgtestdb.mjs';
+import { PgConnection, parseConnString } from '../pgmini.js';
 
 const PORT = process.env.TEST_PORT3 || 4951;
 const B = `http://localhost:${PORT}`;
 const CWD = new URL('..', import.meta.url).pathname;
 const DIR = mkdtempSync(join(tmpdir(), 'crewfit-acct-'));
+const testDb = await freshTestDb('accounts');
 let fails = 0, srv = null, srvDead = true;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fails++; };
 const J = { 'Content-Type': 'application/json' };
 
+// normUser() from server.js, kept in sync deliberately — see db.js's own comment on this.
+const normUser = v => String(v == null ? '' : v).trim().toLowerCase();
+async function readUsers() {
+  const pg = new PgConnection(parseConnString(testDb.url));
+  const r = await pg.query('SELECT id, data FROM users');
+  pg.close();
+  return r.rows.map(row => JSON.parse(row.data));
+}
+async function readUserRaw() {
+  // The raw, un-parsed jsonb text for every user row — used for "the password appears nowhere,"
+  // which needs to check actual stored bytes, not a value already extracted by JSON.parse.
+  const pg = new PgConnection(parseConnString(testDb.url));
+  const r = await pg.query('SELECT data FROM users');
+  pg.close();
+  return r.rows.map(row => row.data).join('\n');
+}
+async function findUser(username) {
+  return (await readUsers()).find(u => u.username === username);
+}
+// Writes a user object directly, bypassing the app entirely — used to simulate a legacy /
+// hand-edited row (e.g. a pre-hash plaintext password) the same way a real hand-edited data.json
+// row used to.
+async function putUserRaw(user) {
+  const pg = new PgConnection(parseConnString(testDb.url));
+  await pg.query(
+    'INSERT INTO users (id, username_lower, data) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO UPDATE SET username_lower = EXCLUDED.username_lower, data = EXCLUDED.data',
+    [user.id, normUser(user.username), JSON.stringify(user)]);
+  pg.close();
+}
+
 function boot(dir = DIR) {
   return new Promise(res => {
-    srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: dir, PORT: String(PORT) },
+    srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: dir, DATABASE_URL: testDb.url, PORT: String(PORT) },
       cwd: CWD, stdio: ['ignore', 'pipe', 'pipe'] });
     srvDead = false;
     let err = '', out = '', done = false;
@@ -45,9 +78,9 @@ console.log('a password is never stored in the clear');
   const u = nm();
   const r = await reg(u, 'hunter2', 'T').then(x => x.json());
   ok(!!r.token, 'the account is created');
-  const raw = readFileSync(join(DIR, 'data.json'), 'utf8');
-  ok(!raw.includes('hunter2'), 'the password does not appear anywhere in data.json');
-  const rec = Object.values(JSON.parse(raw).users).find(x => x.username === u);
+  const raw = await readUserRaw();
+  ok(!raw.includes('hunter2'), 'the password does not appear anywhere in the stored user rows');
+  const rec = await findUser(u);
   ok(!rec.pin && !!rec.pinHash && !!rec.pinSalt, 'it is stored as a salted hash instead');
   ok((await login(u, 'hunter2').then(x => x.json())).token, 'and the real password still logs in');
   ok(!(await login(u, 'hunter3').then(x => x.json())).token, 'a wrong password does not');
@@ -86,7 +119,7 @@ console.log('\nevery account records when it was created');
 {
   const u = nm();
   await reg(u, 'pass1234', 'T');
-  const rec = Object.values(JSON.parse(readFileSync(join(DIR, 'data.json'), 'utf8')).users).find(x => x.username === u);
+  const rec = await findUser(u);
   ok(!!rec.createdAt && !isNaN(new Date(rec.createdAt)), `createdAt is a real date (${rec.createdAt})`);
   ok(!rec.createdAtEstimated, 'and it is observed, not estimated');
 }
@@ -138,16 +171,13 @@ console.log('\nsearch');
 console.log('\nan old account with a plaintext password is converted on the next start');
 {
   await stop();
-  const f = join(DIR, 'data.json');
-  const d = JSON.parse(readFileSync(f, 'utf8'));
   const id = 'legacy01';
-  d.users[id] = { id, username: 'legacyuser', pin: 'oldpass', displayName: 'Legacy', friends: [], units: 'lb' };
-  writeFileSync(f, JSON.stringify(d, null, 2));
+  await putUserRaw({ id, username: 'legacyuser', pin: 'oldpass', displayName: 'Legacy', friends: [], units: 'lb' });
   const r = await boot();
   ok(r.started, 'the server starts');
-  const after = JSON.parse(readFileSync(f, 'utf8')).users[id];
+  const after = await findUser('legacyuser');
   ok(!after.pin && !!after.pinHash, 'the stored plaintext password is gone, replaced by a hash');
-  ok(!readFileSync(f, 'utf8').includes('oldpass'), 'and the old password is nowhere in the file');
+  ok(!(await readUserRaw()).includes('oldpass'), 'and the old password is nowhere in the stored rows');
   ok((await login('legacyuser', 'oldpass').then(x => x.json())).token, 'the person can still log in with it');
   ok((await login('LEGACYUSER', 'oldpass').then(x => x.json())).token, 'in any capitalisation');
   ok(!!after.createdAt === false || !!after.createdAt, 'no join date is invented for an account with no activity');
@@ -156,15 +186,13 @@ console.log('\nan old account with a plaintext password is converted on the next
 console.log('\nJeff can reset a password by hand while self-service reset is off');
 {
   await stop();
-  const f = join(DIR, 'data.json');
-  const d = JSON.parse(readFileSync(f, 'utf8'));
-  const u = Object.values(d.users).find(x => x.username === 'legacyuser');
+  const u = await findUser('legacyuser');
   u.pin = 'jeffSetThis';                       // the documented manual reset: add a plaintext pin
-  writeFileSync(f, JSON.stringify(d, null, 2));
+  await putUserRaw(u);
   await boot();
   ok((await login('legacyuser', 'jeffSetThis').then(x => x.json())).token, 'the new password works');
   ok(!(await login('legacyuser', 'oldpass').then(x => x.json())).token, 'the old one no longer does');
-  ok(!readFileSync(f, 'utf8').includes('jeffSetThis'), 'and the plaintext did not survive the boot');
+  ok(!(await readUserRaw()).includes('jeffSetThis'), 'and the plaintext did not survive the boot');
 }
 
 console.log('\na login survives a restart — it is signed, not remembered');
@@ -188,7 +216,7 @@ console.log('\na login survives a restart — it is signed, not remembered');
      'nonsense is refused');
 }
 
-} finally { await stop(); rmSync(DIR, { recursive: true, force: true }); }
+} finally { await stop(); rmSync(DIR, { recursive: true, force: true }); await testDb.drop(); }
 
 console.log(fails ? `\n${fails} FAILURE(S)\n` : '\nall assertions passed\n');
 process.exit(fails ? 1 : 0);

@@ -5,7 +5,6 @@ const path = require('path');
 const crypto = require('crypto');
 
 const DATA_DIR = process.env.DATA_DIR || __dirname;
-const DATA_FILE = path.join(DATA_DIR, 'data.json');
 const LIB_FILE = path.join(__dirname, 'exercise-library.json');
 const VAPID_FILE = path.join(__dirname, 'vapid.json');
 const PORT = process.env.PORT || 3000;
@@ -23,65 +22,32 @@ if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
 webpush.setVapidDetails('mailto:jeff@example.com', vapid.publicKey, vapid.privateKey);
 
 // ---- Store ----
-const EMPTY_DB = () => ({ users: {}, sessions: {}, friendships: {}, pushSubs: {}, customExercises: {} });
+// Aug 2026: moved off a single data.json file onto Postgres (see db.js for the full design
+// rationale — this is a lift-and-shift: DB keeps the exact same in-memory shape, every route
+// handler below is unchanged except for `await`). load()/save() are now thin wrappers around
+// db.js, which owns "REFUSING TO START IS THE FEATURE": db.js's connFromEnv() throws loudly if
+// DATABASE_URL is unset, and a genuinely unreachable Postgres throws from the first query rather
+// than silently substituting an empty database. That's what protects against the exact incident
+// this comment used to describe by hand (Aug 17, 2026: a copy of production went from 377 users
+// to 0 on one boot, silently, with the server reporting healthy) — a transaction either fully
+// commits or fully rolls back, and a SELECT can't return "corrupted," only real rows or a loud
+// connection/query error.
+const db = require('./db');
+async function load() { return db.load(); }
+async function save(d) { return db.save(d); }
 
-// REFUSING TO START IS THE FEATURE. This used to `catch` a parse failure and return an empty
-// database — and because the boot block below calls save(DB), the very next thing that happened
-// was writing that emptiness over the file. Measured Aug 17, 2026 against a copy of production:
-// 639,995 bytes and 377 users went to 112 bytes and 0 users, with no error, and the server
-// stayed up reporting healthy. Every user, workout and PR, gone, unrecoverably, in silence.
-//
-// A process that will not start is loud, obvious, and fixable from a backup. A process that
-// starts on an empty database destroys the thing it was supposed to be serving. Never soften
-// this into a fallback.
-function load() {
-  if (!fs.existsSync(DATA_FILE)) return EMPTY_DB();          // genuinely first run
-  const raw = fs.readFileSync(DATA_FILE, 'utf8');            // an unreadable file must throw too
-  let d;
-  try { d = JSON.parse(raw); }
-  catch (e) {
-    throw new Error(
-      `REFUSING TO START: ${DATA_FILE} is not valid JSON (${raw.length} bytes) — ${e.message}\n` +
-      `The file was NOT touched. Starting on an empty database would overwrite it.\n` +
-      `Restore the newest file from ${path.join(DATA_DIR, 'backups')} over it, then restart.`);
-  }
-  if (!d || typeof d !== 'object' || typeof d.users !== 'object' || typeof d.sessions !== 'object') {
-    throw new Error(
-      `REFUSING TO START: ${DATA_FILE} parsed but has no users/sessions — it is not a database.\n` +
-      `The file was NOT touched. Restore from ${path.join(DATA_DIR, 'backups')} and restart.`);
-  }
-  d.friendships = d.friendships || {};
-  d.pushSubs = d.pushSubs || {};
-  d.customExercises = d.customExercises || {};
-  return d;
-}
-
-// Write to a temp file, flush it to disk, then rename. rename(2) is atomic on POSIX, so
-// data.json is only ever the old complete file or the new complete file — never the half-written
-// one. The plain writeFileSync this replaces could be interrupted (crash, OOM kill — this box has
-// 256 MB and holds the whole DB in memory while serialising a second copy of it, restart, full
-// disk) leaving invalid JSON, which is precisely what load() above used to wipe.
-function save(d) {
-  const tmp = DATA_FILE + '.tmp';
-  const fd = fs.openSync(tmp, 'w');
-  try {
-    fs.writeSync(fd, JSON.stringify(d, null, 2));
-    fs.fsyncSync(fd);                                        // on the platter before the rename
-  } finally { fs.closeSync(fd); }
-  fs.renameSync(tmp, DATA_FILE);
-}
-
-// A copy of the database as it was BEFORE this boot's migrations touch it. Migrations rewrite
-// data.json on every start, so this is the last point at which the previous state still exists.
+// A snapshot of the database as it was BEFORE this boot's migrations touch it — the same safety
+// net data.json's file-copy backup used to provide, now a JSON dump of what load() just returned
+// (there is no single file to copy anymore). Restore path: scripts/migrate-to-postgres.mjs
+// against the newest one of these, documented in DEPLOY.md.
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const BACKUPS_KEPT = 10;
-function backupOnBoot() {
-  if (!fs.existsSync(DATA_FILE)) return null;                // nothing to lose yet
+async function backupOnBoot() {
   try {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const dest = path.join(BACKUP_DIR, `data-${stamp}.json`);
-    fs.copyFileSync(DATA_FILE, dest);
+    fs.writeFileSync(dest, JSON.stringify(DB, null, 2));
     const kept = fs.readdirSync(BACKUP_DIR).filter(f => /^data-.*\.json$/.test(f)).sort();
     for (const f of kept.slice(0, Math.max(0, kept.length - BACKUPS_KEPT))) {
       try { fs.unlinkSync(path.join(BACKUP_DIR, f)); } catch (e) {}
@@ -97,7 +63,7 @@ function backupOnBoot() {
 // One-time migration: old posts stored photos as huge base64 blobs in data.json
 // (truncated at 3,000,000 chars -> broken images, and re-uploaded on every Save -> very slow).
 // Convert stored base64 to real files on the volume; drop unrecoverable (truncated) ones.
-function migrateMedia() {
+async function migrateMedia() {
   let sessionsChanged = 0, recovered = 0, dropped = 0;
   for (const s of Object.values(DB.sessions || {})) {
     if (!s.post || !Array.isArray(s.post.media) || !s.post.media.length) continue;
@@ -124,9 +90,13 @@ function migrateMedia() {
     }
     if (touched) { s.post.media = keep; sessionsChanged++; }
   }
-  if (sessionsChanged) { save(DB); console.log(`MIGRATE media: sessions=${sessionsChanged} recovered=${recovered} dropped=${dropped}`); }
+  if (sessionsChanged) { await save(DB); console.log(`MIGRATE media: sessions=${sessionsChanged} recovered=${recovered} dropped=${dropped}`); }
 }
-let DB = load();
+// Populated inside the async boot IIFE near the bottom of this file, before app.listen — every
+// route handler below only reads DB from inside a closure that runs on a later request, long
+// after that IIFE has resolved, so this is safe despite being null here at require-time.
+let DB = null;
+let server;
 // The boot migrations and the PR rebuild used to run HERE and have been moved to the end of
 // module evaluation — see the block above app.listen for why.
 const EX_LIB = JSON.parse(fs.readFileSync(LIB_FILE, 'utf8')).exercises;
@@ -314,6 +284,23 @@ function bumpFail(key, windowMs) { overLimit(key, Infinity, windowMs); }   // in
 function clearFail(key) { RL.delete(key); }
 
 const app = express();
+module.exports = { app, server: undefined };  // .server is filled in once the async boot IIFE below resolves
+// Aug 2026: persistence moved onto Postgres (see db.js), so every route handler that calls
+// save(DB) is now async. Express 4 does not catch a rejected promise returned from a route
+// handler on its own — an unhandled rejection there would leave the request hanging forever
+// (no response ever sent) and, on modern Node, can terminate the whole process on an unrelated
+// request's failure. Wrapping app.get/post/put/delete/patch ONCE here, rather than touching
+// every individual route registration, means every handler (sync or async) automatically
+// forwards a thrown/rejected error to Express's error-handling middleware below — no per-route
+// boilerplate, and no route can be added later that accidentally skips this safety net.
+for (const method of ['get', 'post', 'put', 'delete', 'patch']) {
+  const orig = app[method].bind(app);
+  app[method] = (routePath, ...handlers) => orig(routePath, ...handlers.map(h =>
+    (typeof h === 'function' && h.length <= 3)
+      ? (req, res, next) => { try { Promise.resolve(h(req, res, next)).catch(next); } catch (e) { next(e); } }
+      : h
+  ));
+}
 // 60mb let one request carry more than a phone ever sends, on a 1 GB volume shared by the
 // database, its ten backups and every photo. 30 leaves headroom over the 25 MB we accept.
 // Only the two routes carrying a base64 image/video need a large body; everything else is small
@@ -406,13 +393,13 @@ function auth(req, res, next) {
 
 // The deploy pipeline gates on this, so it has to assert something. A constant `{ok:true}` would
 // have passed over a wiped database. Counts are aggregate only — no names, no PINs.
-app.get('/healthz', (req, res) => {
+app.get('/healthz', async (req, res) => {
   if (!DB || typeof DB.users !== 'object' || typeof DB.sessions !== 'object')
     return res.status(503).json({ ok: false, error: 'database not loaded' });
   res.json({ ok: true, users: Object.keys(DB.users).length, sessions: Object.keys(DB.sessions).length });
 });
 app.get('/api/vapid', (req, res) => res.json({ publicKey: vapid.publicKey }));
-app.post('/api/register', (req, res) => {
+app.post('/api/register', async (req, res) => {
   const ip = clientIp(req);
   if (ip && overLimit('reg:' + ip, 20, 60 * 60 * 1000))
     return res.status(429).json({ error: 'Too many sign-ups from here. Please try again later.' });
@@ -425,18 +412,18 @@ app.post('/api/register', (req, res) => {
   DB.users[id] = Object.assign({ id, username: String(username).trim(),
     displayName: capStr(displayName || username, 80).trim(), friends: [], units: 'lb',
     createdAt: new Date().toISOString() }, hashPin(pin));
-  save(DB);
+  await save(DB);
   res.json({ token: signToken(id), user: publicUser(id) });
 });
 // Live username availability check (used by the register popup as the user types)
-app.get('/api/register/check', (req, res) => {
+app.get('/api/register/check', async (req, res) => {
   const username = (req.query.username || '').trim();
   if (!username) return res.json({ available: false });
   if (usernameProblem(username)) return res.json({ available: false });
   res.json({ available: !findUserByName(username) });
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { username, pin } = req.body || {};
   const ip = clientIp(req);
   if (ip && overLimit('login:' + ip, 60, 60 * 1000))
@@ -492,7 +479,7 @@ function publicUser(id) {
 }
 
 // ---- Exercise library (136 base + user-created) ----
-app.get('/api/exercises', (req, res) => {
+app.get('/api/exercises', async (req, res) => {
   // ownerId is stripped: this route needs no login, and it was handing out a real user id beside
   // every custom exercise name to anyone who asked.
   const custom = Object.values(DB.customExercises || {}).flat().map(({ ownerId, ...rest }) => sanitizeExercise(rest));
@@ -529,7 +516,7 @@ function sanitizeExercise(e) {
     is_compound: !!e.is_compound,
   });
 }
-app.post('/api/exercises/custom', auth, (req, res) => {
+app.post('/api/exercises/custom', auth, async (req, res) => {
   const { name, muscle_groups, equipment, level, is_compound, pattern } = req.body || {};
   if (!name || !Array.isArray(muscle_groups) || !muscle_groups.length) return res.status(400).json({ error: 'name + muscle_groups required' });
   // A custom exercise is shown to every other user, so treat these as hostile. Muscle groups are
@@ -559,7 +546,7 @@ app.post('/api/exercises/custom', auth, (req, res) => {
   if (DB.customExercises[req.userId].length >= 500)
     return res.status(400).json({ error: 'You have reached the limit of custom exercises.' });
   DB.customExercises[req.userId].push(ex);
-  save(DB);
+  await save(DB);
   res.json(ex);
 });
 
@@ -677,12 +664,12 @@ function buildActivityFor(userId) {
 }
 
 app.get('/api/profile/me', auth, (req, res) => res.json(profileOf(req.userId, req.userId)));
-app.get('/api/profile/:id', auth, (req, res) => {
+app.get('/api/profile/:id', auth, async (req, res) => {
   const p = profileOf(req.params.id, req.userId);
   if (!p) return res.status(404).json({ error: 'user not found' });
   res.json(p);
 });
-app.post('/api/me/avatar', auth, (req, res) => {
+app.post('/api/me/avatar', auth, async (req, res) => {
   const { data, type } = req.body || {};
   if (!data || !/^data:image\/(png|jpeg|jpg|webp);base64,/.test(data)) return res.status(400).json({ error: 'image data required' });
   const ext = (type === 'image/png' ? 'png' : 'jpg');
@@ -692,17 +679,17 @@ app.post('/api/me/avatar', auth, (req, res) => {
   fs.writeFileSync(path.join(UPLOAD_DIR, fname), Buffer.from(b64, 'base64'));
   const u = DB.users[req.userId];
   u.avatar = `/uploads/${fname}`;
-  save(DB);
+  await save(DB);
   res.json({ avatar: u.avatar });
 });
-app.post('/api/me/bio', auth, (req, res) => {
+app.post('/api/me/bio', auth, async (req, res) => {
   const { bio } = req.body || {};
   DB.users[req.userId].bio = String(bio || '').slice(0, 280);
-  save(DB);
+  await save(DB);
   res.json({ bio: DB.users[req.userId].bio });
 });
 // Following is a REQUEST now, not an instant grant. It stays pending until the target accepts.
-app.post('/api/follow/:id', auth, (req, res) => {
+app.post('/api/follow/:id', auth, async (req, res) => {
   const target = DB.users[req.params.id];
   if (!target) return res.status(404).json({ error: 'user not found' });
   if (req.params.id === req.userId) return res.status(400).json({ error: 'cannot follow self' });
@@ -710,23 +697,23 @@ app.post('/api/follow/:id', auth, (req, res) => {
   if (target.followers.includes(req.userId)) return res.json({ status: 'following' });
   if (!target.followReqs.includes(req.userId)) {
     target.followReqs.push(req.userId);
-    save(DB);
+    await save(DB);
     notify(target.id, { title: 'New follow request', body: `${DB.users[req.userId].displayName} wants to follow you` });
   }
   res.json({ status: 'requested' });
 });
-app.post('/api/unfollow/:id', auth, (req, res) => {
+app.post('/api/unfollow/:id', auth, async (req, res) => {
   const target = DB.users[req.params.id];
   if (!target) return res.json({ status: 'none' });
   ensureFollowArrays(target); const me = DB.users[req.userId]; ensureFollowArrays(me);
   target.followers = target.followers.filter(x => x !== req.userId);   // stop being an approved follower
   target.followReqs = target.followReqs.filter(x => x !== req.userId); // or cancel a pending request
   me.following = me.following.filter(x => x !== req.params.id);
-  save(DB);
+  await save(DB);
   res.json({ status: 'none', followers: target.followers.length });
 });
 // The target approves or rejects a pending follow request. :id is the requester.
-app.post('/api/follow-requests/:id/accept', auth, (req, res) => {
+app.post('/api/follow-requests/:id/accept', auth, async (req, res) => {
   const me = DB.users[req.userId]; ensureFollowArrays(me);
   const fromId = req.params.id;
   if (!me.followReqs.includes(fromId)) return res.status(404).json({ error: 'no such request' });
@@ -734,14 +721,14 @@ app.post('/api/follow-requests/:id/accept', auth, (req, res) => {
   if (!me.followers.includes(fromId)) me.followers.push(fromId);
   const from = DB.users[fromId];
   if (from) { ensureFollowArrays(from); if (!from.following.includes(req.userId)) from.following.push(req.userId); }
-  save(DB);
+  await save(DB);
   if (from) notify(fromId, { title: 'Follow request accepted', body: `${me.displayName} accepted your follow request` });
   res.json({ ok: true });
 });
-app.post('/api/follow-requests/:id/reject', auth, (req, res) => {
+app.post('/api/follow-requests/:id/reject', auth, async (req, res) => {
   const me = DB.users[req.userId]; ensureFollowArrays(me);
   me.followReqs = me.followReqs.filter(x => x !== req.params.id);
-  save(DB);
+  await save(DB);
   res.json({ ok: true });
 });
 
@@ -773,7 +760,7 @@ function migrateFollowApproval() {
   console.log('migrateFollowApproval: friends became approved followers; ' + pending + ' old follows became pending requests');
   return pending;
 }
-app.get('/api/users/search', auth, (req, res) => {
+app.get('/api/users/search', auth, async (req, res) => {
   const q = normUser(req.query.q);
   // One letter returned twenty arbitrary strangers. Two is the shortest query that means anything.
   if (q.length < 2) return res.json([]);
@@ -793,7 +780,7 @@ app.get('/api/users/search', auth, (req, res) => {
   }));
   res.json(hits);
 });
-app.post('/api/friends/request', auth, (req, res) => {
+app.post('/api/friends/request', auth, async (req, res) => {
   const { username } = req.body || {};
   const friend = findUserByName(username);
   if (!friend) return res.status(404).json({ error: 'user not found' });
@@ -804,10 +791,10 @@ app.post('/api/friends/request', auth, (req, res) => {
   me.outgoing.push({ to: friend.id, status:'pending' });
   friend.incoming.push({ from: req.userId, status:'pending' });
   notify(friend.id, { title: 'Friend request', body: `${me.displayName||me.username} wants to train with you` });
-  save(DB);
+  await save(DB);
   res.json({ ok:true });
 });
-app.post('/api/friends/accept', auth, (req, res) => {
+app.post('/api/friends/accept', auth, async (req, res) => {
   const { from } = req.body || {};
   const me = DB.users[req.userId]; ensureFriendArrays(me);
   const req2 = me.incoming.find(r=>r.from===from && r.status==='pending');
@@ -818,18 +805,18 @@ app.post('/api/friends/accept', auth, (req, res) => {
   if(!me.friends.includes(from)) me.friends.push(from);
   if(!other.friends.includes(req.userId)) other.friends.push(req.userId);
   other.outgoing = other.outgoing.filter(r=>!(r.to===req.userId));
-  save(DB);
+  await save(DB);
   res.json({ friends: me.friends.map(publicUser) });
 });
-app.post('/api/friends/reject', auth, (req, res) => {
+app.post('/api/friends/reject', auth, async (req, res) => {
   const { from } = req.body || {};
   const me = DB.users[req.userId]; ensureFriendArrays(me);
   me.incoming = me.incoming.filter(r=>!(r.from===from));
   const other = DB.users[from]; if(other) { ensureFriendArrays(other); other.outgoing = other.outgoing.filter(r=>!(r.to===req.userId)); }
-  save(DB);
+  await save(DB);
   res.json({ ok:true });
 });
-app.get('/api/friends', auth, (req, res) => {
+app.get('/api/friends', auth, async (req, res) => {
   const me = DB.users[req.userId]; ensureFriendArrays(me); ensureFollowArrays(me);
   res.json({
     friends: me.friends.map(id => ({ ...publicUser(id), streak: currentStreak(id) })),
@@ -860,7 +847,7 @@ function currentStreak(userId){
   while (has(key(cur))) { streak++; cur.setDate(cur.getDate()-1); }
   return streak;
 }
-app.get('/api/feed', auth, (req, res) => {
+app.get('/api/feed', auth, async (req, res) => {
   const myFriends = DB.users[req.userId].friends;
   const items = [];
   const weekAgo = Date.now() - 7*24*3600*1000;
@@ -888,44 +875,44 @@ app.get('/api/feed', auth, (req, res) => {
 
 
 // ---- Templates (saved routines) ----
-app.get('/api/templates', auth, (req, res) => {
+app.get('/api/templates', auth, async (req, res) => {
   const all = Object.values(DB.templates || {});
   const mine = all.filter(t => t.ownerId === req.userId);
   // also templates shared by friends
   const friendT = all.filter(t => DB.users[req.userId].friends.includes(t.ownerId));
   res.json({ mine, shared: friendT });
 });
-app.post('/api/templates', auth, (req, res) => {
+app.post('/api/templates', auth, async (req, res) => {
   const { name, exercises } = req.body || {};
   if (!name || !Array.isArray(exercises) || !exercises.length) return res.status(400).json({ error: 'name + exercises required' });
   const id = 't_' + uid();
   const t = { id, ownerId: req.userId, name: capStr(name, 80), exercises: exercises.map(withDefaults) };
   if (!DB.templates) DB.templates = {};
   DB.templates[id] = t;
-  save(DB);
+  await save(DB);
   res.json(t);
 });
-app.put('/api/templates/:id', auth, (req, res) => {
+app.put('/api/templates/:id', auth, async (req, res) => {
   const t = DB.templates && DB.templates[req.params.id];
   if (!t) return res.status(404).json({ error: 'not found' });
   if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
   const { name, exercises } = req.body || {};
   if (name) t.name = capStr(name, 80);
   if (Array.isArray(exercises) && exercises.length) t.exercises = exercises.map(withDefaults);
-  save(DB);
+  await save(DB);
   res.json(t);
 });
-app.delete('/api/templates/:id', auth, (req, res) => {
+app.delete('/api/templates/:id', auth, async (req, res) => {
   const t = DB.templates && DB.templates[req.params.id];
   if (!t) return res.status(404).json({ error: 'not found' });
   if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
   delete DB.templates[req.params.id];
-  save(DB);
+  await save(DB);
   res.json({ ok: true });
 });
 
 // ---- Session comments (Message Host / chat) ----
-app.get('/api/sessions/:id/comments', auth, (req, res) => {
+app.get('/api/sessions/:id/comments', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   // There was no check here at all. Any logged-in account could read any workout's entire chat by
@@ -935,7 +922,7 @@ app.get('/api/sessions/:id/comments', auth, (req, res) => {
   if (tier !== 'member' && tier !== 'invited') return res.status(403).json({ error: 'forbidden' });
   res.json(s.comments || []);
 });
-app.post('/api/sessions/:id/comments', auth, (req, res) => {
+app.post('/api/sessions/:id/comments', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
@@ -948,13 +935,13 @@ app.post('/api/sessions/:id/comments', auth, (req, res) => {
   const c = { id: 'c_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
   if (!s.comments) s.comments = [];
   s.comments.push(c);
-  save(DB);
+  await save(DB);
   for (const pid of s.participants) if (pid !== req.userId) notify(pid, { title: 'New message', body: `${DB.users[req.userId].displayName}: ${text.slice(0,40)}` });
   res.json(sessionView(s, req.userId));
 });
 
 // ---- Push subscribe ----
-app.post('/api/push/subscribe', auth, (req, res) => {
+app.post('/api/push/subscribe', auth, async (req, res) => {
   // Was stored verbatim and uncapped — a single POST with a 10 MB `subscription` ballooned
   // data.json, and a dozen free accounts doing it wedged every write on the box. A real Web Push
   // subscription is a small fixed shape; store only the fields web-push needs, bounded, and refuse
@@ -968,7 +955,7 @@ app.post('/api/push/subscribe', auth, (req, res) => {
     expirationTime: (typeof sub.expirationTime === 'number') ? sub.expirationTime : null,
     keys: { p256dh: capStr(keys.p256dh, 256), auth: capStr(keys.auth, 256) },
   };
-  save(DB);
+  await save(DB);
   res.json({ ok: true });
 });
 function notify(userId, payload) {
@@ -995,7 +982,7 @@ function newSessionId() { return 's_' + uid(); }
 // ---- Templates (saved routines, reusable) ----
 // templates: { [templateId]: { id, ownerId, name, exercises:[{name,defaultSets,defaultReps}] } }
 
-app.post('/api/sessions', auth, (req, res) => {
+app.post('/api/sessions', auth, async (req, res) => {
   const { scheduledAt, visibility, equipment, exercises, inviteUsernames, location, lengthMin, creatorNote, name } = req.body || {};
   if (!Array.isArray(exercises) || !exercises.length) return res.status(400).json({ error: 'needs exercises' });
   const id = newSessionId();
@@ -1030,7 +1017,7 @@ app.post('/api/sessions', auth, (req, res) => {
     history: []
   };
   DB.sessions[id] = session;
-  save(DB);
+  await save(DB);
   // notify invited friends
   for (const fid of invites) notify(fid, { title: 'Workout invite', body: `${DB.users[req.userId].displayName} invited you to a workout` });
   res.json(session);
@@ -1040,7 +1027,7 @@ app.post('/api/sessions', auth, (req, res) => {
 // THE HOME SCREEN. This runs on every single app open, and it used to return raw sessions — so
 // merely being a friend of the creator delivered every participant's sets, the whole chat, and
 // the notes and photo URLs of an "only me" post, to your phone, unasked, several times a day.
-app.get('/api/sessions', auth, (req, res) => {
+app.get('/api/sessions', auth, async (req, res) => {
   const out = Object.values(DB.sessions)
     .map(s => sessionView(s, req.userId))     // tier decides the fields; stranger yields null
     .filter(Boolean)
@@ -1048,7 +1035,7 @@ app.get('/api/sessions', auth, (req, res) => {
   res.json(out);
 });
 
-app.get('/api/sessions/:id', auth, (req, res) => {
+app.get('/api/sessions/:id', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   const view = sessionView(s, req.userId);      // one rule for who, and for which fields
@@ -1257,7 +1244,7 @@ function othersWhoLogged(s, meId) {
   return Object.keys(s.logs || {}).filter(uid => uid !== meId && (s.logs[uid] || []).length);
 }
 
-app.delete('/api/sessions/:id', auth, (req, res) => {
+app.delete('/api/sessions/:id', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
@@ -1274,13 +1261,13 @@ app.delete('/api/sessions/:id', auth, (req, res) => {
   }
   delete DB.sessions[req.params.id];
   rebuildAllPrs();     // the records were built from sets that no longer exist
-  save(DB);
+  await save(DB);
   res.json({ ok: true });
 });
 
 // Take yourself out of a shared workout without destroying it for the people still in it.
 // Removes your participation, your logged sets and your history row; theirs are untouched.
-app.post('/api/sessions/:id/leave', auth, (req, res) => {
+app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
@@ -1308,12 +1295,12 @@ app.post('/api/sessions/:id/leave', auth, (req, res) => {
     if (!s.participants.includes(others[0])) s.participants.push(others[0]);
   }
   rebuildAllPrs();
-  save(DB);
+  await save(DB);
   res.json({ ok: true, left: true });
 });
 
 // update a session (creator only): name/time/location/note/visibility/exercises/invites
-app.put('/api/sessions/:id', auth, (req, res) => {
+app.put('/api/sessions/:id', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
@@ -1340,37 +1327,37 @@ app.put('/api/sessions/:id', auth, (req, res) => {
   s.invited = invites;
   }
   s.updatedAt = new Date().toISOString();
-  save(DB);
+  await save(DB);
   res.json(sessionView(s, req.userId));
 });
 
 // accept an invite (move from invited[] to participants[])
-app.post('/api/sessions/:id/accept', auth, (req, res) => {
+app.post('/api/sessions/:id/accept', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   if (!Array.isArray(s.invited) || !s.invited.includes(req.userId)) return res.status(403).json({ error: 'not invited' });
   s.invited = s.invited.filter(x => x !== req.userId);
   if (!s.participants.includes(req.userId)) s.participants.push(req.userId);
-  save(DB);
+  await save(DB);
   notify(s.creatorId, { title: 'Invite accepted', body: `${DB.users[req.userId].displayName} joined your workout` });
   res.json(sessionView(s, req.userId));
 });
 
 // decline an invite (remove from invited[], do not join)
-app.post('/api/sessions/:id/decline', auth, (req, res) => {
+app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   if (!Array.isArray(s.invited) || !s.invited.includes(req.userId)) return res.status(403).json({ error: 'not invited' });
   s.invited = s.invited.filter(x => x !== req.userId);
-  save(DB);
+  await save(DB);
   notify(s.creatorId, { title: 'Invite declined', body: `${DB.users[req.userId].displayName} declined your workout` });
   res.json(sessionView(s, req.userId));
 });
 
 // suggest a swap (any participant; also join-requester after approval)
-app.post('/api/sessions/:id/suggest', auth, (req, res) => {
+app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
@@ -1385,13 +1372,13 @@ app.post('/api/sessions/:id/suggest', auth, (req, res) => {
   const swapTo = capStr((req.body || {}).swapTo, 80);
   const edit = { id: 'se_' + uid(), exerciseId, proposedBy: req.userId, swapTo, status: 'pending' };
   s.suggestedEdits.push(edit);
-  save(DB);
+  await save(DB);
   // notify creator
   notify(s.creatorId, { title: 'Swap suggested', body: `${DB.users[req.userId].displayName} suggested swapping to ${swapTo}` });
   res.json(sessionView(s, req.userId));
 });
 
-app.post('/api/sessions/:id/suggest/:editId/approve', auth, (req, res) => {
+app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
@@ -1413,12 +1400,12 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, (req, res) => {
     l.exerciseName = edit.swapTo; renamed++;
   }
   if (renamed) rebuildAllPrs();            // the records are grouped by that name
-  save(DB);
+  await save(DB);
   notify(edit.proposedBy, { title: 'Swap approved', body: `${DB.users[s.creatorId].displayName} approved your swap to ${edit.swapTo}` });
   res.json(sessionView(s, req.userId));
 });
 
-app.post('/api/sessions/:id/suggest/:editId/reject', auth, (req, res) => {
+app.post('/api/sessions/:id/suggest/:editId/reject', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
@@ -1426,12 +1413,12 @@ app.post('/api/sessions/:id/suggest/:editId/reject', auth, (req, res) => {
   if (!edit) return res.status(404).json({ error: 'edit not found' });
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator approves' });
   edit.status = 'rejected';
-  save(DB);
+  await save(DB);
   res.json(sessionView(s, req.userId));
 });
 
 // join request (friends-visibility sessions)
-app.post('/api/sessions/:id/join', auth, (req, res) => {
+app.post('/api/sessions/:id/join', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
@@ -1448,12 +1435,12 @@ app.post('/api/sessions/:id/join', auth, (req, res) => {
     return res.status(403).json({ error: 'forbidden' });
   if (s.joinRequests.find(j => j.userId === req.userId)) return res.status(400).json({ error: 'already requested' });
   s.joinRequests.push({ id: 'jr_' + uid(), userId: req.userId, note: capStr((req.body||{}).note, 500), status: 'pending' });
-  save(DB);
+  await save(DB);
   notify(s.creatorId, { title: 'Join request', body: `${DB.users[req.userId].displayName} wants to join your workout` });
   res.json({ ok: true, requested: true });     // the answer to "may I join" is not the workout
 });
 
-app.post('/api/sessions/:id/join/:reqId/approve', auth, (req, res) => {
+app.post('/api/sessions/:id/join/:reqId/approve', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
@@ -1461,31 +1448,31 @@ app.post('/api/sessions/:id/join/:reqId/approve', auth, (req, res) => {
   if (!jr || s.creatorId !== req.userId) return res.status(403).json({ error: 'forbidden' });
   jr.status = 'approved';
   if (!s.participants.includes(jr.userId)) s.participants.push(jr.userId);
-  save(DB);
+  await save(DB);
   notify(jr.userId, { title: 'Join approved', body: `${DB.users[s.creatorId].displayName} approved your join request` });
   res.json(sessionView(s, req.userId));
 });
 
-app.post('/api/sessions/:id/join/:reqId/reject', auth, (req, res) => {
+app.post('/api/sessions/:id/join/:reqId/reject', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   const jr = s.joinRequests.find(j => j.id === req.params.reqId);
   if (!jr || s.creatorId !== req.userId) return res.status(403).json({ error: 'forbidden' });
   jr.status = 'rejected';
-  save(DB);
+  await save(DB);
   notify(jr.userId, { title: 'Join declined', body: `${DB.users[s.creatorId].displayName} declined your join request` });
   res.json(sessionView(s, req.userId));
 });
 
 // attendance
-app.post('/api/sessions/:id/attendance', auth, (req, res) => {
+app.post('/api/sessions/:id/attendance', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   if (!s.participants.includes(req.userId)) return res.status(403).json({ error: 'forbidden' });
   s.attendance[req.userId] = capStr((req.body||{}).status, 20) || 'in';
-  save(DB);
+  await save(DB);
   res.json(sessionView(s, req.userId));
 });
 
@@ -1506,11 +1493,11 @@ function inUnit(weight, from, to) {
 // typed 220.5 lb last week did not change the weight on the bar.
 function sameLoad(a, b) { return Math.abs(toLb(a.weight, a.unit) - toLb(b.weight, b.unit)) < 0.6; }
 
-app.post('/api/me/units', auth, (req, res) => {
+app.post('/api/me/units', auth, async (req, res) => {
   const u = (req.body || {}).units;
   if (u !== 'lb' && u !== 'kg') return res.status(400).json({ error: 'units must be lb or kg' });
   DB.users[req.userId].units = u;
-  save(DB);
+  await save(DB);
   res.json({ units: u });
 });
 
@@ -1728,7 +1715,7 @@ function seedsOf(userId) { return (DB.users[userId] && DB.users[userId].seeded) 
 
 app.get('/api/me/seeds', auth, (req, res) => res.json({ seeds: seedsOf(req.userId) }));
 
-app.put('/api/me/seeds', auth, (req, res) => {
+app.put('/api/me/seeds', auth, async (req, res) => {
   // `weight`/`reps` are the user's CURRENT working set, not an all-time best. Jeff's call:
   // a working weight is self-correcting (real logs replace it within a week) whereas a
   // self-reported all-time best is permanent, may be unbeatable, and would block the first
@@ -1739,7 +1726,7 @@ app.put('/api/me/seeds', auth, (req, res) => {
   const u = DB.users[req.userId];
   u.seeded = u.seeded || {};
   const w = numIn(weight, 1e6), r = numIn(reps, 1e6), g = numIn(goal, 1e6);
-  if (!w && !g) { delete u.seeded[exercise]; save(DB); return res.json({ seeds: u.seeded }); }
+  if (!w && !g) { delete u.seeded[exercise]; await save(DB); return res.json({ seeds: u.seeded }); }
   u.seeded[exercise] = {
     exercise,
     weight: w, reps: r || 1,
@@ -1747,14 +1734,14 @@ app.put('/api/me/seeds', auth, (req, res) => {
     unit: u.units || 'lb',
     at: new Date().toISOString()
   };
-  save(DB);
+  await save(DB);
   res.json({ seeds: u.seeded });
 });
 
-app.delete('/api/me/seeds/:exercise', auth, (req, res) => {
+app.delete('/api/me/seeds/:exercise', auth, async (req, res) => {
   const u = DB.users[req.userId];
   if (u.seeded) delete u.seeded[decodeURIComponent(req.params.exercise)];
-  save(DB);
+  await save(DB);
   res.json({ seeds: u.seeded || {} });
 });
 
@@ -1783,7 +1770,7 @@ function recordsFor(userId) {
 
 // The recommendation for ONE exercise, for the log sheet. /api/progress computes trends,
 // weeks and records too; opening a log sheet should not pay for any of that.
-app.get('/api/progress/exercise/:name', auth, (req, res) => {
+app.get('/api/progress/exercise/:name', auth, async (req, res) => {
   const name = decodeURIComponent(req.params.name);
   const r = recommendationsFor(req.userId);
   // `sessions` and `seeded` exist so the sheet can say what is COMING when there is nothing to
@@ -1804,7 +1791,7 @@ app.get('/api/progress/exercise/:name', auth, (req, res) => {
   });
 });
 
-app.get('/api/progress', auth, (req, res) => {
+app.get('/api/progress', auth, async (req, res) => {
   const weeks = Math.min(52, Math.max(4, Number(req.query.weeks) || 13));
   const rec = recommendationsFor(req.userId);
   const w = weeksFor(req.userId, weeks);
@@ -1825,7 +1812,7 @@ app.get('/api/progress', auth, (req, res) => {
   });
 });
 
-app.post('/api/sessions/:id/log', auth, (req, res) => {
+app.post('/api/sessions/:id/log', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
@@ -1858,7 +1845,7 @@ app.post('/api/sessions/:id/log', auth, (req, res) => {
   if (rr) { entry.targetReps = rr.lo; if (rr.hi !== rr.lo) entry.targetRepsMax = rr.hi; }
   s.logs[req.userId].push(entry);
   rebuildAllPrs();
-  save(DB);
+  await save(DB);
   res.json(sessionView(s, req.userId));
 });
 
@@ -1976,12 +1963,17 @@ function migrateExerciseNames() {
 }
 
 // v168: replace every stored plaintext password with a scrypt hash. Runs once; after it the
-// clear password is gone from disk and from every future backup. There is no way back, which is
-// the point — and it is safe because we hold the plaintext at the moment of conversion.
-// It is also the documented way to reset a password by hand while self-service reset is off:
-// set `"pin": "theNewPassword"` on the account in data.json and restart. A plaintext pin is
-// always taken as an instruction to set that password, even over an existing hash, and is
-// erased in the same pass — so the clear text never survives a boot.
+// clear password is gone from Postgres and from every future JSON snapshot backup. There is no
+// way back, which is the point — and it is safe because we hold the plaintext at the moment of
+// conversion.
+// It is also the documented way to reset a password by hand while self-service reset is off
+// (Aug 2026 — updated for the move off data.json onto Postgres, see DEPLOY.md's "Reset a
+// password by hand" section for the full command): connect to Postgres and run
+//   UPDATE users SET data = jsonb_set(data, '{pin}', to_jsonb('theNewPassword'::text))
+//   WHERE username_lower = 'theirusername';
+// then restart the app. A plaintext pin is always taken as an instruction to set that password,
+// even over an existing hash, and is erased in the same pass — so the clear text never survives
+// a boot.
 function migratePasswords() {
   let done = 0;
   for (const u of Object.values(DB.users)) {
@@ -2140,7 +2132,7 @@ function rebuildAllPrs() {
   }
 }
 
-app.put('/api/sessions/:id/log/:logId', auth, (req, res) => {
+app.put('/api/sessions/:id/log/:logId', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error:'not found' });
   ensureSessionShape(s);
@@ -2153,11 +2145,11 @@ app.put('/api/sessions/:id/log/:logId', auth, (req, res) => {
   if (setType!==undefined) log.setType = setType || 'normal';
   if (set!==undefined) log.set = numIn(set, 1e6) || log.set;
   rebuildAllPrs();
-  save(DB);
+  await save(DB);
   res.json(sessionView(s, req.userId));
 });
 
-app.delete('/api/sessions/:id/log/:logId', auth, (req, res) => {
+app.delete('/api/sessions/:id/log/:logId', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error:'not found' });
   ensureSessionShape(s);
@@ -2166,12 +2158,12 @@ app.delete('/api/sessions/:id/log/:logId', auth, (req, res) => {
   if (idx<0) return res.status(404).json({ error:'log not found' });
   arr.splice(idx,1);
   rebuildAllPrs();
-  save(DB);
+  await save(DB);
   res.json(sessionView(s, req.userId));
 });
 
 // lock session (mark done) -> record history for conflict detection
-app.post('/api/sessions/:id/lock', auth, (req, res) => {
+app.post('/api/sessions/:id/lock', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
@@ -2194,12 +2186,12 @@ app.post('/api/sessions/:id/lock', auth, (req, res) => {
     if (!s.history) s.history = [];
     s.history.push({ userId: pid, date: new Date().toISOString().slice(0,10), muscleGroups: [...mgs], exercises: exNames });
   }
-  save(DB);
+  await save(DB);
   res.json(sessionView(s, req.userId));
 });
 
 // Save a post for a locked session (notes + media + visibility)
-app.post('/api/sessions/:id/post', auth, (req, res) => {
+app.post('/api/sessions/:id/post', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
@@ -2262,8 +2254,22 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
     media: cleanMedia,
     visibility: vis
   };
-  save(DB);
+  await save(DB);
   res.json(sessionView(s, req.userId));
+});
+
+// Catches whatever the async-route wrapper above forwards via next(err) — a thrown error or a
+// rejected promise from any handler, including a Postgres error from save()/load(). Without
+// this, Express's own default error handler would still respond (so a request never hangs
+// forever), but as an HTML page with a stack trace — wrong content type for an API this security
+// audit already treats as adversarial input surface, and a real information leak. status is read
+// from err.status/err.statusCode so express.json's PayloadTooLargeError (413) still reports 413,
+// not a generic 500 — v182's rate-limit/body-cap work depends on that exact status code.
+app.use((err, req, res, next) => {
+  const status = (err && (err.status || err.statusCode)) || 500;
+  const message = status === 413 ? 'Request body too large.' : 'Something went wrong. Please try again.';
+  console.error(err && err.stack || err);
+  res.status(status).json({ error: message });
 });
 
 // ---- Boot migrations ----
@@ -2281,19 +2287,33 @@ app.post('/api/sessions/:id/post', auth, (req, res) => {
 // historical set at log time so a later library re-tag cannot rewrite it.
 // migrateMedia and migrateLoadTypes no-op once the data is in the new shape; rebuildAllPrs is a
 // full replay every boot by design, so PRs self-heal whenever the rule behind them changes.
-backupOnBoot();          // FIRST — after this line, everything below may rewrite data.json
-loadOrCreateSecret();       // before anything can sign or verify a login
-migrateSessionShapes();     // heal malformed session rows BEFORE any migration below walks them
-migrateMedia();
-migratePasswords();
-migrateMergeDuplicateBrian();   // before the collision report, which it resolves
-reportUsernameCollisions();
-migrateCreatedAt();
-migrateFollowApproval();    // friends -> approved followers; old follows -> pending requests
-migrateExerciseNames();     // before rebuildAllPrs, which groups by the name
-rebuildAllPrs();
-migrateLoadTypes();
-save(DB);
-
-const server = app.listen(PORT, () => console.log('CrewFit on', PORT));
-module.exports = { app, server };
+//
+// Aug 2026: this whole sequence is now async (DB comes from Postgres — see db.js), so it's
+// wrapped in an IIFE rather than running as top-level statements. `DB` and `server` are declared
+// with `let` up where they used to be assigned synchronously; every route handler already only
+// reads them from inside a closure that runs on a later request, long after this IIFE has
+// resolved and app.listen has been called — same ordering guarantee the old synchronous code
+// had, just async instead of sync. A rejection anywhere in this chain (most likely: Postgres
+// unreachable) is loud and fatal — see the "REFUSING TO START IS THE FEATURE" design this
+// preserves, now via db.js's connFromEnv() throwing when DATABASE_URL is unset.
+(async () => {
+  DB = await load();
+  await backupOnBoot();       // FIRST — after this line, everything below may rewrite the DB
+  loadOrCreateSecret();       // before anything can sign or verify a login
+  migrateSessionShapes();     // heal malformed session rows BEFORE any migration below walks them
+  await migrateMedia();
+  migratePasswords();
+  migrateMergeDuplicateBrian();   // before the collision report, which it resolves
+  reportUsernameCollisions();
+  migrateCreatedAt();
+  migrateFollowApproval();    // friends -> approved followers; old follows -> pending requests
+  migrateExerciseNames();     // before rebuildAllPrs, which groups by the name
+  rebuildAllPrs();
+  migrateLoadTypes();
+  await save(DB);
+  server = app.listen(PORT, () => console.log('CrewFit on', PORT));
+  module.exports.server = server;
+})().catch(e => {
+  console.error('FATAL during boot:', e && e.stack || e);
+  process.exit(1);
+});

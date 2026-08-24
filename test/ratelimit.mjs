@@ -7,18 +7,23 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freshTestDb } from './_pgtestdb.mjs';
 
 const PORT = 4999, B = `http://localhost:${PORT}`;
 const DIR = mkdtempSync(join(tmpdir(), 'rl-'));
+const testDb = await freshTestDb('ratelimit');
 const J = { 'Content-Type': 'application/json' };
 let srv, fails = 0;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fails++; };
 // post from a given "client IP" (or none) by setting the Fly proxy header
 const post = (p, b, ip) => fetch(B + p, { method: 'POST', headers: ip ? { ...J, 'fly-client-ip': ip } : J, body: JSON.stringify(b) });
+// process 'exit' handlers cannot be async (Node does not wait for promises there), so the DB drop
+// is awaited explicitly at the bottom of this script instead — this handler only covers the
+// synchronous parts (killing the server, clearing DATA_DIR) on an early/unexpected exit.
 process.on('exit', () => { try { srv && srv.kill(); } catch {} try { rmSync(DIR, { recursive: true, force: true }); } catch {} });
 
 await new Promise(res => {
-  srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: DIR, PORT: String(PORT) }, cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'pipe'] });
+  srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: DIR, DATABASE_URL: testDb.url, PORT: String(PORT) }, cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'pipe'] });
   srv.stdout.on('data', d => { if (String(d).includes('CrewFit on')) res(); });
   setTimeout(res, 8000);
 });
@@ -71,6 +76,9 @@ console.log('\na distributed guesser is still capped per account, across many IP
   const fresh = await post('/api/login', { username: 'victim2', pin: 'realpin12' }, '11.0.0.6');
   ok(fresh.status === 429, `after 40 failures spread across IPs the account is globally rate-limited (got ${fresh.status})`);
 }
+
+try { srv && srv.kill(); } catch {}
+await testDb.drop();
 
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
 process.exit(fails ? 1 : 0);

@@ -1,24 +1,42 @@
 // "Add weight next time" — the progression rule and everything the log sheet says about it.
 //
-// Run:  npm test          (starts a server on a throwaway DATA_DIR, never touches data.json)
+// Run:  npm test          (starts a server against a fresh throwaway Postgres database)
 //
 // Every assertion here exists because something was actually wrong. The two that matter most:
 //   - a deload used to satisfy "topped out twice" and told a 225 lb squatter to try 140
 //   - the advice box could render completely empty, which is the one thing it must never do
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freshTestDb } from './_pgtestdb.mjs';
+import { PgConnection, parseConnString } from '../pgmini.js';
 
 const PORT = process.env.TEST_PORT || 4931;
 const B = `http://localhost:${PORT}`;
 const DIR = mkdtempSync(join(tmpdir(), 'crewfit-test-'));
+const testDb = await freshTestDb('progression');
 let fails = 0, srv = null;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fails++; };
 
+// Reads every session row, applies `mutator` to every logged set across every session, writes
+// each changed row back. Replaces the old direct hand-edit of data.json for the same purpose.
+async function mutateAllSessionLogs(mutator) {
+  const pg = new PgConnection(parseConnString(testDb.url));
+  const r = await pg.query('SELECT id, data FROM sessions');
+  let touched = 0;
+  for (const row of r.rows) {
+    const s = JSON.parse(row.data);
+    for (const logs of Object.values(s.logs || {})) for (const l of logs) { mutator(l); touched++; }
+    await pg.query('UPDATE sessions SET data = $1::jsonb WHERE id = $2', [JSON.stringify(s), row.id]);
+  }
+  pg.close();
+  return touched;
+}
+
 function boot() {
   return new Promise((res, rej) => {
-    srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: DIR, PORT: String(PORT) },
+    srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: DIR, DATABASE_URL: testDb.url, PORT: String(PORT) },
       cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'pipe'] });
     let err = '';
     srv.stderr.on('data', d => { err += d; });
@@ -183,12 +201,7 @@ console.log('\nsets logged before rep targets were recorded (pre-v154 data)');
   await log(u, 'Leg Press', '2026-08-05T18:00:00Z', 270, 8);
   await log(u, 'Leg Press', '2026-08-12T18:00:00Z', 270, 9);
   await stop();
-  const f = join(DIR, 'data.json');
-  const d = JSON.parse(readFileSync(f, 'utf8'));
-  for (const s of Object.values(d.sessions))
-    for (const logs of Object.values(s.logs || {}))
-      for (const l of logs) { delete l.targetReps; delete l.targetRepsMax; }
-  writeFileSync(f, JSON.stringify(d, null, 2));
+  await mutateAllSessionLogs(l => { delete l.targetReps; delete l.targetRepsMax; });
   await boot();
   const r = await fetch(B + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: u.username, pin: 'pass12' }) }).then(x => x.json());
@@ -206,16 +219,10 @@ console.log('\nthe server boots with kilogram sets in the file');
   // server.js that reference was in the temporal dead zone: one kg set and the process died
   // before it could listen, permanently, until data.json was hand-edited.
   await stop();
-  const f = join(DIR, 'data.json');
-  const d = JSON.parse(readFileSync(f, 'utf8'));
-  let stamped = 0;
-  for (const s of Object.values(d.sessions))
-    for (const logs of Object.values(s.logs || {}))
-      for (const l of logs) { l.unit = 'kg'; stamped++; }
-  writeFileSync(f, JSON.stringify(d, null, 2));
+  const stamped = await mutateAllSessionLogs(l => { l.unit = 'kg'; });
   let booted = true;
   try { await boot(); } catch (e) { booted = false; console.log('    ' + String(e).split('\n')[1]); }
-  ok(booted, `boots with ${stamped} kg-typed sets in data.json`);
+  ok(booted, `boots with ${stamped} kg-typed sets in the database`);
 }
 
 console.log('\nswitching units re-prints old sets in the NEW unit, converted');
@@ -387,7 +394,7 @@ console.log('\n/api/progress agrees with the log sheet');
      'the exact state that used to print "Nothing to add yet" above real rows');
 }
 
-} finally { await stop(); rmSync(DIR, { recursive: true, force: true }); }
+} finally { await stop(); rmSync(DIR, { recursive: true, force: true }); await testDb.drop(); }
 
 console.log(fails ? `\n${fails} FAILURE(S)\n` : '\nall assertions passed\n');
 process.exit(fails ? 1 : 0);
