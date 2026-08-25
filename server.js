@@ -1033,7 +1033,10 @@ function newSessionId() { return 's_' + uid(); }
 
 app.post('/api/sessions', auth, async (req, res) => {
   const { scheduledAt, visibility, equipment, exercises, inviteUsernames, location, lengthMin, creatorNote, name } = req.body || {};
-  if (!Array.isArray(exercises) || !exercises.length) return res.status(400).json({ error: 'needs exercises' });
+  // Empty is allowed now — "Workout Now" creates a live session with nothing in it yet, so you can
+  // add lifts as you go instead of planning them first. Every other creation path (the normal
+  // create-flow) still enforces at least one exercise on its own side before it ever calls this.
+  if (!Array.isArray(exercises)) return res.status(400).json({ error: 'needs exercises' });
   const id = newSessionId();
   const ex = exercises.map((e, i) => Object.assign({ id: 'e_' + uid(), order: i }, withDefaults(e)));
   const invites = [];
