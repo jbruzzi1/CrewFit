@@ -229,7 +229,7 @@ async function home(){
     <button class="blue btn-new" onclick="newWorkout()">+ New workout</button>
     <button class="btn-quick" onclick="workoutNow()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
-      Workout Now
+      Quick Workout
     </button>
   </div>`;
 
@@ -488,7 +488,7 @@ async function openSession(id, opts){
   }
   html += `<h2>Workout</h2>`;
   if(!s.exercises.length){
-    // A blank "Workout Now" session (or any session with everything removed) — no cards to tap,
+    // A blank "Quick Workout" session (or any session with everything removed) — no cards to tap,
     // so say so and give the one action that fixes it, instead of a silent empty header.
     html += `<div class="card"><div class="qs-empty">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5l11 11"/><path d="M21 21l-1-1"/><path d="M3 3l1 1"/><path d="M9 9l1 1"/><path d="M15 15l1 1"/><rect x="4" y="4" width="4" height="4" rx="1" transform="rotate(45 6 6)"/><rect x="16" y="16" width="4" height="4" rx="1" transform="rotate(45 18 18)"/></svg>
