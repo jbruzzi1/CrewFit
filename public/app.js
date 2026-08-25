@@ -220,11 +220,14 @@ async function home(){
   // Primary action (compact)
   html += `<button class="blue btn-new" onclick="newWorkout()">+ New workout</button>`;
 
-  // Your Sessions (prime spot) — only sessions you've accepted/joined (exclude pending invites)
+  // Your Sessions (prime spot) — only sessions you've accepted/joined (exclude pending invites),
+  // and only ones still open. Once a session has been finished and saved (s.post is set — see
+  // POST /sessions/:id/post in server.js), it's done: it belongs in "My Workouts" on the profile,
+  // not in this active list, so it doesn't sit here forever after everyone's already wrapped up.
   // Today's not-yet-finished session (if any) is pulled to the top with a "Live now" badge —
   // .sort() is stable (every browser this app targets), so this only reorders the live ones
   // forward and otherwise leaves everything exactly where the API's date order put it.
-  const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)))
+  const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && !s.post)
     .sort((a,b) => (isSessionLiveNow(b)?1:0) - (isSessionLiveNow(a)?1:0));
   html += `<h2>Your Sessions</h2><div class="card">`;
   if(yours.length){
@@ -243,7 +246,7 @@ async function home(){
     for(const f of feed){
       const who = await friendName(f.by);
       const ic = f.type==='pr' ? `<span class="act-chip pr">PR</span>` : `<span class="act-chip done">✓</span>`;
-      html += `<div class="feed-item">${ic} <b>${esc(who)}</b> ${esc(f.text)}</div>`;
+      html += `<div class="feed-item" onclick="profileView('${f.by}')" style="cursor:pointer">${ic} <b>${esc(who)}</b> ${esc(f.text)}</div>`;
     }
   } else html += `<div class="muted">No recent activity from friends.</div>`;
   html += `</div></div>`;
@@ -2128,13 +2131,22 @@ async function useTpl(id){
   createFlow();
 }
 
+// Real photo when the user has one (same field ME.avatar already uses on Home), initials
+// circle otherwise — one place so every avatar spot on the Friends page (list, requests,
+// search) stays consistent instead of some showing photos and others showing letters.
+function avatarHtml(x, cls){
+  const initial = esc((x.displayName||x.username||'?')[0]||'?');
+  return x.avatar
+    ? `<img class="${cls}" src="${esc(x.avatar)}" alt="">`
+    : `<div class="${cls}" style="background:${avatarColor(x.username)};color:#fff">${initial}</div>`;
+}
 async function friends(){
   const data = await H.get('/api/friends');
   const f = data.friends||[]; const inc = data.incoming||[]; const out = data.outgoing||[]; const freq = data.followRequests||[];
   const flame = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>';
   const friendRows = f.length ? f.map(x=>`
     <div class="friend-row" onclick="profileView('${x.id}')" style="cursor:pointer">
-      <div class="avatar" style="background:${avatarColor(x.username)};color:#fff">${esc((x.displayName||x.username||'?')[0]||'?')}</div>
+      ${avatarHtml(x,'avatar')}
       <div class="meta">
         <div class="name">${esc(x.displayName||x.username)}</div>
         <div class="handle">@${esc(x.username)}</div>
@@ -2144,7 +2156,7 @@ async function friends(){
     : '<div class="card muted" style="text-align:center">No friends yet.<br>Search above to find people to train with.</div>';
   const reqRows = inc.length ? inc.map(x=>`
     <div class="req">
-      <div class="av" style="background:${avatarColor(x.username)};color:#fff">${esc((x.displayName||x.username||'?')[0]||'?')}</div>
+      ${avatarHtml(x,'av')}
       <div class="rc"><b>${esc(x.displayName||x.username)}</b> wants to train with you</div>
       <div class="ra">
         <button class="sm ok" onclick="acceptRequest('${x.reqId}')">Approve</button>
@@ -2154,7 +2166,7 @@ async function friends(){
     : '<div class="muted" style="padding:4px 0">No pending requests.</div>';
   const followReqRows = freq.length ? freq.map(x=>`
     <div class="req">
-      <div class="av" style="background:${avatarColor(x.username)};color:#fff">${esc((x.displayName||x.username||'?')[0]||'?')}</div>
+      ${avatarHtml(x,'av')}
       <div class="rc"><b>${esc(x.displayName||x.username)}</b> wants to follow you</div>
       <div class="ra">
         <button class="sm ok" onclick="acceptFollow('${x.id}')">Approve</button>
@@ -2190,7 +2202,7 @@ async function friendSearch(){
       const btn = x.requestStatus==='friends' ? `<button class="sm" disabled style="background:#f0f1f3;border-color:transparent;color:var(--muted)">Friends</button>`
         : x.requestStatus==='sent' ? `<button class="sm" disabled style="background:#f0f1f3;border-color:transparent;color:var(--muted)">Requested</button>`
         : `<button class="sm sec" onclick="sendRequest('${jsq(x.username)}', this)">Add</button>`;
-      return `<div class="user-row"><div class="avatar" style="background:${avatarColor(x.username)};color:#fff">${esc((x.displayName||x.username||'?')[0]||'?')}</div><div class="meta"><div class="name">${esc(x.displayName||x.username)}</div><div class="handle">@${esc(x.username)}</div></div>${btn}</div>`;
+      return `<div class="user-row">${avatarHtml(x,'avatar')}<div class="meta"><div class="name">${esc(x.displayName||x.username)}</div><div class="handle">@${esc(x.username)}</div></div>${btn}</div>`;
     }).join('');
   } catch(e){ if(box) box.innerHTML=''; }
 }
@@ -2294,14 +2306,6 @@ async function profileView(id){
   const activityBlock = (activity.length || isMe)
     ? `<h2 class="light">Recent Activity</h2><div class="card feed-strip">${activityRows}</div>`
     : '';
-  // v148: Personal Records list — until now a PR only ever flashed briefly on the set you logged it
-  // on; there was nowhere to go check "what's my Bench Press PR". p.prs comes from the server's
-  // cross-session PR tracking (one entry per exercise, your true current best).
-  const prs = p.prs||[];
-  const prRows = prs.map(pr=>`<div class="pr-row"><div class="pr-name">${esc(pr.exercise)}</div><div class="pr-val"><div class="pr-weight">${pr.weight} × ${pr.reps}</div><div class="pr-date">${fmtDate(pr.at)}</div></div></div>`).join('');
-  const prsBlock = prs.length
-    ? `<h2 class="light">Personal Records</h2><div class="card">${prRows}</div>`
-    : (isMe ? `<h2 class="light">Personal Records</h2><div class="card"><div class="muted" style="padding:6px 4px">Log a workout to start tracking PRs.</div></div>` : '');
   const workouts = p.myWorkouts||[];
   function woCard(w){
     const img = (w.post&&w.post.media&&w.post.media[0]) ? `<img class="wthumb" src="${esc(w.post.media[0].src)}" alt="">` : `<div class="wthumb wthumb-empty"></div>`;
@@ -2345,7 +2349,7 @@ async function profileView(id){
     ${stats}
     ${actHtml}
     ${bioBlock}
-    ${activityBlock}${prsBlock}
+    ${activityBlock}
     <div class="sec-head"><h2>My Workouts</h2><div class="view-toggle"><button class="${wview==='grid'?'on':''}" id="vtGrid" onclick="setWorkoutView('grid')">▦ Grid</button><button class="${wview==='list'?'on':''}" id="vtList" onclick="setWorkoutView('list')">☰ List</button></div></div>
     <div style="margin:8px 0 14px" id="workoutView">${wview==='grid'?gridHtml:listHtml}</div>
     ${isPrivate ? privateBlock : ''}
