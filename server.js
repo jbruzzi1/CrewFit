@@ -641,15 +641,37 @@ function profileOf(id, viewerId) {
     limited: !isApproved        // so the profile can say why it is thin rather than look empty
   };
 }
+// One line per PR is right most days — but a single big workout can set five PRs at once,
+// and that used to mean five separate rows in both "Recent Activity" (profile) and "Friend's
+// Activity" (home) for one session. This groups a person's PRs from the SAME calendar day
+// into one row ("hit 3 new PRs (Bench Press, Squat and 1 more)") so a big session reads as
+// one event, the way it actually happened, instead of flooding the feed. Also enforces the
+// last-7-days window here in one place — a PR from three weeks ago showing up forever was
+// the other half of "growing longer than I hoped for".
+function groupPrsByDay(prs, weekAgo) {
+  const recent = prs.filter(p => new Date(p.at).getTime() >= weekAgo);
+  const byDay = {};
+  for (const p of recent) {
+    const day = new Date(p.at).toISOString().slice(0, 10);
+    (byDay[day] = byDay[day] || []).push(p);
+  }
+  return Object.values(byDay).map(group => {
+    const at = group.map(p => p.at).sort().slice(-1)[0];   // latest timestamp in the group, for feed ordering
+    if (group.length === 1) {
+      const p = group[0];
+      return { type: 'pr', at, text: `hit a new PR on ${p.exercise} (${p.weight}×${p.reps})` };
+    }
+    const names = group.map(p => p.exercise);
+    const label = names.length <= 2 ? names.join(' and ') : `${names.slice(0, 2).join(', ')} and ${names.length - 2} more`;
+    return { type: 'pr', at, text: `hit ${group.length} new PRs (${label})` };
+  });
+}
 // Recent activity for a single user: PRs, weekly completions, streaks (most recent first)
 function buildActivityFor(userId) {
   const items = [];
   const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
   const prs = (DB.prs && DB.prs[userId]) ? Object.values(DB.prs[userId]) : [];
-  // Only surface PRs actually set in the last week here — DB.prs holds every current best regardless
-  // of age, and without this filter "Recent Activity" would list every exercise you've ever maxed out,
-  // forever, not just what's new.
-  for (const p of prs) if (new Date(p.at).getTime() >= weekAgo) items.push({ type: 'pr', at: p.at, text: `hit a new PR on ${p.exercise} (${p.weight}×${p.reps})` });
+  items.push(...groupPrsByDay(prs, weekAgo));
   let count = 0;
   for (const s of Object.values(DB.sessions)) {
     for (const h of (s.history || [])) {
@@ -851,10 +873,11 @@ app.get('/api/feed', auth, async (req, res) => {
   const myFriends = DB.users[req.userId].friends;
   const items = [];
   const weekAgo = Date.now() - 7*24*3600*1000;
-  // PRs from friends
+  // PRs from friends — grouped per friend per day (see groupPrsByDay) so one big workout with
+  // several PRs is one row, not one row per exercise, and nothing older than a week lingers.
   for (const fid of myFriends) {
     const prs = (DB.prs && DB.prs[fid]) ? Object.values(DB.prs[fid]) : [];
-    for (const p of prs) items.push({ type: 'pr', by: fid, at: p.at, text: `hit a new PR on ${p.exercise} (${p.weight}×${p.reps})` });
+    for (const g of groupPrsByDay(prs, weekAgo)) items.push({ ...g, by: fid });
   }
   // Workouts completed this week (from session history)
   for (const fid of myFriends) {
@@ -870,7 +893,10 @@ app.get('/api/feed', auth, async (req, res) => {
     if (streak >= 2) items.push({ type: 'streak', by: fid, at: new Date().toISOString(), text: `hit a ${streak} day workout streak` });
   }
   items.sort((a,b)=> new Date(b.at) - new Date(a.at));
-  res.json(items);
+  // Home shows this as a quick-glance strip, not a full history — cap it so a house full of
+  // active friends doesn't turn it into a scroll. Nothing is lost: every friend's complete
+  // recent activity is still on their own profile page (tap their name here to get there).
+  res.json(items.slice(0, 8));
 });
 
 
