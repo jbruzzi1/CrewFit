@@ -599,10 +599,14 @@
     .seg.wk-seg button { flex:1; border:none; background:transparent; padding:8px 4px; border-radius:8px;
       font:inherit; font-size:12.5px; font-weight:600; color:var(--muted); margin:0; }
     .seg.wk-seg button.on { background:#fff; color:var(--blue); box-shadow:0 1px 2px rgba(0,0,0,.08); }
-    /* Home: "+ New workout" (primary) paired with "Workout Now" (secondary quick-start) */
+    /* Home: "+ New workout" (primary) paired with "Quick Workout" (secondary quick-start) */
     .home-actions { display:flex; gap:10px; align-items:center; margin:16px 0 8px; flex-wrap:wrap; }
     .home-actions .btn-new { margin:0; }
-    .btn-quick { width:auto; margin:0; padding:13px 16px; font-size:14px; border-radius:14px; background:#fff; color:var(--blue); border:1.5px solid var(--blue); display:inline-flex; align-items:center; gap:7px; font-weight:700; }
+    /* padding is 1.5px shorter than .btn-new's on each side, on purpose: .btn-new has no border
+       and .btn-quick has a 1.5px one, so equal padding would make .btn-quick 3px taller — this
+       keeps both buttons the same height and baseline-aligned (see the .inv-actions comment above
+       for the same bug in the Accept/Decline pair). */
+    .btn-quick { width:auto; margin:0; padding:12px 16.5px; font-size:14px; border-radius:14px; background:#fff; color:var(--blue); border:1.5px solid var(--blue); display:inline-flex; align-items:center; gap:7px; font-weight:700; }
     .btn-quick svg { width:16px; height:16px; flex:0 0 auto; }
     .btn-quick:active { background:#eef4ff; }
     /* Workout detail: pending invitees, distinct from joined "Who's in" chips */
@@ -613,7 +617,7 @@
     .fav-av-wrap .fav-av { opacity:.55; }
     .fav-pending-dot { position:absolute; right:-3px; bottom:-3px; width:14px; height:14px; border-radius:50%; background:#fff; border:1px solid var(--line); display:flex; align-items:center; justify-content:center; }
     .fav-pending-dot svg { width:8px; height:8px; color:#9aa1ad; display:block; }
-    /* A "Workout Now" session with nothing logged yet */
+    /* A "Quick Workout" session with nothing logged yet */
     .qs-empty { text-align:center; padding:34px 16px; color:var(--muted); }
     .qs-empty svg { width:34px; height:34px; color:#c7cedb; margin-bottom:10px; }
     .qs-empty .qs-t { font-size:14px; font-weight:600; color:var(--fg); margin-bottom:3px; }
@@ -630,6 +634,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=189"></script>
+  <script src="app.js?v=190"></script>
 </body>
 </html>
