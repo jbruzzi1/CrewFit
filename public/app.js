@@ -233,9 +233,32 @@ async function home(){
   $('app').innerHTML = html;
 }
 
-async function openSession(id){
+// Bumped on every silent refresh kicked off below, so an older, slower response can never
+// overwrite what a newer one already applied (e.g. two quick taps on "+ Add" firing two
+// out-of-order background refreshes).
+let SESSION_SILENT_SEQ = 0;
+// A silent refresh is "for" this exact sheet — the one open when it was kicked off — not just
+// "any sheet at all": editLogSet stacks a second .sheet-back on top of the log sheet without
+// closing it, and closeSheet() only ever targets the first .sheet-back in document order, so a
+// generic .sheet-back.show selector here would false-positive against a leaked, never-removed
+// sheet from an earlier edit/delete. Checking the specific element openLogSheet stamped onto
+// LOGVIEW avoids that.
+function logSheetStillOpenFor(sid){
+  return !!(LOGVIEW && LOGVIEW.sid===sid && LOGVIEW.sheetEl
+    && document.body.contains(LOGVIEW.sheetEl) && LOGVIEW.sheetEl.classList.contains('show'));
+}
+// opts.silent: used for a background refresh fired after logging/editing/deleting a set, to
+// update the "✓ N sets logged" badge on the page sitting UNDER the still-open log sheet —
+// without leaving and re-entering. Must never alert() or steal the screen: if the fetch fails
+// (expired session included — authScreen() may already have repainted #app to the login
+// screen by the time this resolves), or the user has since closed the sheet or navigated
+// elsewhere, it just quietly does nothing.
+async function openSession(id, opts){
+  const silent = !!(opts && opts.silent);
+  const mySeq = silent ? ++SESSION_SILENT_SEQ : null;
   const s = await H.get('/api/sessions/'+id);
-  if(!s || (s.error && !s._expired)){ alert(s && s.error ? s.error : 'Session not found'); return; }
+  if(!s || s.error){ if(!silent && !s._expired) alert(s && s.error ? s.error : 'Session not found'); return; }
+  if(silent && (mySeq !== SESSION_SILENT_SEQ || !logSheetStillOpenFor(id))) return;
   // defensive: older/persisted sessions may lack these array fields
   s.participants = s.participants || [];
   s.invited = s.invited || [];
@@ -487,6 +510,9 @@ async function openSession(id){
     html += crewBlock + chatBlock;
   }
   html += `</div>`;
+  // Re-checked here, not just right after the fetch: the name-lookup awaits above take their
+  // own time, and a silent refresh must not land on whatever screen the user has since moved to.
+  if(silent && (mySeq !== SESSION_SILENT_SEQ || !logSheetStillOpenFor(id))) return;
   $('app').innerHTML = html;
   loadChat(s);
 }
@@ -764,6 +790,12 @@ async function openLogSheet(sid, exId){
   sheet.onclick=(ev)=>{ if(ev.target===sheet) closeSheet(); };
   document.body.appendChild(sheet);
   requestAnimationFrame(()=>sheet.classList.add('show'));
+  // Stamped onto LOGVIEW so a background silent refresh (see openSession's opts.silent) can
+  // check THIS exact sheet's presence/visibility, not just "some .sheet-back.show exists
+  // somewhere" — editLogSet stacks a second .sheet-back on top of this one without closing it,
+  // and closeSheet() only ever targets the first .sheet-back in document order, so a generic
+  // selector here would false-positive (or worse, false-negative) once that's happened.
+  LOGVIEW.sheetEl = sheet;
   renderLogSets(s);
   // The advice belongs HERE, at the moment the weight is chosen — not only on a tab the user
   // has to remember to open before leaving for the gym. Loaded after the sheet is on screen
@@ -854,6 +886,10 @@ async function addLogSet(){
   LOGVIEW.sid && renderLogSets(s);
   document.getElementById('logW').value=''; document.getElementById('logR').value='';
   startRest();
+  // Update the "✓ N sets logged" badge on the workout page behind this sheet right now, instead
+  // of only the next time it's opened. Fire-and-forget on purpose — the sheet above has already
+  // been updated and must not wait on this.
+  if(LOGVIEW.sid) openSession(LOGVIEW.sid, {silent:true});
 }
 async function editLogSet(logId){
   const s=await H.get('/api/sessions/'+LOGVIEW.sid);
@@ -881,13 +917,17 @@ async function saveLogSet(logId){
   const w=document.getElementById('edW').value, r=document.getElementById('edR').value, t=document.getElementById('edT').value;
   const s=await H.put(`/api/sessions/${LOGVIEW.sid}/log/${logId}`,{weight:w,reps:r,setType:t});
   if(s.error){ alert(s.error); return; }
+  const sid = LOGVIEW.sid;
   closeSheet(); openLogSheet(LOGVIEW.sid, LOGVIEW.exId);
+  if(sid) openSession(sid, {silent:true});
 }
 async function delLogSet(logId){
   if(!confirm('Delete this set?')) return;
   const s=await H.delete(`/api/sessions/${LOGVIEW.sid}/log/${logId}`);
   if(s.error){ alert(s.error); return; }
+  const sid = LOGVIEW.sid;
   closeSheet(); openLogSheet(LOGVIEW.sid, LOGVIEW.exId);
+  if(sid) openSession(sid, {silent:true});
 }
 let REST_TIMER=null;
 function startRest(){
