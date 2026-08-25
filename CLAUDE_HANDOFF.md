@@ -29,11 +29,39 @@ Jeff was burned (Aug 15, 2026: an agent deployed a profile thumbnail redesign **
 - Auth token stored as `localStorage` key `crewfit_token` (NOT `token`).
 - VAPID / web-push keys are Fly secrets (not in repo).
 
+## 2.5. FLY POSTGRES SETUP
+- Persistence is Postgres, not a file — `db.js` (hand-rolled client in `pgmini.js`, no
+  dependency) is a thin load()/save() wrapper around it; `server.js`'s in-memory `DB` object
+  shape and all business logic are completely unchanged (see the design-call comment at the top
+  of `db.js`). `DATABASE_URL` is a required Fly secret (set via `fly postgres attach`) — the app
+  refuses to boot without it, or if it's unreachable (loud `FATAL during boot:` in `fly logs`,
+  never a silent empty database).
+- **One-time cutover runbook (create the Postgres cluster, attach it, migrate the live
+  `data.json`, deploy, verify, rollback plan): see `DEPLOY.md`'s "ONE-TIME: moving the database
+  from data.json to Postgres" section.** That section is deleted once the cutover is done — if
+  it's gone, the cutover already happened and this whole paragraph is historical.
+- The migration tool is `scripts/migrate-to-postgres.mjs` — reuses `db.js`'s own
+  save()/load()/ensureSchema() (one source of truth for "how a DB object becomes Postgres rows"),
+  refuses to write anything if the source file has a case-insensitive username collision
+  (mirrors `reportUsernameCollisions()` in `server.js`), and verifies via a full deep read-back
+  compare (not just row counts) before declaring success. Also doubles as the documented
+  incident-recovery tool post-cutover — see DEPLOY.md's "If a deploy goes wrong" — and is
+  exercised end-to-end by `test/data-safety.mjs`'s "documented recovery path" test.
+- The `/data` volume didn't go away — post-cutover it holds uploaded photos/videos and a JSON
+  snapshot backup written before every boot (last 10 kept), not the live database itself.
+- **Scaling this before real growth** — see §11's "Before pushing for real user growth" note.
+
 ## 3. STACK (quick)
-- Node `server.js` (Express, in-memory `DB` persisted via `save(DB)`). No ORM.
+- Node `server.js` (Express, in-memory `DB` persisted to Postgres via `save(DB)` — see §2.5). No ORM.
 - Frontend: `public/app.js` (vanilla, no build step) + `public/index.html`. Bump the `?v=` cache-bust on any frontend change (`app.js?v=144`).
 - Media: files → persistent `/data/uploads` volume → served as `/uploads/...`.
-- `npm test` runs `test/progression.mjs` — 34 assertions over the "add weight next time" rule, against a throwaway `DATA_DIR`. **Run it before and after anything that touches progression, PRs, units or the log sheet, and add to it.** Every assertion in there exists because something was actually broken. No lint/build step; `playwright` is a devDep used only by the render harness (§8).
+- `npm test` runs the full suite (progression, accounts, sharing, targets, exposure, boot-shape,
+  limits, ratelimit, follow, data-safety, plus `pgmini.mjs`/`db-layer.mjs` for the Postgres layer
+  itself) against a real local Postgres — each file gets its own throwaway database via
+  `test/_pgtestdb.mjs`, so tests don't interfere with each other and never touch real data.
+  **Run it before and after anything that touches progression, PRs, units or the log sheet, and
+  add to it.** Every assertion exists because something was actually broken. No lint/build step;
+  `playwright` is a devDep used only by the render harness (§8).
 
 ## 4. SHIPPED VERSIONS (all live on main)
 - v138 — fix `server.js` `s.scheduledAt.slice` crash on numeric date (now `String(s.scheduledAt).slice(0,10)`)
@@ -161,9 +189,12 @@ tags — they are inconsistent** (Goblet Squat is tagged plural but uses one; Fa
 tagged singular but uses two). Generator + the 14 judgment calls: `_design/progress/tag_loadtype.py`.
 A wrong tag silently doubles someone's numbers.
 
-**Test against a COPY of real `data.json`, never the file itself.** `DATA_DIR=/tmp/... node
-server.js`, and checksum the real file before and after to prove it. Two bugs this session were
-found only that way and would have shipped silently otherwise.
+**Test against a COPY of real data, never the live store itself.** Two bugs were found only that
+way and would have shipped silently otherwise. Pre-Postgres this meant `DATA_DIR=/tmp/... node
+server.js` against a copied `data.json`, checksummed before/after to prove it was untouched.
+Post-cutover the same principle is now built into the test suite itself — `test/_pgtestdb.mjs`'s
+`freshTestDb()` gives every Postgres-backed test file its own throwaway database, so a test can
+never touch real data even by accident.
 
 ## 10. AGENT ROLE (how Jeff runs this)
 - **You (Claude Code)** = the build agent. Write code, run checks, render + verify the UI (use the harness in §8), commit locally.
@@ -172,8 +203,49 @@ found only that way and would have shipped silently otherwise.
 - **History:** a separate verify/render agent (Hermes) used to own §8. Jeff consolidated to Claude-only on Aug 16, 2026. Leave `.hermes/hermes-agent/` and `.hermes/memories/MEMORY.md` on disk regardless — retiring the workflow is not a reason to delete his files.
 
 ## 11. OPEN / LIKELY NEXT WORK
+- **Before pushing for real user growth / an app-store launch, revisit the Postgres write
+  pattern.** Flagged during the Aug 2026 data.json→Postgres migration (§2.5); Jeff asked to keep
+  this on record for when he asks about getting real users on the app:
+  - Every one of the ~50 `save(DB)` call sites in `server.js` (inherited unchanged from the old
+    file-based design, on purpose, to keep this migration's risk low) re-syncs the ENTIRE database
+    on every single write — every user row, every session row, every table, upserted, on every
+    save. One person logging one set today does a full write pass over the whole DB. Invisible at
+    a few dozen users; an O(total data) cost per write that slows down for EVERYONE as the user
+    base grows. This is the real scaling ceiling — not the choice of Postgres itself. Fix: convert
+    the highest-traffic call sites to targeted single-row/entity writes instead of whole-DB resyncs.
+  - `db.js` holds one single Postgres connection for the whole app (no pooling) — every request
+    from every user serializes through one TCP socket. Fine at today's traffic, a bottleneck at
+    real scale. Fix: real connection pooling.
+  - `pgmini.js` is a hand-rolled Postgres wire-protocol client (no dependency), not the standard
+    `pg` npm package. Several real bugs were found and fixed in it during the initial build (a
+    hang on connection drop, a race that could silently drop a concurrent write, a latency bug) —
+    that's a signal about the risk of a bespoke client carrying more, not-yet-found edge cases the
+    battle-tested `pg` library already handles. Worth swapping before leaning on it under real
+    production load.
+  - **Supabase considered (Aug 2026), not adopted — worth revisiting for the pooling/client fix
+    specifically.** Supabase is managed Postgres hosting plus optional bundled services (Auth,
+    Storage, Realtime, auto-generated REST/GraphQL APIs, a dashboard) — you can use it as "just
+    Postgres with a real connection pooler (Supavisor) and a web UI" and ignore the rest, pointed
+    at with the standard `pg` npm library instead of self-hosting on Fly. That would close the
+    two bullets above (pooling + hand-rolled client) in one move, since you'd swap `pgmini.js` for
+    `pg` either way. It does NOT fix the whole-DB-resync-per-save bullet — that's our own app
+    code, unrelated to who hosts the database. Not adopting Supabase's Auth/Storage/Realtime/
+    auto-APIs: our own login system already exists, is security-audited, and this app's data
+    (deeply nested JSON per session/user) doesn't map cleanly onto Supabase's auto-REST-API
+    strength anyway, which is built for normalized relational schemas. Cost note: Supabase's free
+    tier auto-pauses after a week of inactivity, so an always-on app needs the Pro tier (from
+    $25/mo) — compare against actual Fly Postgres cost at the time before deciding.
+  - None of this blocks shipping the Postgres migration itself — it fixes a real incident (Aug 17,
+    2026, see `test/data-safety.mjs`'s header comment) and is strictly safer than the old
+    file-based system even unchanged. This is follow-up work, sequenced as its own dedicated
+    build-and-verify pass (like the migration itself got), timed to before real app-store growth —
+    not before shipping this.
 - **The first-run setup screen is not built.** The server side landed in v161 (`GET/PUT/DELETE /api/me/seeds`, seeds as the older half of the progression pair, self-reported vs earned record states). The screen itself does not exist. Reference mockup: `_design/progress/03-setup-first-run.html`. **Jeff's decisions:** collect the WORKING weight only, not an all-time best (a working weight self-corrects within a week; a self-reported best is permanent and could block the first real PR forever); show it on first visit to Progress.
-- **PINs are stored in plaintext** in `data.json`. Must be fixed before there are real users.
+- ~~PINs are stored in plaintext.~~ Fixed in v168 (`migratePasswords()` in `server.js`) — every
+  password is a per-user-salted scrypt hash (`pinHash`/`pinSalt`), never stored in the clear.
+  This note was stale (predated v168) and is left here struck through rather than silently
+  deleted, since it was flagged as a real risk to fix "before there are real users" and this
+  confirms it actually was.
 - **Two things can only be confirmed on a real iPhone**, never in headless Chromium: the v160 bottom-nav fix, and that the green "Try X lb today" box actually responds to a thumb.
 - **A paused bug hunt** left `_bughunt_api.mjs`, `_bughunt_api2.mjs`, `_bughunt_front.cjs` untracked in the repo. Jeff paused it; pick it up or delete them.
 - **Profile tab + New workout creation** still haven't had the v140 "open it up" visual pass — the main remaining consistency gap. (Workouts tab is done as of v144/v145.)

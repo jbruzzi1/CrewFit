@@ -18,17 +18,19 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freshTestDb } from './_pgtestdb.mjs';
 
 const PORT = process.env.TEST_PORT5 || 4959;
 const B = `http://localhost:${PORT}`;
 const DIR = mkdtempSync(join(tmpdir(), 'crewfit-targets-'));
+const testDb = await freshTestDb('targets');
 let fails = 0, srv = null, srvDead = true;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fails++; };
 const J = { 'Content-Type': 'application/json' };
 
 function boot() {
   return new Promise(res => {
-    srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: DIR, PORT: String(PORT) },
+    srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: DIR, DATABASE_URL: testDb.url, PORT: String(PORT) },
       cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'pipe'] });
     srvDead = false;
     let err = '', done = false;
@@ -111,7 +113,7 @@ console.log('\na custom exercise the library has never heard of still gets somet
   ok(e && e.defaultSets === 3 && e.defaultReps > 0, `it falls back rather than breaking (${shapeOf(e)})`);
 }
 
-} finally { await stop(); rmSync(DIR, { recursive: true, force: true }); }
+} finally { await stop(); rmSync(DIR, { recursive: true, force: true }); await testDb.drop(); }
 
 console.log(fails ? `\n${fails} FAILURE(S)\n` : '\nall assertions passed\n');
 process.exit(fails ? 1 : 0);
