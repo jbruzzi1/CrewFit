@@ -182,11 +182,12 @@ console.log('\nan "only me" post belongs to whoever wrote it');
 {
   // Bob was IN the workout and still must not read Alice's private notes
   const v = await get(bob, `/api/sessions/${s.id}`).then(x => x.json());
-  const bad = leaks(JSON.stringify(v.post || {}));
+  const aliceView = (v.posts && v.posts[alice.id]) || {};
+  const bad = leaks(JSON.stringify(aliceView));
   ok(!bad.length, `even a participant does not get them — ${bad.length ? 'LEAKS ' + bad.join(', ') : 'hidden'}`);
-  ok(v.post && v.post.hidden === true, 'he is told a post exists, not what it says');
+  ok(aliceView.hidden === true, 'he is told a post exists, not what it says');
   const mine = await get(alice, `/api/sessions/${s.id}`).then(x => x.json());
-  ok(/do not tell anyone/.test(JSON.stringify(mine.post || {})), 'and Alice still reads her own');
+  ok(/do not tell anyone/.test(JSON.stringify((mine.posts && mine.posts[alice.id]) || {})), 'and Alice still reads her own');
 }
 
 console.log('\nthings that used to answer with a 500');
@@ -230,7 +231,7 @@ console.log('\na published workout reaches the people it was published for');
   const r = await get(far, `/api/sessions/${ps.id}`);
   ok(r.status === 200, `a stranger CAN open a public post (got ${r.status})`);
   const v = await r.json();
-  ok(/good one/.test(JSON.stringify(v.post || {})), 'and read it');
+  ok(/good one/.test(JSON.stringify((v.posts && v.posts[pub.id]) || {})), 'and read it');
   const shown = Object.values(v.logs || {}).flat();
   ok(shown.length === 1 && shown[0].weight === 225, `and see the sets that were published (${shown.length})`);
   ok(Object.keys(v.logs || {}).length === 1, 'the author\'s, and only the author\'s');

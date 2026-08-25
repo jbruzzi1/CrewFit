@@ -180,7 +180,7 @@ console.log('\nthe three vectors a second review caught are closed too');
         offsite = 'https://evil.example/track.gif';
   const okImg = await post(`/api/sessions/${sess.id}/post`, { visibility: 'friends', media: [{ type: 'image', src: png }] }, alice.token);
   d = await db();
-  ok(okImg.status === 200 && /^\/uploads\//.test(d.sessions[sess.id].post.media[0].src), 'a real image is accepted and written to disk (src becomes /uploads/…)');
+  ok(okImg.status === 200 && /^\/uploads\//.test(d.sessions[sess.id].posts[alice.user.id].media[0].src), 'a real image is accepted and written to disk (src becomes /uploads/…)');
   const badMime = await post(`/api/sessions/${sess.id}/post`, { visibility: 'friends', media: [{ type: 'image', src: octet }] }, alice.token);
   ok(badMime.status === 415, `an application/octet-stream blob is refused, not stored raw (got ${badMime.status})`);
   const offRes = await post(`/api/sessions/${sess.id}/post`, { visibility: 'friends', media: [{ type: 'image', src: offsite }] }, alice.token);
