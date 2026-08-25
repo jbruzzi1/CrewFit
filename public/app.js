@@ -97,10 +97,15 @@ function sessSub(s){ const n = (s && s.name || '').trim(); return n ? fmtWhen(s.
 // actually true). A session scheduled later today is still live now — you may not have logged
 // anything yet, but it's today's workout, not next week's.
 function isSessionLiveNow(s){
-  if(!s || s.post) return false;
+  if(!s || (s.posts && s.posts[ME.id])) return false;
   const d = new Date(s.scheduledAt); if(isNaN(d)) return false;
   return startOfDay(d).getTime() === startOfDay(new Date()).getTime();
 }
+// Session-level: has ANYONE finished and posted their recap on this workout? Each participant now
+// finishes and posts independently (s.posts, keyed by userId — see server.js), so this is used only
+// for "has this workout moved past the active/editable phase for at least one person" checks, never
+// for "have I personally finished" — that's s.posts[ME.id] (a.k.a. myPost) at each call site.
+function sessionHasAnyPost(s){ return !!(s && s.posts && Object.keys(s.posts).length); }
 
 // ---- Auth screens ----
 function authScreen(){
@@ -221,13 +226,14 @@ async function home(){
   html += `<button class="blue btn-new" onclick="newWorkout()">+ New workout</button>`;
 
   // Your Sessions (prime spot) — only sessions you've accepted/joined (exclude pending invites),
-  // and only ones still open. Once a session has been finished and saved (s.post is set — see
-  // POST /sessions/:id/post in server.js), it's done: it belongs in "My Workouts" on the profile,
-  // not in this active list, so it doesn't sit here forever after everyone's already wrapped up.
+  // and only ones still open FOR YOU. Once YOU have finished and saved your own recap
+  // (s.posts[ME.id] is set — see POST /sessions/:id/post in server.js; each participant finishes
+  // independently now), it's done for you: it belongs in "My Workouts" on your profile, not in
+  // this active list — even if a training partner on the same session hasn't finished yet.
   // Today's not-yet-finished session (if any) is pulled to the top with a "Live now" badge —
   // .sort() is stable (every browser this app targets), so this only reorders the live ones
   // forward and otherwise leaves everything exactly where the API's date order put it.
-  const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && !s.post)
+  const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && !(s.posts && s.posts[ME.id]))
     .sort((a,b) => (isSessionLiveNow(b)?1:0) - (isSessionLiveNow(a)?1:0));
   html += `<h2>Your Sessions</h2><div class="card">`;
   if(yours.length){
@@ -286,6 +292,7 @@ async function openSession(id, opts){
   s.suggestedEdits = s.suggestedEdits || [];
   s.joinRequests = s.joinRequests || [];
   s.variations = s.variations || {};
+  s.posts = s.posts || {};
   // Someone holding an invitation is given COUNTS, not sets — the server will not hand a
   // non-participant another person's logged weights, only how many there were. These read
   // whichever of the two the server sent.
@@ -300,17 +307,20 @@ async function openSession(id, opts){
     return [...ids].filter(pid => setsTotal(pid) > 0);
   };
   const isCreator = s.creatorId===ME.id;
+  // Each participant finishes and posts their own recap independently now (s.posts, keyed by
+  // userId — see server.js). "myPost" is MY OWN recap on this session, if I've posted one.
+  const myPost = s.posts[ME.id];
   // Inline edit mode for a saved (posted) workout: render the whole page editable.
-  if(EDITING_ID===id && isCreator && s.post){ renderWorkoutEdit(s); return; }
+  if(EDITING_ID===id && isCreator && myPost){ renderWorkoutEdit(s); return; }
   const isParticipant = s.participants.includes(ME.id);
   // "in the workout" = you are actually part of it, not merely allowed to look at it
   const inTheWorkout = isParticipant || s.creatorId === ME.id || (Array.isArray(s.invited) && s.invited.includes(ME.id));
   const approvedJoin = s.joinRequests.find(j=>j.userId===ME.id&&j.status==='approved');
-  const canEdit = s.post ? isCreator : (isParticipant || approvedJoin);
+  const canEdit = myPost ? isCreator : (isParticipant || approvedJoin);
   // Suggesting is for everyone EXCEPT the creator, who does not need to suggest anything — they
   // have Edit. It rendered only for the creator, which is exactly backwards: the person holding
   // an invitation, the one with a reason to say "not Barbell Row", never saw it at all.
-  const canSuggest = !isCreator && !s.post && !canEdit
+  const canSuggest = !isCreator && !sessionHasAnyPost(s) && !canEdit
     && Array.isArray(s.invited) && s.invited.includes(ME.id);
   // suggested edits, keyed by target exercise id (compact one-line inline row, C style)
   const editByEx = {};
@@ -434,7 +444,7 @@ async function openSession(id, opts){
   // Has anyone else started? ONLY on an invitation you have not answered yet. It exists to help
   // you decide; once you have accepted you are going to train regardless, and the same sentence
   // stops being information and starts being a nag. Jeff's call, Aug 18.
-  const startedBy = pendingMe && !s.post ? whoLogged().filter(pid => pid !== ME.id) : [];
+  const startedBy = pendingMe && !sessionHasAnyPost(s) ? whoLogged().filter(pid => pid !== ME.id) : [];
   const startedSets = startedBy.reduce((n,pid) => n + setsTotal(pid), 0);
   const firstName = pid => { const n = nameCache[pid]; return isUnknownName(n) ? 'Someone' : String(n).split(' ')[0]; };
   const startedLine = !startedBy.length ? '' : (() => {
@@ -451,23 +461,28 @@ async function openSession(id, opts){
     ${facts?`<div class="tag">${facts}</div>`:''}
     ${startedLine}
     ${s.creatorNote?`<div class="sess-note">${esc(s.creatorNote)}</div>`:''}`;
-  if(isCreator){
-    html += `<div class="sess-actions">`;
-    if(s.post){
-      html += `<button class="sec sm" onclick="enterWorkoutEdit('${s.id}')">Edit</button>`;
-    } else {
-      html += `<button class="blue sm" onclick="lock('${s.id}')">Log & Finish</button>`;
-      html += `<button class="sec sm" onclick="editSession('${s.id}')">Edit</button>`;
+  // Log & Finish is offered to ANY participant who hasn't posted their own recap yet — not just
+  // the creator. The server (POST /:id/lock, POST /:id/post) has allowed this per-participant since
+  // the recap feature was ported to s.posts; this is the client catching up so everyone actually has
+  // a way to reach it, not just the person who created the workout.
+  {
+    const actions = [];
+    if(!myPost && (isParticipant || isCreator)) actions.push(`<button class="blue sm" onclick="lock('${s.id}')">Log & Finish</button>`);
+    if(isCreator){
+      if(myPost) actions.push(`<button class="sec sm" onclick="enterWorkoutEdit('${s.id}')">Edit</button>`);
+      else actions.push(`<button class="sec sm" onclick="editSession('${s.id}')">Edit</button>`);
+      actions.push(`<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button>`);
     }
-    html += `<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button></div>`;
+    if(actions.length) html += `<div class="sess-actions">${actions.join('')}</div>`;
   }
   html += `<h2>Workout</h2>${myEx}`;
   if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div>`;
   else if(canSuggest) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Not feeling one of these? Tap it to propose a replacement — ${esc(isUnknownName(nameCache[s.creatorId])?'the host':String(nameCache[s.creatorId]).split(' ')[0])} approves it.</div>`;
   if(jr) html += `<h2 class="pt">Join requests</h2>${jr}`;
-  if(s.post){
-    // Completed/saved workout: Photos (where swap slot was), then Notes
-    const postMedia = (Array.isArray(s.post.media)) ? s.post.media : [];
+  if(myPost){
+    // Completed/saved workout: Photos (where swap slot was), then Notes — MY OWN recap, since
+    // each participant now finishes and posts independently (s.posts in server.js).
+    const postMedia = (Array.isArray(myPost.media)) ? myPost.media : [];
     if(isCreator || postMedia.length){
       html += `<h2>Photos</h2><div class="card center-v">
         <div class="media-line"><div class="add-media" title="Add photos or video" onclick="showSavePage('${s.id}')">
@@ -477,7 +492,7 @@ async function openSession(id, opts){
         ${postMedia.length?`<div class="thumbs">${postMedia.map(m=>`<div class="thumb">${m.type==='image'?`<img src="${esc(m.src)}">`:`<video src="${esc(m.src)}" muted></video>`}</div>`).join('')}</div>`:''}
       </div>`;
     }
-    html += `<h2>Notes</h2><div class="notes-box">${s.post.notes ? esc(s.post.notes) : '<span class="muted">How\'d it go?</span>'}</div>`;
+    html += `<h2>Notes</h2><div class="notes-box">${myPost.notes ? esc(myPost.notes) : '<span class="muted">How\'d it go?</span>'}</div>`;
   } else if(!isCreator && canEdit){
     // You have joined and can log, so tapping a card logs — which means the cards are taken and
     // suggesting needs its own door. The creator does NOT get this: they have Edit, and a creator
@@ -488,8 +503,8 @@ async function openSession(id, opts){
       <button class="sec sm" style="background:#f0f1f3; margin-bottom:5px" onclick="openSwapPicker('${s.id}')">Pick replacement from Workouts →</button>
     </div>`;
   }
-  const isPosted = !!s.post;
-  const respondHere = !isCreator && !s.post && !isParticipant;
+  const isPosted = !!myPost;
+  const respondHere = !isCreator && !sessionHasAnyPost(s) && !isParticipant;
 
   // Chat comes BEFORE the answer for someone deciding. Brian messages from the rack — "at the gym,
   // rack 3" — and that used to sit below the exercises AND below the buttons, so the most
@@ -537,14 +552,21 @@ async function openSession(id, opts){
   loadChat(s);
 }
 // ===== Dedicated POSTED-WORKOUT view (read-only, like an Instagram/Hevy post) =====
-// Opened when tapping a saved workout on a profile. Creator-only ⋯ menu (edit/delete).
-async function viewPost(id){
+// Opened when tapping a saved workout on a profile. Each participant posts their own recap
+// independently now (s.posts, keyed by userId — see server.js), so this needs to know WHOSE
+// recap to render: authorId. Falls back to the creator's for any old call site that doesn't
+// pass one yet. Creator-only ⋯ menu (edit/delete) is about the SESSION, not the recap — that
+// stays gated on isCreator regardless of whose recap is being viewed.
+async function viewPost(id, authorId){
   const s = await H.get('/api/sessions/'+id);
   if(!s || (s.error && !s._expired)){ alert(s && s.error ? s.error : 'Session not found'); return; }
   s.participants = s.participants || [];
   s.exercises = s.exercises || [];
+  s.posts = s.posts || {};
+  authorId = authorId || s.creatorId;
   const isCreator = s.creatorId===ME.id;
-  const post = s.post || {};
+  const isAuthor = authorId===ME.id;
+  const post = s.posts[authorId] || {};
   const media = (post.media && post.media.length) ? post.media : [];
   // resolve collaborator display names (participants excluding creator)
   const nm = {};
@@ -605,10 +627,10 @@ async function viewPost(id){
     const setsHtml = blocks || `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">No sets logged</div>`;
     return `<div class="pp-ex"><div class="pp-ex-name">${esc(heading)}</div></div>${setsHtml}`;
   }).join('');
-  const photos = media.length ? `<h2>Photos</h2><div class="pp-photos">${media.map((m,i)=>`<div class="pp-photo">${m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`}${isCreator?`<button class="pp-photo-x" onclick="deletePhoto('${id}',${i})" aria-label="Delete photo">✕</button>`:''}</div>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
+  const photos = media.length ? `<h2>Photos</h2><div class="pp-photos">${media.map((m,i)=>`<div class="pp-photo">${m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`}${isAuthor?`<button class="pp-photo-x" onclick="deletePhoto('${id}','${authorId}',${i})" aria-label="Delete photo">✕</button>`:''}</div>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
   const notes = post.notes ? esc(post.notes) : '<span class="muted">How\'d it go?</span>';
   const dots = isCreator ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none"><button onclick="enterWorkoutEdit('${id}')">Edit session</button><button class="danger" onclick="deleteSession('${id}')">Delete session</button></div>` : '';
-  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="showTab('home')">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${s.visibility==='friends'?'Friends-only':'Private'}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    <h2>Notes</h2><div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}')">Send</button></div></div>`;
+  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="showTab('home')">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${s.visibility==='friends'?'Friends-only':'Private'}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    <h2>Notes</h2><div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
   $('app').innerHTML = html;
   if(media.length>1){
     const strip=document.querySelector('.pp-photos');
@@ -622,15 +644,16 @@ async function viewPost(id){
 }
 // ===== Recovered post-view + chat helpers =====
 function togglePostMenu(id){ const m=document.getElementById('ppMenu-'+id); if(m) m.style.display = m.style.display==='none'?'block':'none'; }
-async function sendPostComment(id){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:t}); $('chatInput').value=''; viewPost(id); }
-async function deletePhoto(id, idx){
+async function sendPostComment(id, authorId){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:t}); $('chatInput').value=''; viewPost(id, authorId); }
+async function deletePhoto(id, authorId, idx){
   if(!confirm('Delete this photo?')) return;
   const s = await H.get('/api/sessions/'+id);
-  if(!s || !s.post) return;
-  const media = (s.post.media||[]).filter((_,i)=>i!==idx);
-  const r = await H.post(`/api/sessions/${id}/post`, { notes: s.post.notes||'', media, visibility: s.post.visibility||'only_me' });
+  const post = s && s.posts && s.posts[authorId];
+  if(!post) return;
+  const media = (post.media||[]).filter((_,i)=>i!==idx);
+  const r = await H.post(`/api/sessions/${id}/post`, { notes: post.notes||'', media, visibility: post.visibility||'only_me' });
   if(r && r.error){ alert(r.error); return; }
-  viewPost(id);
+  viewPost(id, authorId);
 }
 async function acceptInvite(id){ await H.post(`/api/sessions/${id}/accept`,{}); openSession(id); }
 async function declineInvite(id){ if(!confirm('Decline this invite?')) return; await H.post(`/api/sessions/${id}/decline`,{}); home(); }
@@ -1087,7 +1110,8 @@ async function showSavePage(id){
   // right — a value that is not an ISO string still reads "Invalid Date" in the line below. Making
   // it read correctly means changing what this screen shows, so it is not smuggled in here.
   const when = s.scheduledAt ? fmtDate(String(s.scheduledAt).slice(0,10)) : '';
-  const post = s.post || {};
+  // MY OWN recap-in-progress — each participant posts independently (s.posts, keyed by userId).
+  const post = (s.posts && s.posts[ME.id]) || {};
   const vis = post.visibility || 'only_me';
   const visHint = vis==='only_me'?'Only you can see this on your profile.' : vis==='friends'?'Friends can see this on your profile.' : 'Anyone can see this on your profile.';
   const media = Array.isArray(post.media) ? post.media : [];
@@ -1198,7 +1222,7 @@ async function exitWorkoutEdit(id){
   if(INLINE_DIRTY && !confirm('Discard your changes?')) return;
   INLINE_DIRTY = false; EDITING_ID = null;
   const s = await H.get('/api/sessions/'+id);
-  if(s && s.post) viewPost(id); else openSession(id);
+  if(s && s.posts && s.posts[ME.id]) viewPost(id, ME.id); else openSession(id);
 }
 function renderInlineThumbs(){
   const t = document.getElementById('thumbs'); if(!t) return; t.innerHTML='';
@@ -1214,9 +1238,12 @@ function renderInlineThumbs(){
 }
 function renderWorkoutEdit(s){
   INLINE_DIRTY=false;
-  const vis = (s.post && s.post.visibility) || 'only_me';
+  // Reached only by the creator editing their OWN already-posted recap (see openSession's
+  // EDITING_ID gate above) — each participant posts independently now (s.posts, keyed by userId).
+  const myPost = s.posts && s.posts[ME.id];
+  const vis = (myPost && myPost.visibility) || 'only_me';
   window.__saveVis = vis;
-  const media = (s.post && Array.isArray(s.post.media)) ? s.post.media : [];
+  const media = (myPost && Array.isArray(myPost.media)) ? myPost.media : [];
   window.__saveMedia = media.map(m=>({ type:m.type, src:m.src }));
   const exRows = s.exercises.map(e=>`
     <div class="card inex-row" data-ex="${e.id}">
@@ -1245,7 +1272,7 @@ function renderWorkoutEdit(s){
       </div>
     </div>
     <h2>Notes</h2>
-    <textarea id="saveNotes" placeholder="How'd it go?">${esc((s.post&&s.post.notes)||'')}</textarea>
+    <textarea id="saveNotes" placeholder="How'd it go?">${esc((myPost&&myPost.notes)||'')}</textarea>
     <h2>Visibility</h2>
     <div class="card">
       <div class="seg" id="vis">
@@ -1299,7 +1326,7 @@ async function saveWorkoutEdit(id){
   const r2=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'only_me' });
   if(r2&&r2.error){ alert(r2.error); return; }
   INLINE_DIRTY=false; EDITING_ID=null;
-  if(s.post) viewPost(id); else openSession(id);
+  if(s.posts && s.posts[ME.id]) viewPost(id, ME.id); else openSession(id);
 }
 
 // ---- Create flow ----
@@ -2315,7 +2342,7 @@ async function profileView(id){
     const exList = exs.length ? `<div class="wex-h">Exercises</div><ol class="wexb">${exs.map(e=>`<li>${esc(e)}</li>`).join('')}</ol>${more>0?`<div class="wexb-more">+${more} more</div>`:''}` : '<div class="wexnone">No exercises</div>';
     const collab = (w.collaborators&&w.collaborators.length) ? `with @${esc(w.collaborators[0].username)}${w.collaborators.length>1?` +${w.collaborators.length-1}`:''}` : '';
     const when = w.at ? fmtDate(w.at) : (w.date||'');
-    return `<div class="wtile" onclick="viewPost('${w.id}')">
+    return `<div class="wtile" onclick="viewPost('${w.id}','${id}')">
       <div class="wdate">${esc(when)}</div>
       <div class="wtitle">${esc(title)}</div>
       ${img}

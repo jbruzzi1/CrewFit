@@ -92,6 +92,33 @@ async function migrateMedia() {
   }
   if (sessionsChanged) { await save(DB); console.log(`MIGRATE media: sessions=${sessionsChanged} recovered=${recovered} dropped=${dropped}`); }
 }
+// Recaps go from ONE per session (s.post, creator-authored) to ONE PER PARTICIPANT (s.posts, keyed
+// by userId). Jeff, Aug 19: "I want photos and notes to stay separate for each user" — a training
+// partner no longer inherits (or is shut out of) the creator's notes/photos. Must run AFTER
+// migrateMedia(), which still expects the legacy s.post.media shape — this converts the (by-then
+// on-disk-media) s.post into posts[s.post.by] and retires s.post entirely. Idempotent: a session
+// with no s.post, or one already converted, is left alone.
+async function migratePosts() {
+  let migrated = 0;
+  for (const s of Object.values(DB.sessions || {})) {
+    if (!s || typeof s !== 'object') continue;
+    if (!s.posts || typeof s.posts !== 'object' || Array.isArray(s.posts)) s.posts = {};
+    if (s.post && typeof s.post === 'object') {
+      const author = s.post.by || s.creatorId;
+      if (author && !s.posts[author]) {
+        s.posts[author] = {
+          at: s.post.at || new Date().toISOString(),
+          notes: typeof s.post.notes === 'string' ? s.post.notes : '',
+          media: Array.isArray(s.post.media) ? s.post.media : [],
+          visibility: ['only_me', 'friends', 'public'].includes(s.post.visibility) ? s.post.visibility : 'only_me',
+        };
+      }
+      delete s.post;
+      migrated++;
+    }
+  }
+  if (migrated) { await save(DB); console.log(`MIGRATE posts: sessions=${migrated}`); }
+}
 // Populated inside the async boot IIFE near the bottom of this file, before app.listen — every
 // route handler below only reads DB from inside a closure that runs on a later request, long
 // after that IIFE has resolved, so this is safe despite being null here at require-time.
@@ -559,22 +586,18 @@ function profileOf(id, viewerId) {
   const completed = new Set();
   for (const s of Object.values(DB.sessions)) {
     if ((s.history || []).some(h => h.userId === id)) completed.add(s.id);
-    else if (s.post && s.post.by === id) completed.add(s.id);
+    else if (s.posts && s.posts[id]) completed.add(s.id);
   }
   const prs = (DB.prs && DB.prs[id]) ? Object.values(DB.prs[id]) : [];
   // v184: profile detail is gated on APPROVED FOLLOWER now, not friendship. Anyone sees the public
   // counts; only you and people you've approved to follow you see the workouts/PRs/streak/activity.
   const isApproved = id === viewerId || ((u.followers || []).includes(viewerId));
-  // Delegates. This used to be a second, independently-written copy of the same rule, keyed on
-  // whose profile you are looking at instead of who WROTE the post — so a friend of a participant
-  // was handed the creator's friends-only notes and photo URLs on a profile, while the session
-  // route correctly refused them. One rule, one place.
-  const canSeePost = (post) => {
-    if (!post) return false;
-    if (id === viewerId && (post.by || id) === viewerId) return true;   // your own post
-    const owner = Object.values(DB.sessions).find(x => x.post === post);
-    return canSeePostOf(owner || { post, creatorId: post.by }, viewerId);
-  };
+  // Delegates to the one shared rule instead of keeping its own copy — a second, independently
+  // written copy of this check used to be keyed on whose profile you are looking at instead of who
+  // WROTE the post, so a friend of a participant was handed the creator's friends-only notes and
+  // photo URLs on a profile, while the session route correctly refused them. `id` is the profile
+  // owner, so this is always specifically THEIR own recap on session `s` — never a partner's.
+  const canSeeMyPost = (s) => canSeePostAuthor(s.posts && s.posts[id], id, viewerId);
   // A profile listed EVERY workout the person had done, including private ones, to any logged-in
   // stranger: the name, the date, the first three exercises, and the usernames of everyone
   // participating OR still holding an unanswered invitation. sessionView goes to the trouble of
@@ -584,16 +607,16 @@ function profileOf(id, viewerId) {
   // post whose own visibility admits them, or a workout they were actually part of.
   const viewerCanSee = s => {
     if (id === viewerId || isApproved) return true;
-    if (s.post && canSeePost(s.post)) return true;
+    if (canSeeMyPost(s)) return true;
     const t = sessionTier(s, viewerId);
     return t === 'member' || t === 'invited';
   };
   const myWorkouts = Object.values(DB.sessions)
-    .filter(s => (s.post && s.post.by === id) || (s.history || []).some(h => h.userId === id))
+    .filter(s => (s.posts && s.posts[id]) || (s.history || []).some(h => h.userId === id))
     .filter(viewerCanSee)
     .sort((a,b)=> new Date(b.scheduledAt||0) - new Date(a.scheduledAt||0))
     .map(s => {
-      const post = canSeePost(s.post) ? s.post : null;
+      const post = canSeeMyPost(s) ? s.posts[id] : null;
       // collaborators = other participants (and invited) who aren't the profile owner
       // who ELSE was there — participants only. Someone still holding an unanswered invitation has
       // not agreed to be listed anywhere, and "invited" is not a fact about the workout, it is a
@@ -1040,7 +1063,8 @@ app.post('/api/sessions', auth, async (req, res) => {
     attendance: {},
     logs: {},
     comments: [],
-    history: []
+    history: [],
+    posts: {}
   };
   DB.sessions[id] = session;
   await save(DB);
@@ -1082,8 +1106,10 @@ app.get('/api/sessions/:id', auth, async (req, res) => {
 // The tiers, narrowest first:
 //   stranger      not related to this workout at all -> nothing. Routes refuse before reaching here.
 //   friend        a friend of the creator, on a friends-visibility workout, who is not in it.
-//                 Gets the PLAN — what the workout is — and the creator's post only if the post's
-//                 own visibility allows it. Never anyone's sets. Never the chat.
+//                 Gets the PLAN — what the workout is — and EACH participant's recap only if that
+//                 participant's own post visibility allows it (each person posts independently
+//                 now, s.posts keyed by userId — see canSeePostAuthor/anyVisiblePost below). Never
+//                 anyone's sets. Never the chat.
 //   invited       has an invitation they have not answered. Gets the plan, plus the chat, because
 //                 deciding whether to come means being able to ask. Still nobody's sets.
 //   member        a participant or the creator. Gets everything.
@@ -1122,6 +1148,7 @@ function ensureSessionShape(s) {
   if (!isObj(s.variations)) s.variations = {};
   s.joinRequests = objArray(s.joinRequests);
   s.history = objArray(s.history);
+  if (!isObj(s.posts)) s.posts = {};
   return s;
 }
 
@@ -1172,30 +1199,33 @@ function sessionTier(s, viewerId) {
   const u = DB.users[viewerId];
   const friends = (u && Array.isArray(u.friends)) ? u.friends : [];
   if (s.visibility === 'friends' && friends.includes(s.creatorId)) return 'friend';
-  // A PUBLISHED workout is its own thing. Sharing is the point of posting, and session visibility
-  // defaults to 'private' — so gating the published record behind it meant a post shared publicly
-  // could not be opened by the people it was shared with. The post's own visibility decides.
-  if (canSeePostOf(s, viewerId)) return 'reader';
+  // A PUBLISHED recap is its own thing. Sharing is the point of posting, and session visibility
+  // defaults to 'private' — so gating a published recap behind it meant a recap shared publicly
+  // could not be opened by the people it was shared with. Each recap's own visibility decides.
+  if (anyVisiblePost(s, viewerId)) return 'reader';
   return 'stranger';
 }
 
-// A post carries its OWN visibility, chosen when it was published, and it is not the same setting
-// as the workout's. "only me" has to mean only me even to people who were in the workout — the
-// creator wrote those notes for themselves.
-function canSeePostOf(s, viewerId) {
-  const p = s && s.post;
+// A recap carries its OWN visibility, chosen by whoever wrote it — and now every participant has
+// their own, independent of everyone else's. "only me" has to mean only me even to people who
+// were in the same workout; p is one entry of s.posts, authorId is the key it lives under.
+function canSeePostAuthor(p, authorId, viewerId) {
   if (!p) return false;
-  // The AUTHOR, not whoever holds creatorId today. Leaving a shared workout transfers creatorId to
-  // someone else (see /leave), so keying on it meant the person who wrote "only me" notes lost
-  // them and the other participant inherited them — and could republish them publicly.
-  const author = p.by || s.creatorId;
-  if (author === viewerId) return true;
+  if (authorId === viewerId) return true;
   if (p.visibility === 'public') return true;
   if (p.visibility === 'friends') {
     const u = DB.users[viewerId];
-    return !!(u && Array.isArray(u.friends) && u.friends.includes(author));
+    return !!(u && Array.isArray(u.friends) && u.friends.includes(authorId));
   }
   return false;                                    // 'only_me', or no visibility recorded
+}
+// Is there ANY recap in this session the viewer is allowed to open — used only to decide whether
+// a non-member gets 'reader' access to the session at all.
+function anyVisiblePost(s, viewerId) {
+  for (const [authorId, p] of Object.entries((s && s.posts) || {})) {
+    if (canSeePostAuthor(p, authorId, viewerId)) return true;
+  }
+  return false;
 }
 
 // Only the viewer's own entry survives from a per-user map.
@@ -1211,12 +1241,12 @@ function sessionView(s, viewerId) {
   if (!s) return null;
   const tier = sessionTier(s, viewerId);
   if (tier === 'member') {
-    // still not automatic: an "only me" post belongs to whoever wrote it
-    if (s.post && !canSeePostOf(s, viewerId)) {
-      const { post, ...rest } = s;
-      return Object.assign({}, rest, { post: { hidden: true, visibility: s.post.visibility } });
-    }
-    return s;
+    // still not automatic: an "only me" recap belongs to whoever wrote it, even to someone else
+    // who trained in the very same workout.
+    const posts = {};
+    for (const [authorId, p] of Object.entries(s.posts || {}))
+      posts[authorId] = canSeePostAuthor(p, authorId, viewerId) ? p : { hidden: true, visibility: p.visibility };
+    return Object.assign({}, s, { posts });
   }
   if (tier === 'stranger') return null;
 
@@ -1239,12 +1269,20 @@ function sessionView(s, viewerId) {
     joinRequests: [],                    // other people's requests, and their notes, are not yours
     logs: {},                            // NOBODY else's sets — see the reader case below
     comments: tier === 'invited' ? (s.comments || []) : [],
+    posts: {},
   };
-  // A published workout IS the author's sets. That is what was shared, and stripping them rendered
-  // an empty record to exactly the people it was published for.
-  if (tier === 'reader' && canSeePostOf(s, viewerId)) {
-    const author = (s.post && s.post.by) || s.creatorId;
-    if (s.logs && s.logs[author]) view.logs = { [author]: s.logs[author] };
+  // A published recap IS its author's sets — that is what was shared, and stripping them rendered
+  // an empty record to exactly the people it was published for. Every author who has one now, not
+  // just a single "the" author: a viewer sees whichever recaps their own visibility admits, and a
+  // hidden placeholder (existence + visibility, no content) for the rest — same shape either tier,
+  // so the client never has to special-case which one it got.
+  for (const [authorId, p] of Object.entries(s.posts || {})) {
+    if (canSeePostAuthor(p, authorId, viewerId)) {
+      view.posts[authorId] = p;
+      if (tier === 'reader' && s.logs && s.logs[authorId]) view.logs[authorId] = s.logs[authorId];
+    } else {
+      view.posts[authorId] = { hidden: true, visibility: p.visibility };
+    }
   }
   // "Brian's already started - 2 sets in" is the fact that decides an invitation, and it survives
   // this change. It does not need Brian's SETS to say so, only how many there were: no weights,
@@ -1259,8 +1297,6 @@ function sessionView(s, viewerId) {
     }
     view.logCounts = counts;
   }
-  if (canSeePostOf(s, viewerId)) view.post = s.post;
-  else if (s.post) view.post = { hidden: true, visibility: s.post.visibility };
   return view;
 }
 
@@ -1268,6 +1304,26 @@ function sessionView(s, viewerId) {
 // Who OTHER than me has logged sets in this workout.
 function othersWhoLogged(s, meId) {
   return Object.keys(s.logs || {}).filter(uid => uid !== meId && (s.logs[uid] || []).length);
+}
+
+// Record ONE user's own completion of this workout — a history row scoped to them alone. Used by
+// /lock (Log & Finish), which is now per-person rather than a group lock. Idempotent per user:
+// never pushes a second row for someone who already has one, so tapping Finish twice cannot
+// inflate their own workout count, streak or weekly volume. Mutates s.history in place; callers
+// are responsible for save(DB).
+function creditFinish(s, userId) {
+  if (s.history.some(h => h.userId === userId)) return false;
+  const exNames = s.exercises.map(e => {
+    const v = s.variations[e.id] && s.variations[e.id][userId];
+    return v ? v.swapTo : e.name;
+  });
+  const mgs = new Set();
+  for (const n of exNames) {
+    const lib = EX_LIB.find(x => x.name === n);
+    if (lib) lib.muscle_groups.forEach(m => mgs.add(m));
+  }
+  s.history.push({ userId, date: new Date().toISOString().slice(0, 10), muscleGroups: [...mgs], exercises: exNames });
+  return true;
 }
 
 app.delete('/api/sessions/:id', auth, async (req, res) => {
@@ -2189,39 +2245,33 @@ app.delete('/api/sessions/:id/log/:logId', auth, async (req, res) => {
 });
 
 // lock session (mark done) -> record history for conflict detection
+// Log & Finish — per-person, not a group lock. Jeff, Aug 19: "I want each person to have the
+// ability to log and finish the workout on their own... I don't want one person in control of
+// everything for each person." Any participant (creator included) can call this; it credits ONLY
+// the caller's own history/streak/PRs and never touches anyone else's, and never locks the session
+// for anyone. The URL keeps its old name ('lock') to avoid a client/server rename in lockstep —
+// what it does underneath is now entirely different.
 app.post('/api/sessions/:id/lock', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
-  if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator' });
-  // Idempotent: tapping "Log & Finish" twice used to push a SECOND history row for every
-  // participant, inflating workout counts, streaks and the weekly activity line.
-  if (s.completed) return res.json(sessionView(s, req.userId));
-  s.completed = true;
-  // record each participant's history
-  for (const pid of s.participants) {
-    const exNames = s.exercises.map(e => {
-      const v = s.variations[e.id] && s.variations[e.id][pid];
-      return v ? v.swapTo : e.name;
-    });
-    const mgs = new Set();
-    for (const n of exNames) {
-      const lib = EX_LIB.find(x => x.name === n);
-      if (lib) lib.muscle_groups.forEach(m => mgs.add(m));
-    }
-    if (!s.history) s.history = [];
-    s.history.push({ userId: pid, date: new Date().toISOString().slice(0,10), muscleGroups: [...mgs], exercises: exNames });
-  }
-  await save(DB);
+  if (!s.participants.includes(req.userId))
+    return res.status(403).json({ error: 'not in this workout' });
+  // creditFinish is idempotent per user — tapping "Log & Finish" twice must not push a second
+  // history row for THIS person, inflating their own workout count, streak and weekly volume.
+  if (creditFinish(s, req.userId)) await save(DB);
   res.json(sessionView(s, req.userId));
 });
 
-// Save a post for a locked session (notes + media + visibility)
+// Save YOUR OWN recap for this workout (notes + media + visibility) — any participant, not just
+// the creator. Jeff, Aug 19: "I want photos and notes to stay separate for each user." One session
+// now holds one recap per participant, each with its own visibility; this never reads or
+// overwrites anyone else's.
 app.post('/api/sessions/:id/post', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
-  if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator' });
+  if (!s.participants.includes(req.userId)) return res.status(403).json({ error: 'not in this workout' });
   const { notes, media, visibility } = req.body || {};
   const vis = ['only_me','friends','public'].includes(visibility) ? visibility : 'only_me';
   const incoming = Array.isArray(media) ? media : [];
@@ -2273,8 +2323,7 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   }).filter(m => m.src);
   if (writeFailed) return res.status(507).json({
     error: 'Could not save that photo — the server is out of space. Your workout is not saved; please try again.' });
-  s.post = {
-    by: req.userId,
+  s.posts[req.userId] = {
     at: new Date().toISOString(),
     notes: String(notes || '').slice(0, 2000),
     media: cleanMedia,
@@ -2328,6 +2377,7 @@ app.use((err, req, res, next) => {
   loadOrCreateSecret();       // before anything can sign or verify a login
   migrateSessionShapes();     // heal malformed session rows BEFORE any migration below walks them
   await migrateMedia();
+  await migratePosts();       // must run AFTER migrateMedia — see its own comment
   migratePasswords();
   migrateMergeDuplicateBrian();   // before the collision report, which it resolves
   reportUsernameCollisions();
