@@ -70,14 +70,15 @@ async function nameOf(id){
   return hit ? hit.displayName : UNKNOWN_NAME;
 }
 function fmtDate(s){ const d=new Date(s); return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
+// Shared by fmtWhen and isSessionLiveNow, which both need "what calendar day is this, locally".
+function startOfDay(x){ const y = new Date(x); y.setHours(0,0,0,0); return y; }
 // "Aug 19, 5:30 PM" does not answer the question you are actually asking about an invitation,
 // which is whether you can make it. Today / Tomorrow / Yesterday do. Anything further out keeps
 // the date, because "in 9 days" is not how anyone thinks about next Thursday.
 function fmtWhen(iso){
   const d = new Date(iso); if(isNaN(d)) return fmtDate(iso);
   const time = d.toLocaleString(undefined,{hour:'numeric',minute:'2-digit'});
-  const midnight = x => { const y = new Date(x); y.setHours(0,0,0,0); return y; };
-  const days = Math.round((midnight(d) - midnight(new Date())) / 86400000);
+  const days = Math.round((startOfDay(d) - startOfDay(new Date())) / 86400000);
   if(days === 0)  return `Today, ${time}`;
   if(days === 1)  return `Tomorrow, ${time}`;
   if(days === -1) return `Yesterday, ${time}`;
@@ -89,6 +90,17 @@ function fmtWhen(iso){
 // .trim() matters: a name of "   " is truthy and used to render a completely blank <h1>.
 function sessTitle(s){ const n = (s && s.name || '').trim(); return n ? esc(n) : fmtWhen(s.scheduledAt); }
 function sessSub(s){ const n = (s && s.name || '').trim(); return n ? fmtWhen(s.scheduledAt) + ' · ' : ''; }
+// "Live now" for the Home list: today's date (same local-midnight-to-midnight window fmtWhen
+// labels "Today") and not yet finished. Deliberately NOT "any unposted session up to now" — an
+// old abandoned draft from last week would then read as live forever, which is worse than not
+// flagging it at all (see CLAUDE.md: discoverable and wrong beats quiet, but only when it's
+// actually true). A session scheduled later today is still live now — you may not have logged
+// anything yet, but it's today's workout, not next week's.
+function isSessionLiveNow(s){
+  if(!s || s.post) return false;
+  const d = new Date(s.scheduledAt); if(isNaN(d)) return false;
+  return startOfDay(d).getTime() === startOfDay(new Date()).getTime();
+}
 
 // ---- Auth screens ----
 function authScreen(){
@@ -209,13 +221,18 @@ async function home(){
   html += `<button class="blue btn-new" onclick="newWorkout()">+ New workout</button>`;
 
   // Your Sessions (prime spot) — only sessions you've accepted/joined (exclude pending invites)
-  const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)));
+  // Today's not-yet-finished session (if any) is pulled to the top with a "Live now" badge —
+  // .sort() is stable (every browser this app targets), so this only reorders the live ones
+  // forward and otherwise leaves everything exactly where the API's date order put it.
+  const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)))
+    .sort((a,b) => (isSessionLiveNow(b)?1:0) - (isSessionLiveNow(a)?1:0));
   html += `<h2>Your Sessions</h2><div class="card">`;
   if(yours.length){
     for(const s of yours){
       const label = s.name;
-      html += `<div class="lib-item" onclick="openSession('${s.id}')">
-        <div><b>${esc(label)} · ${s.exercises.length} exercises</b><div class="tag">${fmtWhen(s.scheduledAt)}</div></div></div>`;
+      const live = isSessionLiveNow(s);
+      html += `<div class="lib-item${live?' session-live':''}" onclick="openSession('${s.id}')">
+        <div>${live?'<div class="live-badge">● Live now</div>':''}<b>${esc(label)} · ${s.exercises.length} exercises</b><div class="tag">${fmtWhen(s.scheduledAt)}</div></div></div>`;
     }
   } else html += `<div class="muted">No sessions yet.</div>`;
   html += `</div>`;
