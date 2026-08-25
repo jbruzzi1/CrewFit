@@ -222,8 +222,16 @@ async function home(){
     html += `<div class="inv-empty">No invites yet — friends you train with will show up here.</div>`;
   }
 
-  // Primary action (compact)
-  html += `<button class="blue btn-new" onclick="newWorkout()">+ New workout</button>`;
+  // Primary action (compact), plus a zero-friction start for "I'm at the gym right now" — no
+  // name, no schedule, no invite step, just a live session you add lifts to as you go. Jeff, Aug
+  // 25: "a 'workout now' button or something for quick workouts."
+  html += `<div class="home-actions">
+    <button class="blue btn-new" onclick="newWorkout()">+ New workout</button>
+    <button class="btn-quick" onclick="workoutNow()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+      Workout Now
+    </button>
+  </div>`;
 
   // Your Sessions (prime spot) — only sessions you've accepted/joined (exclude pending invites),
   // and only ones still open FOR YOU. Once YOU have finished and saved your own recap
@@ -241,7 +249,7 @@ async function home(){
       const label = s.name;
       const live = isSessionLiveNow(s);
       html += `<div class="lib-item${live?' session-live':''}" onclick="openSession('${s.id}')">
-        <div>${live?'<div class="live-badge">● Live now</div>':''}<b>${esc(label)} · ${s.exercises.length} exercises</b><div class="tag">${fmtWhen(s.scheduledAt)}</div></div></div>`;
+        <div>${live?'<div class="live-badge">● Live now</div>':''}<b>${esc(label)}${s.exercises.length?` · ${s.exercises.length} exercises`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}</div></div></div>`;
     }
   } else html += `<div class="muted">No sessions yet.</div>`;
   html += `</div>`;
@@ -335,6 +343,9 @@ async function openSession(id, opts){
   for(const pid of s.participants){ await nameOfCached(pid); }
   // ...and for anyone who logged sets here, who may no longer be a participant (they left)
   for(const pid of Object.keys(s.logs||{})){ if((s.logs[pid]||[]).length) await nameOfCached(pid); }
+  // ...and for pending invitees, but only when the server actually handed us the real list (see
+  // invitedIds below) — for anyone else it's just our own id or nothing, already covered above.
+  if(isCreator || isParticipant){ for(const pid of (s.invited||[])){ await nameOfCached(pid); } }
   // my variation view (each exercise = its own card tile; swap suggestion nested inside)
   const myEx = s.exercises.map(e=>{
     const v = s.variations[e.id] && s.variations[e.id][ME.id];
@@ -475,9 +486,21 @@ async function openSession(id, opts){
     }
     if(actions.length) html += `<div class="sess-actions">${actions.join('')}</div>`;
   }
-  html += `<h2>Workout</h2>${myEx}`;
-  if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div>`;
-  else if(canSuggest) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Not feeling one of these? Tap it to propose a replacement — ${esc(isUnknownName(nameCache[s.creatorId])?'the host':String(nameCache[s.creatorId]).split(' ')[0])} approves it.</div>`;
+  html += `<h2>Workout</h2>`;
+  if(!s.exercises.length){
+    // A blank "Workout Now" session (or any session with everything removed) — no cards to tap,
+    // so say so and give the one action that fixes it, instead of a silent empty header.
+    html += `<div class="card"><div class="qs-empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5l11 11"/><path d="M21 21l-1-1"/><path d="M3 3l1 1"/><path d="M9 9l1 1"/><path d="M15 15l1 1"/><rect x="4" y="4" width="4" height="4" rx="1" transform="rotate(45 6 6)"/><rect x="16" y="16" width="4" height="4" rx="1" transform="rotate(45 18 18)"/></svg>
+      <div class="qs-t">No exercises yet</div>
+      <div class="qs-s">${isCreator?"Add your first lift — you can add more as you go.":'Nothing logged here yet.'}</div>
+      ${isCreator?`<button class="blue qs-add" style="width:auto;padding:11px 20px;" onclick="editSession('${s.id}')">+ Add exercise</button>`:''}
+    </div></div>`;
+  } else {
+    html += myEx;
+    if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div>`;
+    else if(canSuggest) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Not feeling one of these? Tap it to propose a replacement — ${esc(isUnknownName(nameCache[s.creatorId])?'the host':String(nameCache[s.creatorId]).split(' ')[0])} approves it.</div>`;
+  }
   if(jr) html += `<h2 class="pt">Join requests</h2>${jr}`;
   if(myPost){
     // Completed/saved workout: Photos (where swap slot was), then Notes — MY OWN recap, since
@@ -518,12 +541,26 @@ async function openSession(id, opts){
 
   // "Friends joined" was wrong for the creator, who did not join anything. It DOES list everyone
   // else in the workout, which is worth keeping — it was the name that was off.
-  const crewBlock = (s.participants.filter(p=>p!==ME.id).length)
-    ? `<h2>Who's in</h2><div class="chips mini">${s.participants.filter(p=>p!==ME.id).map(pid=>{
-        const known = !isUnknownName(nameCache[pid]);
-        const label = known ? String(nameCache[pid]) : 'A friend';
-        return `<div class="fav"><div class="fav-av" style="background:${avatarColor(label)};color:#fff">${esc(label[0])}</div><span>${esc(label)}</span></div>`;
-      }).join('')}</div>`
+  const joinedIds = s.participants.filter(p=>p!==ME.id);
+  // Who's still invited and hasn't answered — a member-only view. sessionView only ever hands a
+  // non-member their OWN invited-status, never anyone else's (an unanswered invite is a fact about
+  // the person, not the workout), so this list is only ever non-empty for someone already in it.
+  // A stale invite can outlive someone actually joining (e.g. join-request approval doesn't
+  // clear s.invited) — exclude anyone already in participants so they never show as both
+  // joined AND still-pending at once.
+  const invitedIds = (isCreator || isParticipant) ? (Array.isArray(s.invited) ? s.invited.filter(p=>p!==ME.id && !s.participants.includes(p)) : []) : [];
+  const favChip = (pid, pending) => {
+    const known = !isUnknownName(nameCache[pid]);
+    const label = known ? String(nameCache[pid]) : 'A friend';
+    const av = `<div class="fav-av" style="background:${avatarColor(label)};color:#fff">${esc(label[0])}</div>`;
+    if(!pending) return `<div class="fav">${av}<span>${esc(label)}</span></div>`;
+    return `<div class="fav pending"><div class="fav-av-wrap">${av}<div class="fav-pending-dot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div></div><span>${esc(label)}</span></div>`;
+  };
+  const invitedBlock = invitedIds.length
+    ? `<div class="crew-invited-label">Invited · waiting to respond</div><div class="chips mini">${invitedIds.map(pid=>favChip(pid,true)).join('')}</div>`
+    : '';
+  const crewBlock = (joinedIds.length || invitedIds.length)
+    ? `<h2>Who's in</h2>${joinedIds.length?`<div class="chips mini">${joinedIds.map(pid=>favChip(pid,false)).join('')}</div>`:''}${invitedBlock}`
     : '';
 
   if(respondHere){
@@ -658,7 +695,7 @@ async function deletePhoto(id, authorId, idx){
 async function acceptInvite(id){ await H.post(`/api/sessions/${id}/accept`,{}); openSession(id); }
 async function declineInvite(id){ if(!confirm('Decline this invite?')) return; await H.post(`/api/sessions/${id}/decline`,{}); home(); }
 async function requestChanges(id){ const t=prompt('What changes do you want?'); if(t) { await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+t}); openSession(id); } }
-async function saveRoutine(id){ const s=await H.get('/api/sessions/'+id); const r=await H.post('/api/templates',{name:prompt('Template name:','Saved routine')||'Saved routine',exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}))}); alert('Saved as template: '+r.name); }
+async function saveRoutine(id){ const s=await H.get('/api/sessions/'+id); if(!s.exercises.length){ alert('This workout has no exercises yet — nothing to save.'); return; } const r=await H.post('/api/templates',{name:prompt('Template name:','Saved routine')||'Saved routine',exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}))}); if(r && r.error){ alert(r.error); return; } alert('Saved as template: '+r.name); }
 async function openChat(id){ document.getElementById('chatInput').focus(); }
 async function sendChat(id){
   const t=$('chatInput').value; if(!t.trim()) return;
@@ -1404,6 +1441,20 @@ function newWorkout(){
   createFlow();
 }
 function cancelCreate(){ EDITING_SESSION=null; EDITING_TPL=null; home(); }
+// Skips the whole create-flow wizard — no name, no schedule picker, no invite step. Creates a
+// solo, private, right-now session with zero exercises and drops you straight into it; openSession
+// shows the empty-workout state (see qs-empty below) so you add your first lift from inside a
+// session that already exists, instead of planning one before you've started.
+async function workoutNow(){
+  const r = await H.post('/api/sessions', {
+    name: 'Quick Workout',
+    scheduledAt: new Date().toISOString(),
+    visibility: 'private',
+    exercises: [],
+  });
+  if(r && r.error){ alert(r.error); return; }
+  openSession(r.id);
+}
 async function editSession(id){
   const s = await H.get('/api/sessions/'+id);
   if(!s || s.error){ alert(s && s.error ? s.error : 'Session not found'); return; }
