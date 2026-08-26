@@ -228,10 +228,7 @@ async function home(){
   // 25: "a 'workout now' button or something for quick workouts."
   html += `<div class="home-actions">
     <button class="blue btn-new" onclick="newWorkout()">+ New workout</button>
-    <button class="btn-quick" onclick="workoutNow()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
-      Quick Workout
-    </button>
+    <button class="btn-quick" onclick="workoutNow()">+ Quick Workout</button>
   </div>`;
 
   // Your Sessions (prime spot) — only sessions you've accepted/joined (exclude pending invites),
@@ -537,8 +534,16 @@ async function openSession(id, opts){
   // Only people in the workout can post, so only they are offered the box. Rendering an input
   // that the server will refuse is a promise the app cannot keep.
   const canChat = isCreator || isParticipant || pendingMe;
+  // Once YOU have posted, this box stops being the live workout chat and becomes the Instagram-style
+  // comment thread on YOUR OWN recap (myPost, keyed by ME.id) — same split as viewPost(), which is
+  // where most people actually land after posting (see the openSession/viewPost redirects at the
+  // end of saveWorkoutEdit/exitWorkoutEdit). openSession itself is still reachable with isPosted=true
+  // though (Home's own session list, an invite card, re-opening via a link), and this box used to
+  // stay wired to the old shared s.comments even then — the exact bug the split was meant to fix,
+  // just reachable from a second door.
+  const sendAction = isPosted ? `sendPostComment('${s.id}','${ME.id}')` : `sendChat('${s.id}')`;
   const chatBlock = `<h2>${isPosted?'Comments':'Chat'}</h2><div class="card"><div id="chatbox" class="scrolllist"></div>
-    ${canChat ? `<div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="${isPosted?'Add a comment…':'Message the crew'}"><button class="sm chat-send" onclick="sendChat('${s.id}')">Send</button></div>` : ''}</div>`;
+    ${canChat ? `<div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="${isPosted?'Add a comment…':'Message the crew'}"><button class="sm chat-send" onclick="${sendAction}">Send</button></div>` : ''}</div>`;
 
   // "Friends joined" was wrong for the creator, who did not join anything. It DOES list everyone
   // else in the workout, which is worth keeping — it was the name that was off.
@@ -587,7 +592,7 @@ async function openSession(id, opts){
   // own time, and a silent refresh must not land on whatever screen the user has since moved to.
   if(silent && (mySeq !== SESSION_SILENT_SEQ || !logSheetStillOpenFor(id))) return;
   $('app').innerHTML = html;
-  loadChat(s);
+  if(isPosted) loadPostComments(s.id, ME.id); else loadChat(s);
 }
 // ===== Dedicated POSTED-WORKOUT view (read-only, like an Instagram/Hevy post) =====
 // Opened when tapping a saved workout on a profile. Each participant posts their own recap
@@ -678,11 +683,29 @@ async function viewPost(id, authorId){
       dots.forEach((d,k)=>d.classList.toggle('on',k===i));
     }, {passive:true});
   }
-  loadChat(s);
+  loadPostComments(id, authorId);
 }
 // ===== Recovered post-view + chat helpers =====
 function togglePostMenu(id){ const m=document.getElementById('ppMenu-'+id); if(m) m.style.display = m.style.display==='none'?'block':'none'; }
-async function sendPostComment(id, authorId){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:t}); $('chatInput').value=''; viewPost(id, authorId); }
+// Comments on a POSTED recap — a separate thread from the live-workout Chat (see loadChat /
+// sendChat below), stored on the post itself (server.js: s.posts[authorId].comments) rather than
+// the session's shared chat, so an old "at the gym, rack 3" message never shows up here.
+async function sendPostComment(id, authorId){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/posts/${authorId}/comments`,{text:t}); $('chatInput').value=''; viewPost(id, authorId); }
+async function loadPostComments(id, authorId){
+  const box=$('chatbox'); if(!box) return;
+  const cs=await H.get(`/api/sessions/${id}/posts/${authorId}/comments`);
+  if(!Array.isArray(cs)){ box.innerHTML='<div class="muted">Comments aren\'t visible here.</div>'; return; }
+  if(!cs.length){ box.innerHTML='<div class="muted">No comments yet. Be the first to comment.</div>'; return; }
+  const nm={};
+  for(const c of cs){ if(!(c.userId in nm)) nm[c.userId]= await nameOf(c.userId); }
+  box.innerHTML = cs.map(c=>{
+    const name = c.userId===ME.id?'You':(nm[c.userId]||'User');
+    const ini = c.userId===ME.id?'Y':((nm[c.userId]||'?')[0]||'?');
+    const col = c.userId===ME.id?'#f0a23c':avatarColor(nm[c.userId]||c.userId);
+    const t = new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div></div>';
+  }).join('');
+}
 async function deletePhoto(id, authorId, idx){
   if(!confirm('Delete this photo?')) return;
   const s = await H.get('/api/sessions/'+id);
@@ -2385,8 +2408,8 @@ async function profileView(id){
   const stats = `
     <div class="pstats">
       <div class="pstat"><b>${p.workoutsCompleted}</b><span>Workouts</span></div>
-      <div class="pstat"><b>${p.following}</b><span>Following</span></div>
-      <div class="pstat"><b>${p.followers}</b><span>Followers</span></div>
+      <div class="pstat" style="cursor:pointer" onclick="followList('${p.id}','following')"><b>${p.following}</b><span>Following</span></div>
+      <div class="pstat" style="cursor:pointer" onclick="followList('${p.id}','followers')"><b>${p.followers}</b><span>Followers</span></div>
     </div>`;
   const bioBlock = isMe
     ? `<div class="pbio" onclick="editBio()">${p.bio?esc(p.bio):'<span class="muted">Tap to add a bio</span>'}</div>`
@@ -2419,7 +2442,9 @@ async function profileView(id){
     : '';
   const workouts = p.myWorkouts||[];
   function woCard(w){
-    const img = (w.post&&w.post.media&&w.post.media[0]) ? `<img class="wthumb" src="${esc(w.post.media[0].src)}" alt="">` : `<div class="wthumb wthumb-empty"></div>`;
+    // Jeff, Aug 26: no picture shouldn't mean a gray placeholder box - just skip the image area
+    // entirely and let the card show title/exercises only.
+    const img = (w.post&&w.post.media&&w.post.media[0]) ? `<img class="wthumb" src="${esc(w.post.media[0].src)}" alt="">` : '';
     const title = (w.name && w.name!=='Workout') ? w.name : ((w.firstExercises&&w.firstExercises[0])||'Workout');
     const exs = (w.firstExercises||[]).slice(0,3);
     const more = (w.exerciseCount||0) - exs.length;
@@ -2465,6 +2490,33 @@ async function profileView(id){
     <div style="margin:8px 0 14px" id="workoutView">${wview==='grid'?gridHtml:listHtml}</div>
     ${isPrivate ? privateBlock : ''}
     ${isMe?`<button class="sec" style="margin-top:18px" onclick="logout()">Log out</button>`:''}
+  </div>`;
+}
+// Jeff, Aug 26: "click on the number of followers or following and it show me who." The counts
+// were already public (publicUser, server.js) but the lists themselves are the same private detail
+// as workouts/PRs — gated server-side on the same isApproved rule as the rest of the profile, so a
+// private account's lists stay private to non-approved viewers.
+async function followList(id, kind){
+  const list = await H.get(`/api/profile/${id}/${kind}`);
+  const title = kind==='followers' ? 'Followers' : 'Following';
+  const backBtn = `<div class="pp-head"><button class="sec sm" onclick="profileView('${id}')">← Back</button></div>`;
+  if(!Array.isArray(list)){
+    $('app').innerHTML = `<div class="wrap">${backBtn}<h1>${title}</h1>
+      <div class="card muted" style="text-align:center;padding:20px">This list is private.</div>
+    </div>`;
+    return;
+  }
+  const rows = list.length ? list.map(x=>`
+    <div class="friend-row" onclick="profileView('${x.id}')" style="cursor:pointer">
+      ${avatarHtml(x,'avatar')}
+      <div class="meta">
+        <div class="name">${esc(x.displayName||x.username)}</div>
+        <div class="handle">@${esc(x.username)}</div>
+      </div>
+    </div>`).join('')
+    : `<div class="muted" style="padding:14px 2px;text-align:center">${kind==='followers'?'No followers yet.':'Not following anyone yet.'}</div>`;
+  $('app').innerHTML = `<div class="wrap">${backBtn}<h1>${title}</h1>
+    <div class="card" style="padding:6px 12px">${rows}</div>
   </div>`;
 }
 function setWorkoutView(v){
