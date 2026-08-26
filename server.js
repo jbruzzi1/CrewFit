@@ -722,6 +722,30 @@ app.get('/api/profile/:id', auth, async (req, res) => {
   if (!p) return res.status(404).json({ error: 'user not found' });
   res.json(p);
 });
+// The counts on a profile (Following/Followers) have always been public — see publicUser above —
+// but who is actually IN those lists is the same private detail as their workouts/PRs/streak, so it
+// gates on the identical rule (profileOf's isApproved: you, or someone this account has approved to
+// follow them). Jeff, Aug 26: "click on the number of followers or following and it show me who."
+function followListFor(id, viewerId, kind) {
+  const u = DB.users[id];
+  if (!u) return null;
+  ensureFollowArrays(u);
+  const isApproved = id === viewerId || (u.followers || []).includes(viewerId);
+  if (!isApproved) return { error: 'forbidden' };
+  return (u[kind] || []).filter(fid => DB.users[fid]).map(fid => publicUser(fid));
+}
+app.get('/api/profile/:id/followers', auth, async (req, res) => {
+  const list = followListFor(req.params.id, req.userId, 'followers');
+  if (!list) return res.status(404).json({ error: 'user not found' });
+  if (list.error) return res.status(403).json(list);
+  res.json(list);
+});
+app.get('/api/profile/:id/following', auth, async (req, res) => {
+  const list = followListFor(req.params.id, req.userId, 'following');
+  if (!list) return res.status(404).json({ error: 'user not found' });
+  if (list.error) return res.status(403).json(list);
+  res.json(list);
+});
 app.post('/api/me/avatar', auth, async (req, res) => {
   const { data, type } = req.body || {};
   if (!data || !/^data:image\/(png|jpeg|jpg|webp);base64,/.test(data)) return res.status(400).json({ error: 'image data required' });
@@ -1002,6 +1026,38 @@ app.post('/api/sessions/:id/comments', auth, async (req, res) => {
   s.comments.push(c);
   await save(DB);
   for (const pid of s.participants) if (pid !== req.userId) notify(pid, { title: 'New message', body: `${DB.users[req.userId].displayName}: ${text.slice(0,40)}` });
+  res.json(sessionView(s, req.userId));
+});
+
+// ---- Comments on a POSTED recap (Instagram-style: comment on the finished workout) ----
+// Deliberately separate storage from s.comments above. That thread is crew chat WHILE the workout
+// is still open ("at the gym, rack 3") and has nothing to do with the workout once it's posted; it
+// used to be the exact same array relabeled "Comments" after posting, which meant leftover chat
+// showed up under someone's finished recap. Jeff, Aug 26: "the comments in the workout are just for
+// the workout... that section is for people to comment on the workout after it's saved and posted."
+// Each participant's recap (s.posts[authorId]) is its own post, so its comments live on it, gated by
+// the exact same canSeePostAuthor() rule as reading the post itself — if you can see it, you can
+// comment on it, same as Instagram.
+app.get('/api/sessions/:id/posts/:authorId/comments', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  const p = s.posts && s.posts[req.params.authorId];
+  if (!canSeePostAuthor(p, req.params.authorId, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  res.json(objArray(p.comments));
+});
+app.post('/api/sessions/:id/posts/:authorId/comments', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  const p = s.posts && s.posts[req.params.authorId];
+  if (!canSeePostAuthor(p, req.params.authorId, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  const text = capStr((req.body || {}).text, 2000);
+  if (!text.trim()) return res.status(400).json({ error: 'empty' });
+  const c = { id: 'c_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
+  p.comments = objArray(p.comments);
+  p.comments.push(c);
+  await save(DB);
+  if (req.params.authorId !== req.userId)
+    notify(req.params.authorId, { title: 'New comment', body: `${DB.users[req.userId].displayName}: ${text.slice(0,40)}` });
   res.json(sessionView(s, req.userId));
 });
 
@@ -2342,11 +2398,16 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   }).filter(m => m.src);
   if (writeFailed) return res.status(507).json({
     error: 'Could not save that photo — the server is out of space. Your workout is not saved; please try again.' });
+  // Editing notes/photos on an already-posted recap (the inline-edit "Save" path) hits this same
+  // endpoint again — carry over any comments people already left rather than wiping the thread.
+  const existingComments = (s.posts[req.userId] && Array.isArray(s.posts[req.userId].comments))
+    ? s.posts[req.userId].comments : [];
   s.posts[req.userId] = {
     at: new Date().toISOString(),
     notes: String(notes || '').slice(0, 2000),
     media: cleanMedia,
-    visibility: vis
+    visibility: vis,
+    comments: existingComments
   };
   await save(DB);
   res.json(sessionView(s, req.userId));
