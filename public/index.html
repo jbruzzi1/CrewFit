@@ -259,7 +259,12 @@
     .sheet-list { display:flex; flex-direction:column; margin-top:4px; }
     .sheet-row { background:transparent; color:var(--fg); border:none; border-bottom:1px solid var(--line); text-align:left; padding:15px 4px; font-size:15px; font-weight:500; width:100%; margin:0; border-radius:0; }
     .sheet-row:last-child { border-bottom:none; }
-    .sheet-row.red { color:var(--red); font-weight:600; }
+    /* background:transparent is load-bearing, not decorative: button.red (the solid red CTA style,
+       e.g. "Delete set") sets background:var(--red), and .sheet-row.red's 2 classes beat its
+       1-class-1-element selector on specificity for color but NOT unless background is repeated
+       here too — without this line Log out rendered as a solid red bar with red-on-red invisible
+       text. */
+    .sheet-row.red { color:var(--red); font-weight:600; background:transparent; }
     .row-val { float:right; color:var(--muted); font-weight:600; text-transform:uppercase; font-size:13px; }
     .pavatar-wrap { position:relative; display:inline-block; cursor:pointer; }
     .pavatar { width:84px; height:84px; border-radius:50%; object-fit:cover; background:#e6e8ec; display:flex; align-items:center; justify-content:center; font-size:30px; font-weight:700; overflow:hidden; cursor:pointer; }
@@ -634,6 +639,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=190"></script>
+  <script src="app.js?v=193"></script>
 </body>
 </html>

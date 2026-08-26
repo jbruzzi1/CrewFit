@@ -171,6 +171,7 @@ function showTab(tab, keepModes){
 function resetTransientModes(){
   SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;   // stuck "Pick replacement" library
   LIB_ADDMODE = false;                                        // stuck "Done (n)" library
+  QUICK_ADD_MODE = false;                                     // stuck Quick Workout picker
   EDITING_SESSION = null;                                     // next new workout saved over the edited one
   EDITING_ID = null;                                          // stuck inline-edit on a posted workout
   EDITING_TPL = null;                                         // stuck template edit
@@ -1436,23 +1437,34 @@ let EDITING_SESSION = null;
 // coming back from the exercise picker, and clearing there would throw away what you just added.
 // Without this, "+ New workout" opened pre-filled with the last workout you edited.
 function newWorkout(){
-  DRAFT = { exercises:[], inviteUsernames:[] };
+  // Prefilled from Settings > Default gym, if set — edited or cleared here the same as any other
+  // draft field, this is just where its value starts.
+  DRAFT = { exercises:[], inviteUsernames:[], location: (ME && ME.defaultGym) || '' };
   EDITING_SESSION = null; EDITING_TPL = null; EDITING_ID = null;
   createFlow();
 }
 function cancelCreate(){ EDITING_SESSION=null; EDITING_TPL=null; home(); }
-// Skips the whole create-flow wizard — no name, no schedule picker, no invite step. Creates a
-// solo, private, right-now session with zero exercises and drops you straight into it; openSession
-// shows the empty-workout state (see qs-empty below) so you add your first lift from inside a
-// session that already exists, instead of planning one before you've started.
-async function workoutNow(){
+// Skips the whole create-flow wizard — no name, no schedule picker, no invite step, and (Jeff,
+// Aug 25: a tap of the button shouldn't immediately create it) no session on the server either,
+// not until you've actually picked something. Tapping "Quick Workout" drops you straight into the
+// exercise picker; libDone() below creates the session the moment you tap Done, with whatever you
+// picked, and opens it — one tap to start, one tap when you're done, nothing created if you back
+// out having picked nothing.
+function workoutNow(){
+  DRAFT = { exercises:[], inviteUsernames:[], location: (ME && ME.defaultGym) || '' };
+  EDITING_SESSION = null; EDITING_TPL = null; EDITING_ID = null;
+  QUICK_ADD_MODE = true;
+  openAddExercises();
+}
+async function createQuickWorkout(){
   const r = await H.post('/api/sessions', {
     name: 'Quick Workout',
     scheduledAt: new Date().toISOString(),
     visibility: 'private',
-    exercises: [],
+    exercises: DRAFT.exercises,
+    location: DRAFT.location || '',
   });
-  if(r && r.error){ alert(r.error); return; }
+  if(r && r.error){ alert(r.error); showTab('home'); return; }
   openSession(r.id);
 }
 async function editSession(id){
@@ -1992,6 +2004,13 @@ const LIB_CATS = [
 let LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
 // ---- Add-exercise mode: open the Library so the user picks from there ----
 let LIB_ADDMODE = false;
+// ---- Quick Workout mode: LIB_ADDMODE picks exercises for a session that does not exist on the
+// server yet. libDone() creates it (only if at least one exercise was picked) instead of routing
+// back to the create-flow wizard's own Save button — see workoutNow() below. Must be reset in
+// resetTransientModes() same as every other mode here, or walking away via the bottom nav mid-pick
+// leaves it stuck true and the next ordinary "+ Add exercise" silently tries to create a session
+// instead of returning to whatever it was actually editing.
+let QUICK_ADD_MODE = false;
 // ---- Swap mode: open the Library so the user picks a real exercise as the swap-to target ----
 let SWAP_MODE = false;
 let SWAP_SESSION = null;
@@ -2006,14 +2025,26 @@ function openAddExercises(){
   SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;   // never both at once
   showTab('lib', true);   // identical to tapping the bottom Workouts tab
 }
-function libDone(){ LIB_ADDMODE = false; TPL_MODE.active ? templateExercises() : createFlow(); }
+function libDone(){
+  LIB_ADDMODE = false;
+  if(QUICK_ADD_MODE){
+    QUICK_ADD_MODE = false;
+    // Nothing picked, nothing created — same as never having tapped "Quick Workout" at all.
+    // showTab(), not home() directly: entering the picker went through showTab('lib', true), which
+    // highlighted the Workouts nav tab, and only showTab() un-highlights it again.
+    if(!DRAFT.exercises.length){ showTab('home'); return; }
+    createQuickWorkout();
+    return;
+  }
+  TPL_MODE.active ? templateExercises() : createFlow();
+}
 async function library(){
   LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
   const lib = await H.get('/api/exercises');
   window._LIB2 = lib;
   const head = LIB_ADDMODE
     ? `<div class="pick-head lib-head">
-         <h1 style="flex:1">Workouts</h1>
+         <h1 style="flex:1">${QUICK_ADD_MODE?'Quick Workout':'Workouts'}</h1>
          <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
          <button class="blue sm" onclick="libDone()">Done (<span id="libDoneCount">${DRAFT.exercises.length}</span>)</button>
        </div>`
@@ -2028,6 +2059,7 @@ async function library(){
          <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
        </div>`;
   $('app').innerHTML = `<div class="pick">${head}
+    ${QUICK_ADD_MODE?'<div class="muted" style="font-size:12.5px;padding:0 2px 10px">Pick your first lift(s), then tap Done — this starts a live session right away.</div>':''}
     <div class="pick-search"><input id="ls" placeholder="Search exercises" oninput="libSearch(this.value)"></div>
     <div class="pick-list" id="lib2"></div>
   </div>`;
@@ -2318,6 +2350,7 @@ function openSettings(){
     <div class="sheet-list">
       <button class="sheet-row" onclick="closeSheet(); document.getElementById('av').click()">Edit photo</button>
       <button class="sheet-row" onclick="closeSheet(); editBio()">Edit bio</button>
+      <button class="sheet-row" onclick="editDefaultGym()">Default gym <span class="row-val">${esc(ME.defaultGym || 'Not set')}</span></button>
       <button class="sheet-row" onclick="closeSheet(); pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
       <button class="sheet-row red" onclick="closeSheet(); logout()">Log out</button>
     </div>
@@ -2453,6 +2486,15 @@ function editBio(){
   const v = prompt('Your bio:', cur);
   if(v===null) return;
   H.post('/api/me/bio',{bio:v}).then(r=>{ if(r.bio!==undefined){ ME.bio=r.bio; profileView(ME.id); } });
+}
+// Prefills the Location field on every new workout you create (and Quick Workout) so you're not
+// retyping the same gym every time. Left blank on purpose by default — nothing to prefill until
+// you set one.
+function editDefaultGym(){
+  const cur = ME.defaultGym||'';
+  const v = prompt('Default gym (prefills new workouts):', cur);
+  if(v===null) return;
+  H.post('/api/me/default-gym',{defaultGym:v}).then(r=>{ if(r.defaultGym!==undefined){ ME.defaultGym=r.defaultGym; openSettings(); } });
 }
 async function uploadAvatar(input){
   const file = input.files && input.files[0];
