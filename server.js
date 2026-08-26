@@ -440,7 +440,7 @@ app.post('/api/register', async (req, res) => {
     displayName: capStr(displayName || username, 80).trim(), friends: [], units: 'lb',
     createdAt: new Date().toISOString() }, hashPin(pin));
   await save(DB);
-  res.json({ token: signToken(id), user: publicUser(id) });
+  res.json({ token: signToken(id), user: { ...publicUser(id), defaultGym: '' } });
 });
 // Live username availability check (used by the register popup as the user types)
 app.get('/api/register/check', async (req, res) => {
@@ -477,7 +477,12 @@ app.post('/api/login', async (req, res) => {
   }
   delete LOGIN_FAILS[ipKey];
   clearFail('acct:' + uname);
-  res.json({ token: signToken(u.id), user: publicUser(u.id) });
+  // publicUser() deliberately omits defaultGym — it's used everywhere ELSE to describe someone
+  // else (friends list, follow requests), and that field is private. This response describes
+  // the account that just authenticated, so it's the one safe place to add it directly: without
+  // it, a returning user's saved default gym wouldn't take effect until their next full page
+  // load (the client only re-fetches the fuller self-profile on boot, not on an in-app login).
+  res.json({ token: signToken(u.id), user: { ...publicUser(u.id), defaultGym: u.defaultGym || '' } });
 });
 
 // ---- Password reset: DISABLED, deliberately ----
@@ -648,6 +653,9 @@ function profileOf(id, viewerId) {
   return {
     ...publicUser(id),
     units: (DB.users[id] && DB.users[id].units) || 'lb',
+    // Self only — where you train is not a public fact about your account, and nobody else's
+    // profile view needs it (it only ever prefills YOUR OWN new-workout form).
+    defaultGym: id === viewerId ? (u.defaultGym || '') : undefined,
     workoutsCompleted: completed.size,
     // the follow button's state, and whether they follow you back
     youFollow: id === viewerId ? 'self'
@@ -732,6 +740,14 @@ app.post('/api/me/bio', auth, async (req, res) => {
   DB.users[req.userId].bio = String(bio || '').slice(0, 280);
   await save(DB);
   res.json({ bio: DB.users[req.userId].bio });
+});
+// Same cap as a session's own location field (see POST/PUT /api/sessions) — a saved default gets
+// prefilled into that same field, so the two limits have to agree.
+app.post('/api/me/default-gym', auth, async (req, res) => {
+  const { defaultGym } = req.body || {};
+  DB.users[req.userId].defaultGym = capStr(defaultGym, 120).trim();
+  await save(DB);
+  res.json({ defaultGym: DB.users[req.userId].defaultGym });
 });
 // Following is a REQUEST now, not an instant grant. It stays pending until the target accepts.
 app.post('/api/follow/:id', auth, async (req, res) => {
