@@ -51,7 +51,16 @@
     .home-avatar { width:44px; height:44px; border-radius:50%; background:var(--green); color:#fff; display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:700; cursor:pointer; object-fit:cover; overflow:hidden; box-shadow:0 2px 8px rgba(22,163,74,.25); }
     .home-greet { font-size:19px; color:var(--fg); font-weight:700; }
     .act-chip { flex:0 0 auto; font-size:11px; font-weight:700; border-radius:999px; padding:3px 8px; vertical-align:middle; }
-    .act-chip.pr { background:rgba(245,158,11,.15); color:#b45309; }
+    /* was .act-chip.pr — the element also matched the unrelated .pr list-row class used by the
+       Progress tab's PR list (line ~564: display:flex, padding:11px 2px, border-bottom). .act-chip
+       (0,1,0) and .pr (0,1,0) are equal specificity, and .pr comes later in the file, so its
+       display:flex/padding won outright — .act-chip.pr (0,2,0) itself never set either property,
+       so there was nothing to out-specificity it with. Result: a full-width 390x35 row instead of
+       a small pill (act-chip.done, with no such collision, stayed a normal ~25x18 pill next to it).
+       Renamed instead of touching the .pr family, which several other Progress-tab classes
+       (.pr-n/.pr-d/.pr-beat/etc.) depend on. Same fix applied to .type-tag.pr below, which had the
+       identical collision on the logged-set PR badge. */
+    .act-chip.act-pr { background:rgba(245,158,11,.15); color:#b45309; }
     .act-chip.done { background:rgba(16,185,129,.15); color:var(--green); }
     .btn-new { padding:13px 18px; font-size:14px; border-radius:14px; margin:16px 0 8px; width:auto; align-self:flex-start; box-shadow:0 4px 12px rgba(37,99,235,.25); }
     h2 { font-size:12px; margin:28px 0 12px; color:var(--muted); text-transform:uppercase; letter-spacing:.8px; font-weight:600; }
@@ -296,7 +305,7 @@
     .cat-pills { display:flex; gap:6px; overflow-x:auto; padding:4px 0 10px; -webkit-overflow-scrolling:touch; }
     .cat-pills::-webkit-scrollbar { display:none; }
     .cat-pill { flex:0 0 auto; background:var(--card); border:1px solid var(--line); color:var(--fg); border-radius:999px; padding:6px 13px; font-size:13px; cursor:pointer; }
-    .cat-pill.on { background:var(--green); color:#fff; border-color:var(--green); }
+    .cat-pill.on { background:var(--blue); color:#fff; border-color:var(--blue); }
     .pick-list { flex:1; overflow-y:auto; padding-bottom:calc(84px + env(safe-area-inset-bottom)); }
     .pick-list > .card { box-shadow:0 6px 18px rgba(20,24,31,.09); margin:4px 0 14px; }
     .ex-row { display:flex; align-items:center; gap:12px; padding:14px 2px; border-bottom:1px solid var(--line); cursor:pointer; }
@@ -335,9 +344,9 @@
     .sheet-mg { font-size:13px; color:var(--muted); margin-bottom:12px; }
     .sheet-row { display:flex; justify-content:space-between; padding:10px 0; border-top:1px solid var(--line); font-size:15px; }
     .sheet-row span { color:var(--muted); }
-    .icon-btn { flex:0 0 auto; width:34px; height:34px; border-radius:50%; border:1px solid var(--line); background:var(--card); color:var(--green); font-size:20px; line-height:1; display:flex; align-items:center; justify-content:center; cursor:pointer; }
-    .txt-btn { flex:0 0 auto; background:transparent; color:var(--green); border:none; font-size:14px; font-weight:600; padding:6px 8px; border-radius:8px; width:auto; margin:0; cursor:pointer; }
-    .txt-btn:active { background:rgba(45,212,120,.12); }
+    .icon-btn { flex:0 0 auto; width:34px; height:34px; border-radius:50%; border:1px solid var(--line); background:var(--card); color:var(--blue); font-size:20px; line-height:1; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+    .txt-btn { flex:0 0 auto; background:transparent; color:var(--blue); border:none; font-size:14px; font-weight:600; padding:6px 8px; border-radius:8px; width:auto; margin:0; cursor:pointer; }
+    .txt-btn:active { background:rgba(37,99,235,.12); }
     .tpl-page { padding-top:8px; }
     .lib-head { padding-bottom:6px; }
     .sheet label.muted { display:block; margin:10px 0 4px; font-size:12px; }
@@ -384,7 +393,11 @@
     .t-warm { background:rgba(37,99,235,.12); color:var(--blue); }
     .t-drop { background:rgba(147,51,234,.12); color:#9333ea; }
     .t-fail { background:rgba(220,38,38,.12); color:var(--red); }
-    .type-tag.pr { background:rgba(245,158,11,.15); color:#b45309; }
+    /* was .type-tag.pr — same .pr-class collision as .act-chip.act-pr above: the logged-set PR
+       badge on a set row was matching the unrelated Progress-tab .pr list-row class too, and that
+       rule's own display:flex/padding (never overridden by .type-tag, which sets neither) applied
+       unopposed, ballooning it into a full-width row instead of a small badge. */
+    .type-tag.type-tag-pr { background:rgba(245,158,11,.15); color:#b45309; }
     .seg { display:flex; gap:6px; margin:6px 0 14px; }
     .seg .chip, .seg button { flex:1; text-align:center; background:#eef1f5; color:var(--muted); border:1px solid transparent; border-radius:999px; padding:9px 0; font-size:12px; font-weight:600; cursor:pointer; font:inherit; }
     .seg .chip.on, .seg button.on { background:rgba(37,99,235,.12); color:var(--blue); border:1px solid var(--blue); font-weight:700; }
@@ -639,6 +652,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=193"></script>
+  <script src="app.js?v=195"></script>
 </body>
 </html>

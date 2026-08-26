@@ -260,7 +260,7 @@ async function home(){
   if(feed.length){
     for(const f of feed){
       const who = await friendName(f.by);
-      const ic = f.type==='pr' ? `<span class="act-chip pr">PR</span>` : `<span class="act-chip done">✓</span>`;
+      const ic = f.type==='pr' ? `<span class="act-chip act-pr">PR</span>` : `<span class="act-chip done">✓</span>`;
       html += `<div class="feed-item" onclick="profileView('${f.by}')" style="cursor:pointer">${ic} <b>${esc(who)}</b> ${esc(f.text)}</div>`;
     }
   } else html += `<div class="muted">No recent activity from friends.</div>`;
@@ -950,7 +950,7 @@ function renderLogSets(s){
       <div class="set-n">${l.set||'·'}</div>
       <div class="set-vals"><b>${Number(l.weight)||0} ${unitOf(l)}${suffixFor(l)}</b> · <span class="sub">${Number(l.reps)||0} reps</span></div>
       <span class="type-tag ${TYPE_CLASS[l.setType]||'t-normal'}">${TYPE_LABEL[l.setType]||'Normal'}</span>
-      ${l.isPr?'<span class="type-tag pr">PR</span>':''}
+      ${l.isPr?'<span class="type-tag type-tag-pr">PR</span>':''}
     </div>`).join('');
 }
 async function addLogSet(){
@@ -2410,7 +2410,7 @@ async function profileView(id){
   const activity = p.recentActivity||[];
   const activityRows = activity.length
     ? activity.map(a=>{
-        const chip = a.type==='pr' ? `<span class="act-chip pr">PR</span>` : `<span class="act-chip done">✓</span>`;
+        const chip = a.type==='pr' ? `<span class="act-chip act-pr">PR</span>` : `<span class="act-chip done">✓</span>`;
         return `<div class="feed-item">${chip} ${esc(a.text)}</div>`;
       }).join('')
     : (isMe ? `<div class="muted">No activity yet — log a workout to see it here.</div>` : '');
