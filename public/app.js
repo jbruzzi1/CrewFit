@@ -2384,6 +2384,7 @@ function openSettings(){
       <button class="sheet-row" onclick="closeSheet(); editBio()">Edit bio</button>
       <button class="sheet-row" onclick="editDefaultGym()">Default gym <span class="row-val">${esc(ME.defaultGym || 'Not set')}</span></button>
       <button class="sheet-row" onclick="closeSheet(); pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
+      <button class="sheet-row" onclick="toggleStreakReminders()">Streak reminders <span class="row-val">${ME.notifyStreakReminders!==false?'On':'Off'}</span></button>
       <button class="sheet-row red" onclick="closeSheet(); logout()">Log out</button>
     </div>
   </div>`;
@@ -2556,6 +2557,14 @@ function editDefaultGym(){
   const v = prompt('Default gym (prefills new workouts):', cur);
   if(v===null) return;
   H.post('/api/me/default-gym',{defaultGym:v}).then(r=>{ if(r.defaultGym!==undefined){ ME.defaultGym=r.defaultGym; openSettings(); } });
+}
+// Task #63: "you're about to lose your streak" push reminder, opt-out toggle. Only matters if
+// push permission is separately granted (setupPush()) - this just controls whether the server
+// will ever send THIS particular kind of notification once it can send any at all.
+async function toggleStreakReminders(){
+  const next = !(ME.notifyStreakReminders!==false);
+  const r = await H.post('/api/me/notify-prefs',{streakReminders:next});
+  if(r.streakReminders!==undefined){ ME.notifyStreakReminders=r.streakReminders; openSettings(); }
 }
 async function uploadAvatar(input){
   const file = input.files && input.files[0];
