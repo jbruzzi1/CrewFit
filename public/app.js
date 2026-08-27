@@ -2517,9 +2517,13 @@ async function friends(){
   $('app').innerHTML = `<div class="wrap">
     <div class="h1-row"><h1>Friends</h1>${badge}</div>
     <div class="card">
+      <!-- Jeff, Aug 27: "search bar text does not fit properly" -- the placeholder was getting
+           clipped because a "Search" button sat next to the input eating its width, even though
+           the input already searches live on every keystroke (oninput below) -- the button never
+           did anything a keystroke hadn't already done. Dropping it gives the placeholder the
+           full row and removes a genuinely redundant control at the same time. -->
       <div class="add-row">
         <input id="fu" placeholder="Search people by name or @username" autocomplete="off" oninput="friendSearch()">
-        <button class="add-btn" onclick="friendSearch()">Search</button>
       </div>
       <div id="fresults"></div>
     </div>
