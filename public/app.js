@@ -2545,7 +2545,13 @@ async function friendSearch(){
       const btn = x.requestStatus==='friends' ? `<button class="sm" disabled style="background:#f0f1f3;border-color:transparent;color:var(--muted)">Friends</button>`
         : x.requestStatus==='sent' ? `<button class="sm" disabled style="background:#f0f1f3;border-color:transparent;color:var(--muted)">Requested</button>`
         : `<button class="sm sec" onclick="sendRequest('${jsq(x.username)}', this)">Add</button>`;
-      return `<div class="user-row">${avatarHtml(x,'avatar')}<div class="meta"><div class="name">${esc(x.displayName||x.username)}</div><div class="handle">@${esc(x.username)}</div></div>${btn}</div>`;
+      // Jeff, Aug 27: "the add button or showing if your friends or not is directly under the
+      // name" -- this row used a "user-row" class that had no CSS rule anywhere, so the avatar,
+      // name/handle, and button just stacked as plain block boxes instead of sitting in a row.
+      // .friend-row (used two lines down for the real Friends list) is exactly this same
+      // avatar + growing name/handle + trailing control layout, already correct -- reusing it
+      // here instead of inventing new CSS.
+      return `<div class="friend-row">${avatarHtml(x,'avatar')}<div class="meta"><div class="name">${esc(x.displayName||x.username)}</div><div class="handle">@${esc(x.username)}</div></div>${btn}</div>`;
     }).join('');
   } catch(e){ if(box) box.innerHTML=''; }
 }
