@@ -2042,11 +2042,11 @@ function trendFor(userId) {
   const lifts = Object.keys(byName)
     .map(name => ({ name, points: byName[name].sort((a, b) => a.at.localeCompare(b.at)) }))
     .filter(x => x.points.length >= 2)                   // one point is not a trend
-    .sort((a, b) => b.points.length - a.points.length);
+    .sort((a, b) => b.points.length - a.points.length);  // most logged first = the default 5
 
-  // Overall: each lift indexed to ITS OWN starting value, then averaged weighted by how heavy
-  // it is. Weighting stops a 15->20 lb lateral raise (+33%) outvoting a 45 lb squat gain, and
-  // requiring 2+ points stops a lift trained once diluting the average toward zero.
+  // Overall stays computed from EVERY eligible lift, never just the picked/displayed subset --
+  // it is a holistic "how is your training going" number, and shrinking it to whatever chips
+  // happen to be picked would make it lie by omission the moment someone picks fewer than 5.
   const dates = [...new Set(lifts.flatMap(l => l.points.map(p => p.at)))].sort();
   const wsum = lifts.reduce((a, l) => a + l.points[0].est, 0);
   const overall = !lifts.length ? [] : dates.map(d => {
@@ -2058,13 +2058,37 @@ function trendFor(userId) {
     }
     return { at: d, pct: Number(((acc - 1) * 100).toFixed(1)) };
   });
-  return {
-    lifts: lifts.map(l => ({
-      name: l.name, points: l.points,
-      changePct: Number(((l.points[l.points.length-1].est / l.points[0].est - 1) * 100).toFixed(1))
-    })),
-    overall
-  };
+
+  const toChip = l => ({
+    name: l.name, points: l.points,
+    changePct: Number(((l.points[l.points.length-1].est / l.points[0].est - 1) * 100).toFixed(1))
+  });
+  const allNames = lifts.map(l => l.name);
+
+  // Picks are validated HERE, not at save time (see POST /api/me/trend-picks) -- a name that no
+  // longer has an eligible trend (renamed, deleted, or just not logged in a while) is silently
+  // dropped rather than leaving a dead chip or, worse, an empty chart. Everything below has to be
+  // safe against anything already sitting in this field regardless of how it got there -- the
+  // save route always writes a well-formed deduped array, but that is not the only way a value
+  // could land here (a hand-edited row, a future write path that skips the route, ...). That
+  // includes the field's TYPE, not just its contents: Array.isArray, not a truthiness check --
+  // a non-array truthy value (e.g. {}) would throw out of the for..of below and 500 the whole
+  // Progress tab for that user instead of just falling back to the default.
+  const u = DB.users[userId];
+  const rawPicks = Array.isArray(u && u.trendPicks) ? u.trendPicks : [];
+  const seen = new Set();
+  const picks = [];
+  for (const name of rawPicks) {
+    if (seen.has(name) || !allNames.includes(name)) continue;
+    seen.add(name);
+    picks.push(name);
+    if (picks.length >= 5) break;
+  }
+  const shown = picks.length
+    ? picks.map(name => lifts.find(l => l.name === name))
+    : lifts.slice(0, 5);
+
+  return { lifts: shown.map(toChip), overall, allNames, picks };
 }
 
 
@@ -2111,6 +2135,31 @@ app.delete('/api/me/seeds/:exercise', auth, async (req, res) => {
   if (u.seeded) delete u.seeded[decodeURIComponent(req.params.exercise)];
   await save(DB);
   res.json({ seeds: u.seeded || {} });
+});
+
+// Jeff, Aug 19: "only select 5 workouts at a time... let the user pick which workouts they want
+// to select rather than it using most recent exercises... a tab under it that allows us to
+// select." Strength trend used to auto-pick whichever lift had the most logged history,
+// unbounded. Names are NOT validated against what the user has actually logged here -- that
+// would make an exercise you temporarily stop logging vanish from your saved picks entirely.
+// Validity (does this name still have an eligible trend?) is checked lazily, every time, in
+// trendFor() -- see the comment there. This route only guarantees the STORED list is well-formed:
+// an array, deduped, capped at 5, regardless of what the client sends.
+app.post('/api/me/trend-picks', auth, async (req, res) => {
+  const { picks } = req.body || {};
+  if (!Array.isArray(picks)) return res.status(400).json({ error: 'picks must be an array' });
+  const seen = new Set();
+  const clean = [];
+  for (const p of picks) {
+    const name = capStr(p, 80);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    clean.push(name);
+    if (clean.length >= 5) break;
+  }
+  DB.users[req.userId].trendPicks = clean;
+  await save(DB);
+  res.json({ picks: clean });
 });
 
 // The record list the UI renders: earned records, plus seeded entries for lifts with none yet.
