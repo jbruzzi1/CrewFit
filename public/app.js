@@ -880,7 +880,7 @@ async function openLogSheet(sid, exId){
         ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" data-t="${t.key}" onclick="logSetType('${t.key}')">${t.label}</div>`).join('')}
       </div>
       <div class="add-row">
-        <input id="logW" placeholder="${loadType==='pair'? myUnit()+' each' : myUnit()}" type="number" inputmode="tel" pattern="[0-9]*" oninput="updateLoadHint()">
+        <input id="logW" placeholder="${loadType==='pair'? myUnit()+' each' : myUnit()}" type="number" inputmode="decimal" step="any" oninput="updateLoadHint()">
         <input id="logR" placeholder="reps" type="number" inputmode="tel" pattern="[0-9]*">
         <input id="logRir" placeholder="RIR" type="number" inputmode="tel" pattern="[0-9]*" style="flex:0 0 60px; padding-left:8px; padding-right:6px" title="Reps in reserve (optional)">
         <button class="add-btn" onclick="addLogSet()">+ Add</button>
@@ -1011,7 +1011,7 @@ async function editLogSet(logId){
       <div class="sheet-head"><h2>Edit set</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
       <div class="ex-sub">Set ${l.set||''}</div>
       <label class="muted" style="font-size:12px">Weight (${unitOf(l)}${(LOGVIEW&&LOGVIEW.loadType==='pair')?', each hand':(LOGVIEW&&LOGVIEW.loadType==='added')?' added':''})</label>
-      <input id="edW" type="number" inputmode="tel" pattern="[0-9]*" value="${l.weight}">
+      <input id="edW" type="number" inputmode="decimal" step="any" value="${l.weight}">
       <label class="muted" style="font-size:12px">Reps</label>
       <input id="edR" type="number" inputmode="tel" pattern="[0-9]*" value="${l.reps}">
       <label class="muted" style="font-size:12px">RIR (optional)</label>
