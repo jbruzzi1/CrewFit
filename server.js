@@ -1975,7 +1975,7 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
   ensureSessionShape(s);
   if (!s.participants.includes(req.userId) && !s.joinRequests.find(j=>j.userId===req.userId&&j.status==='approved'))
     return res.status(403).json({ error: 'forbidden' });
-  const { exerciseId, weight, reps, set, setType } = req.body || {};
+  const { exerciseId, weight, reps, set, setType, rir } = req.body || {};
   if (!s.logs[req.userId]) s.logs[req.userId] = [];
   const w = numIn(weight, 1e6), r = numIn(reps, 1e6);
   // reps are what make a set a set. Storing reps:0 silently turned "225, forgot to type reps"
@@ -2000,6 +2000,9 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
   if (lt) entry.loadType = lt;   // omitted entirely for unambiguous lifts (barbell, cable, machine)
   if (unit !== 'lb') entry.unit = unit;   // omitted when lb, so existing data stays byte-identical
   if (rr) { entry.targetReps = rr.lo; if (rr.hi !== rr.lo) entry.targetRepsMax = rr.hi; }
+  // RIR (Reps In Reserve) is optional, per set, task #62. Omitted entirely when blank rather than
+  // stored as 0 - those mean different things ("didn't track it" vs. "went to failure").
+  if (rir !== undefined && rir !== null && String(rir).trim() !== '') entry.rir = numIn(rir, 20);
   s.logs[req.userId].push(entry);
   rebuildAllPrs();
   await save(DB);
@@ -2296,11 +2299,14 @@ app.put('/api/sessions/:id/log/:logId', auth, async (req, res) => {
   const arr = s.logs[req.userId] || [];
   const log = arr.find(l => l.id === req.params.logId);
   if (!log) return res.status(404).json({ error:'log not found' });
-  const { weight, reps, setType, set } = req.body || {};
+  const { weight, reps, setType, set, rir } = req.body || {};
   if (weight!==undefined) log.weight = numIn(weight, 1e6);
   if (reps!==undefined) log.reps = numIn(reps, 1e6);
   if (setType!==undefined) log.setType = setType || 'normal';
   if (set!==undefined) log.set = numIn(set, 1e6) || log.set;
+  // Same optional-field handling as POST /log above - clearing the box removes rir entirely
+  // rather than writing a 0 ("went to failure"), which is a different, real answer.
+  if (rir!==undefined) { if (rir===null || String(rir).trim()==='') delete log.rir; else log.rir = numIn(rir, 20); }
   rebuildAllPrs();
   await save(DB);
   res.json(sessionView(s, req.userId));
