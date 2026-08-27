@@ -72,6 +72,10 @@ async function nameOf(id){
 function fmtDate(s){ const d=new Date(s); return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
 // Shared by fmtWhen and isSessionLiveNow, which both need "what calendar day is this, locally".
 function startOfDay(x){ const y = new Date(x); y.setHours(0,0,0,0); return y; }
+// Whole calendar days between today and iso — negative means iso is in the past. Used to decide
+// whether a friend's joinable workout is still current (see the Friends' Workouts section of
+// home() below), separately from fmtWhen's Today/Tomorrow/Yesterday display wording.
+function dayDiff(iso){ const d = new Date(iso); if(isNaN(d)) return 0; return Math.round((startOfDay(d) - startOfDay(new Date())) / 86400000); }
 // "Aug 19, 5:30 PM" does not answer the question you are actually asking about an invitation,
 // which is whether you can make it. Today / Tomorrow / Yesterday do. Anything further out keeps
 // the date, because "in 9 days" is not how anyone thinks about next Thursday.
@@ -250,6 +254,30 @@ async function home(){
         <div>${live?'<div class="live-badge">● Live now</div>':''}<b>${esc(label)}${s.exercises.length?` · ${s.exercises.length} exercises`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}</div></div></div>`;
     }
   } else html += `<div class="muted">No sessions yet.</div>`;
+  html += `</div>`;
+
+  // Friends' Workouts — a friend's own joinable session, discoverable even before you have any
+  // invite or join step in it. Jeff, Aug 20: "If i follow someone on the app and they approve ...
+  // I want to be able to see all active workouts they have that are public. Even ones they have
+  // before I followed them that are still active or awaiting." Past-dated does not mean done: a
+  // workout the creator has not finished yet (creatorFinished, from sessionView) stays here past
+  // its original date, same as it would still be open for them. Missing creatorFinished (an older
+  // session shape) fails OPEN — shown, not silently hidden.
+  const friendIds = new Set(myFriends.map(f=>f.id));
+  const joinable = sessions.filter(s => s.name
+    && s.visibility === 'friends'
+    && friendIds.has(s.creatorId)
+    && !(s.participants||[]).includes(ME.id)
+    && !(Array.isArray(s.invited) && s.invited.includes(ME.id))
+    && (dayDiff(s.scheduledAt) >= 0 || !s.creatorFinished));
+  html += `<h2 class="light">Friends' Workouts</h2><div class="card">`;
+  if(joinable.length){
+    for(const s of joinable){
+      const creatorName = await friendName(s.creatorId);
+      html += `<div class="lib-item" onclick="openSession('${s.id}')">
+        <div><b>${esc(s.name)}${s.exercises.length?` · ${s.exercises.length} exercises`:''}</b><div class="tag">${esc(creatorName)} · ${fmtWhen(s.scheduledAt)}</div></div></div>`;
+    }
+  } else html += `<div class="muted">No joinable workouts from friends right now.</div>`;
   html += `</div>`;
 
   // Friend's Activity (lighter strip, in an elevated card to match Your Sessions)
@@ -536,7 +564,24 @@ async function openSession(id, opts){
     </div>`;
   }
   const isPosted = !!myPost;
-  const respondHere = !isCreator && !sessionHasAnyPost(s) && !isParticipant;
+  // Accept/Decline is for an actual INVITE — someone was asked. Before Home's Friends' Workouts
+  // card existed, that was the only way to ever reach this screen without already being in the
+  // workout, so "not creator and not participant" was a safe stand-in for "was invited." It no
+  // longer is: a friend-visible session now shows up here for people who were never invited at
+  // all, and this used to hand them Accept/Decline anyway — tapping either did nothing useful,
+  // since there was no invite on file to answer.
+  const respondHere = !isCreator && !sessionHasAnyPost(s) && !isParticipant
+    && Array.isArray(s.invited) && s.invited.includes(ME.id);
+  // The other door in: a friend-visible workout you can see but were never asked into. "Join in?"
+  // instead of Accept/Decline — you're the one asking here, not answering. Uses the same
+  // joinRequests the creator's Approve/Reject already runs on (see the "join requests (creator
+  // only)" block above); myJoinReq lets this reflect a request already on file instead of
+  // offering to file a second one.
+  const myJoinReq = s.joinRequests.find(j => j.userId === ME.id);
+  // visibility==='friends' matches the server's own /join eligibility rule (server.js) — a
+  // private session reached some other way (e.g. a publicly-shared recap on it) is not actually
+  // joinable, and should not offer a button promising otherwise.
+  const joinable = !isCreator && !isParticipant && !respondHere && s.visibility === 'friends';
 
   // Chat comes BEFORE the answer for someone deciding. Brian messages from the rack — "at the gym,
   // rack 3" — and that used to sit below the exercises AND below the buttons, so the most
@@ -595,6 +640,24 @@ async function openSession(id, opts){
         <span class="aside-dot">·</span>
         <button class="linkbtn" onclick="saveRoutine('${s.id}')">Save this routine</button>
       </div>`;
+  } else if(joinable){
+    html += crewBlock + chatBlock;
+    const host = isUnknownName(nameCache[s.creatorId]) ? 'the host' : String(nameCache[s.creatorId]).split(' ')[0];
+    if(myJoinReq && myJoinReq.status==='pending'){
+      html += `<div class="muted" style="padding:0 2px 10px">Request sent — waiting on ${esc(host)}.</div>`;
+    } else {
+      // A rejected request used to permanently trip the server's "already requested" 400 on every
+      // future tap, with the button silently re-rendering as if nothing had happened — a dead end
+      // with no way back in. requestJoin's server side now re-opens a rejected request instead of
+      // refusing it, so the button here stays real and actionable; this line is only about not
+      // pretending the earlier answer never happened.
+      const declined = myJoinReq && myJoinReq.status==='rejected';
+      html += `${declined ? `<div class="muted" style="padding:0 2px 10px">${esc(host)} declined your last request — you can ask again.</div>` : ''}
+      <button class="btn-answer" onclick="requestJoin('${s.id}')">Join in?</button>
+      <div class="answer-aside">
+        <button class="linkbtn" onclick="openChat('${s.id}')">Message ${esc(host)}</button>
+      </div>`;
+    }
   } else {
     html += crewBlock + chatBlock;
   }
@@ -730,6 +793,14 @@ async function deletePhoto(id, authorId, idx){
 }
 async function acceptInvite(id){ await H.post(`/api/sessions/${id}/accept`,{}); openSession(id); }
 async function declineInvite(id){ if(!confirm('Decline this invite?')) return; await H.post(`/api/sessions/${id}/decline`,{}); home(); }
+// The requester's half of the join-request flow — approveJoin/rejectJoin (below) are the
+// creator's half, and already existed; this side never had a button to actually fire the request
+// from, even though the server route has been there all along.
+async function requestJoin(id){
+  const r = await H.post(`/api/sessions/${id}/join`,{});
+  if(r && r.error){ alert(r.error); return; }
+  openSession(id);
+}
 async function requestChanges(id){ const t=prompt('What changes do you want?'); if(t) { await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+t}); openSession(id); } }
 async function saveRoutine(id){ const s=await H.get('/api/sessions/'+id); if(!s.exercises.length){ alert('This workout has no exercises yet — nothing to save.'); return; } const r=await H.post('/api/templates',{name:prompt('Template name:','Saved routine')||'Saved routine',exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}))}); if(r && r.error){ alert(r.error); return; } alert('Saved as template: '+r.name); }
 async function openChat(id){ document.getElementById('chatInput').focus(); }

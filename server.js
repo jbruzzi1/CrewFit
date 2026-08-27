@@ -1405,7 +1405,11 @@ function sessionView(s, viewerId) {
     // your OWN swap comes back; nobody else's
     variations: pickMine(s.variations, viewerId),
     attendance: {}, history: [],
-    joinRequests: [],                    // other people's requests, and their notes, are not yours
+    // Same "yourself and nobody else" rule as `invited` above. Was unconditionally empty for
+    // every non-member tier, which erased the viewer's OWN join request along with everyone
+    // else's — the client had no way to tell "never asked" from "already asked, waiting on the
+    // creator," so the Join in? screen could only ever offer to file a second request.
+    joinRequests: (s.joinRequests || []).filter(j => j.userId === viewerId),
     logs: {},                            // NOBODY else's sets — see the reader case below
     comments: tier === 'invited' ? (s.comments || []) : [],
     posts: {},
@@ -1705,8 +1709,22 @@ app.post('/api/sessions/:id/join', auth, async (req, res) => {
   const myFriends = (me && Array.isArray(me.friends)) ? me.friends : [];
   if (s.creatorId !== req.userId && !myFriends.includes(s.creatorId))
     return res.status(403).json({ error: 'forbidden' });
-  if (s.joinRequests.find(j => j.userId === req.userId)) return res.status(400).json({ error: 'already requested' });
-  s.joinRequests.push({ id: 'jr_' + uid(), userId: req.userId, note: capStr((req.body||{}).note, 500), status: 'pending' });
+  // Already in it (an approved request, or invited-and-accepted separately) — nothing to request.
+  // Without this, a stale "Join in?" screen (a second tab, or approval that landed while this one
+  // was still open) could re-fire, flip an already-approved request back to 'pending', and spam
+  // the creator with a "wants to join" notification for someone already training with them.
+  if ((s.participants || []).includes(req.userId)) return res.status(400).json({ error: 'already in this workout' });
+  // Reuse one request per (session, user) rather than piling up a new row every time — a
+  // rejected request used to permanently block asking again (the dedupe check below matched ANY
+  // status, pending or not), which silently locked someone out of a workout forever the moment
+  // the creator declined once, with no way back in and no indication that was even what happened.
+  // Flipping the existing row back to 'pending' also means the client only ever needs to look at
+  // ONE entry per user, never guess which of several rows for the same person is the current one.
+  let jr = s.joinRequests.find(j => j.userId === req.userId);
+  if (jr && jr.status === 'pending') return res.status(400).json({ error: 'already requested' });
+  const note = capStr((req.body||{}).note, 500);
+  if (jr) { jr.status = 'pending'; jr.note = note; }
+  else { jr = { id: 'jr_' + uid(), userId: req.userId, note, status: 'pending' }; s.joinRequests.push(jr); }
   await save(DB);
   notify(s.creatorId, { title: 'Join request', body: `${DB.users[req.userId].displayName} wants to join your workout` });
   res.json({ ok: true, requested: true });     // the answer to "may I join" is not the workout
