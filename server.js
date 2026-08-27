@@ -6,10 +6,16 @@ const crypto = require('crypto');
 
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const LIB_FILE = path.join(__dirname, 'exercise-library.json');
-const VAPID_FILE = path.join(__dirname, 'vapid.json');
+const VAPID_FILE = path.join(DATA_DIR, 'vapid.json');
 const PORT = process.env.PORT || 3000;
 
 // ---- VAPID (reuse Daily Routine pattern) ----
+// Task #61: this used to live at path.join(__dirname, 'vapid.json') - __dirname is the app
+// source directory baked into each deploy's container image, not the persistent /data volume
+// (see SECRET_FILE above for the same fix applied to the auth secret). Every `fly deploy` wiped
+// it, so a fresh key pair got generated on every deploy, silently invalidating every existing
+// push subscription (the mismatched-key send just fails and is swallowed, see notify() below).
+// Now on DATA_DIR, it survives deploys like auth-secret.json and data.json already do.
 let vapid;
 if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
   vapid = { publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY };
@@ -1082,7 +1088,20 @@ app.post('/api/push/subscribe', auth, async (req, res) => {
 function notify(userId, payload) {
   const sub = DB.pushSubs[userId];
   if (!sub) return;
-  webpush.sendNotification(sub, JSON.stringify(payload)).catch(() => {});
+  webpush.sendNotification(sub, JSON.stringify(payload)).catch(err => {
+    // 404/410 = the push service says this subscription is dead (expired, unsubscribed on the
+    // device, or - the #61 case - signed with a VAPID key that no longer matches). Drop it rather
+    // than retrying it forever; the client re-subscribes on its next app open (see setupPush()
+    // in app.js), which will overwrite this with a fresh, valid subscription.
+    // Only delete if it's still the SAME subscription that failed - sendNotification is async, and
+    // by the time this rejects the user may have already resubscribed (POST /api/push/subscribe
+    // overwrites DB.pushSubs[userId] synchronously); deleting unconditionally would wipe out that
+    // brand-new, working subscription instead of the stale one that actually failed.
+    if (err && (err.statusCode === 404 || err.statusCode === 410) && DB.pushSubs[userId] === sub) {
+      delete DB.pushSubs[userId];
+      save(DB).catch(e => console.error('notify: failed to persist dead-subscription cleanup:', e.message));
+    }
+  });
 }
 
 // ---- Sessions ----
