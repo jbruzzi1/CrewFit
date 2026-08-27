@@ -830,11 +830,11 @@ async function saveRoutine(id){
   const s=await H.get('/api/sessions/'+id);
   if(!s.exercises.length){ alert('This workout has no exercises yet — nothing to save.'); return; }
   textEntrySheet({
-    title:'Save as template', label:'Template name', value:'Saved routine', placeholder:'e.g. Push Day',
+    title:'Save as routine', label:'Routine name', value:'Saved routine', placeholder:'e.g. Push Day',
     onConfirm: async v => {
       const r = await H.post('/api/templates',{name:(v||'').trim()||'Saved routine',exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}))});
       if(r && r.error){ alert(r.error); return; }
-      alert('Saved as template: '+r.name);
+      alert('Saved as routine: '+r.name);
     }
   });
 }
@@ -1578,8 +1578,8 @@ async function createFlow(){
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="openAddExercises()">+ Add exercise</button>
     <div class="tpl-actions">
-    <button class="sec sm" onclick="templatesPage()">Browse templates</button>
-    <button class="sec sm" onclick="tplQuickSaveSheet()">Save as template</button>
+    <button class="sec sm" onclick="templatesPage()">Routines</button>
+    <button class="sec sm" onclick="tplQuickSaveSheet()">Save as routine</button>
     </div>
     <h2>Invite friends</h2><div id="invList" class="card">${invRows}</div>
     ${EDITING_SESSION ? '<button class="blue" onclick="submitSession()">Save changes</button>' : '<button class="blue" onclick="submitSession()">Create workout</button>'}</div>`;
@@ -1603,21 +1603,13 @@ async function submitSession(){
   // MUST be cleared. Nothing cleared it on success before, so the next "+ New workout" would have
   // saved itself over the workout you had just edited.
   EDITING_SESSION = null;
-  // only offered when creating — you do not re-save a template every time you fix a typo
-  if(!editing){
-    // Jeff, Aug 27: "I don't want a separate iPhone style pop up." This used to chain a native
-    // confirm() ("Save this as a template?") into a native prompt() (the name) -- both native OS
-    // dialogs. One in-app sheet now does both jobs at once: Skip leaves without saving, Save
-    // names and saves it, and either way the flow lands on home() same as before.
-    textEntrySheet({
-      title:'Save as template?', label:'Template name', value:name||'My workout', placeholder:'e.g. Push Day',
-      confirmLabel:'Save', cancelLabel:'Skip',
-      onConfirm: async v => { await H.post('/api/templates',{name:(v||'').trim()||'My workout',exercises:DRAFT.exercises}); home(); },
-      onCancel: home
-    });
-  } else {
-    home();
-  }
+  // Jeff, Aug 27: "do we think we should have a button that pops up every time we create a
+  // workout asking us to save as a routine?" -- this used to interrupt every single workout
+  // creation with a sheet asking exactly that. Removed: it's a second, naggier path to
+  // something already reachable without a popup -- "Save as routine" on this same create form,
+  // "Save this routine" on every session's detail page, and now "Routine" in Quick Workout too.
+  // An interruption on every save just trains you to reflex-tap past it.
+  home();
 }
 let EDITING_SESSION = null;
 // A NEW workout starts empty. createFlow() cannot do this itself — it is also where you land
@@ -1653,6 +1645,28 @@ async function createQuickWorkout(){
   });
   if(r && r.error){ alert(r.error); showTab('home'); return; }
   openSession(r.id);
+}
+// Jeff, Aug 27: "add the ability to quick select a routine within quick workout" -- Quick Workout
+// used to only offer picking exercises one at a time from the library. This lets you skip that
+// entirely: pick a saved routine and it starts the workout immediately with that routine's
+// exercises, same one-tap-to-start philosophy as workoutNow() itself (see its comment above).
+async function quickPickRoutine(){
+  const { mine, shared } = await H.get('/api/templates');
+  window._TPL = { mine, shared };
+  const all = [...mine, ...shared];
+  const qRoutineRow = (t)=>`<div class="lib-item"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${t.exercises.length} exercises</div></div>
+    <button class="sec sm" onclick="quickUseRoutine('${t.id}')">Use</button></div>`;
+  openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Routines</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="card" style="margin-top:4px">${all.length ? all.map(qRoutineRow).join('') : '<div class="muted" style="padding:16px 6px">No routines saved yet. Build one from the Workouts tab, then it will show up here.</div>'}</div>
+  </div>`);
+}
+function quickUseRoutine(id){
+  const { mine, shared } = window._TPL || { mine:[], shared:[] };
+  const t = [...mine, ...shared].find(x=>x.id===id); if(!t) return;
+  closeSheet();
+  DRAFT.exercises = t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}));
+  QUICK_ADD_MODE = false; LIB_ADDMODE = false;
+  createQuickWorkout();
 }
 async function editSession(id){
   const s = await H.get('/api/sessions/'+id);
@@ -1694,17 +1708,17 @@ async function templatesPage(){
     <button class="sec sm" onclick="tplUse('${t.id}')">Use</button>
     ${t.ownerId===ME.id?`<button class="sec sm" onclick="tplEdit('${t.id}')">Edit</button><button class="sec sm red" onclick="tplDelete('${t.id}')">Delete</button>`:''}</div>`;
   $('app').innerHTML = `<div class="wrap tpl-page">
-    <div class="pick-head lib-head"><h1 style="flex:1">Templates</h1>
-      <button class="icon-btn" onclick="tplNew()" title="New template">＋</button></div>
+    <div class="pick-head lib-head"><h1 style="flex:1">Routines</h1>
+      <button class="icon-btn" onclick="tplNew()" title="New routine">＋</button></div>
     <div class="muted" style="font-size:13px;margin:4px 2px 12px">Reusable workouts. Build one, then use it to start a new session in a tap.</div>
-    ${mine.length?mine.map(row).join(''):'<div class="card muted" style="padding:16px;text-align:center">No templates created. Tap ＋ to create one.</div>'}
+    ${mine.length?mine.map(row).join(''):'<div class="card muted" style="padding:16px;text-align:center">No routines created. Tap ＋ to create one.</div>'}
     ${shared.length?`<div class="lib-cat" style="margin-top:12px">Shared by friends</div>`+shared.map(row).join(''):''}</div>`;
 }
 function tplNew(){
   TPL_MODE.active=true; TPL_MODE.id=null; TPL_MODE.name='';
   DRAFT={ exercises:[] }; EDITING_TPL=null;
-  openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Name template</h2></div>
-    <label class="muted">Template name</label>
+  openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Name routine</h2></div>
+    <label class="muted">Routine name</label>
     <input id="tplName" placeholder="e.g. Push Day" autocomplete="off">
     <div style="display:flex;gap:10px;margin-top:16px">
       <button class="sec" style="flex:1" onclick="closeSheet()">Cancel</button>
@@ -1714,7 +1728,7 @@ function tplNew(){
 }
 function tplConfirmName(){
   const n=$('tplName').value.trim();
-  if(!n){ alert('Name your template first.'); return; }
+  if(!n){ alert('Name your routine first.'); return; }
   TPL_MODE.name=n; closeSheet(); templateExercises();
 }
 async function tplEdit(id){
@@ -1734,21 +1748,21 @@ async function tplDelete(id){
 async function templateExercises(){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
   const nameField = TPL_MODE.id
-    ? `<input id="tplNameEdit" class="tpl-name-edit" value="${esc(TPL_MODE.name||'')}" placeholder="Template name" autocomplete="off">`
-    : `<h1>${esc(TPL_MODE.name||'Template')}</h1>`;
+    ? `<input id="tplNameEdit" class="tpl-name-edit" value="${esc(TPL_MODE.name||'')}" placeholder="Routine name" autocomplete="off">`
+    : `<h1>${esc(TPL_MODE.name||'Routine')}</h1>`;
   $('app').innerHTML = `<div class="wrap create-flow">
     <button class="sec sm" onclick="closeSheet();templatesPage()">← Back</button>
     ${nameField}
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button>
-    <button class="blue" onclick="finishTemplate()">✓ ${TPL_MODE.id?'Save changes':'Create template'}</button></div>`;
+    <button class="blue" onclick="finishTemplate()">✓ ${TPL_MODE.id?'Save changes':'Create routine'}</button></div>`;
   renderDraft();
 }
 function tplOpenPicker(){ openAddExercises(); }
 async function finishTemplate(){
   if(!DRAFT.exercises.length){ alert('Add at least one exercise'); return; }
   const liveName = (TPL_MODE.id && $('tplNameEdit')) ? $('tplNameEdit').value.trim() : TPL_MODE.name.trim();
-  if(!liveName){ alert('Name your template first.'); return; }
+  if(!liveName){ alert('Name your routine first.'); return; }
   const payload = { name:liveName, exercises:DRAFT.exercises };
   const r = TPL_MODE.id
     ? await H.put('/api/templates/'+TPL_MODE.id, payload)
@@ -1765,9 +1779,9 @@ async function tplUse(id){
   createFlow();
 }
 function tplQuickSaveSheet(){
-  if(!DRAFT.exercises.length){ alert('Add exercises first, then save as a template.'); return; }
-  openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Save as template</h2></div>
-    <label class="muted">Template name</label>
+  if(!DRAFT.exercises.length){ alert('Add exercises first, then save as a routine.'); return; }
+  openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Save as routine</h2></div>
+    <label class="muted">Routine name</label>
     <input id="tplName" placeholder="${esc(DRAFT.name||'My workout')}" autocomplete="off">
     <div style="display:flex;gap:10px;margin-top:16px">
       <button class="sec" style="flex:1" onclick="closeSheet()">Cancel</button>
@@ -1776,14 +1790,14 @@ function tplQuickSaveSheet(){
   setTimeout(()=>{ const i=$('tplName'); if(i) i.focus(); }, 60);
 }
 async function tplQuickSaveConfirm(){
-  const n=$('tplName').value.trim(); if(!n){ alert('Name your template first.'); return; }
+  const n=$('tplName').value.trim(); if(!n){ alert('Name your routine first.'); return; }
   closeSheet();
   if(!DRAFT.exercises.length){ return alert('Add exercises first.'); }
   const r = EDITING_TPL
     ? await H.put('/api/templates/'+EDITING_TPL,{name:n,exercises:DRAFT.exercises})
     : await H.post('/api/templates',{name:n,exercises:DRAFT.exercises});
   if(r.error) return alert(r.error);
-  alert('Template saved: '+n);
+  alert('Routine saved: '+n);
 }
 function toggleInvite(cb){ const u=cb.value; if(cb.checked){ if(!DRAFT.inviteUsernames.includes(u)) DRAFT.inviteUsernames.push(u);} else { DRAFT.inviteUsernames=DRAFT.inviteUsernames.filter(x=>x!==u);} }
 function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item draft-ex" data-idx="${i}"><div class="drag-handle" title="Drag to reorder"></div><div class="draft-main" onclick="editDraftEx(${i})"><span class="draft-name">${esc(e.name)}</span><span class="draft-chip">${e.defaultSets} × ${repLabel(e)}</span></div><button class="draft-rm" onclick="rmEx(${i})">Remove</button></div>`).join('') : '<div class="muted">None added.</div>';  const list=$('draftList'); if(list) dragReorder(list, DRAFT.exercises, ()=>renderDraft()); }
@@ -2310,11 +2324,13 @@ async function library(){
        </div>`
     : `<div class="pick-head lib-head">
          <h1 style="flex:1">Workouts</h1>
-         <button class="txt-btn" onclick="templatesPage()" title="Templates">Templates</button>
+         <button class="txt-btn" onclick="templatesPage()" title="Routines">Routines</button>
          <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
        </div>`;
   $('app').innerHTML = `<div class="pick">${head}
-    ${QUICK_ADD_MODE?'<div class="muted" style="font-size:12.5px;padding:0 2px 10px">Pick your first lift(s), then tap Done — this starts a live session right away.</div>':''}
+    ${QUICK_ADD_MODE?`<div style="display:flex;justify-content:flex-end;padding:0 2px 10px">
+      <button class="sec sm" onclick="quickPickRoutine()">Routine</button>
+    </div>`:''}
     <div class="pick-search"><input id="ls" placeholder="Search exercises" oninput="libSearch(this.value)"></div>
     <div class="pick-list" id="lib2"></div>
   </div>`;
@@ -2359,7 +2375,7 @@ function libOpenMuscle(m){
     : `<div class="pick-head lib-head">
          <button class="sec sm" onclick="library()">‹ All muscles</button>
          <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
-         <button class="txt-btn" onclick="templatesPage()" title="Templates">Templates</button>
+         <button class="txt-btn" onclick="templatesPage()" title="Routines">Routines</button>
          <button class="icon-btn" onclick="openCreateEx('${m}')" title="Create exercise">＋</button>
        </div>`;
   $('app').innerHTML = `<div class="pick">${head}
@@ -2503,7 +2519,7 @@ function textEntrySheet({title, label, value, placeholder, multiline, confirmLab
 // ---- Templates ----
 async function templates(){
   const { mine, shared } = await H.get('/api/templates');
-  let html = `<div class="wrap"><h1>Templates</h1><div class="muted">Saved routines — reuse on your next workout</div>`;
+  let html = `<div class="wrap"><h1>Routines</h1><div class="muted">Saved routines — reuse on your next workout</div>`;
   if(mine.length){
     html += `<h2>Yours</h2>`;
     for(const t of mine) html += `<div class="lib-item"><div><b>${esc(t.name)}</b><div class="tag">${t.exercises.length} exercises</div></div><button class="sm" onclick="useTpl('${t.id}')">Use</button></div>`;
@@ -2512,7 +2528,7 @@ async function templates(){
     html += `<h2>From friends</h2>`;
     for(const t of shared) html += `<div class="lib-item"><div><b>${esc(t.name)}</b><div class="tag">${t.exercises.length} ex</div></div><button class="sm" onclick="useTpl('${t.id}')">Use</button></div>`;
   }
-  if(!mine.length && !shared.length) html += `<div class="card muted">No templates created. Create a workout and choose "Save as template".</div>`;
+  if(!mine.length && !shared.length) html += `<div class="card muted">No routines created. Create a workout and choose "Save as routine".</div>`;
   html += `</div>`;
   $('app').innerHTML = html;
 }

@@ -7,9 +7,9 @@
 // silently reverting Friends-only back to Private. Since adding an exercise is essentially
 // mandatory when creating a workout, this reproduced every time.
 //
-// The same gap existed in templatesPage(): "Browse templates" (also reachable mid-create)
-// stashed nothing at all, and tplUse() also returns via createFlow() -- so browsing
-// templates mid-create would have reverted name/visibility/date/location/length/note too.
+// The same gap existed in templatesPage(): "Routines" (also reachable mid-create) stashed
+// nothing at all, and tplUse() also returns via createFlow() -- so browsing routines
+// mid-create would have reverted name/visibility/date/location/length/note too.
 //
 // Both are fixed by stashing the same fields openAddExercises already stashed for the
 // other inputs. This test drives the real rendered app in a real browser (not a DOM mock)
@@ -86,23 +86,23 @@ console.log('"+ Add exercise" mid-create must not revert the form on return');
   await page.close();
 }
 
-console.log('\n"Browse templates" mid-create must not revert the form on return');
+console.log('\n"Routines" mid-create must not revert the form on return');
 {
   const page = await freshPage();
   await page.evaluate(() => window.createFlow());
   await page.waitForTimeout(200);
   await page.fill('#wname', 'Push Day');
   await page.selectOption('#vis', 'friends');
-  await page.click('button:has-text("Browse templates")');
+  await page.click('.tpl-actions button:has-text("Routines")');
   await page.waitForTimeout(300);
-  // No templates exist yet, so just navigate straight back the way createFlow() would be
+  // No routines exist yet, so just navigate straight back the way createFlow() would be
   // re-entered from any return path off templatesPage (e.g. the Workouts nav).
   await page.evaluate(() => window.createFlow());
   await page.waitForTimeout(300);
   const vis = await page.$eval('#vis', el => el.value);
   const name = await page.$eval('#wname', el => el.value);
-  ok(vis === 'friends', `visibility survives "Browse templates" round trip (got ${vis})`);
-  ok(name === 'Push Day', `workout name survives "Browse templates" round trip (got "${name}")`);
+  ok(vis === 'friends', `visibility survives "Routines" round trip (got ${vis})`);
+  ok(name === 'Push Day', `workout name survives "Routines" round trip (got "${name}")`);
   await page.close();
 }
 
