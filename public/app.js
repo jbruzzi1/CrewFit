@@ -882,6 +882,7 @@ async function openLogSheet(sid, exId){
       <div class="add-row">
         <input id="logW" placeholder="${loadType==='pair'? myUnit()+' each' : myUnit()}" type="number" inputmode="tel" pattern="[0-9]*" oninput="updateLoadHint()">
         <input id="logR" placeholder="reps" type="number" inputmode="tel" pattern="[0-9]*">
+        <input id="logRir" placeholder="RIR" type="number" inputmode="tel" pattern="[0-9]*" style="flex:0 0 60px; padding-left:8px; padding-right:6px" title="Reps in reserve (optional)">
         <button class="add-btn" onclick="addLogSet()">+ Add</button>
       </div>
       ${loadType?`<div class="load-note">
@@ -969,26 +970,31 @@ function renderLogSets(s){
   const fallback = (LOGVIEW && LOGVIEW.loadType) || '';
   const suffixFor = l => { const t = l.loadType || fallback;
     return t==='pair' ? ' each' : t==='added' ? ' added' : ''; };
+  // RIR (task #62) is optional per set - only shown when actually tracked, never a fabricated
+  // "RIR 0" for sets logged before this existed or where it was just left blank.
+  const rirFor = l => (l.rir!==undefined && l.rir!==null) ? ` · RIR ${l.rir}` : '';
   list.innerHTML = exLogs.map(l=>`<div class="set-row" onclick="editLogSet('${l.id}')">
       <div class="set-n">${l.set||'·'}</div>
-      <div class="set-vals"><b>${Number(l.weight)||0} ${unitOf(l)}${suffixFor(l)}</b> · <span class="sub">${Number(l.reps)||0} reps</span></div>
+      <div class="set-vals"><b>${Number(l.weight)||0} ${unitOf(l)}${suffixFor(l)}</b> · <span class="sub">${Number(l.reps)||0} reps${rirFor(l)}</span></div>
       <span class="type-tag ${TYPE_CLASS[l.setType]||'t-normal'}">${TYPE_LABEL[l.setType]||'Normal'}</span>
       ${l.isPr?'<span class="type-tag type-tag-pr">PR</span>':''}
     </div>`).join('');
 }
 async function addLogSet(){
   const w=document.getElementById('logW').value, r=document.getElementById('logR').value;
+  const rirEl=document.getElementById('logRir'), rir=rirEl?rirEl.value:'';
   // reps are required — a set with a weight and no reps used to save as reps:0, which then
-  // read as a failed set. Weight may legitimately be blank/0 for bodyweight movements.
+  // read as a failed set. Weight may legitimately be blank/0 for bodyweight movements. RIR is
+  // optional (task #62) - blank just means it was not tracked for this set.
   if(!(Number(r) > 0)){ alert('How many reps did you do?'); return; }
   const seg=document.getElementById('logTypeSeg');
   const type=(seg&&seg.querySelector('.chip.on'))?seg.querySelector('.chip.on').getAttribute('data-t'):'normal';
-  const s=await H.post(`/api/sessions/${LOGVIEW.sid}/log`,{exerciseId:LOGVIEW.exId,weight:w,reps:r,setType:type});
+  const s=await H.post(`/api/sessions/${LOGVIEW.sid}/log`,{exerciseId:LOGVIEW.exId,weight:w,reps:r,setType:type,rir});
   // Leave what was typed in the boxes if it did not save. They were cleared unconditionally, so
   // a failed request threw the set away and you had to remember it and type it again.
   if(s.error){ alert(s.error); return; }
   LOGVIEW.sid && renderLogSets(s);
-  document.getElementById('logW').value=''; document.getElementById('logR').value='';
+  document.getElementById('logW').value=''; document.getElementById('logR').value=''; if(rirEl) rirEl.value='';
   startRest();
   // Update the "✓ N sets logged" badge on the workout page behind this sheet right now, instead
   // of only the next time it's opened. Fire-and-forget on purpose — the sheet above has already
@@ -1008,6 +1014,8 @@ async function editLogSet(logId){
       <input id="edW" type="number" inputmode="tel" pattern="[0-9]*" value="${l.weight}">
       <label class="muted" style="font-size:12px">Reps</label>
       <input id="edR" type="number" inputmode="tel" pattern="[0-9]*" value="${l.reps}">
+      <label class="muted" style="font-size:12px">RIR (optional)</label>
+      <input id="edRir" type="number" inputmode="tel" pattern="[0-9]*" value="${(l.rir!==undefined&&l.rir!==null)?l.rir:''}">
       <label class="muted" style="font-size:12px">Type</label>
       <select id="edT">${SET_TYPES.map(t=>`<option value="${t.key}"${t.key===l.setType?' selected':''}>${t.label}</option>`).join('')}</select>
       <button class="blue" onclick="saveLogSet('${logId}')">Save</button>
@@ -1019,7 +1027,8 @@ async function editLogSet(logId){
 }
 async function saveLogSet(logId){
   const w=document.getElementById('edW').value, r=document.getElementById('edR').value, t=document.getElementById('edT').value;
-  const s=await H.put(`/api/sessions/${LOGVIEW.sid}/log/${logId}`,{weight:w,reps:r,setType:t});
+  const rirEl=document.getElementById('edRir'), rir=rirEl?rirEl.value:'';
+  const s=await H.put(`/api/sessions/${LOGVIEW.sid}/log/${logId}`,{weight:w,reps:r,setType:t,rir});
   if(s.error){ alert(s.error); return; }
   const sid = LOGVIEW.sid;
   closeSheet(); openLogSheet(LOGVIEW.sid, LOGVIEW.exId);
