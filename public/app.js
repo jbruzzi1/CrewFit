@@ -791,7 +791,11 @@ async function loadPostComments(id, authorId){
   box.innerHTML = cs.map(c=>{
     const name = c.userId===ME.id?'You':(nm[c.userId]||'User');
     const ini = c.userId===ME.id?'Y':((nm[c.userId]||'?')[0]||'?');
-    const col = c.userId===ME.id?'#f0a23c':avatarColor(nm[c.userId]||c.userId);
+    // "You" used to get an off-palette orange found nowhere else in the app, while everyone else
+    // got the old rainbow hash -- two more one-off treatments on top of Home's own green avatar.
+    // avatarColor() is now one consistent accent for everyone (see its definition), including you;
+    // the bold "You"/name label right next to it is what actually says whose comment this is.
+    const col = avatarColor(nm[c.userId]||c.userId);
     const t = new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
     return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div></div>';
   }).join('');
@@ -839,7 +843,11 @@ async function loadChat(s){
   box.innerHTML = cs.map(c=>{
     const name = c.userId===ME.id?'You':(nm[c.userId]||'User');
     const ini = c.userId===ME.id?'Y':((nm[c.userId]||'?')[0]||'?');
-    const col = c.userId===ME.id?'#f0a23c':avatarColor(nm[c.userId]||c.userId);
+    // "You" used to get an off-palette orange found nowhere else in the app, while everyone else
+    // got the old rainbow hash -- two more one-off treatments on top of Home's own green avatar.
+    // avatarColor() is now one consistent accent for everyone (see its definition), including you;
+    // the bold "You"/name label right next to it is what actually says whose comment this is.
+    const col = avatarColor(nm[c.userId]||c.userId);
     const t = new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
     return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div></div>';
   }).join('');
@@ -2558,9 +2566,21 @@ async function rejectFollow(id){
   const r = await H.post('/api/follow-requests/'+id+'/reject',{});
   if(r && r.error) alert(r.error); else friends();
 }
+// Design cleanup, Aug 27: this used to hash the seed into one of 8 colors, so friends, requests,
+// search results and chat all showed a scatter of random reds/purples/oranges -- and since it's a
+// hash, two different people could (and did) land on the identical color anyway, so it was never
+// actually a reliable way to tell people apart. The initial letter plus the name already shown
+// right next to every avatar does that job. Every initials-avatar (no photo yet) now uses one
+// consistent accent everywhere -- a first pass reused --green (this repo's old, now-stale "avatar
+// accent" constant), but Jeff, Aug 27: green isn't really part of the app anymore, and repeating
+// it on every avatar also competed with the ONE thing green is still used for elsewhere (streaks,
+// PRs, "done") -- diluting the very achievement moments it's meant to highlight. Settled on
+// graphite (--avatar, this repo's own near-black ink color) instead: it doesn't compete with any
+// accent in the app, reads as a considered choice rather than a placeholder, and gets out of the
+// way the moment someone adds a real photo. `seed` is kept as a parameter (unused) rather than
+// removing it from every call site, in case per-person variation is wanted again.
 function avatarColor(seed){
-  const colors=['#16a34a','#2563eb','#dc2626','#9333ea','#ea580c','#0891b2','#db2777','#65a30d'];
-  let h=0; for(const c of seed) h=(h*31+c.charCodeAt(0))>>>0; return colors[h%colors.length];
+  return 'var(--avatar)';
 }
 
 // ---- Profile (me + any friend) ----
