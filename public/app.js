@@ -474,13 +474,24 @@ async function openSession(id, opts){
   // the creator. The server (POST /:id/lock, POST /:id/post) has allowed this per-participant since
   // the recap feature was ported to s.posts; this is the client catching up so everyone actually has
   // a way to reach it, not just the person who created the workout.
+  // v187: Log & Finish visibility now tracks s.history (have you actually finished), not myPost
+  // (have you posted a recap) — the two used to be conflated, but /lock and /post are independent
+  // now. Someone who tapped Log & Finish and never got around to a recap kept seeing their own
+  // "Log & Finish" button forever, inviting a second, harmless-but-pointless tap.
+  const hasFinished = (s.history||[]).some(h=>h.userId===ME.id);
   {
     const actions = [];
-    if(!myPost && (isParticipant || isCreator)) actions.push(`<button class="blue sm" onclick="lock('${s.id}')">Log & Finish</button>`);
+    if(!hasFinished && (isParticipant || isCreator)) actions.push(`<button class="blue sm" onclick="lock('${s.id}')">Log & Finish</button>`);
     if(isCreator){
       if(myPost) actions.push(`<button class="sec sm" onclick="enterWorkoutEdit('${s.id}')">Edit</button>`);
       else actions.push(`<button class="sec sm" onclick="editSession('${s.id}')">Edit</button>`);
-      actions.push(`<button class="red sm" onclick="deleteSession('${s.id}')">Delete session</button>`);
+      actions.push(`<button class="red sm" onclick="deleteSession('${s.id}', ${hasFinished})">Delete session</button>`);
+    } else if(isParticipant){
+      // Jeff, Aug 19: workouts you were invited into (not ones you created) had no way to make go
+      // away at all — Edit/Delete are creator-only, always have been, so an invite the creator
+      // never finishes just sits on Home forever. Leave gives every non-creator participant their
+      // own way out, with the same Save/Discard choice Delete's fallback below now uses too.
+      actions.push(`<button class="sec sm" onclick="leaveWorkout('${s.id}', ${hasFinished})">Leave workout</button>`);
     }
     if(actions.length) html += `<div class="sess-actions">${actions.join('')}</div>`;
   }
@@ -672,7 +683,8 @@ async function viewPost(id, authorId){
   }).join('');
   const photos = media.length ? `<h2>Photos</h2><div class="pp-photos">${media.map((m,i)=>`<div class="pp-photo">${m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`}${isAuthor?`<button class="pp-photo-x" onclick="deletePhoto('${id}','${authorId}',${i})" aria-label="Delete photo">✕</button>`:''}</div>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
   const notes = post.notes ? esc(post.notes) : '<span class="muted">How\'d it go?</span>';
-  const dots = isCreator ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none"><button onclick="enterWorkoutEdit('${id}')">Edit session</button><button class="danger" onclick="deleteSession('${id}')">Delete session</button></div>` : '';
+  const hasFinishedPost = (s.history||[]).some(h=>h.userId===ME.id);
+  const dots = isCreator ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none"><button onclick="enterWorkoutEdit('${id}')">Edit session</button><button class="danger" onclick="deleteSession('${id}', ${hasFinishedPost})">Delete session</button></div>` : '';
   const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="showTab('home')">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${s.visibility==='friends'?'Friends-only':'Private'}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    <h2>Notes</h2><div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
   $('app').innerHTML = html;
   if(media.length>1){
@@ -1269,18 +1281,41 @@ async function saveWorkout(id){
   if(r && r.error){ alert(r.error); return; }
   showRecap(id);          // the recap is the LAST thing, after saving — notes and photos are done
 }
-async function deleteSession(id){
+async function deleteSession(id, alreadyFinished){
   if(!confirm('Delete this workout?')) return;
   const r = await H.delete(`/api/sessions/${id}`);
-  // Someone else logged sets in it, so deleting would erase their training history too. Offer
-  // to take yourself out instead — the same shape as declining an invite, which removes only you.
-  if(r && r.canLeave){
-    if(!confirm(r.error + '\n\nRemove it from your profile instead? Your sets go with you; theirs stay.')) return;
-    const l = await H.post(`/api/sessions/${id}/leave`, {});
-    if(l && l.error){ alert(l.error); return; }
-    home(); return;
-  }
+  // Someone else has real credit tied to this workout (current or a departed partner's history),
+  // so deleting would erase their training record too. Offer to take yourself out instead — the
+  // same shape as declining an invite, which removes only you.
+  // v187 (Jeff, Aug 20, cold-review catch): this used to post an empty {} body straight to
+  // /leave, which — now that /leave has a real keep/discard choice — would silently default to
+  // NOT keeping your own credit, even if you'd already logged real sets today you never meant to
+  // throw away. Routes through the exact same Save/Discard sheet the Leave button uses instead of
+  // guessing on your behalf.
+  if(r && r.canLeave) return leaveWorkout(id, alreadyFinished);
+  else if(r && r.error){ alert(r.error); return; }
+  else home();
+}
+// v187 (Leave Workout redesign), Jeff Aug 19-20. Two doors lead here: the Leave button (any
+// non-creator participant) and Delete's canLeave fallback above (creator, when someone else's
+// credit blocks a real delete). If you've already finished your own portion, there is nothing left
+// to choose — your credit is already locked in either way (creditFinish is idempotent) — so this
+// skips straight to leaving instead of asking a question with only one real answer.
+function leaveWorkout(id, alreadyFinished){
+  if(alreadyFinished){ return leaveWorkoutConfirmed(id, true); }
+  const inner = `<div class="sheet"><div class="sheet-head"><h2>Leave workout</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="muted" style="padding:0 2px 14px">You have sets logged here today that you haven't finished yet.</div>
+    <div class="sheet-list">
+      <button class="sheet-row" onclick="leaveWorkoutConfirmed('${id}', true)">Save today's sets</button>
+      <button class="sheet-row red" onclick="leaveWorkoutConfirmed('${id}', false)">Discard today's sets</button>
+    </div>
+  </div>`;
+  openSheetHtml(inner);
+}
+async function leaveWorkoutConfirmed(id, keep){
+  const r = await H.post(`/api/sessions/${id}/leave`, {keep});
   if(r && r.error){ alert(r.error); return; }
+  closeSheet();
   home();
 }
 
@@ -2385,10 +2420,32 @@ function openSettings(){
       <button class="sheet-row" onclick="editDefaultGym()">Default gym <span class="row-val">${esc(ME.defaultGym || 'Not set')}</span></button>
       <button class="sheet-row" onclick="closeSheet(); pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
       <button class="sheet-row" onclick="toggleStreakReminders()">Streak reminders <span class="row-val">${ME.notifyStreakReminders!==false?'On':'Off'}</span></button>
+      <button class="sheet-row red" onclick="closeSheet(); confirmResetWorkouts()">Reset workouts</button>
       <button class="sheet-row red" onclick="closeSheet(); logout()">Log out</button>
     </div>
   </div>`;
   openSheetHtml(inner);
+}
+// Task #64, Jeff Aug 21: "Can you delete all of my workouts and history to let me start over?"
+// Irreversible and account-wide, so this gets its own explaining sheet rather than a bare
+// browser confirm() — the same severity Delete/Leave get, just spelled out further since this
+// touches every workout at once instead of one.
+function confirmResetWorkouts(){
+  const inner = `<div class="sheet"><div class="sheet-head"><h2>Reset workouts</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="muted" style="padding:0 2px 14px">This permanently deletes every workout, log, and personal record you've saved — there's no undo. Workouts you share with a friend who still has their own credit in them stay theirs; you're just taken off. Your account, username, and friends are not affected.</div>
+    <div class="sheet-list">
+      <button class="sheet-row red" onclick="doResetWorkouts()">Reset everything</button>
+      <button class="sheet-row" onclick="closeSheet()">Cancel</button>
+    </div>
+  </div>`;
+  openSheetHtml(inner);
+}
+async function doResetWorkouts(){
+  const r = await H.post('/api/me/reset-workouts', {confirm:true});
+  if(r && r.error){ alert(r.error); return; }
+  ME.workoutsCompleted = 0;
+  closeSheet();
+  home();
 }
 function pickUnits(){
   const cur = myUnit();

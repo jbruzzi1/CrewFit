@@ -1329,6 +1329,15 @@ function sessionTier(s, viewerId) {
   // defaults to 'private' — so gating a published recap behind it meant a recap shared publicly
   // could not be opened by the people it was shared with. Each recap's own visibility decides.
   if (anyVisiblePost(s, viewerId)) return 'reader';
+  // v187 (Leave Workout redesign): a real history row here means you actually trained this
+  // workout at some point, even though Leave has since taken you off the live roster — Jeff, Aug
+  // 21: "I have exercises in my profile that when I click on show as forbidden." A private
+  // session has no friend-tier route back, and most people never post a recap before leaving, so
+  // without this a workout you genuinely completed 403'd forever the moment you left it, even
+  // with credit kept. Checked LAST, after every stronger tier — a still-mutual friend viewing a
+  // friends-visible session they left should keep getting 'friend' (and everything that comes
+  // with it), never get quietly downgraded to this narrower shape.
+  if ((s.history || []).some(h => h.userId === viewerId)) return 'alumni';
   return 'stranger';
 }
 
@@ -1382,6 +1391,10 @@ function sessionView(s, viewerId) {
     visibility: s.visibility, name: s.name, location: s.location, lengthMin: s.lengthMin,
     creatorNote: s.creatorNote, equipment: s.equipment || [],
     exercises: s.exercises || [], participants: s.participants || [],
+    // Whether the creator has finished their own portion — not privacy-sensitive (just a
+    // boolean, no one's actual data), so available to every non-member tier alike rather than
+    // gated per-tier. Uses the real s.history, unlike the empty `history: []` below.
+    creatorFinished: (s.history || []).some(h => h.userId === s.creatorId),
     // You are told about YOURSELF and nobody else. Emptying this entirely also erased the fact
     // that the viewer is invited, which is what the whole invitation screen keys on — "waiting on
     // you", the Respond block, and being able to suggest a swap before accepting all vanished.
@@ -1427,9 +1440,24 @@ function sessionView(s, viewerId) {
 }
 
 // delete a session (creator only)
-// Who OTHER than me has logged sets in this workout.
+// Who OTHER than me has logged sets in this workout. Only ever true for someone CURRENT — leaving
+// (see /leave below) always clears your own s.logs entry, so a departed alumni never shows up
+// here even though their history credit survives. That's deliberate: this is specifically "who
+// could inherit ownership right now", and ownership can only pass to someone still actually here.
 function othersWhoLogged(s, meId) {
   return Object.keys(s.logs || {}).filter(uid => uid !== meId && (s.logs[uid] || []).length);
+}
+// v187 (Leave Workout redesign): the broader "does anyone ELSE have a real stake in this workout"
+// check — CURRENT logged credit (othersWhoLogged) OR a permanent history row left behind by
+// someone who already departed. othersWhoLogged alone missed a departed participant's credit
+// entirely (leaving clears s.logs but, since this redesign, no longer clears s.history), which
+// let DELETE erase a training partner's earned record just because they weren't around anymore
+// to be counted, and let /leave's own "nobody else, delete instead" guard dead-end a creator whose
+// only remaining connection to their own workout was someone who had already left.
+function othersWithCredit(s, meId) {
+  const ids = new Set(othersWhoLogged(s, meId));
+  for (const h of (s.history || [])) if (h.userId !== meId) ids.add(h.userId);
+  return [...ids];
 }
 
 // Record ONE user's own completion of this workout — a history row scoped to them alone. Used by
@@ -1460,7 +1488,10 @@ app.delete('/api/sessions/:id', auth, async (req, res) => {
   // Delete is creator-only, which sounds safe — but a workout holds EVERYONE's sets, so deleting
   // it took a training partner's history with it, silently and with no undo. Declining an invite
   // already removes only you; delete now behaves the same way once anyone else is involved.
-  const others = othersWhoLogged(s, req.userId);
+  // othersWithCredit, not othersWhoLogged — a partner who already left with credit kept is not
+  // around to lose "logged sets" today, but the permanent record of them training here is still
+  // real, and delete would erase it just as surely as if they were still a current participant.
+  const others = othersWithCredit(s, req.userId);
   if (others.length) {
     const names = others.map(id => (DB.users[id] && (DB.users[id].displayName || DB.users[id].username)) || 'someone');
     return res.status(409).json({
@@ -1474,7 +1505,8 @@ app.delete('/api/sessions/:id', auth, async (req, res) => {
 });
 
 // Take yourself out of a shared workout without destroying it for the people still in it.
-// Removes your participation, your logged sets and your history row; theirs are untouched.
+// Removes your live participation and your in-progress sets always. Whether your PERMANENT
+// credit (history row) survives is your own choice via `keep` — see the v187 redesign note below.
 app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
@@ -1484,23 +1516,55 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   if (!(s.participants || []).includes(req.userId) && s.creatorId !== req.userId)
     return res.status(403).json({ error: 'not in this workout' });
   const me = req.userId;
-  const others = othersWhoLogged(s, me);
+  // v187: broader than the old othersWhoLogged-only check — a departed partner's history-only
+  // credit is still a real reason this workout needs to survive, even though they are not around
+  // to be counted as someone who "has logged" today. Without this, a creator whose only remaining
+  // connection to their own workout was someone who had already left got dead-ended: DELETE
+  // refuses (that partner's credit blocks it), and the old narrower check here ALSO refused,
+  // with no path forward at all.
+  const others = othersWithCredit(s, me);
   if (!others.length && s.creatorId === me)
     return res.status(400).json({ error: 'Nobody else has logged in this workout — delete it instead.' });
+
+  // v187 (Leave Workout redesign), Jeff Aug 19-20: "the leave button... simply just logs the
+  // current sets you have" — keep credits you exactly like tapping Log & Finish would have,
+  // right before you go. creditFinish is idempotent, so this is always safe to call even if you
+  // already finished earlier — it will never push a second row or touch anyone else's credit.
+  // Only an EXPLICIT keep:false (the "off day, I want out entirely" case) skips it — keep
+  // defaults to true (favoring not silently losing data) for any caller that doesn't say
+  // otherwise, e.g. a bare {} body hitting this endpoint directly. The client never relies on
+  // that default though: Jeff Aug 20's cold-review catch was the client silently posting {} and
+  // getting this default applied without ever asking, so both leaveWorkout call sites (the Leave
+  // button and Delete's canLeave fallback) always route through the Save/Discard sheet and send
+  // an explicit true or false — the default here only fires for a direct API caller.
+  if (!(req.body && req.body.keep === false)) creditFinish(s, me);
 
   if (s.logs) delete s.logs[me];
   s.participants = (s.participants || []).filter(x => x !== me);
   s.invited      = (s.invited || []).filter(x => x !== me);
-  s.history      = (s.history || []).filter(h => h.userId !== me);
+  // history is deliberately NOT touched here anymore. The old code unconditionally stripped your
+  // own history row on leave, which meant choosing to Keep your credit and then leaving erased
+  // that same credit in the very same request — and any ALREADY-earned credit from finishing
+  // earlier vanished the moment you left too, even though you never asked for that. Whatever
+  // history you have — old, or just added by `keep` above — is permanent now, same as anyone
+  // else's, and is exactly what lets you still find this workout later (see the new 'alumni'
+  // sessionTier below).
   if (s.attendance) delete s.attendance[me];
   for (const exId of Object.keys(s.variations || {})) {
     if (s.variations[exId]) delete s.variations[exId][me];
   }
   // If the creator walks away, the workout needs a new owner or nobody can ever finish or edit
-  // it. It goes to whoever else has actually logged in it.
+  // it. Ownership can only pass to someone CURRENT — othersWhoLogged, not the broader
+  // othersWithCredit above, since a departed alumni is not here to own anything. If nobody
+  // current is left either, creatorId goes explicitly null rather than pointing at nobody: it
+  // still displays and can still be reopened by anyone with a real connection to it (an alumni
+  // history row, a friend, and so on), it just has no one who can edit or delete it until someone
+  // new takes it over — which nothing in this codebase currently does, so today that means never;
+  // an orphaned workout stays exactly as it was left.
   if (s.creatorId === me) {
-    s.creatorId = others[0];
-    if (!s.participants.includes(others[0])) s.participants.push(others[0]);
+    const currentOthers = othersWhoLogged(s, me);
+    s.creatorId = currentOthers.length ? currentOthers[0] : null;
+    if (s.creatorId && !s.participants.includes(s.creatorId)) s.participants.push(s.creatorId);
   }
   rebuildAllPrs();
   await save(DB);
@@ -1720,6 +1784,71 @@ app.post('/api/me/notify-prefs', auth, async (req, res) => {
   DB.users[req.userId].notifyStreakReminders = v;
   await save(DB);
   res.json({ streakReminders: v });
+});
+
+// Task #64, Jeff Aug 21: "Can you delete all of my workouts and history to let me start over?"
+// Strips every trace of one user's OWN training from a session — logs, participation, history
+// credit, their own recap — without touching anyone else's. Unlike /leave, this always removes
+// history too: reset means "nothing I logged happened," not "keep my credit around."
+function stripUserFromSession(s, userId) {
+  if (s.logs) delete s.logs[userId];
+  s.participants = (s.participants || []).filter(x => x !== userId);
+  s.invited      = (s.invited || []).filter(x => x !== userId);
+  s.history      = (s.history || []).filter(h => h.userId !== userId);
+  if (s.attendance) delete s.attendance[userId];
+  if (s.posts) delete s.posts[userId];
+  for (const exId of Object.keys(s.variations || {})) {
+    if (s.variations[exId]) delete s.variations[exId][userId];
+  }
+}
+
+// Scoped to req.userId ONLY — never a body param, so this can never be pointed at anyone else,
+// spoofed userId in the body or not. Account identity (username, login, friends) is untouched;
+// that was Jeff's own explicit choice when asked what "start over" should mean — only what he
+// actually LOGGED disappears. Requires an explicit confirm:true so a bare/misfired POST can never
+// silently wipe someone's training history.
+//
+// For every session this user has any real footprint in (current participant, creator, or a
+// history-only alumni row): if they're the creator and nobody else has real credit
+// (othersWithCredit — same rule DELETE and /leave already use), the whole session is theirs alone
+// and gets hard-deleted. If they're the creator and someone else DOES have credit, ownership hands
+// off to a current credit-holder (same deterministic rule /leave uses — never Jeff, never a coin
+// flip), creatorId going explicitly null if nobody current remains, and their own trace is
+// stripped from the now-handed-off session. If they're not the creator, the session and its actual
+// owner are left completely alone — only their own trace is stripped out of it.
+app.post('/api/me/reset-workouts', auth, async (req, res) => {
+  if (!(req.body && req.body.confirm === true))
+    return res.status(400).json({ error: 'confirm:true is required to reset your workouts' });
+  const me = req.userId;
+  let sessionsDeleted = 0, sessionsHandedOff = 0, sessionsCleared = 0;
+  for (const s of Object.values(DB.sessions)) {
+    ensureSessionShape(s);
+    const isCreator = s.creatorId === me;
+    const isTouched = isCreator
+      || (s.participants || []).includes(me)
+      || (s.invited || []).includes(me)
+      || (s.history || []).some(h => h.userId === me);
+    if (!isTouched) continue;
+    if (isCreator) {
+      const others = othersWithCredit(s, me);
+      if (!others.length) {
+        delete DB.sessions[s.id];
+        sessionsDeleted++;
+        continue;
+      }
+      const currentOthers = othersWhoLogged(s, me);
+      stripUserFromSession(s, me);
+      s.creatorId = currentOthers.length ? currentOthers[0] : null;
+      if (s.creatorId && !s.participants.includes(s.creatorId)) s.participants.push(s.creatorId);
+      sessionsHandedOff++;
+    } else {
+      stripUserFromSession(s, me);
+      sessionsCleared++;
+    }
+  }
+  rebuildAllPrs();     // every record was built from logs that may no longer be theirs
+  await save(DB);
+  res.json({ ok: true, sessionsDeleted, sessionsHandedOff, sessionsCleared });
 });
 
 
