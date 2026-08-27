@@ -1898,6 +1898,7 @@ function incrementFor(name, unit) {
 }
 
 // Every session in which this user logged working sets for this exercise, newest first.
+// Only consumer: recommendationsFor() below -- safe to shape this purely for that purpose.
 function sessionsForUser(userId) {
   const out = [];
   for (const s of Object.values(DB.sessions)) {
@@ -1905,6 +1906,11 @@ function sessionsForUser(userId) {
     const byName = {};
     for (const l of s.logs[userId]) {
       if (!isWorkingSet(l)) continue;               // warm-ups and drop sets are not working sets
+      // Jeff, Aug 22: "the weight to add next should focus only on full sets, not any with an
+      // RIR." An RIR-tagged set is excluded entirely, not just deprioritized -- if every set for
+      // an exercise this session carried RIR, this session contributes no evidence either way for
+      // that exercise, same as if it had never been logged.
+      if ('rir' in l) continue;
       const name = logExerciseName(s, l, userId);
       (byName[name] = byName[name] || []).push(l);
     }
@@ -2015,7 +2021,13 @@ function weeksFor(userId, count) {
 // Bodyweight movements are excluded: they store weight 0, so Epley is 0 and the ratio maths
 // below would be 0/0. They still appear in Personal Records, ranked by reps (v151).
 function estMax(l) {
-  const w = toLb(l.weight, l.unit), r = Number(l.reps) || 0;
+  const w = toLb(l.weight, l.unit);
+  // Jeff, Aug 22: "I may have more in the tank on that set and stopped early. I don't want that
+  // to negatively affect my strength trend." Reps actually performed plus reps held back in
+  // reserve is the true capacity that set represents -- an honest 210x2 with 6 RIR scores the
+  // same as a genuine 210x8, not as a false dip. Only the SCORE is adjusted; the point still
+  // records the real reps performed (see trendFor) -- this function alone decides trend strength.
+  const r = (Number(l.reps) || 0) + (Number(l.rir) || 0);
   return (w > 0 && r > 0) ? w * (1 + r / 30) : 0;
 }
 
@@ -2033,12 +2045,16 @@ function trendFor(userId) {
       if (!perEx[name] || e > perEx[name].e) perEx[name] = { e, l };
     }
     for (const name of Object.keys(perEx)) {
-      (byName[name] = byName[name] || []).push({
+      const point = {
         at: perfDate(s.scheduledAt).slice(0, 10),
         est: Math.round(perEx[name].e),
         weight: Number(perEx[name].l.weight) || 0,
+        // The REAL reps performed, never the rir-adjusted count -- estMax() alone applies the
+        // rir bump to the score. Client and this point both need what actually happened.
         reps: Number(perEx[name].l.reps) || 0
-      });
+      };
+      if (perEx[name].l.rir !== undefined) point.rir = perEx[name].l.rir;
+      (byName[name] = byName[name] || []).push(point);
     }
   }
   const lifts = Object.keys(byName)
