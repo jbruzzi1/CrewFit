@@ -1951,7 +1951,11 @@ function prLabel(p,U){
 let TREND_PICK = '__overall';
 function setTrendPick(k){ TREND_PICK=k; progressScreen(); }
 function trendChart(d, U){
-  const t = d.trend || {lifts:[], overall:[]};
+  const t = d.trend || {lifts:[], overall:[], allNames:[], picks:[]};
+  // Stashed here (not just read inside openTrendPicker) so the picker sheet always reflects
+  // whatever was actually rendered, not a stale/refetched copy.
+  window._TREND_ALL = t.allNames || [];
+  window._TREND_PICKS_SAVED = t.picks || [];
   if(!t.lifts.length) return `<h2>Strength trend</h2><div class="card"><div class="empty">
     <div class="empty-t">Not enough history yet</div>
     <div class="empty-b">Log the same lift <b>twice</b> and its strength line starts here.
@@ -2004,7 +2008,8 @@ function trendChart(d, U){
       <div class="drv-p ${l.changePct>0.5?'up':'flat'}">${l.changePct>0.5?'▲ '+Math.round(l.changePct)+'%':'—'}</div>
     </div>`).join('')}` : '';
 
-  return `<h2>Strength trend</h2>${chips}<div class="card">
+  return `<div class="sec-head"><h2>Strength trend</h2><button class="txt-btn" style="margin-left:auto"
+    onclick="openTrendPicker()" title="Pick which lifts to show">Pick lifts</button></div>${chips}<div class="card">
     <div class="ch-head">${head}</div>
     <div class="ch-note">${isOverall
       ? `Each lift compared with where it started, weighted by how heavy it is`
@@ -2018,6 +2023,49 @@ function trendChart(d, U){
       : `Estimated max is what your best set predicts for one all-out rep (weight × [1 + reps ÷ 30]),
          so a heavy triple and a light set of ten compare fairly.`}</div>
   </div>`;
+}
+
+// Jeff, Aug 19: "only select 5 workouts at a time... let the user pick which workouts they want
+// to select rather than it using most recent exercises... a tab under it that allows us to
+// select." TRENDPICK_SEL tracks selection ORDER (push on check, filter on uncheck) because the
+// server preserves and displays picks in the order chosen, not alphabetically or by history —
+// see POST /api/me/trend-picks and trendFor() in server.js.
+let TRENDPICK_SEL = [];
+function openTrendPicker(){
+  TRENDPICK_SEL = (window._TREND_PICKS_SAVED || []).slice();
+  openSheetHtml(renderTrendPicker());
+}
+function renderTrendPicker(){
+  const all = window._TREND_ALL || [];
+  const rows = all.length ? all.map(name => {
+    const checked = TRENDPICK_SEL.includes(name);
+    return `<label class="inv-row"><div class="inv-text"><div class="name">${esc(name)}</div></div>
+      <span class="check"><input type="checkbox" value="${esc(name)}" ${checked?'checked':''} onchange="toggleTrendPick(this)">
+      <span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`;
+  }).join('') : '<div class="muted">Log the same lift twice to see it here.</div>';
+  return `<div class="sheet"><div class="sheet-head"><h2>Pick lifts to show</h2></div>
+    <div class="muted" style="font-size:12.5px;padding:0 2px 10px">Choose up to 5. Leave none picked
+      and your most-trained lifts show automatically.</div>
+    <div class="card">${rows}</div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="sec" style="flex:1" onclick="closeSheet()">Cancel</button>
+      <button class="blue" style="flex:1" onclick="saveTrendPicks()">✓ Save</button>
+    </div></div>`;
+}
+function toggleTrendPick(input){
+  const name = input.value;
+  if(input.checked){
+    if(TRENDPICK_SEL.length>=5){ input.checked=false; alert('You can pick up to 5.'); return; }
+    TRENDPICK_SEL.push(name);
+  } else {
+    TRENDPICK_SEL = TRENDPICK_SEL.filter(n=>n!==name);
+  }
+}
+async function saveTrendPicks(){
+  const r = await H.post('/api/me/trend-picks', { picks: TRENDPICK_SEL });
+  if(r && r.error){ alert(r.error); return; }
+  closeSheet();
+  progressScreen();
 }
 
 async function progressScreen(){
