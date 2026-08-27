@@ -681,37 +681,38 @@ function profileOf(id, viewerId) {
     limited: !isApproved        // so the profile can say why it is thin rather than look empty
   };
 }
-// One line per PR is right most days — but a single big workout can set five PRs at once,
-// and that used to mean five separate rows in both "Recent Activity" (profile) and "Friend's
-// Activity" (home) for one session. This groups a person's PRs from the SAME calendar day
-// into one row ("hit 3 new PRs (Bench Press, Squat and 1 more)") so a big session reads as
-// one event, the way it actually happened, instead of flooding the feed. Also enforces the
-// last-7-days window here in one place — a PR from three weeks ago showing up forever was
-// the other half of "growing longer than I hoped for".
-function groupPrsByDay(prs, weekAgo) {
-  const recent = prs.filter(p => new Date(p.at).getTime() >= weekAgo);
-  const byDay = {};
-  for (const p of recent) {
-    const day = new Date(p.at).toISOString().slice(0, 10);
-    (byDay[day] = byDay[day] || []).push(p);
+// One line per PR is right most days — but a single big workout can set five PRs at once, and
+// that used to mean five separate rows in both "Recent Activity" (profile) and "Friend's
+// Activity" (home) for one session. Jeff, Aug 21: "if I have 10 friends and they are all new,
+// that list is going to get quite heavy" — even with firstLog baselines excluded (see
+// rebuildAllPrs), a genuinely improving lifter can beat several of their own bests within the
+// same week, not just the same day. This groups ALL of a person's REAL PRs (never a firstLog —
+// there is nothing to "beat" the first time) from the last 7 days into ONE line, naming up to 3
+// lifts and summarizing the rest ("hit 4 new PRs this week (Squat, Bench, Deadlift and +1
+// more)"), the same way "completed N workouts" already collapses instead of listing every
+// workout separately. Also enforces the last-7-days window here in one place — a PR from three
+// weeks ago showing up forever was the other half of "growing longer than I hoped for".
+function groupPrsForFeed(prs, weekAgo) {
+  const recent = prs.filter(p => !p.firstLog && new Date(p.at).getTime() >= weekAgo);
+  if (!recent.length) return [];
+  if (recent.length === 1) {
+    const p = recent[0];
+    return [{ type: 'pr', at: p.at, text: `hit a new PR on ${p.exercise} (${p.weight}×${p.reps})` }];
   }
-  return Object.values(byDay).map(group => {
-    const at = group.map(p => p.at).sort().slice(-1)[0];   // latest timestamp in the group, for feed ordering
-    if (group.length === 1) {
-      const p = group[0];
-      return { type: 'pr', at, text: `hit a new PR on ${p.exercise} (${p.weight}×${p.reps})` };
-    }
-    const names = group.map(p => p.exercise);
-    const label = names.length <= 2 ? names.join(' and ') : `${names.slice(0, 2).join(', ')} and ${names.length - 2} more`;
-    return { type: 'pr', at, text: `hit ${group.length} new PRs (${label})` };
-  });
+  const at = recent.map(p => p.at).sort().slice(-1)[0];   // latest timestamp in the group, for feed ordering
+  const names = recent.map(p => p.exercise);
+  const shown = names.slice(0, 3);
+  const label = names.length > 3
+    ? `${shown.join(', ')} and +${names.length - 3} more`
+    : `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`;
+  return [{ type: 'pr', at, text: `hit ${recent.length} new PRs this week (${label})` }];
 }
 // Recent activity for a single user: PRs, weekly completions, streaks (most recent first)
 function buildActivityFor(userId) {
   const items = [];
   const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
   const prs = (DB.prs && DB.prs[userId]) ? Object.values(DB.prs[userId]) : [];
-  items.push(...groupPrsByDay(prs, weekAgo));
+  items.push(...groupPrsForFeed(prs, weekAgo));
   let count = 0;
   for (const s of Object.values(DB.sessions)) {
     for (const h of (s.history || [])) {
@@ -974,11 +975,12 @@ app.get('/api/feed', auth, async (req, res) => {
   const myFriends = DB.users[req.userId].friends;
   const items = [];
   const weekAgo = Date.now() - 7*24*3600*1000;
-  // PRs from friends — grouped per friend per day (see groupPrsByDay) so one big workout with
-  // several PRs is one row, not one row per exercise, and nothing older than a week lingers.
+  // PRs from friends — grouped per friend per week (see groupPrsForFeed) so one big improving
+  // week is one row, not one row per exercise, firstLog baselines never masquerade as earned
+  // PRs, and nothing older than a week lingers.
   for (const fid of myFriends) {
     const prs = (DB.prs && DB.prs[fid]) ? Object.values(DB.prs[fid]) : [];
-    for (const g of groupPrsByDay(prs, weekAgo)) items.push({ ...g, by: fid });
+    for (const g of groupPrsForFeed(prs, weekAgo)) items.push({ ...g, by: fid });
   }
   // Workouts completed this week (from session history)
   for (const fid of myFriends) {
@@ -2544,9 +2546,19 @@ function rebuildAllPrs() {
       }
       if (bestLog) {
         bestLog.isPr = true;
+        // Jeff, Aug 21: "every new first rep will be considered a PR" -- a brand-new user's very
+        // first-ever session, trying several exercises for the first time each, used to post one
+        // "hit a new PR" feed item per exercise even though none of them beat anything. The
+        // current record holder is the chronologically FIRST log for this (user, exercise) pair
+        // exactly when nothing since has ever beaten it -- whether that's because there is
+        // literally only one log, or because every later attempt fell short. Either way, that
+        // record was never the result of an improvement, so it's a baseline, not an earned PR.
+        // Still shown as the user's current best on their OWN profile (see profileOf's `prs`) --
+        // just excluded from the celebratory feed/activity items (see groupPrsForFeed).
+        const firstLog = bestLog === chronological[0];
         DB.prs[userId] = DB.prs[userId] || {};
         DB.prs[userId][name] = { exercise: name, weight: Number(bestLog.weight) || 0,
-          reps: Number(bestLog.reps) || 0, at: bestLog._performedAt || bestLog.at };
+          reps: Number(bestLog.reps) || 0, at: bestLog._performedAt || bestLog.at, firstLog };
       }
     }
   }
