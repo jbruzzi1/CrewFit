@@ -42,9 +42,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      # --omit=dev matches the Dockerfile, so this also proves the production dependency
-      # set is enough to run the app. The tests use only node built-ins and fetch.
-      - run: npm ci --omit=dev
+      # Full install, not --omit=dev: test/create-flow-draft-persist.mjs drives a real Chromium
+      # via the playwright devDependency. The Dockerfile still builds the deploy image with
+      # --omit=dev separately, so production never carries Playwright or its browser download --
+      # this only affects what the test job itself installs to run the suite.
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
       - run: npm test
 
   deploy:
