@@ -662,6 +662,9 @@ function profileOf(id, viewerId) {
     // Self only — where you train is not a public fact about your account, and nobody else's
     // profile view needs it (it only ever prefills YOUR OWN new-workout form).
     defaultGym: id === viewerId ? (u.defaultGym || '') : undefined,
+    // Self only, same reasoning as defaultGym above. Unset reads as true — see the notify-prefs
+    // route comment for why "on by default" is safe here.
+    notifyStreakReminders: id === viewerId ? (u.notifyStreakReminders !== false) : undefined,
     workoutsCompleted: completed.size,
     // the follow button's state, and whether they follow you back
     youFollow: id === viewerId ? 'self'
@@ -937,6 +940,35 @@ function currentStreak(userId){
   if (!has(key(cur))) { cur.setDate(cur.getDate()-1); if (!has(key(cur))) return 0; }
   while (has(key(cur))) { streak++; cur.setDate(cur.getDate()-1); }
   return streak;
+}
+// Task #63 (streak-loss reminders). Whether userId has a completed session dated TODAY —
+// pulled out of currentStreak() as its own check because streakStatusFor() below needs it
+// independently of the streak count (a streak of 0 with trainedToday true is still "safe today").
+function trainedToday(userId) {
+  const today = new Date().toISOString().slice(0, 10);
+  for (const s of Object.values(DB.sessions))
+    for (const h of (s.history || []))
+      if (h.userId === userId && h.date === today) return true;
+  return false;
+}
+// The whole claim this feature makes, boiled down to one testable question per user: does this
+// person still need to train today to keep their streak? atRisk requires BOTH a real streak (>=2
+// days — a single day is not a streak worth protecting, and nagging a brand-new user about their
+// first session would be discoverable and wrong, the exact thing CLAUDE.md warns against) AND not
+// having trained yet today. See test/streak-reminders.mjs for the full worked-example spec this
+// was built against.
+function streakStatusFor(userId) {
+  const streak = currentStreak(userId);
+  const today = trainedToday(userId);
+  return { streak, trainedToday: today, atRisk: streak >= 2 && !today };
+}
+app.get('/api/me/streak-status', auth, async (req, res) => {
+  res.json(streakStatusFor(req.userId));
+});
+// Not exposed via HTTP on purpose — a "send everyone their reminder now" endpoint would be a way
+// to spam every user's push notifications on demand. Called only by the background timer below.
+function usersAtRiskOfLosingStreak() {
+  return Object.keys(DB.users).filter(uid => streakStatusFor(uid).atRisk);
 }
 app.get('/api/feed', auth, async (req, res) => {
   const myFriends = DB.users[req.userId].friends;
@@ -1675,6 +1707,19 @@ app.post('/api/me/units', auth, async (req, res) => {
   DB.users[req.userId].units = u;
   await save(DB);
   res.json({ units: u });
+});
+
+// Task #63: in-app toggle for the streak-loss push reminder. Unset (never touched) reads as ON —
+// new and existing accounts alike get the reminder by default, same call CLAUDE.md's "Lead, don't
+// just execute" made for defaulting this feature on: it is inert with no cost unless the user has
+// already separately granted push permission (setupPush() in app.js), so defaulting on only ever
+// matters for someone who would actually receive it.
+app.post('/api/me/notify-prefs', auth, async (req, res) => {
+  const v = (req.body || {}).streakReminders;
+  if (typeof v !== 'boolean') return res.status(400).json({ error: 'streakReminders must be true or false' });
+  DB.users[req.userId].notifyStreakReminders = v;
+  await save(DB);
+  res.json({ streakReminders: v });
 });
 
 
@@ -2494,6 +2539,34 @@ app.use((err, req, res, next) => {
   await save(DB);
   server = app.listen(PORT, () => console.log('CrewFit on', PORT));
   module.exports.server = server;
+
+  // Task #63: streak-loss push reminders. Polls every 30 minutes (cheap - it's an in-memory
+  // object scan, not a query) and actually sends at most once per user per calendar day, the
+  // first poll that lands inside STREAK_REMINDER_HOUR_UTC. A 30-minute period guarantees at
+  // least one poll inside any given UTC hour regardless of how boot time lines up with the hour
+  // boundary. There's no per-user timezone on this app, so this is a single fixed UTC hour for
+  // everyone rather than a real "evening, wherever you are" - 23:00 UTC is evening for US time
+  // zones (~6-7pm Eastern, ~3-4pm Pacific), which covers where this app's users actually are
+  // today. Easy to move later if that changes.
+  const STREAK_REMINDER_HOUR_UTC = 23;
+  setInterval(async () => {
+    try {
+      if (new Date().getUTCHours() !== STREAK_REMINDER_HOUR_UTC) return;
+      const today = new Date().toISOString().slice(0, 10);
+      const atRiskIds = usersAtRiskOfLosingStreak();
+      let sent = 0;
+      for (const uid of atRiskIds) {
+        const u = DB.users[uid];
+        if (!u || u.notifyStreakReminders === false) continue;   // respects the in-app toggle
+        if (u.lastStreakReminderAt === today) continue;          // already sent today
+        u.lastStreakReminderAt = today;
+        const streak = currentStreak(uid);
+        notify(uid, { title: 'Keep your streak alive', body: `You're on a ${streak}-day streak - train today to keep it going.` });
+        sent++;
+      }
+      if (sent) await save(DB);
+    } catch (e) { console.error('streak reminder check failed:', e && e.message); }
+  }, 30 * 60 * 1000);
 })().catch(e => {
   console.error('FATAL during boot:', e && e.stack || e);
   process.exit(1);
