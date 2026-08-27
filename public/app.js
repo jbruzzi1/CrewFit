@@ -1639,6 +1639,20 @@ function toLocalInput(iso){ const d=new Date(iso); const p=n=>String(n).padStart
 // ---- Templates: page-based flow (list -> name -> pick exercises -> save) ----
 const TPL_MODE = { active:false, id:null, name:'' };   // active while building a template
 async function templatesPage(){
+  // Same gap as openAddExercises() had: "Browse templates" is also reachable mid-create (from
+  // createFlow()'s form), and tplUse() returns via createFlow() too — so without stashing here,
+  // browsing templates mid-create silently reverted name/visibility/date/location/length/note.
+  // Guarded by element existence: these inputs only exist when this was reached from the
+  // create-flow form; every other entry point (the Workouts tab's "Templates" button, the
+  // template-builder's own "Back") leaves DRAFT untouched, same as before.
+  if(DRAFT){
+    if($('loc')) DRAFT.location = $('loc').value;
+    if($('len')) DRAFT.lengthMin = $('len').value;
+    if($('note')) DRAFT.creatorNote = $('note').value;
+    if($('wname')) DRAFT.name = $('wname').value;
+    if($('vis')) DRAFT.visibility = $('vis').value;
+    if($('dt')) DRAFT._dt = $('dt').value;
+  }
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
   const { mine, shared } = await H.get('/api/templates');
   window._TPL = { mine, shared };
@@ -2174,6 +2188,12 @@ function openAddExercises(){
   if($('len')) DRAFT.lengthMin = $('len').value;
   if($('note')) DRAFT.creatorNote = $('note').value;
   if($('wname')) DRAFT.name = $('wname').value;
+  // visibility and the scheduled date/time were missing here — createFlow() re-renders the
+  // <select id="vis"> and <input id="dt"> from these DRAFT fields on return, so leaving them
+  // unstashed silently reverted Friends-only back to Private (and the date/time to blank) the
+  // moment you tapped "+ Add exercise". See test/create-flow-draft-persist.mjs.
+  if($('vis')) DRAFT.visibility = $('vis').value;
+  if($('dt')) DRAFT._dt = $('dt').value;
   LIB_ADDMODE = true;
   SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;   // never both at once
   showTab('lib', true);   // identical to tapping the bottom Workouts tab
