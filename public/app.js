@@ -820,8 +820,24 @@ async function requestJoin(id){
   if(r && r.error){ alert(r.error); return; }
   openSession(id);
 }
-async function requestChanges(id){ const t=prompt('What changes do you want?'); if(t) { await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+t}); openSession(id); } }
-async function saveRoutine(id){ const s=await H.get('/api/sessions/'+id); if(!s.exercises.length){ alert('This workout has no exercises yet — nothing to save.'); return; } const r=await H.post('/api/templates',{name:prompt('Template name:','Saved routine')||'Saved routine',exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}))}); if(r && r.error){ alert(r.error); return; } alert('Saved as template: '+r.name); }
+function requestChanges(id){
+  textEntrySheet({
+    title:'Request changes', label:'What changes do you want?', placeholder:'e.g. swap Bench for Incline Bench', multiline:true, confirmLabel:'Send',
+    onConfirm: async v => { if(!v.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+v}); openSession(id); }
+  });
+}
+async function saveRoutine(id){
+  const s=await H.get('/api/sessions/'+id);
+  if(!s.exercises.length){ alert('This workout has no exercises yet — nothing to save.'); return; }
+  textEntrySheet({
+    title:'Save as template', label:'Template name', value:'Saved routine', placeholder:'e.g. Push Day',
+    onConfirm: async v => {
+      const r = await H.post('/api/templates',{name:(v||'').trim()||'Saved routine',exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}))});
+      if(r && r.error){ alert(r.error); return; }
+      alert('Saved as template: '+r.name);
+    }
+  });
+}
 async function openChat(id){ document.getElementById('chatInput').focus(); }
 async function sendChat(id){
   const t=$('chatInput').value; if(!t.trim()) return;
@@ -1588,10 +1604,20 @@ async function submitSession(){
   // saved itself over the workout you had just edited.
   EDITING_SESSION = null;
   // only offered when creating — you do not re-save a template every time you fix a typo
-  if(!editing && confirm('Save this as a template for next time?')){
-    await H.post('/api/templates',{name:prompt('Template name:',name||'My workout')||'My workout',exercises:DRAFT.exercises});
+  if(!editing){
+    // Jeff, Aug 27: "I don't want a separate iPhone style pop up." This used to chain a native
+    // confirm() ("Save this as a template?") into a native prompt() (the name) -- both native OS
+    // dialogs. One in-app sheet now does both jobs at once: Skip leaves without saving, Save
+    // names and saves it, and either way the flow lands on home() same as before.
+    textEntrySheet({
+      title:'Save as template?', label:'Template name', value:name||'My workout', placeholder:'e.g. Push Day',
+      confirmLabel:'Save', cancelLabel:'Skip',
+      onConfirm: async v => { await H.post('/api/templates',{name:(v||'').trim()||'My workout',exercises:DRAFT.exercises}); home(); },
+      onCancel: home
+    });
+  } else {
+    home();
   }
-  home();
 }
 let EDITING_SESSION = null;
 // A NEW workout starts empty. createFlow() cannot do this itself — it is also where you land
@@ -2445,6 +2471,34 @@ function exDetail(name){
 }
 function closeSheet(){ const s=document.querySelector('.sheet-back'); if(s){ s.classList.remove('show'); setTimeout(()=>s.remove(),200); } }
 function openSheetHtml(inner){ const s=document.createElement('div'); s.className='sheet-back'; s.onclick=(e)=>{ if(e.target===s) closeSheet(); }; s.innerHTML=inner; document.body.appendChild(s); requestAnimationFrame(()=>s.classList.add('show')); }
+// A single in-app bottom sheet for free-text entry. Jeff, Aug 27: "when I go to add a bio or
+// notes etc I don't want a separate iPhone style pop up to happen to input... I want it to stay
+// within the app." The browser's own prompt() is a native OS dialog entirely outside the app's
+// own design, and it forces every field into one cramped, unresizable line no matter how long
+// the text is meant to be. tplNew()/tplQuickSaveSheet() already used exactly this sheet shape
+// for template naming -- this generalizes that pattern (label + input/textarea + Cancel/Save)
+// so every other prompt()-based text entry in the app (bio, default gym, a workout-changes
+// note, template naming) gets the same in-app sheet, and multi-line fields get a real,
+// multi-row textarea instead of one line.
+function textEntrySheet({title, label, value, placeholder, multiline, confirmLabel, cancelLabel, onConfirm, onCancel}){
+  const cur = value||'';
+  const field = multiline
+    ? `<textarea id="teVal" placeholder="${esc(placeholder||'')}" style="min-height:110px">${esc(cur)}</textarea>`
+    : `<input id="teVal" placeholder="${esc(placeholder||'')}" value="${esc(cur)}" autocomplete="off">`;
+  openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>${esc(title)}</h2></div>
+    ${label?`<label class="muted">${esc(label)}</label>`:''}
+    ${field}
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="sec" style="flex:1" onclick="_teCancel()">${esc(cancelLabel||'Cancel')}</button>
+      <button class="blue" style="flex:1" onclick="_teConfirm()">✓ ${esc(confirmLabel||'Save')}</button>
+    </div></div>`);
+  // Stashed on window (not a closure the buttons' inline onclick can reach) and reassigned per
+  // open -- only one text-entry sheet is ever open at a time, same as closeSheet()'s single
+  // .sheet-back assumption elsewhere in this file.
+  window._teConfirm = ()=>{ const v=$('teVal').value; closeSheet(); onConfirm(v); };
+  window._teCancel = ()=>{ closeSheet(); if(onCancel) onCancel(); };
+  setTimeout(()=>{ const i=$('teVal'); if(i) i.focus(); }, 60);
+}
 
 // ---- Templates ----
 async function templates(){
@@ -2785,19 +2839,19 @@ async function toggleFollow(id, state){
   profileView(id);   // re-render from the server's fresh youFollow so the button is always right
 }
 function editBio(){
-  const cur = (ME.bio)||'';
-  const v = prompt('Your bio:', cur);
-  if(v===null) return;
-  H.post('/api/me/bio',{bio:v}).then(r=>{ if(r.bio!==undefined){ ME.bio=r.bio; profileView(ME.id); } });
+  textEntrySheet({
+    title:'Your bio', label:'Bio', value:ME.bio||'', placeholder:'Tell people about yourself', multiline:true,
+    onConfirm: v => { H.post('/api/me/bio',{bio:v}).then(r=>{ if(r.bio!==undefined){ ME.bio=r.bio; profileView(ME.id); } }); }
+  });
 }
 // Prefills the Location field on every new workout you create (and Quick Workout) so you're not
 // retyping the same gym every time. Left blank on purpose by default — nothing to prefill until
 // you set one.
 function editDefaultGym(){
-  const cur = ME.defaultGym||'';
-  const v = prompt('Default gym (prefills new workouts):', cur);
-  if(v===null) return;
-  H.post('/api/me/default-gym',{defaultGym:v}).then(r=>{ if(r.defaultGym!==undefined){ ME.defaultGym=r.defaultGym; openSettings(); } });
+  textEntrySheet({
+    title:'Default gym', label:'Prefills new workouts', value:ME.defaultGym||'', placeholder:'e.g. Equinox Downtown',
+    onConfirm: v => { H.post('/api/me/default-gym',{defaultGym:v}).then(r=>{ if(r.defaultGym!==undefined){ ME.defaultGym=r.defaultGym; openSettings(); } }); }
+  });
 }
 // Task #63: "you're about to lose your streak" push reminder, opt-out toggle. Only matters if
 // push permission is separately granted (setupPush()) - this just controls whether the server
