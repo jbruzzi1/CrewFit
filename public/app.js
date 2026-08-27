@@ -2663,7 +2663,19 @@ async function setupPush(){
     if(Notification.permission === 'default'){ try{ await Notification.requestPermission(); }catch(e){} }
     if(Notification.permission !== 'granted') return; // user declined; push stays optional
     const reg = await navigator.serviceWorker.register('/sw.js');
-    const sub = await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey: await vapidKey()});
+    const key = await vapidKey();
+    let sub;
+    try {
+      sub = await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey: key});
+    } catch(e) {
+      // The browser already holds a subscription signed with an OLD server key (task #61 - this
+      // happened to every subscriber once, the time the server's VAPID key changed out from under
+      // them) and refuses to subscribe again with a different key until the old one is dropped.
+      // Drop it and get a fresh subscription under the current key.
+      const old = await reg.pushManager.getSubscription();
+      if (old) await old.unsubscribe();
+      sub = await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey: key});
+    }
     await H.post('/api/push/subscribe',{subscription:sub});
   }catch(e){ /* push optional for demo */ }
 }
