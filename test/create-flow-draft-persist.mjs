@@ -19,11 +19,19 @@
 // version predates that migration and relied on DATA_DIR alone to boot the server; server.js
 // now requires DATABASE_URL unconditionally. No assertions changed, just how the server boots.
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { freshTestDb } from './_pgtestdb.mjs';
+
+// This sandbox has Chromium pre-installed at a fixed path (PLAYWRIGHT_BROWSERS_PATH) and skips
+// Playwright's own download to save re-fetching it every session. CI (and any other machine) has
+// no such path -- there, Playwright must resolve its own browser, installed via the
+// "npx playwright install" step in .github/workflows/deploy.yml. Only pass executablePath when
+// the sandbox-specific binary actually exists, so this test still runs everywhere else.
+const SANDBOX_CHROMIUM = '/opt/pw-browsers/chromium';
+const LAUNCH_OPTS = existsSync(SANDBOX_CHROMIUM) ? { executablePath: SANDBOX_CHROMIUM } : {};
 
 let fails = 0;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fails++; };
@@ -45,7 +53,7 @@ const { srv } = await boot(PORT, dir);
 if (!srv) { console.log('  FAIL server did not boot'); process.exit(1); }
 const BASE = `http://localhost:${PORT}`;
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await chromium.launch(LAUNCH_OPTS);
 async function freshPage() {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
   const uname = 'vfx' + Math.random().toString(36).slice(2, 8);
