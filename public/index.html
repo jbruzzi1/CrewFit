@@ -383,6 +383,10 @@
        (blue is CTAs/the active nav tab; green is the avatar accent and the "sets logged" state). */
     .session-live { background:rgba(245,158,11,.05); border-left:3px solid #f59e0b; padding-left:9px; margin-left:-3px; border-radius:0 10px 10px 0; }
     .live-badge { display:block; width:fit-content; font-size:11px; font-weight:700; letter-spacing:.02em; color:#b45309; background:rgba(245,158,11,.15); border-radius:999px; padding:3px 9px; margin-bottom:6px; }
+    /* Neutral, not alarming — a missed session is a plain fact, not an error, and it is never
+       hidden or blocked from late logging (CLAUDE.md: discoverability over minimalism). Same
+       badge shape as .live-badge, but muted gray instead of amber so it reads as informational. */
+    .missed-badge { display:block; width:fit-content; font-size:11px; font-weight:700; letter-spacing:.02em; color:var(--muted); background:#f0f1f3; border-radius:999px; padding:3px 9px; margin-bottom:6px; }
     .log-cnt { color:var(--blue); font-weight:600; }
     .log-sheet { max-height:86vh; overflow:auto; }
     .ex-sub { font-size:13px; color:var(--muted); margin:-2px 0 12px; }
@@ -657,6 +661,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=204"></script>
+  <script src="app.js?v=205"></script>
 </body>
 </html>

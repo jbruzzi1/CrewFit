@@ -105,6 +105,19 @@ function isSessionLiveNow(s){
   const d = new Date(s.scheduledAt); if(isNaN(d)) return false;
   return startOfDay(d).getTime() === startOfDay(new Date()).getTime();
 }
+// A scheduled workout whose day has passed with nothing logged for YOU looks identical to
+// tomorrow's plan on Home — flagged "Missed" here, never hidden, deleted, or blocked from late
+// logging (CLAUDE.md: discoverability over minimalism). v187 made finishing per-person, so this
+// only ever claims something about viewerId's OWN history/logs — a training partner finishing,
+// or logging their own sets, says nothing about whether YOU did.
+function isSessionMissed(s, viewerId){
+  if(!s || !viewerId) return false;
+  const d = new Date(s.scheduledAt); if(isNaN(d)) return false;
+  if(dayDiff(s.scheduledAt) >= 0) return false;
+  if((s.history||[]).some(h=>h.userId===viewerId)) return false;
+  if(s.logs && s.logs[viewerId] && s.logs[viewerId].length) return false;
+  return true;
+}
 // Session-level: has ANYONE finished and posted their recap on this workout? Each participant now
 // finishes and posts independently (s.posts, keyed by userId — see server.js), so this is used only
 // for "has this workout moved past the active/editable phase for at least one person" checks, never
@@ -250,8 +263,10 @@ async function home(){
     for(const s of yours){
       const label = s.name;
       const live = isSessionLiveNow(s);
+      const missed = !live && isSessionMissed(s, ME.id);
+      const badge = live ? '<div class="live-badge">● Live now</div>' : (missed ? '<div class="missed-badge">Missed</div>' : '');
       html += `<div class="lib-item${live?' session-live':''}" onclick="openSession('${s.id}')">
-        <div>${live?'<div class="live-badge">● Live now</div>':''}<b>${esc(label)}${s.exercises.length?` · ${s.exercises.length} exercises`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}</div></div></div>`;
+        <div>${badge}<b>${esc(label)}${s.exercises.length?` · ${s.exercises.length} exercises`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}</div></div></div>`;
     }
   } else html += `<div class="muted">No sessions yet.</div>`;
   html += `</div>`;
