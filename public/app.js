@@ -523,12 +523,6 @@ async function openSession(id, opts){
     return `<div class="sess-started">${label} — ${startedSets} set${startedSets===1?'':'s'} in</div>`;
   })();
 
-  let html = `<div class="wrap"><button class="sec sm" onclick="showTab('${backTab}')">← Back</button>
-    <h1 class="sess-date">${sessTitle(s)}</h1>
-    <div class="muted sess-meta">${sessSub(s)}${vis} · ${who}</div>
-    ${facts?`<div class="tag">${facts}</div>`:''}
-    ${startedLine}
-    ${s.creatorNote?`<div class="sess-note">${esc(s.creatorNote)}</div>`:''}`;
   // Log & Finish is offered to ANY participant who hasn't posted their own recap yet — not just
   // the creator. The server (POST /:id/lock, POST /:id/post) has allowed this per-participant since
   // the recap feature was ported to s.posts; this is the client catching up so everyone actually has
@@ -538,18 +532,37 @@ async function openSession(id, opts){
   // now. Someone who tapped Log & Finish and never got around to a recap kept seeing their own
   // "Log & Finish" button forever, inviting a second, harmless-but-pointless tap.
   const hasFinished = (s.history||[]).some(h=>h.userId===ME.id);
+  // Jeff, Aug 28: "not sure how I feel about the Log & Finish/Edit/Delete session visuals" -- the
+  // three used to sit as equal-weight pills in a row (see the old .sess-actions block this
+  // replaced), which meant a destructive, rarely-tapped action (Delete session) had exactly the
+  // same visual prominence as the one action you take on basically every visit (Log & Finish) --
+  // worse, once you'd already finished, Delete session became the SECOND thing on the whole page.
+  // Creator-only Edit/Delete now live behind a "..." menu next to Back instead, so the only pill
+  // left in the flow is the one primary action -- and it matches the "..." pattern this app
+  // ALREADY uses one screen over, on the posted-workout view (viewPost, above) for the exact same
+  // Edit session/Delete session pair. This was two different treatments of the same two actions;
+  // now it's one.
+  const sessMenuItems = isCreator
+    ? `<button onclick="${myPost?`enterWorkoutEdit('${s.id}')`:`editSession('${s.id}')`}">Edit session</button><button class="danger" onclick="deleteSession('${s.id}', ${hasFinished})">Delete session</button>`
+    : '';
+  const sessDots = sessMenuItems ? `<button class="pp-dots" onclick="togglePostMenu('${s.id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${s.id}" style="display:none">${sessMenuItems}</div>` : '';
+  let html = `<div class="wrap"><div class="pp-head"><button class="sec sm" onclick="showTab('${backTab}')">← Back</button>${sessDots}</div>
+    <h1 class="sess-date">${sessTitle(s)}</h1>
+    <div class="muted sess-meta">${sessSub(s)}${vis} · ${who}</div>
+    ${facts?`<div class="tag">${facts}</div>`:''}
+    ${startedLine}
+    ${s.creatorNote?`<div class="sess-note">${esc(s.creatorNote)}</div>`:''}`;
   {
     const actions = [];
     if(!hasFinished && (isParticipant || isCreator)) actions.push(`<button class="blue sm" onclick="lock('${s.id}')">Log & Finish</button>`);
-    if(isCreator){
-      if(myPost) actions.push(`<button class="sec sm" onclick="enterWorkoutEdit('${s.id}')">Edit</button>`);
-      else actions.push(`<button class="sec sm" onclick="editSession('${s.id}')">Edit</button>`);
-      actions.push(`<button class="red sm" onclick="deleteSession('${s.id}', ${hasFinished})">Delete session</button>`);
-    } else if(isParticipant){
+    if(!isCreator && isParticipant){
       // Jeff, Aug 19: workouts you were invited into (not ones you created) had no way to make go
       // away at all — Edit/Delete are creator-only, always have been, so an invite the creator
       // never finishes just sits on Home forever. Leave gives every non-creator participant their
-      // own way out, with the same Save/Discard choice Delete's fallback below now uses too.
+      // own way out, with the same Save/Discard choice Delete's fallback below now uses too. Left
+      // as its own pill (not folded into a menu) since it's the only secondary action a
+      // participant ever has here -- one pill next to Log & Finish isn't the crowding problem the
+      // creator's three-in-a-row was.
       actions.push(`<button class="sec sm" onclick="leaveWorkout('${s.id}', ${hasFinished})">Leave workout</button>`);
     }
     if(actions.length) html += `<div class="sess-actions">${actions.join('')}</div>`;

@@ -48,8 +48,14 @@
     .aside-dot { color:#c9cfd8; font-size:13px; }
     .sess-actions { display:flex; flex-wrap:wrap; gap:10px; margin:12px 0 4px; }
     .sess-actions .sm { width:auto; background:transparent; border:1px solid #b0b6c0; color:var(--fg); font-weight:600; }
-    .sess-actions .sm.blue { border-color:#bcd4fb; color:#2563eb; background:#e8f1ff; }
-    .sess-actions .sm.red { border-color:#f1b9b9; color:#dc2626; background:#fbe9e9; }
+    /* Jeff, Aug 28: now that Edit/Delete moved into the "..." menu, Log & Finish is the only pill
+       left here most of the time -- a light tint read as one option among equals, which was the
+       point when it had to share the row with two other pills, but it undersells the one thing
+       you actually do on this screen every time. Solid, same as the app's other primary CTAs
+       (.btn-primary, button.blue elsewhere), so it reads as THE action, not a suggestion. When
+       it's paired with Leave workout (invited, non-creator), this also sharpens that hierarchy
+       instead of flattening it -- solid primary vs. outlined secondary, not two same-weight pills. */
+    .sess-actions .sm.blue { background:var(--blue); color:#fff; border-color:var(--blue); }
     .sess-actions .sm.sec { border-color:#b0b6c0; color:var(--fg); background:transparent; }
     .home-head { padding-top:calc(22px + env(safe-area-inset-top)); }
     .home-top { display:flex; align-items:center; justify-content:space-between; margin:0 0 16px; }
@@ -680,6 +686,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=219"></script>
+  <script src="app.js?v=220"></script>
 </body>
 </html>
