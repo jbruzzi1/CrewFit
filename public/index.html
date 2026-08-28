@@ -61,7 +61,34 @@
     .home-top { display:flex; align-items:center; justify-content:space-between; margin:0 0 16px; }
     .home-brand { font-size:20px; font-weight:700; letter-spacing:.2px; }
     .home-avatar { width:44px; height:44px; border-radius:50%; background:var(--avatar); color:#fff; display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:700; cursor:pointer; object-fit:cover; overflow:hidden; box-shadow:0 2px 8px rgba(20,24,31,.18); }
-    .home-greet { font-size:19px; color:var(--fg); font-weight:700; }
+    .home-greet { font-size:21px; color:var(--fg); font-weight:700; letter-spacing:-0.01em; }
+    .home-sub { font-size:13px; color:var(--muted); margin-top:3px; }
+    /* v221: adaptive stat row — open on the page, no card box (Jeff: "no windows"). Numbers only
+       appear when true; the row itself is omitted with nothing to say. */
+    .home-stats { display:flex; margin:2px 0 18px; }
+    .hstat { flex:1; min-width:0; }
+    .hstat + .hstat { border-left:1px solid var(--line); padding-left:14px; margin-left:14px; }
+    .hstat .num { font-size:21px; font-weight:700; letter-spacing:-0.01em; font-variant-numeric:tabular-nums; }
+    .hstat .lbl { font-size:11.5px; color:var(--muted); margin-top:2px; line-height:1.25; }  /* wraps — a truncated label is a hidden claim */
+    /* v222 (Jeff: "when a workout schedules or a friend has activity, THEN it creates the pill
+       box"): on Home, a card exists only when there is something real inside it. Cards float on
+       shadow alone — no border fence — and an empty section is OPEN on the page: icon + line,
+       no container. Discoverability rule intact: the section header and explanation still render,
+       nothing is hidden, there is just no box drawn around nothing. */
+    .home-head .card { border:none; box-shadow:0 1px 2px rgba(20,24,31,.04), 0 8px 20px -10px rgba(20,24,31,.14); }
+    /* Between-section gap must clearly beat the gaps inside a section — with no box to draw the
+       boundary, whitespace is the only thing separating groups (Jeff: "does it look clumped?"). */
+    .home-empty { text-align:center; padding:14px 16px 4px; margin:2px 0 34px; }
+    .home-empty svg { opacity:.5; margin-bottom:8px; }
+    .home-empty .he-title { font-weight:600; font-size:13.5px; color:var(--fg); margin:0 0 3px; }
+    .home-empty .he-sub { font-size:12.5px; color:var(--muted); margin:0; }
+    .home-empty .he-cta { display:inline-block; margin-top:8px; font-size:13px; font-weight:600; color:var(--blue); cursor:pointer; }
+    /* v221: the "window" — a faint sky wash at the very top of Home only, fading to the page
+       background by ~380px down. Painted on .home-head itself (the wrap spans the whole app
+       column, and body is already a 480px column), so it needs no body class, no JS toggling,
+       and dies with the page. Not a header gradient rule violation: the header bar itself stays
+       flat; this is atmosphere behind the whole top zone of one screen. */
+    .home-head { background-image:linear-gradient(180deg, #eef4fd 0%, #f7fafd 55%, rgba(251,251,253,0) 100%); background-repeat:no-repeat; background-size:100% 380px; }
     .act-chip { flex:0 0 auto; font-size:11px; font-weight:700; border-radius:999px; padding:3px 8px; vertical-align:middle; }
     /* was .act-chip.pr — the element also matched the unrelated .pr list-row class used by the
        Progress tab's PR list (line ~564: display:flex, padding:11px 2px, border-bottom). .act-chip
@@ -80,7 +107,8 @@
     h2.pt { margin-top:84px; }
     h2.sep { margin-top:28px; padding-top:18px; border-top:1px solid var(--line); }
     .inv-banner { background:#f4f8ff; border:1px solid #dbe7fb; border-radius:14px; padding:10px 12px; margin:0 0 16px; }
-    .inv-empty { font-size:12.5px; color:var(--muted); background:#f4f6f9; border:1px solid var(--line); border-radius:12px; padding:11px 12px; margin:0 0 16px; }
+    /* v222: an empty state gets no box (the box appears when an invite does) */
+    .inv-empty { font-size:12.5px; color:var(--muted); padding:0 2px; margin:0 0 16px; }
     /* A pending invite on the home screen. Deliberately NOT called .inv-row: that name belongs to
        the friend picker in New Workout further down this file, and while these two shared it the
        picker's padding, gap and border-bottom silently applied here — two invites drew a double
@@ -686,6 +714,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=220"></script>
+  <script src="app.js?v=222"></script>
 </body>
 </html>
