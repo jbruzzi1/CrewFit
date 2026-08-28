@@ -4,8 +4,15 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#131417" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" id="themeColorMeta" content="#131417" />
+  <script>
+    /* v230: stamp the theme BEFORE first paint so there is no light flash. Dark is the default;
+       Settings > Appearance flips it (toggleTheme in app.js). try/catch: private mode can throw. */
+    (function(){ var t='dark'; try{ t = localStorage.getItem('crewfit_theme') || 'dark'; }catch(e){}
+      if(t==='dark') document.documentElement.classList.add('theme-dark');
+      var m = document.getElementById('themeColorMeta') || document.querySelector('meta[name=theme-color]');
+      if(m) m.content = t==='dark' ? '#131417' : '#f7f8fa'; })();
+  </script>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="apple-touch-icon" href="/icon-192.png" />
   <!-- without this every first load asks for /favicon.ico and takes a 404 -->
@@ -18,7 +25,7 @@
        itself to the new graphite would have turned all of those graphite too. --avatar exists so
        the "no photo yet" placeholder can change color on its own, matching this repo's own ink
        color rather than any accent -- see avatarColor() in app.js for why. */
-    :root { --bg:#fbfbfd; --card:#ffffff; --fg:#15181f; --muted:#6b7280; --green:#16a34a; --avatar:#2b2f38; --blue:#2563eb; --red:#dc2626; --line:#edeff2; }
+    :root { color-scheme: light; --bg:#fbfbfd; --card:#ffffff; --fg:#15181f; --muted:#6b7280; --green:#16a34a; --avatar:#2b2f38; --blue:#2563eb; --red:#dc2626; --line:#edeff2; }
     * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
     html,body { margin:0; padding:0; background:var(--bg); color:var(--fg); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
     body { max-width:480px; margin:0 auto; padding-bottom:calc(72px + env(safe-area-inset-bottom)); }
@@ -721,115 +728,114 @@
        contrast on charcoal), muted gold for Live (amber went "Halloween" on
        dark, Jeff Aug 28), green stays the achievement color. Keep this block at
        the END of the stylesheet so equal-specificity overrides win by order. */
-    @media (prefers-color-scheme: dark) {
-      :root {
+    /* ============================ DARK MODE (v228, re-scoped v230) ============================
+       v230 (Jeff): the app no longer follows the phone - DARK IS THE DEFAULT, with a Light/Dark
+       switch in Settings. Theming is class-based: a tiny inline script in <head> stamps
+       html.theme-dark from localStorage('crewfit_theme', default 'dark') BEFORE first paint, and
+       toggleTheme() in app.js flips it. Everything below is the v228 palette unchanged, scoped
+       under html.theme-dark instead of prefers-color-scheme. Keep this at the END of the
+       stylesheet so equal-specificity overrides win by order. */
+    html.theme-dark {
+        color-scheme: dark;
         --bg:#131417; --card:#1c1e22; --fg:#f1f2f4; --muted:#a2a7b0;
         --green:#3ecf72; --avatar:#454a54; --blue:#5a8bff; --red:#f3766a; --line:#2b2e34;
         --s1:#2b3a5c; --s2:#3a5488; --s3:#4a71b8; --s4:#5a8bff;
       }
       /* -- surfaces & fills (light grays -> raised charcoal) -- */
-      .pp-dots:active, .pp-menu button:active, .lib-item:active, .ex-card.log-row:active,
-      .lib-item.log-row:active, .profile-set:active, .mg-card:active, .ex-row:active,
-      .set-row:active, .rc-chip, .rest, .load-chip, .hold-ic, .self-tag, .empty-ic,
-      .streak, .pill, .chip, .fav, .ex-add, .ex-idx, .t-normal, .pp-set-n,
-      .seg .chip, .seg button, #vis.seg, .seg.wk-seg, .log-rec.soon .lr-ic,
-      .log-rec.hold .lr-ic { background:#262930; }
-      .missed-badge { background:#2f3238; color:#a2a7b0; }
-      .log-rec.hold { background:#1f2126; }
+      :where(html.theme-dark) .pp-dots:active, :where(html.theme-dark) .pp-menu button:active, :where(html.theme-dark) .lib-item:active, :where(html.theme-dark) .ex-card.log-row:active, :where(html.theme-dark) .lib-item.log-row:active, :where(html.theme-dark) .profile-set:active, :where(html.theme-dark) .mg-card:active, :where(html.theme-dark) .ex-row:active, :where(html.theme-dark) .set-row:active, :where(html.theme-dark) .rc-chip, :where(html.theme-dark) .rest, :where(html.theme-dark) .load-chip, :where(html.theme-dark) .hold-ic, :where(html.theme-dark) .self-tag, :where(html.theme-dark) .empty-ic, :where(html.theme-dark) .streak, :where(html.theme-dark) .pill, :where(html.theme-dark) .chip, :where(html.theme-dark) .fav, :where(html.theme-dark) .ex-add, :where(html.theme-dark) .ex-idx, :where(html.theme-dark) .t-normal, :where(html.theme-dark) .pp-set-n, :where(html.theme-dark) .seg .chip, :where(html.theme-dark) .seg button, :where(html.theme-dark) #vis.seg, :where(html.theme-dark) .seg.wk-seg, :where(html.theme-dark) .log-rec.soon .lr-ic, :where(html.theme-dark) .log-rec.hold .lr-ic { background:#262930; }
+      :where(html.theme-dark) .missed-badge { background:#2f3238; color:#a2a7b0; }
+      :where(html.theme-dark) .log-rec.hold { background:#1f2126; }
       /* Muscle diagrams are drawn on/for white - on a dark tile the gray figure dissolves
          and only the red pops (Jeff, Aug 28). The tile stays white in dark mode, like app-store
          icon tiles; rounded corners already soften it. */
-      .mg-card .mg-ico, .mg-ico { background:#fff; }
-      .mw-thumb, .thumb, .pavatar, .pp-photos img, .pp-photos video, .saved-grid .sq,
-      .feed-cover, .wthumb { background:#262930; }
-      .wthumb-empty { background:linear-gradient(135deg,#24262c,#1c1e22); }
-      .wexb li::before { background:#2b2e34; color:#a2a7b0; }
-      .add-media { background:#1f2126; border-color:#2b2e34; }
-      .add-row input { background:#17181c; }
-      .add-row input::placeholder { color:#6f747d; }
-      .pr-self { background:#1f2126; border-color:#2b2e34; }
-      .rc-chip.warm { background:transparent; border-color:#3a3e46; color:#8a8f98; }
-      .aside-dot { color:#4a4f59; }
-      .pp-photo-dots .pp-dot { background:#3a3e46; }
-      .fav.pending { border-color:#3a3e46; }
-      .fav-pending-dot { background:#1c1e22; }
-      .fav-pending-dot svg { color:#6f747d; }
-      .qs-empty svg { color:#3a3e46; }
-      .drag-handle::before { background:linear-gradient(#6f747d,#6f747d) left top/16px 2px no-repeat, linear-gradient(#6f747d,#6f747d) left center/16px 2px no-repeat, linear-gradient(#6f747d,#6f747d) left bottom/16px 2px no-repeat; }
-      .log-rec.soon { border-color:#3a3e46; }
+      :where(html.theme-dark) .mg-card .mg-ico, :where(html.theme-dark) .mg-ico { background:#fff; }
+      :where(html.theme-dark) .mw-thumb, :where(html.theme-dark) .thumb, :where(html.theme-dark) .pavatar, :where(html.theme-dark) .pp-photos img, :where(html.theme-dark) .pp-photos video, :where(html.theme-dark) .saved-grid .sq, :where(html.theme-dark) .feed-cover, :where(html.theme-dark) .wthumb { background:#262930; }
+      :where(html.theme-dark) .wthumb-empty { background:linear-gradient(135deg,#24262c,#1c1e22); }
+      :where(html.theme-dark) .wexb li::before { background:#2b2e34; color:#a2a7b0; }
+      :where(html.theme-dark) .add-media { background:#1f2126; border-color:#2b2e34; }
+      :where(html.theme-dark) .add-row input { background:#17181c; }
+      :where(html.theme-dark) .add-row input::placeholder { color:#6f747d; }
+      :where(html.theme-dark) .pr-self { background:#1f2126; border-color:#2b2e34; }
+      :where(html.theme-dark) .rc-chip.warm { background:transparent; border-color:#3a3e46; color:#8a8f98; }
+      :where(html.theme-dark) .aside-dot { color:#4a4f59; }
+      :where(html.theme-dark) .pp-photo-dots .pp-dot { background:#3a3e46; }
+      :where(html.theme-dark) .fav.pending { border-color:#3a3e46; }
+      :where(html.theme-dark) .fav-pending-dot { background:#1c1e22; }
+      :where(html.theme-dark) .fav-pending-dot svg { color:#6f747d; }
+      :where(html.theme-dark) .qs-empty svg { color:#3a3e46; }
+      :where(html.theme-dark) .drag-handle::before { background:linear-gradient(#6f747d,#6f747d) left top/16px 2px no-repeat, linear-gradient(#6f747d,#6f747d) left center/16px 2px no-repeat, linear-gradient(#6f747d,#6f747d) left bottom/16px 2px no-repeat; }
+      :where(html.theme-dark) .log-rec.soon { border-color:#3a3e46; }
       /* segmented controls: the "on" chip was solid white */
-      #vis.seg button.on, .seg.wk-seg button.on { background:#3a3e46; color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.4); }
-      .seg .chip.on, .seg button.on { background:rgba(90,139,255,.16); }
+      :where(html.theme-dark) #vis.seg button.on, :where(html.theme-dark) .seg.wk-seg button.on { background:#3a3e46; color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.4); }
+      :where(html.theme-dark) .seg .chip.on, :where(html.theme-dark) .seg button.on { background:rgba(90,139,255,.16); }
       /* -- blue tints -- */
-      .inv-banner { background:#1b2540; border-color:#2c3c63; }
-      .inv-card:active { background:#222c4a; }
-      .inv-card + .inv-card { border-top-color:#2c3c63; }
-      .chat-row .chat-send, .req .ra .sm.ok { background:#1b2540; border-color:#2c3c63; color:var(--blue); }
-      .btn-quick { background:transparent; }
-      .btn-quick:active { background:#222c4a; }
-      .txt-btn:active, .add-btn:active { background:rgba(90,139,255,.12); }
-      .edit-banner { background:rgba(90,139,255,.12); }
-      .t-warm { background:rgba(90,139,255,.16); }
-      .drag-placeholder { background:rgba(90,139,255,.08); }
-      .drag-handle:active { background:rgba(90,139,255,.18); }
-      .btn-new { box-shadow:0 6px 14px rgba(0,0,0,.4); }
+      :where(html.theme-dark) .inv-banner { background:#1b2540; border-color:#2c3c63; }
+      :where(html.theme-dark) .inv-card:active { background:#222c4a; }
+      :where(html.theme-dark) .inv-card + .inv-card { border-top-color:#2c3c63; }
+      :where(html.theme-dark) .chat-row .chat-send, :where(html.theme-dark) .req .ra .sm.ok { background:#1b2540; border-color:#2c3c63; color:var(--blue); }
+      :where(html.theme-dark) .btn-quick { background:transparent; }
+      :where(html.theme-dark) .btn-quick:active { background:#222c4a; }
+      :where(html.theme-dark) .txt-btn:active, :where(html.theme-dark) .add-btn:active { background:rgba(90,139,255,.12); }
+      :where(html.theme-dark) .edit-banner { background:rgba(90,139,255,.12); }
+      :where(html.theme-dark) .t-warm { background:rgba(90,139,255,.16); }
+      :where(html.theme-dark) .drag-placeholder { background:rgba(90,139,255,.08); }
+      :where(html.theme-dark) .drag-handle:active { background:rgba(90,139,255,.18); }
+      :where(html.theme-dark) .btn-new { box-shadow:0 6px 14px rgba(0,0,0,.4); }
       /* -- greens (recommendation engine, PR moments) -- */
-      .rp-ic, .rc-pr-ic, .rc-next-ic, .log-rec.up .lr-ic, .log-rec.almost .lr-ic,
-      .hold-ic.almost-ic { background:rgba(62,207,114,.14); color:var(--green); }
-      .rc-chip.top { background:rgba(62,207,114,.14); color:var(--green); }
-      .rp-tag, .rc-next-to, .drv-p.up, .beat-chip { color:var(--green); }
-      .beat-chip { background:rgba(62,207,114,.14); }
-      .log-rec.up, .rc-pr { background:rgba(62,207,114,.07); border-color:rgba(62,207,114,.25); }
-      .log-rec.almost { border-color:rgba(62,207,114,.45); }
-      .pr-beat { border-color:var(--green); background:rgba(62,207,114,.05); }
-      .act-chip.done { background:rgba(62,207,114,.16); }
+      :where(html.theme-dark) .rp-ic, :where(html.theme-dark) .rc-pr-ic, :where(html.theme-dark) .rc-next-ic, :where(html.theme-dark) .log-rec.up .lr-ic, :where(html.theme-dark) .log-rec.almost .lr-ic, :where(html.theme-dark) .hold-ic.almost-ic { background:rgba(62,207,114,.14); color:var(--green); }
+      :where(html.theme-dark) .rc-chip.top { background:rgba(62,207,114,.14); color:var(--green); }
+      :where(html.theme-dark) .rp-tag, :where(html.theme-dark) .rc-next-to, :where(html.theme-dark) .drv-p.up, :where(html.theme-dark) .beat-chip { color:var(--green); }
+      :where(html.theme-dark) .beat-chip { background:rgba(62,207,114,.14); }
+      :where(html.theme-dark) .log-rec.up, :where(html.theme-dark) .rc-pr { background:rgba(62,207,114,.07); border-color:rgba(62,207,114,.25); }
+      :where(html.theme-dark) .log-rec.almost { border-color:rgba(62,207,114,.45); }
+      :where(html.theme-dark) .pr-beat { border-color:var(--green); background:rgba(62,207,114,.05); }
+      :where(html.theme-dark) .act-chip.done { background:rgba(62,207,114,.16); }
       /* -- amber -> muted gold -- */
-      .session-live { background:rgba(215,160,74,.06); border-left-color:#d7a04a; }
-      .live-badge, .act-chip.act-pr, .type-tag.type-tag-pr { background:rgba(215,160,74,.15); color:#d7a04a; }
-      .pp-pr { background:rgba(215,160,74,.13); color:#d7a04a; }
-      .pp-set-n.warm { background:rgba(215,160,74,.15); color:#d7a04a; }
-      .streak-pill { background:rgba(215,160,74,.13); color:#d7a04a; }
+      :where(html.theme-dark) .session-live { background:rgba(215,160,74,.06); border-left-color:#d7a04a; }
+      :where(html.theme-dark) .live-badge, :where(html.theme-dark) .act-chip.act-pr, :where(html.theme-dark) .type-tag.type-tag-pr { background:rgba(215,160,74,.15); color:#d7a04a; }
+      :where(html.theme-dark) .pp-pr { background:rgba(215,160,74,.13); color:#d7a04a; }
+      :where(html.theme-dark) .pp-set-n.warm { background:rgba(215,160,74,.15); color:#d7a04a; }
+      :where(html.theme-dark) .streak-pill { background:rgba(215,160,74,.13); color:#d7a04a; }
       /* -- reds / drops -- */
-      .pp-set-n.drop { background:rgba(243,118,106,.15); color:#f3766a; }
-      .pp-set-n.fail { background:rgba(243,118,106,.18); color:#f3766a; }
-      .t-fail { background:rgba(243,118,106,.16); }
-      .t-drop { background:rgba(176,122,255,.16); color:#b07aff; }
-      .pp-menu button.danger { color:#f3766a; }
-      .ex-badge.lv-advanced { color:#f3766a; }
-      .ex-badge.lv-advanced .dot { background:#f3766a; }
-      .ex-badge.lv-intermediate { color:#d7a04a; }
-      .ex-badge.lv-intermediate .dot { background:#d7a04a; }
-      .ex-badge.lv-beginner { color:var(--green); }
-      .ex-badge.lv-beginner .dot { background:var(--green); }
-      .ex-badge.ex-type { color:#8a8f98; }
+      :where(html.theme-dark) .pp-set-n.drop { background:rgba(243,118,106,.15); color:#f3766a; }
+      :where(html.theme-dark) .pp-set-n.fail { background:rgba(243,118,106,.18); color:#f3766a; }
+      :where(html.theme-dark) .t-fail { background:rgba(243,118,106,.16); }
+      :where(html.theme-dark) .t-drop { background:rgba(176,122,255,.16); color:#b07aff; }
+      :where(html.theme-dark) .pp-menu button.danger { color:#f3766a; }
+      :where(html.theme-dark) .ex-badge.lv-advanced { color:#f3766a; }
+      :where(html.theme-dark) .ex-badge.lv-advanced .dot { background:#f3766a; }
+      :where(html.theme-dark) .ex-badge.lv-intermediate { color:#d7a04a; }
+      :where(html.theme-dark) .ex-badge.lv-intermediate .dot { background:#d7a04a; }
+      :where(html.theme-dark) .ex-badge.lv-beginner { color:var(--green); }
+      :where(html.theme-dark) .ex-badge.lv-beginner .dot { background:var(--green); }
+      :where(html.theme-dark) .ex-badge.ex-type { color:#8a8f98; }
       /* -- text grays -- */
-      .fineprint { color:#8a8f98; }
-      .nav button { color:#a2a7b0; }
-      .sess-actions .sm, .sess-actions .sm.sec { border-color:#4a4f59; }
+      :where(html.theme-dark) .fineprint { color:#8a8f98; }
+      :where(html.theme-dark) .nav button { color:#a2a7b0; }
+      :where(html.theme-dark) .sess-actions .sm, :where(html.theme-dark) .sess-actions .sm.sec { border-color:#4a4f59; }
       /* -- structure & chrome -- */
-      .home-head { background-image:linear-gradient(180deg, #1a2030 0%, #171b24 55%, rgba(19,20,23,0) 100%); }
-      .card { box-shadow:0 1px 2px rgba(0,0,0,.35), 0 8px 20px -10px rgba(0,0,0,.55); }
-      .home-head .card, .pp-menu { box-shadow:0 8px 24px rgba(0,0,0,.5); }
-      .sheet-back { background:rgba(0,0,0,.6); }
-      .nav { box-shadow:0 -2px 10px rgba(0,0,0,.4); }
-      .sticky-bar { box-shadow:0 -6px 16px rgba(0,0,0,.35); }
-      .draft-ex.dragging { box-shadow:0 10px 24px rgba(0,0,0,.5); }
-      .home-avatar { box-shadow:0 2px 8px rgba(0,0,0,.5); }
-      .ex-card { box-shadow:0 1px 2px rgba(0,0,0,.3); }
-      .view-toggle button { background:#262930; }
-      .add-media .am-plus { border-color:var(--card); }
+      :where(html.theme-dark) .home-head { background-image:linear-gradient(180deg, #1a2030 0%, #171b24 55%, rgba(19,20,23,0) 100%); }
+      :where(html.theme-dark) .card { box-shadow:0 1px 2px rgba(0,0,0,.35), 0 8px 20px -10px rgba(0,0,0,.55); }
+      :where(html.theme-dark) .home-head .card, :where(html.theme-dark) .pp-menu { box-shadow:0 8px 24px rgba(0,0,0,.5); }
+      :where(html.theme-dark) .sheet-back { background:rgba(0,0,0,.6); }
+      :where(html.theme-dark) .nav { box-shadow:0 -2px 10px rgba(0,0,0,.4); }
+      :where(html.theme-dark) .sticky-bar { box-shadow:0 -6px 16px rgba(0,0,0,.35); }
+      :where(html.theme-dark) .draft-ex.dragging { box-shadow:0 10px 24px rgba(0,0,0,.5); }
+      :where(html.theme-dark) .home-avatar { box-shadow:0 2px 8px rgba(0,0,0,.5); }
+      :where(html.theme-dark) .ex-card { box-shadow:0 1px 2px rgba(0,0,0,.3); }
+      :where(html.theme-dark) .view-toggle button { background:#262930; }
+      :where(html.theme-dark) .add-media .am-plus { border-color:var(--card); }
       /* 2+3: --green/--blue are brightened for TEXT on charcoal, which makes white text on
          SOLID fills fail contrast. Solid fills use deeper steps of the same hues instead
          (white on #1f8a4c ~= 4.4:1, on #3b6de8 ~= 4.6:1); text/links/borders keep the
          bright tokens. */
-      button { background:#1f8a4c; }
-      .ex-row.ex-on .ex-add { background:#1f8a4c; }
-      .check input:checked + .box { background:#1f8a4c; border-color:#1f8a4c; }
-      button.blue, .btn-primary, .btn-answer, .chip.on, .badge, .view-toggle button.on,
-      .sess-actions .sm.blue, .btn-new { background:#3b6de8; }
-      .sess-actions .sm.blue { border-color:#3b6de8; }
-      .btn-new { border-color:#3b6de8; }
-    }
+      :where(html.theme-dark) button { background:#1f8a4c; }
+      :where(html.theme-dark) .ex-row.ex-on .ex-add { background:#1f8a4c; }
+      :where(html.theme-dark) .check input:checked + .box { background:#1f8a4c; border-color:#1f8a4c; }
+      :where(html.theme-dark) button.blue, :where(html.theme-dark) .btn-primary, :where(html.theme-dark) .btn-answer, :where(html.theme-dark) .chip.on, :where(html.theme-dark) .badge, :where(html.theme-dark) .view-toggle button.on, :where(html.theme-dark) .sess-actions .sm.blue, :where(html.theme-dark) .btn-new { background:#3b6de8; }
+      :where(html.theme-dark) .sess-actions .sm.blue { border-color:#3b6de8; }
+      :where(html.theme-dark) .btn-new { border-color:#3b6de8; }
+
   </style>
 </head>
 <body>
@@ -841,6 +847,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=229"></script>
+  <script src="app.js?v=230"></script>
 </body>
 </html>
