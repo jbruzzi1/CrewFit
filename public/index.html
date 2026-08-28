@@ -736,7 +736,10 @@
       .log-rec.hold .lr-ic { background:#262930; }
       .missed-badge { background:#2f3238; color:#a2a7b0; }
       .log-rec.hold { background:#1f2126; }
-      .mg-card .mg-ico, .mg-ico { background:#262930; }
+      /* Muscle diagrams are drawn on/for white - on a dark tile the gray figure dissolves
+         and only the red pops (Jeff, Aug 28). The tile stays white in dark mode, like app-store
+         icon tiles; rounded corners already soften it. */
+      .mg-card .mg-ico, .mg-ico { background:#fff; }
       .mw-thumb, .thumb, .pavatar, .pp-photos img, .pp-photos video, .saved-grid .sq,
       .feed-cover, .wthumb { background:#262930; }
       .wthumb-empty { background:linear-gradient(135deg,#24262c,#1c1e22); }
@@ -838,6 +841,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=228"></script>
+  <script src="app.js?v=229"></script>
 </body>
 </html>
