@@ -4,7 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="theme-color" content="#f7f8fa" />
+  <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#131417" media="(prefers-color-scheme: dark)" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="apple-touch-icon" href="/icon-192.png" />
   <!-- without this every first load asks for /favicon.ico and takes a 404 -->
@@ -710,6 +711,122 @@
     .qs-empty .qs-t { font-size:14px; font-weight:600; color:var(--fg); margin-bottom:3px; }
     .qs-empty .qs-s { font-size:12.5px; }
     .qs-add { margin-top:16px; }
+
+    /* ============================ DARK MODE (v228) ============================
+       Follows the phone's setting - no in-app toggle. One media block, two parts:
+       (1) the :root tokens flip, which re-colors everything var()-based;
+       (2) targeted overrides for every rule that uses literal colors (inventory
+       in the v228 commit). Palette is TUNED, not inverted: charcoal base (pure
+       black kills card shadows), brightened blue (#5a8bff - brand #2563eb fails
+       contrast on charcoal), muted gold for Live (amber went "Halloween" on
+       dark, Jeff Aug 28), green stays the achievement color. Keep this block at
+       the END of the stylesheet so equal-specificity overrides win by order. */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg:#131417; --card:#1c1e22; --fg:#f1f2f4; --muted:#a2a7b0;
+        --green:#3ecf72; --avatar:#454a54; --blue:#5a8bff; --red:#f3766a; --line:#2b2e34;
+        --s1:#2b3a5c; --s2:#3a5488; --s3:#4a71b8; --s4:#5a8bff;
+      }
+      /* -- surfaces & fills (light grays -> raised charcoal) -- */
+      .pp-dots:active, .pp-menu button:active, .lib-item:active, .ex-card.log-row:active,
+      .lib-item.log-row:active, .profile-set:active, .mg-card:active, .ex-row:active,
+      .set-row:active, .rc-chip, .rest, .load-chip, .hold-ic, .self-tag, .empty-ic,
+      .streak, .pill, .chip, .fav, .ex-add, .ex-idx, .t-normal, .pp-set-n,
+      .seg .chip, .seg button, #vis.seg, .seg.wk-seg, .log-rec.soon .lr-ic,
+      .log-rec.hold .lr-ic { background:#262930; }
+      .missed-badge { background:#2f3238; color:#a2a7b0; }
+      .log-rec.hold { background:#1f2126; }
+      .mg-card .mg-ico, .mg-ico { background:#262930; }
+      .mw-thumb, .thumb, .pavatar, .pp-photos img, .pp-photos video, .saved-grid .sq,
+      .feed-cover, .wthumb { background:#262930; }
+      .wthumb-empty { background:linear-gradient(135deg,#24262c,#1c1e22); }
+      .wexb li::before { background:#2b2e34; color:#a2a7b0; }
+      .add-media { background:#1f2126; border-color:#2b2e34; }
+      .add-row input { background:#17181c; }
+      .add-row input::placeholder { color:#6f747d; }
+      .pr-self { background:#1f2126; border-color:#2b2e34; }
+      .rc-chip.warm { background:transparent; border-color:#3a3e46; color:#8a8f98; }
+      .aside-dot { color:#4a4f59; }
+      .pp-photo-dots .pp-dot { background:#3a3e46; }
+      .fav.pending { border-color:#3a3e46; }
+      .fav-pending-dot { background:#1c1e22; }
+      .fav-pending-dot svg { color:#6f747d; }
+      .qs-empty svg { color:#3a3e46; }
+      .drag-handle::before { background:linear-gradient(#6f747d,#6f747d) left top/16px 2px no-repeat, linear-gradient(#6f747d,#6f747d) left center/16px 2px no-repeat, linear-gradient(#6f747d,#6f747d) left bottom/16px 2px no-repeat; }
+      .log-rec.soon { border-color:#3a3e46; }
+      /* segmented controls: the "on" chip was solid white */
+      #vis.seg button.on, .seg.wk-seg button.on { background:#3a3e46; color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.4); }
+      .seg .chip.on, .seg button.on { background:rgba(90,139,255,.16); }
+      /* -- blue tints -- */
+      .inv-banner { background:#1b2540; border-color:#2c3c63; }
+      .inv-card:active { background:#222c4a; }
+      .inv-card + .inv-card { border-top-color:#2c3c63; }
+      .chat-row .chat-send, .req .ra .sm.ok { background:#1b2540; border-color:#2c3c63; color:var(--blue); }
+      .btn-quick { background:transparent; }
+      .btn-quick:active { background:#222c4a; }
+      .txt-btn:active, .add-btn:active { background:rgba(90,139,255,.12); }
+      .edit-banner { background:rgba(90,139,255,.12); }
+      .t-warm { background:rgba(90,139,255,.16); }
+      .drag-placeholder { background:rgba(90,139,255,.08); }
+      .drag-handle:active { background:rgba(90,139,255,.18); }
+      .btn-new { box-shadow:0 6px 14px rgba(0,0,0,.4); }
+      /* -- greens (recommendation engine, PR moments) -- */
+      .rp-ic, .rc-pr-ic, .rc-next-ic, .log-rec.up .lr-ic, .log-rec.almost .lr-ic,
+      .hold-ic.almost-ic { background:rgba(62,207,114,.14); color:var(--green); }
+      .rc-chip.top { background:rgba(62,207,114,.14); color:var(--green); }
+      .rp-tag, .rc-next-to, .drv-p.up, .beat-chip { color:var(--green); }
+      .beat-chip { background:rgba(62,207,114,.14); }
+      .log-rec.up, .rc-pr { background:rgba(62,207,114,.07); border-color:rgba(62,207,114,.25); }
+      .log-rec.almost { border-color:rgba(62,207,114,.45); }
+      .pr-beat { border-color:var(--green); background:rgba(62,207,114,.05); }
+      .act-chip.done { background:rgba(62,207,114,.16); }
+      /* -- amber -> muted gold -- */
+      .session-live { background:rgba(215,160,74,.06); border-left-color:#d7a04a; }
+      .live-badge, .act-chip.act-pr, .type-tag.type-tag-pr { background:rgba(215,160,74,.15); color:#d7a04a; }
+      .pp-pr { background:rgba(215,160,74,.13); color:#d7a04a; }
+      .pp-set-n.warm { background:rgba(215,160,74,.15); color:#d7a04a; }
+      .streak-pill { background:rgba(215,160,74,.13); color:#d7a04a; }
+      /* -- reds / drops -- */
+      .pp-set-n.drop { background:rgba(243,118,106,.15); color:#f3766a; }
+      .pp-set-n.fail { background:rgba(243,118,106,.18); color:#f3766a; }
+      .t-fail { background:rgba(243,118,106,.16); }
+      .t-drop { background:rgba(176,122,255,.16); color:#b07aff; }
+      .pp-menu button.danger { color:#f3766a; }
+      .ex-badge.lv-advanced { color:#f3766a; }
+      .ex-badge.lv-advanced .dot { background:#f3766a; }
+      .ex-badge.lv-intermediate { color:#d7a04a; }
+      .ex-badge.lv-intermediate .dot { background:#d7a04a; }
+      .ex-badge.lv-beginner { color:var(--green); }
+      .ex-badge.lv-beginner .dot { background:var(--green); }
+      .ex-badge.ex-type { color:#8a8f98; }
+      /* -- text grays -- */
+      .fineprint { color:#8a8f98; }
+      .nav button { color:#a2a7b0; }
+      .sess-actions .sm, .sess-actions .sm.sec { border-color:#4a4f59; }
+      /* -- structure & chrome -- */
+      .home-head { background-image:linear-gradient(180deg, #1a2030 0%, #171b24 55%, rgba(19,20,23,0) 100%); }
+      .card { box-shadow:0 1px 2px rgba(0,0,0,.35), 0 8px 20px -10px rgba(0,0,0,.55); }
+      .home-head .card, .pp-menu { box-shadow:0 8px 24px rgba(0,0,0,.5); }
+      .sheet-back { background:rgba(0,0,0,.6); }
+      .nav { box-shadow:0 -2px 10px rgba(0,0,0,.4); }
+      .sticky-bar { box-shadow:0 -6px 16px rgba(0,0,0,.35); }
+      .draft-ex.dragging { box-shadow:0 10px 24px rgba(0,0,0,.5); }
+      .home-avatar { box-shadow:0 2px 8px rgba(0,0,0,.5); }
+      .ex-card { box-shadow:0 1px 2px rgba(0,0,0,.3); }
+      .view-toggle button { background:#262930; }
+      .add-media .am-plus { border-color:var(--card); }
+      /* 2+3: --green/--blue are brightened for TEXT on charcoal, which makes white text on
+         SOLID fills fail contrast. Solid fills use deeper steps of the same hues instead
+         (white on #1f8a4c ~= 4.4:1, on #3b6de8 ~= 4.6:1); text/links/borders keep the
+         bright tokens. */
+      button { background:#1f8a4c; }
+      .ex-row.ex-on .ex-add { background:#1f8a4c; }
+      .check input:checked + .box { background:#1f8a4c; border-color:#1f8a4c; }
+      button.blue, .btn-primary, .btn-answer, .chip.on, .badge, .view-toggle button.on,
+      .sess-actions .sm.blue, .btn-new { background:#3b6de8; }
+      .sess-actions .sm.blue { border-color:#3b6de8; }
+      .btn-new { border-color:#3b6de8; }
+    }
   </style>
 </head>
 <body>
@@ -721,6 +838,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=227"></script>
+  <script src="app.js?v=228"></script>
 </body>
 </html>
