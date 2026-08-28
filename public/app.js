@@ -203,7 +203,7 @@ function resetTransientModes(){
   EDITING_SESSION = null;                                     // next new workout saved over the edited one
   EDITING_ID = null;                                          // stuck inline-edit on a posted workout
   EDITING_TPL = null;                                         // stuck template edit
-  if(typeof TPL_MODE === 'object' && TPL_MODE) { TPL_MODE.active = false; TPL_MODE.id = null; TPL_MODE.name = ''; }
+  if(typeof TPL_MODE === 'object' && TPL_MODE) { TPL_MODE.active = false; TPL_MODE.id = null; TPL_MODE.name = ''; TPL_MODE.copy = false; }
 }
 
 // ---- Open empty states (v222 Home, v225 app-wide) ----
@@ -955,7 +955,29 @@ async function viewPost(id, authorId){
   loadPostComments(id, authorId);
 }
 // ===== Recovered post-view + chat helpers =====
-function togglePostMenu(id){ const m=document.getElementById('ppMenu-'+id); if(m) m.style.display = m.style.display==='none'?'block':'none'; }
+// v231 (Jeff): the menus used to be fiddly - the dots were the only way to close, several
+// could be open at once, and a stray tap did nothing. Now: opening one closes the rest, the
+// dots still toggle, and ANY tap outside a menu or its dots closes whatever is open (document
+// listener below; bubble phase, so menu-item clicks still run their action first).
+function togglePostMenu(id){
+  const m = document.getElementById('ppMenu-'+id);
+  if(!m) return;
+  const wasOpen = m.style.display !== 'none';
+  document.querySelectorAll('.pp-menu').forEach(x => { x.style.display = 'none'; });
+  if(!wasOpen) m.style.display = 'block';
+}
+// Guarded: test/client-hostile.mjs executes this file in a vm whose mock document may lack
+// addEventListener. Element.closest covers taps on the dots glyph/svg inside the button.
+if(typeof document !== 'undefined' && typeof document.addEventListener === 'function'){
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+    // keep the menu open only for taps on the dots or an actual menu OPTION - a tap on the
+    // menu's own background (its padding covers the next row's dots) closes it like any
+    // other outside tap
+    if(t && t.closest && (t.closest('.pp-dots') || t.closest('.pp-menu button'))) return;
+    document.querySelectorAll('.pp-menu').forEach(x => { x.style.display = 'none'; });
+  });
+}
 // Comments on a POSTED recap — a separate thread from the live-workout Chat (see loadChat /
 // sendChat below), stored on the post itself (server.js: s.posts[authorId].comments) rather than
 // the session's shared chat, so an old "at the gym, rack 3" message never shows up here.
@@ -1953,7 +1975,7 @@ async function editSession(id){
 }
 function toLocalInput(iso){ const d=new Date(iso); const p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; }
 // ---- Templates: page-based flow (list -> name -> pick exercises -> save) ----
-const TPL_MODE = { active:false, id:null, name:'' };   // active while building a template
+const TPL_MODE = { active:false, id:null, name:'', copy:false };   // active while building a template; copy = forking a friend's shared routine
 async function templatesPage(){
   // Same gap as openAddExercises() had: "Browse templates" is also reachable mid-create (from
   // createFlow()'s form), and tplUse() returns via createFlow() too — so without stashing here,
@@ -1987,7 +2009,7 @@ async function templatesPage(){
     <button class="pp-dots" onclick="togglePostMenu('${t.id}')" aria-label="More">\u22ef</button>
     <div class="pp-menu" id="ppMenu-${t.id}" style="display:none">${t.ownerId===ME.id
       ?`<button onclick="tplEdit('${t.id}')">Edit</button><button class="danger" onclick="tplDelete('${t.id}')">Delete</button>`
-      :`<button class="danger" onclick="tplHide('${t.id}')">Remove</button>`}</div></div>`;
+      :`<button onclick="tplEditCopy('${t.id}')">Edit a copy</button><button class="danger" onclick="tplHide('${t.id}')">Remove</button>`}</div></div>`;
   $('app').innerHTML = `<div class="wrap tpl-page">
     <div class="pick-head lib-head"><h1 style="flex:1">Routines</h1>
       <button class="icon-btn" onclick="tplNew()" title="New routine">＋</button></div>
@@ -1996,7 +2018,7 @@ async function templatesPage(){
     ${shared.length?`<div class="lib-cat" style="margin-top:12px">Shared by friends</div>`+shared.map(row).join(''):''}</div>`;
 }
 function tplNew(){
-  TPL_MODE.active=true; TPL_MODE.id=null; TPL_MODE.name='';
+  TPL_MODE.active=true; TPL_MODE.id=null; TPL_MODE.name=''; TPL_MODE.copy=false;
   DRAFT={ exercises:[] }; EDITING_TPL=null;
   openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Name routine</h2></div>
     <label class="muted">Routine name</label>
@@ -2015,9 +2037,23 @@ function tplConfirmName(){
 async function tplEdit(id){
   const { mine } = await H.get('/api/templates');
   const t = mine.find(x=>x.id===id); if(!t) return;
-  TPL_MODE.active=true; TPL_MODE.id=id; TPL_MODE.name=t.name;
+  TPL_MODE.active=true; TPL_MODE.id=id; TPL_MODE.name=t.name; TPL_MODE.copy=false;
   DRAFT={ exercises:t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax})) };
   EDITING_TPL=id;
+  templateExercises();
+}
+// Jeff, Aug 28 (evening): "I want to edit routines shared by friends." Same principle as
+// /remove-mine and /hide - NEVER touch the owner's object. Editing a friend's routine opens the
+// full editor pre-filled and SAVING CREATES YOUR OWN COPY (plain POST /api/templates - no server
+// change); the friend's original is untouched and stays in your Shared list until you Remove it.
+// The menu item says "Edit a copy" and the save button "Save as my routine" so nobody expects
+// their edit to reach the friend.
+async function tplEditCopy(id){
+  const { shared } = await H.get('/api/templates');
+  const t = shared.find(x=>x.id===id); if(!t) return;
+  TPL_MODE.active=true; TPL_MODE.id=null; TPL_MODE.name=t.name; TPL_MODE.copy=true;
+  DRAFT={ exercises:t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax})) };
+  EDITING_TPL=null;
   templateExercises();
 }
 async function tplDelete(id){
@@ -2038,7 +2074,7 @@ async function tplHide(id){
 }
 async function templateExercises(){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
-  const nameField = TPL_MODE.id
+  const nameField = (TPL_MODE.id || TPL_MODE.copy)
     ? `<input id="tplNameEdit" class="tpl-name-edit" value="${esc(TPL_MODE.name||'')}" placeholder="Routine name" autocomplete="off">`
     : `<h1>${esc(TPL_MODE.name||'Routine')}</h1>`;
   $('app').innerHTML = `<div class="wrap create-flow">
@@ -2046,20 +2082,20 @@ async function templateExercises(){
     ${nameField}
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button>
-    <button class="blue" onclick="finishTemplate()">✓ ${TPL_MODE.id?'Save changes':'Create routine'}</button></div>`;
+    <button class="blue" onclick="finishTemplate()">✓ ${TPL_MODE.id?'Save changes':(TPL_MODE.copy?'Save as my routine':'Create routine')}</button></div>`;
   renderDraft();
 }
 function tplOpenPicker(){ openAddExercises(); }
 async function finishTemplate(){
   if(!DRAFT.exercises.length){ alert('Add at least one exercise'); return; }
-  const liveName = (TPL_MODE.id && $('tplNameEdit')) ? $('tplNameEdit').value.trim() : TPL_MODE.name.trim();
+  const liveName = ((TPL_MODE.id || TPL_MODE.copy) && $('tplNameEdit')) ? $('tplNameEdit').value.trim() : TPL_MODE.name.trim();
   if(!liveName){ alert('Name your routine first.'); return; }
   const payload = { name:liveName, exercises:DRAFT.exercises };
   const r = TPL_MODE.id
     ? await H.put('/api/templates/'+TPL_MODE.id, payload)
     : await H.post('/api/templates', payload);
   if(r.error) return alert(r.error);
-  TPL_MODE.active=false; TPL_MODE.id=null; templatesPage();
+  TPL_MODE.active=false; TPL_MODE.id=null; TPL_MODE.copy=false; templatesPage();
 }
 async function tplUse(id){
   const { mine, shared } = await H.get('/api/templates');
