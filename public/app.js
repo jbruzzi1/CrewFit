@@ -771,7 +771,23 @@ async function viewPost(id, authorId){
     const setsHtml = blocks || `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">No sets logged</div>`;
     return `<div class="pp-ex"><div class="pp-ex-name">${esc(heading)}</div></div>${setsHtml}`;
   }).join('');
-  const photos = media.length ? `<h2>Photos</h2><div class="pp-photos">${media.map((m,i)=>`<div class="pp-photo">${m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`}${isAuthor?`<button class="pp-photo-x" onclick="deletePhoto('${id}','${authorId}',${i})" aria-label="Delete photo">✕</button>`:''}</div>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
+  // Jeff, Aug 28: "I want to be able to add or change the picture i added later once its on my
+  // profile and already logged." Delete-a-photo already existed (below); this adds the other half
+  // -- reuses the exact same .add-media button the save/edit-session pages already use, and the
+  // exact same fetch-current-post -> mutate media -> re-POST /post pattern deletePhoto() uses, so
+  // an already-posted recap's photos work the same whether you're adding or removing. Shown even
+  // with zero photos yet (not just alongside existing ones) so it's discoverable, not just a repair
+  // path -- "add or change ... later" covers a recap you saved with no photo at all.
+  const addPhotoRow = (isAuthor && media.length<4) ? `<div class="media-line" style="margin-top:${media.length?'10px':'0'}">
+    <label class="add-media" title="Add photo or video">
+      <svg class="am-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg>
+      <span class="am-plus"></span>
+      <input type="file" accept="image/*,video/*" multiple style="display:none" onchange="addPostPhoto('${id}','${authorId}',this)">
+    </label>
+    <span class="ml-text">${media.length?'Add another':'Add a photo / video'}</span>
+  </div>` : '';
+  const photoStrip = media.length ? `<div class="pp-photos">${media.map((m,i)=>`<div class="pp-photo">${m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`}${isAuthor?`<button class="pp-photo-x" onclick="deletePhoto('${id}','${authorId}',${i})" aria-label="Delete photo">✕</button>`:''}</div>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
+  const photos = (media.length || addPhotoRow) ? `<h2>Photos</h2>${photoStrip}${addPhotoRow}` : '';
   const notes = post.notes ? esc(post.notes) : '<span class="muted">How\'d it go?</span>';
   const hasFinishedPost = (s.history||[]).some(h=>h.userId===ME.id);
   const dots = isCreator ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none"><button onclick="enterWorkoutEdit('${id}')">Edit session</button><button class="danger" onclick="deleteSession('${id}', ${hasFinishedPost})">Delete session</button></div>` : '';
@@ -818,6 +834,34 @@ async function deletePhoto(id, authorId, idx){
   const post = s && s.posts && s.posts[authorId];
   if(!post) return;
   const media = (post.media||[]).filter((_,i)=>i!==idx);
+  const r = await H.post(`/api/sessions/${id}/post`, { notes: post.notes||'', media, visibility: post.visibility||'only_me' });
+  if(r && r.error){ alert(r.error); return; }
+  viewPost(id, authorId);
+}
+// Add (or, paired with deletePhoto above, effectively replace) a photo/video on an already-posted
+// recap. Same MAX-4 / one-video-max rules as the save page's addWorkoutMedia -- re-fetches the
+// current post so this can't stomp on notes/visibility saved by a stale in-memory copy.
+async function addPostPhoto(id, authorId, input){
+  const files = Array.from(input.files || []);
+  input.value = '';
+  if(!files.length) return;
+  const s = await H.get('/api/sessions/'+id);
+  const post = (s && s.posts && s.posts[authorId]) || {};
+  const media = Array.isArray(post.media) ? post.media.slice() : [];
+  const MAX = 4;
+  for(const file of files){
+    if(media.length>=MAX){ alert('You can add up to 4 photos or videos.'); break; }
+    const isImg = file.type.startsWith('image/');
+    const type = isImg ? 'image' : 'video';
+    if(type==='video' && media.some(m=>m.type==='video')){ alert('Only one video is allowed.'); continue; }
+    const src = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    media.push({ type, src });
+  }
   const r = await H.post(`/api/sessions/${id}/post`, { notes: post.notes||'', media, visibility: post.visibility||'only_me' });
   if(r && r.error){ alert(r.error); return; }
   viewPost(id, authorId);
