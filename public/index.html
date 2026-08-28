@@ -106,7 +106,10 @@
        Renamed instead of touching the .pr family, which several other Progress-tab classes
        (.pr-n/.pr-d/.pr-beat/etc.) depend on. Same fix applied to .type-tag.pr below, which had the
        identical collision on the logged-set PR badge. */
-    .act-chip.act-pr { background:rgba(245,158,11,.15); color:#b45309; }
+    /* PR markers are solid GREEN - green is the achievement color (streak, recap card);
+       gold stays reserved for the Live now status. Dark uses the deeper fill green (v228
+       contrast lesson: white on the bright dark-green fails). */
+    .act-chip.act-pr { background:var(--green); color:#fff; }
     .act-chip.done { background:rgba(16,185,129,.15); color:var(--green); }
     .btn-new { padding:13px 18px; font-size:14px; border-radius:14px; margin:16px 0 8px; width:auto; align-self:flex-start; box-shadow:0 4px 12px rgba(37,99,235,.25); }
     h2 { font-size:12px; margin:28px 0 12px; color:var(--muted); text-transform:uppercase; letter-spacing:.8px; font-weight:600; }
@@ -196,7 +199,7 @@
     .pp-set-n.drop { background:#ffe8e0; color:#c2410c; }
     .pp-set-n.fail { background:#fde2e2; color:#b91c1c; }
     .pp-set-val { color:var(--fg); }
-    .pp-pr { font-size:10px; font-weight:700; color:#b8860b; background:#fff8e1; border-radius:6px; padding:1px 6px; }
+    .pp-pr { font-size:10px; font-weight:700; color:#fff; background:var(--green); border-radius:6px; padding:1px 6px; }
     .pp-collab { font-size:12px; color:var(--blue); margin:2px 0 10px; }
     .row { display:flex; gap:8px; align-items:center; }
     .row > * { flex:1; }
@@ -479,7 +482,7 @@
        badge on a set row was matching the unrelated Progress-tab .pr list-row class too, and that
        rule's own display:flex/padding (never overridden by .type-tag, which sets neither) applied
        unopposed, ballooning it into a full-width row instead of a small badge. */
-    .type-tag.type-tag-pr { background:rgba(245,158,11,.15); color:#b45309; }
+    .type-tag.type-tag-pr { background:var(--green); color:#fff; }
     .seg { display:flex; gap:6px; margin:6px 0 14px; }
     .seg .chip, .seg button { flex:1; text-align:center; background:#eef1f5; color:var(--muted); border:1px solid transparent; border-radius:999px; padding:9px 0; font-size:12px; font-weight:600; cursor:pointer; font:inherit; }
     .seg .chip.on, .seg button.on { background:rgba(37,99,235,.12); color:var(--blue); border:1px solid var(--blue); font-weight:700; }
@@ -514,18 +517,18 @@
        check, then each block rises in order. All of it is decoration over content that is
        already visible-safe: prefers-reduced-motion shows the finished state instantly. */
     .rc-check { width:56px; height:56px; display:block; margin:6px auto 10px; }
-    .rc-check circle { stroke:var(--green); stroke-width:2.5; fill:none; stroke-dasharray:164; stroke-dashoffset:164; animation:rcDraw .5s ease-out forwards; }
-    .rc-check path { stroke:var(--green); stroke-width:3.2; fill:none; stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:34; stroke-dashoffset:34; animation:rcDraw .35s .4s ease-out forwards; }
+    .rc-check circle { stroke:var(--green); stroke-width:2.5; fill:none; stroke-dasharray:164; stroke-dashoffset:164; animation:rcDraw .8s ease-out forwards; }
+    .rc-check path { stroke:var(--green); stroke-width:3.2; fill:none; stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:34; stroke-dashoffset:34; animation:rcDraw .5s .65s ease-out forwards; }
     @keyframes rcDraw { to { stroke-dashoffset:0; } }
     @keyframes rcRise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
-    .rc-h1 { font-size:22px; font-weight:700; margin:2px 0 2px; letter-spacing:-.2px; text-align:center; animation:rcRise .45s .1s ease-out both; }
-    .rc-sub { text-align:center; font-size:13px; color:var(--muted); margin:0 0 14px; animation:rcRise .45s .18s ease-out both; }
-    .rc-streakline { display:flex; align-items:center; justify-content:center; gap:5px; color:var(--green); font-size:13px; font-weight:600; margin:6px 0 2px; animation:rcRise .45s .26s ease-out both; }
-    .rc-stats .rc-tile:nth-child(1) { animation:rcRise .45s .3s ease-out both; }
-    .rc-stats .rc-tile:nth-child(2) { animation:rcRise .45s .4s ease-out both; }
-    .rc-stats .rc-tile:nth-child(3) { animation:rcRise .45s .5s ease-out both; }
-    .rc-pr { animation:rcRise .5s .6s ease-out both; position:relative; overflow:hidden; }
-    .rc-pr::after { content:""; position:absolute; inset:0; transform:translateX(-110%); background:linear-gradient(115deg, transparent 30%, var(--shine) 50%, transparent 70%); animation:rcShine .9s 1.1s ease-out 1 both; pointer-events:none; }
+    .rc-h1 { font-size:22px; font-weight:700; margin:2px 0 2px; letter-spacing:-.2px; text-align:center; animation:rcRise .55s .25s ease-out both; }
+    .rc-sub { text-align:center; font-size:13px; color:var(--muted); margin:0 0 14px; animation:rcRise .55s .38s ease-out both; }
+    .rc-streakline { display:flex; align-items:center; justify-content:center; gap:5px; color:var(--green); font-size:13px; font-weight:600; margin:6px 0 2px; animation:rcRise .55s .5s ease-out both; }
+    .rc-stats .rc-tile:nth-child(1) { animation:rcRise .55s .6s ease-out both; }
+    .rc-stats .rc-tile:nth-child(2) { animation:rcRise .55s .75s ease-out both; }
+    .rc-stats .rc-tile:nth-child(3) { animation:rcRise .55s .9s ease-out both; }
+    .rc-pr { animation:rcRise .6s 1.05s ease-out both; position:relative; overflow:hidden; }
+    .rc-pr::after { content:""; position:absolute; inset:0; transform:translateX(-110%); background:linear-gradient(115deg, transparent 30%, var(--shine) 50%, transparent 70%); animation:rcShine 1.4s 1.8s ease-out 1 both; pointer-events:none; }
     @keyframes rcShine { to { transform:translateX(110%); } }
     @keyframes prPop { 0% { transform:scale(.3); opacity:0; } 100% { transform:scale(1); opacity:1; } }
     .type-tag-pr.pr-pop { animation:prPop .5s cubic-bezier(.34,1.56,.64,1) both; }
@@ -554,6 +557,8 @@
     .rc-chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
     .rc-chip { font-size:12px; font-weight:600; padding:4px 9px; border-radius:8px; background:#f1f3f6; color:var(--fg); }
     .rc-chip.top { background:rgba(6,122,6,.12); color:#067a06; }
+    .rc-chip.prfill { background:var(--green); color:#fff; font-weight:700; }
+    .rc-chip.prfill .star { color:#fff; }
     .rc-chip.warm { background:transparent; border:1px dashed #d6dae1; color:var(--muted); font-weight:500; }
     .rc-chip .star { margin-left:3px; }
     .rc-note { font-size:11px; color:var(--muted); padding:9px 2px 0; }
@@ -820,8 +825,10 @@
       :where(html.theme-dark) .act-chip.done { background:rgba(62,207,114,.16); }
       /* -- amber -> muted gold -- */
       :where(html.theme-dark) .session-live { background:rgba(215,160,74,.06); border-left-color:#d7a04a; }
-      :where(html.theme-dark) .live-badge, :where(html.theme-dark) .act-chip.act-pr, :where(html.theme-dark) .type-tag.type-tag-pr { background:rgba(215,160,74,.15); color:#d7a04a; }
-      :where(html.theme-dark) .pp-pr { background:rgba(215,160,74,.13); color:#d7a04a; }
+      :where(html.theme-dark) .live-badge { background:rgba(215,160,74,.15); color:#d7a04a; }
+      :where(html.theme-dark) .act-chip.act-pr, :where(html.theme-dark) .type-tag.type-tag-pr { background:#1f8a4c; color:#fff; }
+      :where(html.theme-dark) .pp-pr { background:#1f8a4c; color:#fff; }
+      :where(html.theme-dark) .rc-chip.prfill { background:#1f8a4c; color:#fff; }
       :where(html.theme-dark) .pp-set-n.warm { background:rgba(215,160,74,.15); color:#d7a04a; }
       :where(html.theme-dark) .streak-pill { background:rgba(215,160,74,.13); color:#d7a04a; }
       /* -- reds / drops -- */
@@ -875,6 +882,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=235"></script>
+  <script src="app.js?v=236"></script>
 </body>
 </html>
