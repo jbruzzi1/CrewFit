@@ -234,6 +234,96 @@ console.log('\nv187: finishing is PER PERSON — one participant\'s Log & Finish
   ok(progAfter.thisWeek >= 1, `the day they trained (135x5, finished, then left) still counts (thisWeek=${progAfter.thisWeek})`);
   ok(progAfter.streakWeeks >= 1, `and the streak still stands (streakWeeks=${progAfter.streakWeeks})`);
 
+  console.log("\nv242 (Jeff's list): PRs survive a keep-leave — sets are no longer deleted, so records/trends keep them; discard still erases");
+  {
+    const authP = { Authorization: 'Bearer ' + participant.token };
+    const prOf = async (name) => {
+      const prog = await fetch(B + '/api/progress', { headers: authP }).then(r => r.json());
+      return (prog.prs || []).find(p => p.exercise === name) || null;
+    };
+    // A PR needs something to beat: first outing is a baseline, the second beats it.
+    const base = await post('/api/sessions', { name: 'OHP Base', visibility: 'private',
+      scheduledAt: new Date(Date.now() - 30 * 864e5).toISOString(),
+      exercises: [{ name: 'Overhead Press' }], inviteUsernames: ['leave_partner'] }, creator.token);
+    await post('/api/sessions/' + base.id + '/accept', {}, participant.token);
+    await post('/api/sessions/' + base.id + '/log', { exerciseId: base.exercises[0].id, weight: 95, reps: 5 }, participant.token);
+    const prSess = await post('/api/sessions', { name: 'OHP PR Day', visibility: 'private',
+      scheduledAt: new Date().toISOString(),
+      exercises: [{ name: 'Overhead Press' }], inviteUsernames: ['leave_partner'] }, creator.token);
+    await post('/api/sessions/' + prSess.id + '/accept', {}, participant.token);
+    await post('/api/sessions/' + prSess.id + '/log', { exerciseId: prSess.exercises[0].id, weight: 115, reps: 5 }, participant.token);
+    let pr = await prOf('Overhead Press');
+    ok(pr && Number(pr.weight) === 115, `setup: the 115 is their Overhead Press record (got ${pr && pr.weight})`);
+
+    await post('/api/sessions/' + prSess.id + '/leave', { keep: true }, participant.token);
+    pr = await prOf('Overhead Press');
+    ok(pr && Number(pr.weight) === 115, `the PR SURVIVES leaving the workout it was set in (got ${pr && pr.weight} — used to collapse to 95)`);
+
+    // ...but nobody still in the workout is shown the departed person's sets (no recap posted)
+    const creatorView = await fetch(B + '/api/sessions/' + prSess.id, { headers: { Authorization: 'Bearer ' + creator.token } }).then(r => r.json());
+    ok(!creatorView.logs || !creatorView.logs[participant.user.id],
+       "a remaining member no longer sees the departed person's sets — stored is not shown");
+
+    // discard is still a real discard: a NEW record erased by keep:false goes away with its sets
+    const pr2 = await post('/api/sessions', { name: 'OHP PR Day 2', visibility: 'private',
+      scheduledAt: new Date().toISOString(),
+      exercises: [{ name: 'Overhead Press' }], inviteUsernames: ['leave_partner'] }, creator.token);
+    await post('/api/sessions/' + pr2.id + '/accept', {}, participant.token);
+    await post('/api/sessions/' + pr2.id + '/log', { exerciseId: pr2.exercises[0].id, weight: 125, reps: 5 }, participant.token);
+    pr = await prOf('Overhead Press');
+    ok(pr && Number(pr.weight) === 125, `setup: the record moved to 125 (got ${pr && pr.weight})`);
+    await post('/api/sessions/' + pr2.id + '/leave', { keep: false }, participant.token);
+    pr = await prOf('Overhead Press');
+    ok(pr && Number(pr.weight) === 115, `discard-leave still erases those sets, and the record honestly falls back (got ${pr && pr.weight})`);
+
+    console.log('\nv242: a departed person\'s sets are shown exactly where their RECAP admits the viewer — and nowhere else');
+    // Frank: a friend of both creator and partner, in no workout — the friend-tier viewer.
+    const frank = await reg('leave_frank', 'pass1234', 'Frank');
+    await post('/api/friends/request', { username: 'leave_frank' }, creator.token);
+    await post('/api/friends/accept', { from: creator.user.id }, frank.token);
+    await post('/api/friends/request', { username: 'leave_frank' }, participant.token);
+    await post('/api/friends/accept', { from: participant.user.id }, frank.token);
+
+    const recapDay = await post('/api/sessions', { name: 'Recap Day', visibility: 'friends',
+      scheduledAt: new Date().toISOString(),
+      exercises: [{ name: 'Incline Bench Press' }], inviteUsernames: ['leave_partner'] }, creator.token);
+    await post('/api/sessions/' + recapDay.id + '/accept', {}, participant.token);
+    await post('/api/sessions/' + recapDay.id + '/log', { exerciseId: recapDay.exercises[0].id, weight: 100, reps: 5 }, participant.token);
+    await post('/api/sessions/' + recapDay.id + '/log', { exerciseId: recapDay.exercises[0].id, weight: 185, reps: 4 }, creator.token);
+    // partner also floats a swap idea, then publishes a friends-visible recap, then leaves
+    await post('/api/sessions/' + recapDay.id + '/suggest', { exerciseId: recapDay.exercises[0].id, swapTo: 'Machine Chest Press' }, participant.token);
+    await post('/api/sessions/' + recapDay.id + '/post', { notes: 'good one', media: [], visibility: 'friends' }, participant.token);
+    await post('/api/sessions/' + recapDay.id + '/leave', { keep: true }, participant.token);
+
+    const memberView = await fetch(B + '/api/sessions/' + recapDay.id, { headers: { Authorization: 'Bearer ' + creator.token } }).then(r => r.json());
+    ok(memberView.logs && (memberView.logs[participant.user.id] || []).some(l => l.weight === 100),
+       "a remaining member DOES see the departed person's sets when their recap admits them (posted friends-visible)");
+    const frankView = await fetch(B + '/api/sessions/' + recapDay.id, { headers: { Authorization: 'Bearer ' + frank.token } }).then(r => r.json());
+    ok(frankView.logs && (frankView.logs[participant.user.id] || []).some(l => l.weight === 100),
+       "a friend-tier viewer admitted by that same recap sees the author's sets too — not just the reader tier (v242 widening)");
+    ok(!frankView.logs || !(frankView.logs[creator.user.id] || []).length,
+       "but the CREATOR's sets stay out of Frank's view — no recap of the creator's admits him, and arriving via someone else's does not widen");
+
+    console.log('\nv242 (cold-review catch): leaving withdraws your PENDING swap suggestions — approving one later must not rewrite a departed person\'s kept sets');
+    const pending = (memberView.suggestedEdits || []).filter(e => e.proposedBy === participant.user.id && e.status === 'pending');
+    ok(pending.length === 0, 'the pending swap suggestion was withdrawn by the leave');
+    pr = await prOf('Incline Bench Press');
+    ok(pr && Number(pr.weight) === 100, `and their record still says Incline Bench Press 100 (got ${pr && pr.exercise} ${pr && pr.weight})`);
+
+    console.log('\nv242: the invited "already started" counts only count people still here');
+    const countsDay = await post('/api/sessions', { name: 'Counts Day', visibility: 'friends',
+      scheduledAt: new Date().toISOString(),
+      exercises: [{ name: 'Lat Pulldown' }], inviteUsernames: ['leave_partner', 'leave_frank'] }, creator.token);
+    await post('/api/sessions/' + countsDay.id + '/accept', {}, participant.token);
+    await post('/api/sessions/' + countsDay.id + '/log', { exerciseId: countsDay.exercises[0].id, weight: 120, reps: 10 }, participant.token);
+    await post('/api/sessions/' + countsDay.id + '/leave', { keep: true }, participant.token);
+    const invitedView = await fetch(B + '/api/sessions/' + countsDay.id, { headers: { Authorization: 'Bearer ' + frank.token } }).then(r => r.json());
+    ok(!Object.keys(invitedView.logCounts || {}).length,
+       `deciding Frank's invitation: the person who logged and LEFT is not "already started" (${JSON.stringify(invitedView.logCounts || {})})`);
+    ok(!Object.keys(invitedView.logs || {}).some(k => k === participant.user.id),
+       'and no departed sets ride along to the invited tier either (no recap on this one)');
+  }
+
   console.log('\na departed participant\'s credit blocks delete just like a CURRENT participant\'s would');
   // the partner above already left `finished` and still holds a history row there — this is
   // exactly the shape a plain "who has logged" check misses, since their s.logs entry is gone.
@@ -370,6 +460,9 @@ console.log("\nJeff, Aug 21: \"I have exercises in my profile that when I click 
   await post('/api/sessions/' + orphSession.id + '/accept', {}, participant.token);
   const exId = orphSession.exercises[0].id;
   await post('/api/sessions/' + orphSession.id + '/log', { exerciseId: exId, weight: 135, reps: 8 }, participant.token);
+  // the creator logs too — the "no creator sets handed over" assertion below is only a real
+  // assertion if the creator actually HAS sets that could leak (cold-review catch: it was vacuous)
+  await post('/api/sessions/' + orphSession.id + '/log', { exerciseId: exId, weight: 205, reps: 3 }, creator.token);
   // partner writes a recap before leaving — this is the one thing that should still be theirs to see
   await post('/api/sessions/' + orphSession.id + '/post', { notes: 'Felt strong today', media: [], visibility: 'only_me' }, participant.token);
   await post('/api/sessions/' + orphSession.id + '/leave', { keep: true }, participant.token);
@@ -388,8 +481,13 @@ console.log("\nJeff, Aug 21: \"I have exercises in my profile that when I click 
   ok(Array.isArray(view.exercises) && view.exercises.some(e => e.name === 'Bench Press'), 'the plan (what the workout was) still comes through');
   ok(view.posts && view.posts[participant.user.id] && view.posts[participant.user.id].notes === 'Felt strong today',
      'their OWN recap, written before they left, is still theirs to read back');
-  ok(!view.logs || !view.logs[participant.user.id], "but their live SETS are not resurrected (Leave already deleted those — history is the permanent record now, weights/reps aren't)");
-  ok(!view.logs || !view.logs[creator.user.id], "and they do not get handed the CREATOR's sets either — one visible recap of their own does not widen into everyone else's data");
+  // v242: this assertion used to be the exact opposite ("their live SETS are not resurrected")
+  // — that codified the old delete-on-leave behavior, which silently erased every PR set in a
+  // workout the moment its owner left it. Keep-leave now keeps the sets; your own are always
+  // yours to see.
+  ok(view.logs && (view.logs[participant.user.id] || []).some(l => l.weight === 135 && l.reps === 8),
+     'their own sets survived the keep-leave and come back to them (135x8 still there)');
+  ok(!view.logs || !view.logs[creator.user.id], "but they do not get handed the CREATOR's sets — one visible recap of their own does not widen into everyone else's data");
 
   const editAttempt = await fetch(B + '/api/sessions/' + orphSession.id, {
     method: 'PUT', headers: { ...J, Authorization: 'Bearer ' + participant.token },
