@@ -143,6 +143,10 @@
     /* the lift as it was named when THEY logged it, if a swap has since renamed it */
     .pp-who-note { font-weight:600; text-transform:none; letter-spacing:0; opacity:.8; }
     .pp-set { display:flex; align-items:center; gap:8px; padding:3px 0; font-size:13px; }
+    /* Jeff, Aug 28: tap-to-edit affordance on your own logged sets on a posted workout (never
+       another participant's -- setRows() in app.js only sets this class when mine===true). */
+    .pp-set-mine { cursor:pointer; }
+    .pp-set-edit { margin-left:auto; flex:0 0 auto; }
     .pp-set-n { width:22px; height:22px; border-radius:6px; background:#eef1f5; color:var(--muted); font-size:11px; font-weight:700; display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; }
     .pp-set-n.warm { background:#fff3e0; color:#b26a00; }
     .pp-set-n.drop { background:#ffe8e0; color:#c2410c; }
@@ -672,6 +676,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=215"></script>
+  <script src="app.js?v=217"></script>
 </body>
 </html>

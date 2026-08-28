@@ -51,7 +51,13 @@ because you wrote it.
 - Profile "Your Workouts" excludes pending invites.
 - Auth token key is `crewfit_token`, not `token`.
 - `String(s.scheduledAt)` before `.slice` in `server.js`.
-- The three-dots ⋯ menu renders only when `isCreator`.
+- The three-dots ⋯ menu's **Edit session** (the shared exercise list, via `renderWorkoutEdit`/`saveWorkoutEdit`) and **Delete session** both render only when `isCreator` (Delete removes the session for every participant, not just your own copy — Leave Workout is the non-creator's door out).
+  **Aug 28, 2026:** Jeff first asked to edit a posted workout even when he wasn't the creator, "just as if i was." A widened, creator-or-author version of `PUT /api/sessions/:id` was built and verified end to end, but his very next message narrowed the ask: *"I don't want to change the exercises — just my logged sets"* (plus deleting it off his own page, editing his own notes, and photos). So the exercise-list edit stayed exactly what it always was — creator-only, unchanged, reverted back to its original form in both server.js and app.js. What non-creator participants actually got instead, all scoped to "my own," documented in the comment above `viewPost` in app.js:
+  - **Remove from my profile** (non-creator author, in place of Delete) — `POST /api/sessions/:id/remove-mine`, a deliberately new/separate endpoint, not a variant of Leave Workout (see the comment above `/leave` in server.js for why: Leave exists specifically to *keep* your history, this exists to erase it).
+  - Editing your own logged sets, right on the posted-workout view — `editPostedSet`/`savePostedSet`/`deletePostedSet` in app.js, gated per set-row on `pid===ME.id`, using the already-self-scoped `PUT`/`DELETE /api/sessions/:id/log/:logId`.
+  - Editing your own notes on the recap — `editPostNotes` in app.js, gated on `isAuthor`.
+  - Adding/changing photos on the recap — `addPostPhoto`/`deletePhoto` in app.js, gated on `isAuthor` (shipped earlier, PR #29).
+  Do not widen `PUT /api/sessions/:id` (the exercise list) to non-creators again without asking Jeff first — he's now said no to it once already.
 - The boot block at the bottom of `server.js`, and `sameLoad()` / `inUnit()` / `perfDate()`.
 - Warm-ups and drop sets not counting as working sets — Jeff's call, deliberate.
 

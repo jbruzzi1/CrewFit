@@ -1577,7 +1577,54 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   res.json({ ok: true, left: true });
 });
 
+// Jeff, Aug 28: "Once its posted on my page - I want to be able to delete it off my page." This
+// is deliberately NOT built on top of /leave above: /leave (v187) exists specifically to KEEP your
+// history/credit when you step away -- the comment above it explains that an earlier version which
+// erased history on leave was a real bug, fixed on purpose. This route is the opposite of that by
+// design: erase MY OWN post, logged sets, and history credit for this session entirely, so it's
+// genuinely gone from my profile. It never touches the creator's or any other participant's data --
+// same "only your own stuff" guarantee /leave already gives, just going one step further for anyone
+// who explicitly wants their own trace of this workout gone, not just archived. Ownership hand-off
+// on creatorId, if the caller happens to be the creator, mirrors /leave exactly.
+app.post('/api/sessions/:id/remove-mine', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  const me = req.userId;
+  const hasConnection = (s.participants || []).includes(me) || s.creatorId === me
+    || (s.posts && s.posts[me]) || (s.history || []).some(h => h.userId === me) || (s.logs && s.logs[me]);
+  if (!hasConnection) return res.status(403).json({ error: 'not yours' });
+  if (s.posts) delete s.posts[me];
+  if (s.logs) delete s.logs[me];
+  s.participants = (s.participants || []).filter(x => x !== me);
+  s.invited = (s.invited || []).filter(x => x !== me);
+  s.history = (s.history || []).filter(h => h.userId !== me);
+  if (s.attendance) delete s.attendance[me];
+  for (const exId of Object.keys(s.variations || {})) {
+    if (s.variations[exId]) delete s.variations[exId][me];
+  }
+  if (s.creatorId === me) {
+    const currentOthers = othersWhoLogged(s, me);
+    s.creatorId = currentOthers.length ? currentOthers[0] : null;
+    if (s.creatorId && !s.participants.includes(s.creatorId)) s.participants.push(s.creatorId);
+  }
+  rebuildAllPrs();
+  await save(DB);
+  res.json({ ok: true, removed: true });
+});
+
 // update a session (creator only): name/time/location/note/visibility/exercises/invites
+//
+// Jeff, Aug 28, first asked to edit a workout posted on his profile even when he wasn't the
+// creator, "just as if i was." His very next message narrowed that: "I don't want to change the
+// exercises - just my logged sets" plus photos/notes/deleting it off his own page. So this stays
+// creator-only exactly as it always was -- editing the shared exercise list/session details is a
+// session-wide change everyone else is counting on, and Jeff's own follow-up confirmed he didn't
+// actually want that. What he DID want lives elsewhere: editing your own logged sets is already
+// self-scoped and needs no permission change (PUT /api/sessions/:id/log/:logId, keyed off
+// s.logs[req.userId]); notes/photos go through POST /api/sessions/:id/post, keyed off your own
+// post; and removing a workout from your own profile entirely is the new
+// POST /api/sessions/:id/remove-mine below. None of those touch this route.
 app.put('/api/sessions/:id', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
