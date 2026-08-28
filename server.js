@@ -2126,7 +2126,16 @@ function weeksFor(userId, count) {
   const days = new Set();
   for (const s of Object.values(DB.sessions)) {
     const mine = s.logs && s.logs[userId];
-    if (!mine || !mine.some(isWorkingSet)) continue;
+    const worked = !!(mine && mine.some(isWorkingSet));
+    // v241 (Jeff's list): finish credit counts as a trained day too. /leave deletes your own
+    // s.logs entry but deliberately keeps your history row, so a workout you logged, finished
+    // and then left silently vanished from days trained, this week and the streak. A history row
+    // is this codebase's permanent record that you trained here -- it is what blocks DELETE from
+    // erasing you (othersWithCredit) and what the alumni tier is built on -- so it is exactly as
+    // countable as a working set. Day is keyed to the workout's own scheduled day, same as the
+    // logs path, not to the day the finish button happened to be tapped.
+    const credited = (s.history || []).some(h => h.userId === userId);
+    if (!worked && !credited) continue;
     days.add(perfDate(s.scheduledAt).slice(0, 10));
   }
   const today = new Date();

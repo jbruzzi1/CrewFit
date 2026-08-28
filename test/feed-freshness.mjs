@@ -167,6 +167,47 @@ console.log('\nmore than 3 real PRs in a week truncates the line instead of list
     `and the fourth is summarized rather than named, so the line does not run on (saw: ${carlPrItems[0] && carlPrItems[0].text})`);
 }
 
+console.log('\nv239 recap rows: a friend\'s posted recap shows in the feed, thumbnail gated to own /uploads/, visibility respected, and fresh recaps sort above the weekly summary');
+{
+  // Bob posts a recap on this week's Back Day with a photo already on disk (the /uploads/ path
+  // shape is what a saved photo becomes; the ingest regex accepts it without re-writing a file).
+  const sessions = await get('/api/sessions', bob.token).then(r => r.json());
+  const backDay = sessions.find(s => s.name === 'Back Day');
+  await post(`/api/sessions/${backDay.id}/post`, { notes: 'good pulls', visibility: 'friends',
+    media: [{ type: 'image', src: '/uploads/bobrecap.jpg' }] }, bob.token);
+  let feed = await get('/api/feed', alice.token).then(r => r.json());
+  const recap = feed.find(f => f.type === 'recap' && f.sessionId === backDay.id);
+  ok(!!recap, "Bob's posted recap reaches Alice's feed as a recap row");
+  ok(recap && recap.text === 'finished Back Day', `and it names the workout (saw: ${recap && recap.text})`);
+  ok(recap && recap.thumb === '/uploads/bobrecap.jpg', 'the photo rides along as the thumbnail');
+  ok(recap && recap.by === bob.user.id, 'attributed to Bob');
+
+  // Bob finishes the workout too -> Alice's feed gains a "completed" summary row. The summary is
+  // stamped with the workout's date (midnight), the recap with the moment it was posted -- so the
+  // fresh recap must sort ABOVE the summary (v239 cold-review catch: summaries stamped "now"
+  // permanently outranked every real-timestamped row).
+  await post(`/api/sessions/${backDay.id}/lock`, {}, bob.token);
+  feed = await get('/api/feed', alice.token).then(r => r.json());
+  const iRecap = feed.findIndex(f => f.type === 'recap' && f.sessionId === backDay.id);
+  const iDone = feed.findIndex(f => f.type === 'completed' && f.by === bob.user.id);
+  ok(iDone !== -1, "Bob's weekly summary row appeared after he finished");
+  ok(iRecap !== -1 && iRecap < iDone, `and the fresh recap sorts above it (recap at index ${iRecap}, summary at ${iDone})`);
+
+  // A recap with no photo still gets a row, with no thumbnail to render.
+  const earlierBack = sessions.find(s => s.name === 'Earlier Back Day');
+  await post(`/api/sessions/${earlierBack.id}/post`, { notes: 'no pics', visibility: 'friends', media: [] }, bob.token);
+  feed = await get('/api/feed', alice.token).then(r => r.json());
+  const bare = feed.find(f => f.type === 'recap' && f.sessionId === earlierBack.id);
+  ok(!!bare && bare.thumb === null, 'a photo-less recap still rows up, thumb explicitly null');
+
+  // An only_me recap must never reach a friend's feed, whatever its timestamp.
+  const oldLeg = sessions.find(s => s.name === 'Old Leg Day');
+  await post(`/api/sessions/${oldLeg.id}/post`, { notes: 'just for me', visibility: 'only_me', media: [] }, bob.token);
+  feed = await get('/api/feed', alice.token).then(r => r.json());
+  ok(!feed.some(f => f.type === 'recap' && f.sessionId === oldLeg.id),
+    "an only_me recap stays out of Alice's feed even though it was posted seconds ago");
+}
+
 try { srv && srv.kill(); } catch {}
 rmSync(DIR, { recursive: true, force: true });
 await testDb.drop();
