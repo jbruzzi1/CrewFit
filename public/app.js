@@ -206,6 +206,18 @@ function resetTransientModes(){
   if(typeof TPL_MODE === 'object' && TPL_MODE) { TPL_MODE.active = false; TPL_MODE.id = null; TPL_MODE.name = ''; }
 }
 
+// ---- Open empty states (v222 Home, v225 app-wide) ----
+// A card ("pill box") is only drawn when there is something in it. An empty section stays OPEN
+// on the page: icon, one bold line, one muted line, optional CTA — no container. Section headers
+// around them always render (discoverability rule), so nothing becomes hidden.
+// STATIC STRINGS ONLY — nothing here is esc()'d. Never pass server- or user-derived text.
+const homeEmpty = (icon, title, sub, cta) =>
+  `<div class="home-empty">${icon}<div class="he-title">${title}</div><div class="he-sub">${sub}</div>${cta||''}</div>`;
+const ICON_CAL = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><rect x="3.5" y="5" width="17" height="15.5" rx="3" stroke="#9ca3af" stroke-width="1.6"/><path d="M3.5 9.5h17M8.5 3.5v3M15.5 3.5v3" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+const ICON_PEOPLE = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M8 6a3 3 0 1 1 6 0 3 3 0 0 1-6 0Zm-5 13c0-3 3.5-5 8-5" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/><circle cx="17" cy="8" r="2.4" stroke="#9ca3af" stroke-width="1.6"/><path d="M14 19c0-2.2 2-3.6 4.4-3.6" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+const ICON_FEED = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M4 18V8l8-4 8 4v10" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 18v-6h6v6" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+const ICON_LIST = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><rect x="4" y="3.5" width="16" height="17" rx="3" stroke="#9ca3af" stroke-width="1.6"/><path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4.5" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+
 // ---- Home / sessions (Option B: split sections) ----
 async function home(){
   // weeks=26, not 4: streakWeeks is computed inside the requested window, so a 4-week request
@@ -331,15 +343,6 @@ async function home(){
   // forward and otherwise leaves everything exactly where the API's date order put it.
   const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && !hasFinishedSession(s, ME.id))
     .sort((a,b) => (isSessionLiveNow(b)?1:0) - (isSessionLiveNow(a)?1:0));
-  // v222: the card ("pill box") is only drawn when there is something in it. An empty section
-  // stays OPEN on the page — header, icon, explanation, no container. Section headers always
-  // render (discoverability rule), so nothing becomes hidden.
-  // STATIC STRINGS ONLY — nothing here is esc()'d. Never pass server- or user-derived text.
-  const homeEmpty = (icon, title, sub, cta) =>
-    `<div class="home-empty">${icon}<div class="he-title">${title}</div><div class="he-sub">${sub}</div>${cta||''}</div>`;
-  const ICON_CAL = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><rect x="3.5" y="5" width="17" height="15.5" rx="3" stroke="#9ca3af" stroke-width="1.6"/><path d="M3.5 9.5h17M8.5 3.5v3M15.5 3.5v3" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
-  const ICON_PEOPLE = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M8 6a3 3 0 1 1 6 0 3 3 0 0 1-6 0Zm-5 13c0-3 3.5-5 8-5" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/><circle cx="17" cy="8" r="2.4" stroke="#9ca3af" stroke-width="1.6"/><path d="M14 19c0-2.2 2-3.6 4.4-3.6" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
-  const ICON_FEED = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M4 18V8l8-4 8 4v10" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 18v-6h6v6" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
   html += `<h2>Your Sessions</h2>`;
   if(yours.length){
     html += `<div class="card">`;
@@ -1982,7 +1985,7 @@ async function templatesPage(){
     <div class="pick-head lib-head"><h1 style="flex:1">Routines</h1>
       <button class="icon-btn" onclick="tplNew()" title="New routine">＋</button></div>
     <div class="muted" style="font-size:13px;margin:4px 2px 12px">Reusable workouts. Build one, then use it to start a new session in a tap.</div>
-    ${mine.length?mine.map(row).join(''):'<div class="card muted" style="padding:16px;text-align:center">No routines created. Tap ＋ to create one.</div>'}
+    ${mine.length?mine.map(row).join(''):homeEmpty(ICON_LIST, 'No routines yet', 'Tap + to create one, or save a finished workout as a routine.')}
     ${shared.length?`<div class="lib-cat" style="margin-top:12px">Shared by friends</div>`+shared.map(row).join(''):''}</div>`;
 }
 function tplNew(){
@@ -2843,7 +2846,7 @@ async function friends(){
         ${x.streak>1?`<div class="streak-pill">${flame}${x.streak} day streak</div>`:''}
       </div>
     </div>`).join('')
-    : '<div class="card muted" style="text-align:center">No friends yet.<br>Search above to find people to train with.</div>';
+    : homeEmpty(ICON_PEOPLE, 'No friends yet', 'Search above to find people to train with.');
   const reqRows = inc.length ? inc.map(x=>`
     <div class="req">
       ${avatarHtml(x,'av')}
@@ -2881,7 +2884,7 @@ async function friends(){
     ${freq.length?`<h2>Follow requests</h2><div class="card" style="padding:6px 12px">${followReqRows}</div>`:''}
     ${inc.length?`<h2>Friend requests</h2><div class="card" style="padding:6px 12px">${reqRows}</div>`:''}
     <h2>Friends</h2>
-    <div class="card" style="padding:6px 12px">${friendRows}</div>
+    ${f.length ? `<div class="card" style="padding:6px 12px">${friendRows}</div>` : friendRows}
   </div>`;
 }
 async function friendSearch(){
@@ -3031,19 +3034,16 @@ async function profileView(id){
   const actHtml = action?`<div style="margin:10px 0">${action}</div>`:'';
   // v147: surface recentActivity (PRs / weekly completions / streaks) — server already computes
   // this (buildActivityFor in server.js) but the profile page never rendered it. Same markup as
-  // Home's "Friends' Activity" strip, but since v222 Home's copy floats borderless (.home-head
-  // .card override) while this one keeps the bordered base .card — deliberate for now; extending
-  // the floating style beyond Home is a later step of the visual pass.
+  // Home's "Friends' Activity" strip; since v225 all cards float borderless, and (same rule as
+  // Home) the card only renders when there is activity in it — an empty section stays open.
   const activity = p.recentActivity||[];
-  const activityRows = activity.length
-    ? activity.map(a=>{
+  const activityRows = activity.map(a=>{
         const chip = a.type==='pr' ? `<span class="act-chip act-pr">PR</span>` : `<span class="act-chip done">✓</span>`;
         return `<div class="feed-item">${chip} ${esc(a.text)}</div>`;
-      }).join('')
-    : (isMe ? `<div class="muted">No activity yet — log a workout to see it here.</div>` : '');
-  const activityBlock = (activity.length || isMe)
+      }).join('');
+  const activityBlock = activity.length
     ? `<h2 class="light">Recent Activity</h2><div class="card feed-strip">${activityRows}</div>`
-    : '';
+    : (isMe ? `<h2 class="light">Recent Activity</h2>${homeEmpty(ICON_FEED, 'No activity yet', 'Log a workout to see it here.')}` : '');
   const workouts = p.myWorkouts||[];
   function woCard(w){
     // Jeff, Aug 26: no picture shouldn't mean a gray placeholder box - just skip the image area
@@ -3063,13 +3063,17 @@ async function profileView(id){
       ${collab?`<div class="wcollab">${collab}</div>`:''}
     </div>`;
   }
+  // isPrivate FIRST: a private profile returns myWorkouts:[] even when the person has plenty,
+  // and "No workouts logged yet" would be a false claim about their history (v163 rule). The
+  // privateBlock below already explains why the section is empty.
+  const isPrivate = p.limited && !isMe;
+  const emptyWorkouts = isPrivate ? '' : homeEmpty(ICON_CAL, 'No workouts logged yet', 'Finished workouts show up here.');
   const gridHtml = workouts.length
     ? `<div class="wgrid">` + workouts.map(w=>woCard(w)).join('') + `</div>`
-    : '<div class="muted" style="padding:14px 0;text-align:center">No workouts logged yet.</div>';
+    : emptyWorkouts;
   const listHtml = workouts.length
     ? `<div class="wgrid wlist">` + workouts.map(w=>woCard(w)).join('') + `</div>`
-    : '<div class="muted" style="padding:14px 0;text-align:center">No workouts logged yet.</div>';
-  const isPrivate = p.limited && !isMe;
+    : emptyWorkouts;
   const privateBlock = `<div class="card" style="text-align:center;padding:26px 16px;margin-top:10px">
       <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" style="color:var(--muted)"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
       <div style="font-weight:700;margin-top:8px">This profile is private</div>
