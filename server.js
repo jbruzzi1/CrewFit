@@ -1000,16 +1000,33 @@ app.get('/api/feed', auth, async (req, res) => {
   }
   // Workouts completed this week (from session history)
   for (const fid of myFriends) {
-    let count = 0;
+    let count = 0, latest = 0;
     for (const s of Object.values(DB.sessions)) {
       for (const h of (s.history || [])) {
-        if (h.userId === fid && new Date(h.date).getTime() >= weekAgo) count++;
+        const t = new Date(h.date).getTime();
+        if (h.userId === fid && t >= weekAgo) { count++; if (t > latest) latest = t; }
       }
     }
-    if (count > 0) items.push({ type: 'completed', by: fid, at: new Date().toISOString(), text: `completed ${count} workout${count>1?'s':''} this week` });
+    // v239: stamped with the latest contributing workout, not now() - a summary stamped "now"
+    // permanently outranked every recap/PR row with a real timestamp (cold-review catch)
+    if (count > 0) items.push({ type: 'completed', by: fid, at: new Date(latest).toISOString(), text: `completed ${count} workout${count>1?'s':''} this week` });
     // Current streak
     const streak = currentStreak(fid);
     if (streak >= 2) items.push({ type: 'streak', by: fid, at: new Date().toISOString(), text: `hit a ${streak} day workout streak` });
+  }
+  // v239: friends' posted recaps from the week - the feed's first VISUAL rows. Same
+  // visibility gate as everywhere else (canSeePostAuthor); the thumbnail is only sent when the
+  // photo has been migrated to an /uploads/ URL - a still-inline data URI would bloat the feed
+  // payload, so those rows just go without a thumb until the next boot migrates them.
+  for (const fid of myFriends) {
+    for (const s of Object.values(DB.sessions)) {
+      const p = s.posts && s.posts[fid];
+      if (!p || !p.at || !(new Date(p.at).getTime() >= weekAgo)) continue;   // NaN fails CLOSED, same as the PR path
+      if (!canSeePostAuthor(p, fid, req.userId)) continue;
+      const img = (p.media || []).find(m => m && m.type === 'image' && typeof m.src === 'string' && m.src.startsWith('/uploads/'));
+      items.push({ type: 'recap', by: fid, at: p.at, text: `finished ${s.name || 'a workout'}`,
+        sessionId: s.id, thumb: img ? img.src : null });
+    }
   }
   items.sort((a,b)=> new Date(b.at) - new Date(a.at));
   // Home shows this as a quick-glance strip, not a full history — cap it so a house full of
@@ -1044,7 +1061,10 @@ app.get('/api/templates', auth, async (req, res) => {
   // friend's routine it stays out of your list even if you unfriend and re-friend them later.
   const friendT = all.filter(t => DB.users[req.userId].friends.includes(t.ownerId)
     && !(t.hiddenBy && t.hiddenBy.includes(req.userId)));
-  res.json({ mine: mine.map(stripHidden), shared: friendT.map(stripHidden) });
+  // v239: shared rows carry WHO shared them - two friends' "Legs - Random" were otherwise
+  // indistinguishable (Jeff's real list, Aug 28). Display name only; never the id-to-name map.
+  res.json({ mine: mine.map(stripHidden),
+    shared: friendT.map(t => ({ ...stripHidden(t), ownerName: (DB.users[t.ownerId] && (DB.users[t.ownerId].displayName || DB.users[t.ownerId].username)) || '' })) });
 });
 // The non-owner half of "delete a routine": hides it from MY list, never touches the owner's
 // row. See the comment above GET /api/templates for why this can't just be DELETE /:id.

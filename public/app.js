@@ -392,8 +392,17 @@ async function home(){
     html += `<div class="card feed-strip">`;
     for(const f of feed){
       const who = await friendName(f.by);
+      if(f.type==='recap' && f.sessionId){
+        // a posted recap is a THING to open, not just a fact - tap goes to the workout itself
+        const lead = f.thumb ? `<img class="feed-thumb" src="${esc(f.thumb)}" alt="">` : `<span class="act-chip done">✓</span>`;
+        // .feed-lead is a fixed 36px column (Jeff, Aug 28 2026): photo thumbs, check pills and PR
+        // pills are all different widths, so without it the NAME started at a different x on every
+        // row type and mixed feeds looked ragged. Every feed row's lead must sit inside one.
+        html += `<div class="feed-item feed-recap" onclick="viewPost('${f.sessionId}','${f.by}')" style="cursor:pointer"><span class="feed-lead">${lead}</span><span><b>${esc(who)}</b> ${esc(f.text)}</span></div>`;
+        continue;
+      }
       const ic = f.type==='pr' ? `<span class="act-chip act-pr">PR</span>` : `<span class="act-chip done">✓</span>`;
-      html += `<div class="feed-item" onclick="profileView('${f.by}')" style="cursor:pointer">${ic} <b>${esc(who)}</b> ${esc(f.text)}</div>`;
+      html += `<div class="feed-item" onclick="profileView('${f.by}')" style="cursor:pointer"><span class="feed-lead">${ic}</span><span><b>${esc(who)}</b> ${esc(f.text)}</span></div>`;
     }
     html += `</div>`;
   } else {
@@ -2053,7 +2062,7 @@ async function templatesPage(){
   // (pp-dots/pp-menu/togglePostMenu), so all three screens handle secondary actions one way and
   // no solid-red button sits in the main list. Row is position:relative so the absolutely
   // positioned .pp-menu anchors to its own row.
-  const row = (t)=>`<div class="lib-item" style="position:relative"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${plur(t.exercises.length,'exercise')}</div></div>
+  const row = (t)=>`<div class="lib-item" style="position:relative"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${plur(t.exercises.length,'exercise')}${t.ownerName?` · from ${esc(t.ownerName)}`:''}</div></div>
     <button class="sec sm" onclick="tplUse('${t.id}')">Use</button>
     <button class="pp-dots" onclick="togglePostMenu('${t.id}')" aria-label="More">\u22ef</button>
     <div class="pp-menu" id="ppMenu-${t.id}" style="display:none">${t.ownerId===ME.id
@@ -3194,7 +3203,8 @@ async function profileView(id){
   const activity = p.recentActivity||[];
   const activityRows = activity.map(a=>{
         const chip = a.type==='pr' ? `<span class="act-chip act-pr">PR</span>` : `<span class="act-chip done">✓</span>`;
-        return `<div class="feed-item">${chip} ${esc(a.text)}</div>`;
+        // same .feed-lead fixed column as Home's feed - text start must line up across PR/check rows
+        return `<div class="feed-item"><span class="feed-lead">${chip}</span><span>${esc(a.text)}</span></div>`;
       }).join('');
   const activityBlock = activity.length
     ? `<h2 class="light">Recent Activity</h2><div class="card feed-strip">${activityRows}</div>`

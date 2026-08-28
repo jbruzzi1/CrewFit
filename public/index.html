@@ -142,6 +142,14 @@
     .inv-actions button.sm { border:1px solid transparent; }
     .inv-actions button.sm:active { filter:brightness(.93); }
     .feed-strip { display:flex; flex-direction:column; gap:2px; }
+    /* .feed-lead: fixed-width lead column for every feed row (Jeff, Aug 28 2026). Photo thumbs
+       (36px), check pills (~25px) and PR pills (~30px) are different widths, so names started at
+       a different x per row type and mixed feeds looked ragged. The column is exactly the thumb's
+       width; smaller pills center inside it. Both selectors are doubled (.feed-item.feed-lead
+       would be wrong - lead is a CHILD) to outrank the later plain .feed-item rule's align-items. */
+    .feed-item .feed-lead { flex:0 0 36px; display:flex; justify-content:center; align-items:center; }
+    .feed-item.feed-recap { align-items:center; }
+    .feed-thumb { width:36px; height:36px; border-radius:9px; object-fit:cover; flex:0 0 auto; background:var(--line); }
     .feed-item { font-size:13px; color:var(--fg); line-height:1.5; padding:7px 0; border-bottom:1px solid var(--line); }
     .feed-item:last-child { border-bottom:none; }
     .muted { color:var(--muted); font-size:12px; }
@@ -890,6 +898,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=238"></script>
+  <script src="app.js?v=239"></script>
 </body>
 </html>
