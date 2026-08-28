@@ -971,6 +971,22 @@ app.get('/api/me/streak-status', auth, async (req, res) => {
 function usersAtRiskOfLosingStreak() {
   return Object.keys(DB.users).filter(uid => streakStatusFor(uid).atRisk);
 }
+// v238: the deployed version, read from index.html's cache-bust (?v=NNN) - the one number
+// that already changes on every frontend ship. Lazily read + cached on first request, NOT at
+// startup (CLAUDE.md rule 7). No auth: it leaks nothing but a build number, and the client
+// asks before anyone logs in.
+let _appVersion = null;
+app.get('/api/version', (req, res) => {
+  if (_appVersion === null) {
+    try {
+      const html = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8');
+      const m = /app\.js\?v=(\d+)/.exec(html);
+      _appVersion = (m && m[1]) || '';
+    } catch (e) { _appVersion = ''; }
+  }
+  res.json({ v: _appVersion });
+});
+
 app.get('/api/feed', auth, async (req, res) => {
   const myFriends = DB.users[req.userId].friends;
   const items = [];

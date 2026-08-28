@@ -3490,6 +3490,40 @@ if(typeof MutationObserver !== 'undefined'){
   }).observe(document.body, {childList:true});
 }
 
+// ---- Update watcher (v238) ----
+// Every deploy used to require force-quitting the app to escape the cached page. The app now
+// reads its own ?v= off its script tag, asks the server for the deployed one when you come
+// back to the app (and every 10 minutes), and offers a one-tap refresh when they differ.
+// Never a forced reload - a mid-workout page reload would eat an open log sheet.
+// The listener block is typeof-guarded for test/client-hostile.mjs's vm; the mock DOM does
+// provide document.addEventListener, but setInterval/fetch may be absent there.
+function myAppVersion(){
+  try { const s = document.querySelector('script[src*="app.js"]');
+    const m = /[?&]v=(\d+)/.exec((s && s.src) || ''); return m ? m[1] : null; } catch(e){ return null; }
+}
+function showUpdateBar(){
+  if(document.getElementById('updateBar')) return;
+  const b = document.createElement('div');
+  b.id = 'updateBar';
+  b.innerHTML = 'A new version is ready <button onclick="location.reload()">Refresh</button>';
+  document.body.appendChild(b);
+}
+async function checkAppVersion(){
+  const mine = myAppVersion(); if(!mine) return;
+  try {
+    const r = await fetch('/api/version', { cache: 'no-store' });
+    const j = await r.json();
+    if(j && j.v && j.v !== mine) showUpdateBar();
+  } catch(e){}
+}
+if(typeof document !== 'undefined' && typeof document.addEventListener === 'function'
+   && typeof setInterval === 'function' && typeof fetch === 'function'){
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible') checkAppVersion();
+  });
+  setInterval(checkAppVersion, 10 * 60 * 1000);
+}
+
 // ---- Boot ----
 (async ()=>{
   if(TOKEN){
