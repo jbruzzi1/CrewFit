@@ -971,10 +971,12 @@ function togglePostMenu(id){
 if(typeof document !== 'undefined' && typeof document.addEventListener === 'function'){
   document.addEventListener('click', (e) => {
     const t = e.target;
-    // keep the menu open only for taps on the dots or an actual menu OPTION - a tap on the
-    // menu's own background (its padding covers the next row's dots) closes it like any
-    // other outside tap
-    if(t && t.closest && (t.closest('.pp-dots') || t.closest('.pp-menu button'))) return;
+    // Only the dots themselves keep the menu open (their own onclick handles the toggle).
+    // EVERYTHING else closes it - including choosing a menu option: this listener runs at
+    // bubble phase, AFTER the option's inline onclick, so the action fires and then the menu
+    // closes. v234 (Jeff): options that open a confirm sheet were leaving the menu hanging
+    // behind it, because unlike navigation they never repaint the page.
+    if(t && t.closest && t.closest('.pp-dots')) return;
     document.querySelectorAll('.pp-menu').forEach(x => { x.style.display = 'none'; });
   });
 }
