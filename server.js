@@ -1004,12 +1004,42 @@ app.get('/api/feed', auth, async (req, res) => {
 
 
 // ---- Templates (saved routines) ----
+// hiddenBy (added below, Aug 28) is a list of OTHER PEOPLE's user ids -- whoever removed this
+// routine from their own list, see the comment on GET below for why it exists at all. Nothing
+// client-side ever reads it, and there's no reason a routine's owner, or anyone else it's shared
+// with, should be able to see WHICH of their friends quietly removed it. Same instinct as
+// viewPost's "who sees whose" gating elsewhere in this file: every response that echoes a
+// template object -- GET's mine/shared, POST's create response, PUT's update response -- strips
+// it before the object leaves the server. (DELETE only ever returns {ok:true}, nothing to strip.)
+const stripHidden = t => { const { hiddenBy, ...rest } = t; return rest; };
 app.get('/api/templates', auth, async (req, res) => {
   const all = Object.values(DB.templates || {});
   const mine = all.filter(t => t.ownerId === req.userId);
   // also templates shared by friends
-  const friendT = all.filter(t => DB.users[req.userId].friends.includes(t.ownerId));
-  res.json({ mine, shared: friendT });
+  //
+  // Jeff, Aug 28: "I want to be able to delete friend shared routines having that option also."
+  // A shared routine is ONE object owned by your friend -- the "Delete" button on your OWN
+  // routines below (owner-only, and a real DELETE that erases the row for everyone) can't just
+  // be reused here: you deleting it would delete your friend's routine out from under them too.
+  // So "delete" a friend's routine means take it out of MY OWN Routines list only -- t.hiddenBy
+  // below, exactly the same "remove it for me, leave everyone else's copy alone" shape as
+  // POST /api/sessions/:id/remove-mine (Aug 28, above the session routes). Never surfaced to the
+  // owner or any other friend, and permanent -- there's no unhide button, so once you remove a
+  // friend's routine it stays out of your list even if you unfriend and re-friend them later.
+  const friendT = all.filter(t => DB.users[req.userId].friends.includes(t.ownerId)
+    && !(t.hiddenBy && t.hiddenBy.includes(req.userId)));
+  res.json({ mine: mine.map(stripHidden), shared: friendT.map(stripHidden) });
+});
+// The non-owner half of "delete a routine": hides it from MY list, never touches the owner's
+// row. See the comment above GET /api/templates for why this can't just be DELETE /:id.
+app.post('/api/templates/:id/hide', auth, async (req, res) => {
+  const t = DB.templates && DB.templates[req.params.id];
+  if (!t) return res.status(404).json({ error: 'not found' });
+  if (t.ownerId === req.userId) return res.status(400).json({ error: 'this is your own routine — delete it instead' });
+  t.hiddenBy = t.hiddenBy || [];
+  if (!t.hiddenBy.includes(req.userId)) t.hiddenBy.push(req.userId);
+  await save(DB);
+  res.json({ ok: true });
 });
 app.post('/api/templates', auth, async (req, res) => {
   const { name, exercises } = req.body || {};
@@ -1019,7 +1049,7 @@ app.post('/api/templates', auth, async (req, res) => {
   if (!DB.templates) DB.templates = {};
   DB.templates[id] = t;
   await save(DB);
-  res.json(t);
+  res.json(stripHidden(t));
 });
 app.put('/api/templates/:id', auth, async (req, res) => {
   const t = DB.templates && DB.templates[req.params.id];
@@ -1029,7 +1059,11 @@ app.put('/api/templates/:id', auth, async (req, res) => {
   if (name) t.name = capStr(name, 80);
   if (Array.isArray(exercises) && exercises.length) t.exercises = exercises.map(withDefaults);
   await save(DB);
-  res.json(t);
+  // stripHidden matters here specifically: once a friend has hidden this routine, t.hiddenBy is
+  // populated, and this is the response an owner gets back on every completely ordinary edit
+  // (finishTemplate/tplQuickSaveConfirm in app.js) -- without stripping it, editing your own
+  // routine would silently hand you the exact list of friends who quietly removed it.
+  res.json(stripHidden(t));
 });
 app.delete('/api/templates/:id', auth, async (req, res) => {
   const t = DB.templates && DB.templates[req.params.id];

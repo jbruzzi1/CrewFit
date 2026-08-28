@@ -1874,9 +1874,15 @@ async function templatesPage(){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
   const { mine, shared } = await H.get('/api/templates');
   window._TPL = { mine, shared };
+  // Jeff, Aug 28: "I want to be able to delete friend shared routines having that option also."
+  // Your own routines keep Edit + a real Delete (erases the row for everyone -- server-owner-
+  // gated). A friend's shared routine gets Remove instead of Delete -- same word Jeff would use,
+  // but it can only ever take the routine out of YOUR OWN list (POST .../hide, see the comment
+  // above GET /api/templates in server.js), never touch your friend's copy of it.
   const row = (t)=>`<div class="lib-item"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${t.exercises.length} exercises</div></div>
     <button class="sec sm" onclick="tplUse('${t.id}')">Use</button>
-    ${t.ownerId===ME.id?`<button class="sec sm" onclick="tplEdit('${t.id}')">Edit</button><button class="sec sm red" onclick="tplDelete('${t.id}')">Delete</button>`:''}</div>`;
+    ${t.ownerId===ME.id?`<button class="sec sm" onclick="tplEdit('${t.id}')">Edit</button><button class="sec sm red" onclick="tplDelete('${t.id}')">Delete</button>`
+      :`<button class="sec sm red" onclick="tplHide('${t.id}')">Remove</button>`}</div>`;
   $('app').innerHTML = `<div class="wrap tpl-page">
     <div class="pick-head lib-head"><h1 style="flex:1">Routines</h1>
       <button class="icon-btn" onclick="tplNew()" title="New routine">＋</button></div>
@@ -1914,6 +1920,16 @@ async function tplDelete(id){
   const t = mine.find(x=>x.id===id); if(!t) return;
   const r = await H.delete('/api/templates/'+id);
   if(r.error) alert(r.error); else templatesPage();
+}
+// Jeff, Aug 28: the non-owner half of "delete a routine" -- takes a friend's shared routine out
+// of YOUR list only. A real confirm() since, like removeFromMyProfile, there's no undo offered.
+async function tplHide(id){
+  const { shared } = await H.get('/api/templates');
+  const t = shared.find(x=>x.id===id); if(!t) return;
+  if(!confirm(`Remove "${t.name}" from your Routines? This only removes it from your own list — your friend's routine is untouched.`)) return;
+  const r = await H.post('/api/templates/'+id+'/hide', {});
+  if(r && r.error){ alert(r.error); return; }
+  templatesPage();
 }
 async function templateExercises(){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
