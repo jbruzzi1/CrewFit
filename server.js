@@ -1057,8 +1057,9 @@ app.get('/api/templates', auth, async (req, res) => {
   // So "delete" a friend's routine means take it out of MY OWN Routines list only -- t.hiddenBy
   // below, exactly the same "remove it for me, leave everyone else's copy alone" shape as
   // POST /api/sessions/:id/remove-mine (Aug 28, above the session routes). Never surfaced to the
-  // owner or any other friend, and permanent -- there's no unhide button, so once you remove a
-  // friend's routine it stays out of your list even if you unfriend and re-friend them later.
+  // owner or any other friend. Since v240 removal is undoable for a moment (POST /unhide below,
+  // driven by the client's undo toast); once that moment passes it stays out of your list even
+  // if you unfriend and re-friend them later.
   const friendT = all.filter(t => DB.users[req.userId].friends.includes(t.ownerId)
     && !(t.hiddenBy && t.hiddenBy.includes(req.userId)));
   // v239: shared rows carry WHO shared them - two friends' "Legs - Random" were otherwise
@@ -1074,6 +1075,18 @@ app.post('/api/templates/:id/hide', auth, async (req, res) => {
   if (t.ownerId === req.userId) return res.status(400).json({ error: 'this is your own routine — delete it instead' });
   t.hiddenBy = t.hiddenBy || [];
   if (!t.hiddenBy.includes(req.userId)) t.hiddenBy.push(req.userId);
+  await save(DB);
+  res.json({ ok: true });
+});
+// v240: the undo half of Remove (Jeff asked for an undo moment after removing a shared routine —
+// hide used to be permanent). Only ever removes YOUR OWN id from hiddenBy, so, like hide, it can
+// never touch the owner's row or any other friend's view of it. Idempotent on purpose: un-hiding
+// something that isn't hidden is {ok:true}, because the client's Undo button can race a
+// double-tap and neither tap should surface an error.
+app.post('/api/templates/:id/unhide', auth, async (req, res) => {
+  const t = DB.templates && DB.templates[req.params.id];
+  if (!t) return res.status(404).json({ error: 'not found' });
+  if (t.hiddenBy) t.hiddenBy = t.hiddenBy.filter(id => id !== req.userId);
   await save(DB);
   res.json({ ok: true });
 });
