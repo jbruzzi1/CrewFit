@@ -1151,7 +1151,7 @@ async function openLogSheet(sid, exId){
   const last = bestLog ? `${bestLog.weight} × ${bestLog.reps}` : '—';
   const sheet = document.createElement('div'); sheet.className='sheet-back';
   sheet.innerHTML = `
-    <div class="sheet log-sheet" onclick="event.stopPropagation()">
+    <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>Log · ${esc(e.name)}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
       <div class="ex-sub">${repLabel(e) ? `Target: <b>${e.defaultSets} × ${repLabel(e)}</b> · ` : ''}Last time: <b>${esc(last)}</b></div>
       <div id="logRec"></div>
@@ -3170,6 +3170,48 @@ async function setupPush(){
   }catch(e){ /* push optional for demo */ }
 }
 async function vapidKey(){ const r=await (await fetch('/api/vapid')).json(); return r.publicKey; }
+
+// ---- Keyboard-aware bottom sheets ----
+// Jeff, Aug 28 (screenshot from logging a set on Lat Pulldown): "When I go to log a set the
+// keyboard sometimes covers everything." .sheet-back is `position:fixed; inset:0` and every
+// sheet inside it is bottom-aligned (align-items:flex-end) to fill that. iOS Safari does NOT
+// shrink the LAYOUT viewport when the on-screen keyboard opens -- only the VISUAL viewport (the
+// part actually still visible above the keyboard) shrinks -- so a fixed element anchored to
+// "the bottom" stays anchored to the bottom of the space the keyboard now covers. The weight/
+// reps inputs and the Add button, near the bottom of the sheet, ended up rendered behind the
+// keyboard instead of merely scrolled off-screen where scrolling could still reach them.
+// window.visualViewport is the one API that actually reports the visible-above-the-keyboard
+// area, so this keeps every open .sheet-back sized to exactly that, and caps each .sheet's
+// height to fit inside it (on top of the plain CSS max-height/overflow-y in index.html, which
+// covers browsers with no visualViewport support at all).
+function syncSheetsToViewport(){
+  if(!window.visualViewport) return;
+  const vv = window.visualViewport;
+  document.querySelectorAll('.sheet-back').forEach(back=>{
+    back.style.height = vv.height + 'px';
+    back.style.top = vv.offsetTop + 'px';
+    const sheet = back.querySelector('.sheet');
+    // min() against the CSS's own 86vh so this only ever SHRINKS a sheet to fit above the
+    // keyboard -- it must never grow one taller than its normal, no-keyboard design height.
+    if(sheet) sheet.style.maxHeight = Math.max(160, Math.min(vv.height - 16, window.innerHeight*0.86)) + 'px';
+  });
+}
+if(window.visualViewport){
+  window.visualViewport.addEventListener('resize', syncSheetsToViewport);
+  window.visualViewport.addEventListener('scroll', syncSheetsToViewport);
+}
+// Also sync the instant a sheet is opened (not just on the next viewport change after) -- covers
+// a sheet opened while a keyboard is already up, e.g. editLogSet() stacking a second .sheet-back
+// on top of the still-open log sheet to edit a set you already logged. Guarded like the
+// visualViewport check above -- this
+// whole file also gets loaded and run for real (not just scanned as text) by
+// test/client-hostile.mjs in a plain Node vm with no MutationObserver global at all.
+if(typeof MutationObserver !== 'undefined'){
+  new MutationObserver(muts=>{
+    for(const m of muts) for(const n of m.addedNodes)
+      if(n.nodeType===1 && n.classList && n.classList.contains('sheet-back')){ syncSheetsToViewport(); return; }
+  }).observe(document.body, {childList:true});
+}
 
 // ---- Boot ----
 (async ()=>{
