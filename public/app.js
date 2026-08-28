@@ -311,7 +311,7 @@ async function home(){
       // stopPropagation sits on the button WRAPPER, not just the buttons, so the 6px gap between
       // Accept and Decline is not a stray "open the workout" tap target.
       html += `<div class="inv-card" onclick="openSession('${s.id}')">
-        <div class="inv-info"><b>${esc(creatorName)}</b> invited you<div class="tag">${esc(s.name||'Workout')} · ${s.exercises.length} exercises</div>
+        <div class="inv-info"><b>${esc(creatorName)}</b> invited you<div class="tag">${esc(s.name||'Workout')} · ${plur(s.exercises.length,'exercise')}</div>
           <div class="inv-open">See the workout →</div></div>
         <div class="row inv-actions" onclick="event.stopPropagation()">
           <button class="sm blue" onclick="acceptInvite('${s.id}')">Accept</button>
@@ -352,7 +352,7 @@ async function home(){
       const missed = !live && isSessionMissed(s, ME.id);
       const badge = live ? '<div class="live-badge">● Live now</div>' : (missed ? '<div class="missed-badge">Missed</div>' : '');
       html += `<div class="lib-item${live?' session-live':''}" onclick="openSession('${s.id}')">
-        <div>${badge}<b>${esc(label)}${s.exercises.length?` · ${s.exercises.length} exercises`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}</div></div></div>`;
+        <div>${badge}<b>${esc(label)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}</div></div></div>`;
     }
     html += `</div>`;
   } else {
@@ -379,7 +379,7 @@ async function home(){
     for(const s of joinable){
       const creatorName = await friendName(s.creatorId);
       html += `<div class="lib-item" onclick="openSession('${s.id}')">
-        <div><b>${esc(s.name)}${s.exercises.length?` · ${s.exercises.length} exercises`:''}</b><div class="tag">${esc(creatorName)} · ${fmtWhen(s.scheduledAt)}</div></div></div>`;
+        <div><b>${esc(s.name)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${esc(creatorName)} · ${fmtWhen(s.scheduledAt)}</div></div></div>`;
     }
     html += `</div>`;
   } else {
@@ -1002,7 +1002,9 @@ async function loadPostComments(id, authorId){
   }).join('');
 }
 async function deletePhoto(id, authorId, idx){
-  if(!confirm('Delete this photo?')) return;
+  confirmSheet('Delete photo?', 'The photo comes off your recap — the workout and your sets stay.', 'Delete photo', () => deletePhotoConfirmed(id, authorId, idx));
+}
+async function deletePhotoConfirmed(id, authorId, idx){
   const s = await H.get('/api/sessions/'+id);
   const post = s && s.posts && s.posts[authorId];
   if(!post) return;
@@ -1083,13 +1085,18 @@ async function savePostedSet(id, authorId, logId){
   closeSheet(); viewPost(id, authorId);
 }
 async function deletePostedSet(id, authorId, logId){
-  if(!confirm('Delete this set?')) return;
+  confirmSheet('Delete set?', "The set comes off your logged workout — there's no undo.", 'Delete set', () => deletePostedSetConfirmed(id, authorId, logId));
+}
+async function deletePostedSetConfirmed(id, authorId, logId){
   const s = await H.delete(`/api/sessions/${id}/log/${logId}`);
   if(s && s.error){ alert(s.error); return; }
   closeSheet(); viewPost(id, authorId);
 }
 async function acceptInvite(id){ await H.post(`/api/sessions/${id}/accept`,{}); openSession(id); }
-async function declineInvite(id){ if(!confirm('Decline this invite?')) return; await H.post(`/api/sessions/${id}/decline`,{}); home(); }
+async function declineInvite(id){
+  confirmSheet('Decline invite?', 'The workout comes off your Home.', 'Decline invite',
+    async () => { await H.post(`/api/sessions/${id}/decline`,{}); home(); }, false);
+}
 // The requester's half of the join-request flow — approveJoin/rejectJoin (below) are the
 // creator's half, and already existed; this side never had a button to actually fire the request
 // from, even though the server route has been there all along.
@@ -1435,7 +1442,9 @@ async function saveLogSet(logId){
   if(sid) openSession(sid, {silent:true});
 }
 async function delLogSet(logId){
-  if(!confirm('Delete this set?')) return;
+  confirmSheet('Delete set?', "The set comes off this workout — there's no undo.", 'Delete set', () => delLogSetConfirmed(logId));
+}
+async function delLogSetConfirmed(logId){
   const s=await H.delete(`/api/sessions/${LOGVIEW.sid}/log/${logId}`);
   if(s.error){ alert(s.error); return; }
   const sid = LOGVIEW.sid;
@@ -1587,7 +1596,7 @@ async function showSavePage(id){
   const media = Array.isArray(post.media) ? post.media : [];
   $('app').innerHTML = `<div class="wrap save-page">
     <h1>Save workout</h1>
-    <p class="sub">${esc(s.name||'Workout')} · ${when} · ${(s.exercises||[]).length} exercises</p>
+    <p class="sub">${esc(s.name||'Workout')} · ${when} · ${plur((s.exercises||[]).length,'exercise')}</p>
     <div class="sess-card">
       <b>${esc(s.name||'Workout')}</b>
       <div class="tag">${esc(exNames.join(' · '))}</div>
@@ -1670,7 +1679,9 @@ async function saveWorkout(id){
   showRecap(id);          // the recap is the LAST thing, after saving — notes and photos are done
 }
 async function deleteSession(id, alreadyFinished){
-  if(!confirm('Delete this workout?')) return;
+  confirmSheet('Delete workout?', "This removes the workout for everyone in it — not just you. There's no undo.", 'Delete workout', () => deleteSessionConfirmed(id, alreadyFinished));
+}
+async function deleteSessionConfirmed(id, alreadyFinished){
   const r = await H.delete(`/api/sessions/${id}`);
   // Someone else has real credit tied to this workout (current or a departed partner's history),
   // so deleting would erase their training record too. Offer to take yourself out instead — the
@@ -1713,7 +1724,9 @@ async function leaveWorkoutConfirmed(id, keep){
 // profile. Never touches the creator's or any other participant's data. A real confirm() because,
 // unlike Leave, there is no "keep credit" option here -- this is meant to actually remove it.
 async function removeFromMyProfile(id){
-  if(!confirm('Remove this workout from your profile? Your notes, photos, logged sets, and workout credit for it will be gone. This cannot be undone.')) return;
+  confirmSheet('Remove from my profile?', 'Your notes, photos, logged sets, and workout credit for this workout will be gone. This cannot be undone.', 'Remove from my profile', () => removeFromMyProfileConfirmed(id));
+}
+async function removeFromMyProfileConfirmed(id){
   const r = await H.post(`/api/sessions/${id}/remove-mine`, {});
   if(r && r.error){ alert(r.error); return; }
   showTab('me');
@@ -1724,8 +1737,8 @@ let INLINE_DIRTY = false;
 function markDirty(){ INLINE_DIRTY = true; }
 function enterWorkoutEdit(id){ EDITING_ID = id; openSession(id); }
 async function exitWorkoutEdit(id){
-  if(INLINE_DIRTY && !confirm('Discard your changes?')) return;
-  INLINE_DIRTY = false; EDITING_ID = null;
+  if(INLINE_DIRTY){ confirmSheet('Discard changes?', 'Your edits to this workout will be lost.', 'Discard changes', () => { INLINE_DIRTY = false; exitWorkoutEdit(id); }); return; }
+  EDITING_ID = null;
   const s = await H.get('/api/sessions/'+id);
   if(s && s.posts && s.posts[ME.id]) viewPost(id, ME.id); else openSession(id);
 }
@@ -1824,7 +1837,26 @@ async function saveWorkoutEdit(id){
     const who=Object.keys(s.logs||{}).filter(pid=>pid!==ME.id && (s.logs[pid]||[]).some(l=>l.exerciseId===rid));
     if(who.length) touched.push((ex&&ex.name)||'exercise');
   }
-  if(touched.length && !confirm(touched.length+' friend(s) logged sets on: '+touched.join(', ')+'. Saving will detach those sets. Continue?')) return;
+  if(touched.length){
+    confirmSheet('Save changes?', esc(plur(touched.length,'friend')) + ' logged sets on: ' + esc(touched.join(', ')) + '. Saving detaches those sets.', 'Save anyway', () => saveWorkoutEditConfirmed(id));
+    return;
+  }
+  saveWorkoutEditConfirmed(id); return;
+}
+// the part of saveWorkoutEdit that runs once the detach warning (if any) is accepted.
+// Re-reads the session and the edit rows itself - the page under the confirm sheet is
+// unchanged, and a callback must not lean on the outer call's locals.
+async function saveWorkoutEditConfirmed(id){
+  const s = await H.get('/api/sessions/'+id);
+  if(!s||s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
+  const rows=[...document.querySelectorAll('.inex-row')];
+  const exercises=rows.map(r=>{ const eid=r.dataset.ex;
+    return { id:eid, name:(document.getElementById('inex-name-'+eid)||{}).value||'Exercise',
+      defaultSets:Number((document.getElementById('inex-sets-'+eid)||{}).value||3),
+      defaultReps:Number((document.getElementById('inex-reps-'+eid)||{}).value||10),
+      defaultRepsMax:Number((document.getElementById('inex-repsmax-'+eid)||{}).value)||undefined };
+  });
+  if(!exercises.length){ alert('Add at least one exercise'); return; }
   const notes=document.getElementById('saveNotes').value;
   const r1=await H.put('/api/sessions/'+id,{ name:s.name, scheduledAt:s.scheduledAt, visibility:s.visibility, exercises, invited:(s.invited||[]), location:s.location, lengthMin:s.lengthMin, creatorNote:s.creatorNote });
   if(r1&&r1.error){ alert(r1.error); return; }
@@ -1944,7 +1976,7 @@ async function quickPickRoutine(){
   const { mine, shared } = await H.get('/api/templates');
   window._TPL = { mine, shared };
   const all = [...mine, ...shared];
-  const qRoutineRow = (t)=>`<div class="lib-item"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${t.exercises.length} exercises</div></div>
+  const qRoutineRow = (t)=>`<div class="lib-item"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${plur(t.exercises.length,'exercise')}</div></div>
     <button class="sec sm" onclick="quickUseRoutine('${t.id}')">Use</button></div>`;
   openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Routines</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
     <div class="card" style="margin-top:4px">${all.length ? all.map(qRoutineRow).join('') : '<div class="muted" style="padding:16px 6px">No routines saved yet. Build one from the Workouts tab, then it will show up here.</div>'}</div>
@@ -2004,7 +2036,7 @@ async function templatesPage(){
   // (pp-dots/pp-menu/togglePostMenu), so all three screens handle secondary actions one way and
   // no solid-red button sits in the main list. Row is position:relative so the absolutely
   // positioned .pp-menu anchors to its own row.
-  const row = (t)=>`<div class="lib-item" style="position:relative"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${t.exercises.length} exercises</div></div>
+  const row = (t)=>`<div class="lib-item" style="position:relative"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${plur(t.exercises.length,'exercise')}</div></div>
     <button class="sec sm" onclick="tplUse('${t.id}')">Use</button>
     <button class="pp-dots" onclick="togglePostMenu('${t.id}')" aria-label="More">\u22ef</button>
     <div class="pp-menu" id="ppMenu-${t.id}" style="display:none">${t.ownerId===ME.id
@@ -2056,18 +2088,50 @@ async function tplEditCopy(id){
   EDITING_TPL=null;
   templateExercises();
 }
+// ---- In-app confirmation sheet (replaces browser confirm(), which speaks no design language
+// and cannot be styled for dark mode). Same anatomy as the Reset workouts sheet: title, one
+// plain-language explanation, the action in red, Cancel. Callers esc() anything user-derived
+// they put in title/body.
+// The sheet closes ITSELF (not via closeSheet, which removes the FIRST .sheet-back in the
+// document — wrong one when this confirm is stacked on top of an already-open sheet, e.g.
+// deleting a set from the edit sheet).
+let CONFIRM_CB = null, CONFIRM_EL = null;
+function dismissConfirm(){ const el = CONFIRM_EL; CONFIRM_CB = null; CONFIRM_EL = null;
+  if(el){ el.classList.remove('show'); setTimeout(()=>el.remove(),200); } }
+function runConfirmCb(){ const cb = CONFIRM_CB; dismissConfirm(); if(cb) cb(); }
+// danger=false renders the action without red — for confirms that are choices, not destruction
+// (declining an invite is not framed as destructive, same as the invite banner's Decline).
+function confirmSheet(title, body, label, cb, danger=true){
+  CONFIRM_CB = cb;
+  CONFIRM_EL = openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>${title}</h2><button class="sec sm" onclick="dismissConfirm()">✕</button></div>
+    ${body ? `<div class="muted" style="padding:0 2px 14px; font-size:13px; line-height:1.5">${body}</div>` : ''}
+    <div class="sheet-list">
+      <button class="sheet-row${danger?' red':''}" onclick="runConfirmCb()">${label}</button>
+      <button class="sheet-row" onclick="dismissConfirm()">Cancel</button>
+    </div></div>`);
+  // the confirm's OWN backdrop dismisses the confirm — openSheetHtml's generic handler calls
+  // closeSheet(), which removes the FIRST .sheet-back and would pull the sheet out from UNDER
+  // a stacked confirm (cold-review catch)
+  CONFIRM_EL.onclick = (e)=>{ if(e.target===CONFIRM_EL) dismissConfirm(); };
+}
+// "1 exercises" was on half the screens in the app (Jeff, Aug 28)
+function plur(n, word){ return `${n} ${word}${n===1?'':'s'}`; }
 async function tplDelete(id){
   const { mine } = await H.get('/api/templates');
   const t = mine.find(x=>x.id===id); if(!t) return;
-  const r = await H.delete('/api/templates/'+id);
-  if(r.error) alert(r.error); else templatesPage();
+  confirmSheet('Delete routine?',
+    `"${esc(t.name)}" will be gone from your Routines — there's no undo. Workouts you already logged with it are not affected.`,
+    'Delete routine',
+    async ()=>{ const r = await H.delete('/api/templates/'+id); if(r.error) alert(r.error); else templatesPage(); });
 }
 // Jeff, Aug 28: the non-owner half of "delete a routine" -- takes a friend's shared routine out
 // of YOUR list only. A real confirm() since, like removeFromMyProfile, there's no undo offered.
 async function tplHide(id){
   const { shared } = await H.get('/api/templates');
   const t = shared.find(x=>x.id===id); if(!t) return;
-  if(!confirm(`Remove "${t.name}" from your Routines? This only removes it from your own list — your friend's routine is untouched.`)) return;
+  confirmSheet('Remove routine?', `"${esc(t.name)}" comes off your own list only — your friend's routine is untouched. There's no undo.`, 'Remove routine', () => tplHideConfirmed(id));
+}
+async function tplHideConfirmed(id){
   const r = await H.post('/api/templates/'+id+'/hide', {});
   if(r && r.error){ alert(r.error); return; }
   templatesPage();
@@ -2828,7 +2892,7 @@ function exDetail(name){
   requestAnimationFrame(()=>sheet.classList.add('show'));
 }
 function closeSheet(){ const s=document.querySelector('.sheet-back'); if(s){ s.classList.remove('show'); setTimeout(()=>s.remove(),200); } }
-function openSheetHtml(inner){ const s=document.createElement('div'); s.className='sheet-back'; s.onclick=(e)=>{ if(e.target===s) closeSheet(); }; s.innerHTML=inner; document.body.appendChild(s); requestAnimationFrame(()=>s.classList.add('show')); }
+function openSheetHtml(inner){ const s=document.createElement('div'); s.className='sheet-back'; s.onclick=(e)=>{ if(e.target===s) closeSheet(); }; s.innerHTML=inner; document.body.appendChild(s); requestAnimationFrame(()=>s.classList.add('show')); return s; }
 // A single in-app bottom sheet for free-text entry. Jeff, Aug 27: "when I go to add a bio or
 // notes etc I don't want a separate iPhone style pop up to happen to input... I want it to stay
 // within the app." The browser's own prompt() is a native OS dialog entirely outside the app's
@@ -2864,11 +2928,11 @@ async function templates(){
   let html = `<div class="wrap"><h1>Routines</h1><div class="muted">Saved routines — reuse on your next workout</div>`;
   if(mine.length){
     html += `<h2>Yours</h2>`;
-    for(const t of mine) html += `<div class="lib-item"><div><b>${esc(t.name)}</b><div class="tag">${t.exercises.length} exercises</div></div><button class="sm" onclick="useTpl('${t.id}')">Use</button></div>`;
+    for(const t of mine) html += `<div class="lib-item"><div><b>${esc(t.name)}</b><div class="tag">${plur(t.exercises.length,'exercise')}</div></div><button class="sm" onclick="useTpl('${t.id}')">Use</button></div>`;
   }
   if(shared.length){
     html += `<h2>From friends</h2>`;
-    for(const t of shared) html += `<div class="lib-item"><div><b>${esc(t.name)}</b><div class="tag">${t.exercises.length} ex</div></div><button class="sm" onclick="useTpl('${t.id}')">Use</button></div>`;
+    for(const t of shared) html += `<div class="lib-item"><div><b>${esc(t.name)}</b><div class="tag">${plur(t.exercises.length,'exercise')}</div></div><button class="sm" onclick="useTpl('${t.id}')">Use</button></div>`;
   }
   if(!mine.length && !shared.length) html += `<div class="card muted">No routines created. Create a workout and choose "Save as routine".</div>`;
   html += `</div>`;

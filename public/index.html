@@ -404,7 +404,7 @@
        chaining into the page when it hits its end. */
     html.sheet-open, html.sheet-open body { overflow:hidden; }  /* both: iOS scrolls html, desktop may scroll body */
     .sheet { overscroll-behavior:contain; }
-    .sheet-back { overscroll-behavior:contain; position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex; align-items:flex-end; opacity:0; transition:opacity .2s; z-index:50; }
+    .sheet-back { overscroll-behavior:contain; position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex; align-items:flex-end; opacity:0; transition:opacity .2s; z-index:70; }
     .sheet-back.show { opacity:1; }
     /* Jeff, Aug 28 (screenshot): "When I go to log a set the keyboard sometimes covers
        everything." max-height/overflow-y here (previously only on .log-sheet, so every OTHER
@@ -852,6 +852,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=232"></script>
+  <script src="app.js?v=233"></script>
 </body>
 </html>

@@ -299,7 +299,12 @@ console.log('\nJeff, Aug 20 (cold-review catch): the "remove it from your profil
   const ctx = makeCtx();
   vm.runInContext(`TOKEN = ${JSON.stringify(creator.token)}; ME = ${JSON.stringify(creator.user)};`, ctx);
   sink.html = '';
+  // v233: deleteSession now shows an in-app confirm sheet first (browser confirm() is gone);
+  // the actual DELETE lives in deleteSessionConfirmed, which the sheet's red button calls.
   await vm.runInContext('deleteSession', ctx)(bugSession.id, false);
+  ok(sink.html.includes('Delete workout?'), 'deleteSession opens the in-app confirm sheet first (v233)');
+  sink.html = '';
+  await vm.runInContext('deleteSessionConfirmed', ctx)(bugSession.id, false);
   ok(sink.html.includes('Save today\'s sets') && sink.html.includes('Discard today\'s sets'),
      'the delete-fallback opens the same Keep/Discard sheet Leave uses, instead of posting an empty {} leave body');
   const dbMid = await readDb(testDb.url);
@@ -339,6 +344,8 @@ console.log('\nand the delete-fallback for an ALREADY-finished creator still jus
   vm.runInContext(`TOKEN = ${JSON.stringify(creator.token)}; ME = ${JSON.stringify(creator.user)};`, ctx);
   sink.html = '';
   await vm.runInContext('deleteSession', ctx)(finSession.id, true);
+  ok(sink.html.includes('Delete workout?'), 'confirm sheet shown for the already-finished case too (v233)');
+  await vm.runInContext('deleteSessionConfirmed', ctx)(finSession.id, true);
   const db = await readDb(testDb.url);
   const hist = (db.sessions[finSession.id].history || []).filter(h => h.userId === creator.user.id);
   ok(hist.length === 1, `already-finished delete-fallback does not duplicate the creator's credit (${hist.length} row(s))`);
