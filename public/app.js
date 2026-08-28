@@ -208,23 +208,84 @@ function resetTransientModes(){
 
 // ---- Home / sessions (Option B: split sections) ----
 async function home(){
-  const sessions = await H.get('/api/sessions');
-  const feed = await H.get('/api/feed');
-  const _fr = await H.get('/api/friends');
+  // weeks=26, not 4: streakWeeks is computed inside the requested window, so a 4-week request
+  // silently caps the streak stat at "4 week streak" — false for anyone on a longer run.
+  const [sessions, feed, _fr, prog] = await Promise.all([
+    H.get('/api/sessions'), H.get('/api/feed'), H.get('/api/friends'), H.get('/api/progress?weeks=26')
+  ]);
   const myFriends = (_fr && _fr.friends) ? _fr.friends : (Array.isArray(_fr) ? _fr : []);
   const friendName = async (id)=> myFriends.find(f=>f.id===id)?.displayName || 'A friend';   // reads as a phrase, not as someone's name
   const initial = ((ME&&(ME.displayName||ME.username))||'?')[0]||'?';
   const first = ((ME.displayName||ME.username||'there').split(' ')[0]);
-  const HYPE = ['Time to crush it','Let\'s get after it','Show up. Lift heavy'];
-  const hypeLine = HYPE[Math.floor(Math.random()*HYPE.length)];
+  // v221 header (Jeff, Aug 28: whole-app visual pass). Replaces the random hype lines with a
+  // time-of-day greeting plus two things that are only ever TRUE (design constant: never claim
+  // history you can't stand behind):
+  //   - a "Last workout: Tuesday · Pull-Up Day" line, from my own finished sessions
+  //   - a stat row that NEVER renders a zero. It picks the first three stats from a priority
+  //     list that have something real to say (streak, this week, PRs this week), falling back to
+  //     numbers that only count up (total logged, best lift, with friends). A quiet month never
+  //     reads "0 PRs" — the stat simply isn't shown. Brand-new user: no row at all.
+  const hr = new Date().getHours();
+  const greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
+  const mine = sessions.filter(s => (s.history||[]).some(h => h.userId === ME.id));
+  // "when" for a finished session: prefer my latest LOG timestamp (full ISO, converts to the
+  // user's local day correctly) over history.date, which the server stamps as a UTC calendar
+  // day — an 8pm ET workout lands on tomorrow's UTC date, and date-only strings can't be
+  // un-shifted client-side. Logs are visible to me on my own sessions; history.date is the
+  // fallback for sessions finished without logging any sets.
+  const whenDone = (s) => {
+    const logAts = ((s.logs && s.logs[ME.id]) || []).map(l => l.at).filter(Boolean).sort();
+    if(logAts.length) return new Date(logAts[logAts.length - 1]);
+    const d = (s.history||[]).filter(h => h.userId === ME.id).map(h => h.date).sort().slice(-1)[0];
+    return d ? new Date(d + 'T12:00:00') : null;                 // noon dodges TZ edge-of-day drift
+  };
+  const lastDone = mine
+    .map(s => ({ s, when: whenDone(s) }))
+    .filter(x => x.when && !isNaN(x.when))
+    .sort((a,b) => b.when - a.when)[0] || null;
+  const fmtLastDay = (then) => {
+    const t = new Date(then); t.setHours(12,0,0,0);
+    const today = new Date(); today.setHours(12,0,0,0);
+    const days = Math.round((today - t) / 86400e3);
+    if(days <= 0) return 'today';
+    if(days === 1) return 'yesterday';
+    if(days < 7) return then.toLocaleDateString(undefined, { weekday:'long' });
+    return then.toLocaleDateString(undefined, { month:'short', day:'numeric' });
+  };
+  const weekAgoMs = Date.now() - 7*86400e3;
+  const earnedPrs = ((prog && prog.prs) || []).filter(p => p.source === 'earned' && !p.firstLog);
+  const prsThisWeek = earnedPrs.filter(p => new Date(p.at).getTime() >= weekAgoMs).length;
+  // Records store weight as a number in the USER'S unit and carry no unit field — prog.unit is
+  // the display unit, exactly how the Progress tab's prLabel does it. Raw-number compare is
+  // therefore unit-consistent too.
+  const best = earnedPrs.filter(p => Number(p.weight) > 0).sort((a,b) => Number(b.weight) - Number(a.weight))[0] || null;
+  const withFriends = mine.filter(s => (s.participants||[]).some(x => x && x !== ME.id)).length;
+  const statPool = [];
+  const streakW = (prog && prog.streakWeeks) || 0;
+  const thisWeek = (prog && prog.thisWeek) || 0;
+  if(streakW >= 2) statPool.push({ num: streakW, lbl: 'week streak' });
+  // "days trained", not "workouts" — thisWeek counts distinct days with working sets (same
+  // signal the Progress tab labels days/week), and two sessions in one day would make
+  // "workouts" a false claim.
+  if(thisWeek >= 1) statPool.push({ num: thisWeek, lbl: thisWeek === 1 ? 'day trained this week' : 'days trained this week' });
+  if(prsThisWeek >= 1) statPool.push({ num: prsThisWeek, lbl: prsThisWeek === 1 ? 'PR this week' : 'PRs this week' });
+  if(mine.length >= 1) statPool.push({ num: mine.length, lbl: mine.length === 1 ? 'workout logged' : 'workouts logged' });
+  if(best) statPool.push({ num: `${best.weight} ${(prog && prog.unit) || 'lb'}`, lbl: 'best ' + best.exercise });
+  if(withFriends >= 1) statPool.push({ num: withFriends, lbl: 'with friends' });
+  const stats = statPool.slice(0, 3);
   const homeAvatarHtml = ME && ME.avatar
     ? `<img class="home-avatar" src="${esc(ME.avatar)}" alt="" onclick="showTab('me')">`
     : `<div class="home-avatar" onclick="showTab('me')">${esc(initial.toUpperCase())}</div>`;
   let html = `<div class="wrap home-head">
     <div class="home-top">
-      <div class="home-greet">${esc(hypeLine)}, ${esc(first)}</div>
+      <div>
+        <div class="home-greet">${greet}, ${esc(first)}</div>
+        ${lastDone ? `<div class="home-sub">Last workout: ${esc(fmtLastDay(lastDone.when))} · ${esc((lastDone.s.name || '').trim() || 'Workout')}</div>` : ''}
+      </div>
       ${homeAvatarHtml}
-    </div>`;
+    </div>
+    ${stats.length ? `<div class="home-stats">${stats.map(st =>
+      `<div class="hstat"><div class="num">${esc(String(st.num))}</div><div class="lbl">${esc(st.lbl)}</div></div>`).join('')}</div>` : ''}`;
 
   // Invites slot: blue banner when pending, else subtle empty-state hint (so new users learn the feature exists)
   const pending = sessions.filter(s=>Array.isArray(s.invited)&&s.invited.includes(ME.id));
@@ -270,8 +331,18 @@ async function home(){
   // forward and otherwise leaves everything exactly where the API's date order put it.
   const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && !hasFinishedSession(s, ME.id))
     .sort((a,b) => (isSessionLiveNow(b)?1:0) - (isSessionLiveNow(a)?1:0));
-  html += `<h2>Your Sessions</h2><div class="card">`;
+  // v222: the card ("pill box") is only drawn when there is something in it. An empty section
+  // stays OPEN on the page — header, icon, explanation, no container. Section headers always
+  // render (discoverability rule), so nothing becomes hidden.
+  // STATIC STRINGS ONLY — nothing here is esc()'d. Never pass server- or user-derived text.
+  const homeEmpty = (icon, title, sub, cta) =>
+    `<div class="home-empty">${icon}<div class="he-title">${title}</div><div class="he-sub">${sub}</div>${cta||''}</div>`;
+  const ICON_CAL = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><rect x="3.5" y="5" width="17" height="15.5" rx="3" stroke="#9ca3af" stroke-width="1.6"/><path d="M3.5 9.5h17M8.5 3.5v3M15.5 3.5v3" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+  const ICON_PEOPLE = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M8 6a3 3 0 1 1 6 0 3 3 0 0 1-6 0Zm-5 13c0-3 3.5-5 8-5" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/><circle cx="17" cy="8" r="2.4" stroke="#9ca3af" stroke-width="1.6"/><path d="M14 19c0-2.2 2-3.6 4.4-3.6" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+  const ICON_FEED = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M4 18V8l8-4 8 4v10" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 18v-6h6v6" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+  html += `<h2>Your Sessions</h2>`;
   if(yours.length){
+    html += `<div class="card">`;
     for(const s of yours){
       const label = s.name;
       const live = isSessionLiveNow(s);
@@ -280,8 +351,10 @@ async function home(){
       html += `<div class="lib-item${live?' session-live':''}" onclick="openSession('${s.id}')">
         <div>${badge}<b>${esc(label)}${s.exercises.length?` · ${s.exercises.length} exercises`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}</div></div></div>`;
     }
-  } else html += `<div class="muted">No sessions yet.</div>`;
-  html += `</div>`;
+    html += `</div>`;
+  } else {
+    html += homeEmpty(ICON_CAL, 'No upcoming sessions', 'Plan one with + New workout, or start a Quick Workout right now.');
+  }
 
   // Friends' Workouts — a friend's own joinable session, discoverable even before you have any
   // invite or join step in it. Jeff, Aug 20: "If i follow someone on the app and they approve ...
@@ -297,26 +370,35 @@ async function home(){
     && !(s.participants||[]).includes(ME.id)
     && !(Array.isArray(s.invited) && s.invited.includes(ME.id))
     && (dayDiff(s.scheduledAt) >= 0 || !s.creatorFinished));
-  html += `<h2 class="light">Friends' Workouts</h2><div class="card">`;
+  html += `<h2 class="light">Friends' Workouts</h2>`;
   if(joinable.length){
+    html += `<div class="card">`;
     for(const s of joinable){
       const creatorName = await friendName(s.creatorId);
       html += `<div class="lib-item" onclick="openSession('${s.id}')">
         <div><b>${esc(s.name)}${s.exercises.length?` · ${s.exercises.length} exercises`:''}</b><div class="tag">${esc(creatorName)} · ${fmtWhen(s.scheduledAt)}</div></div></div>`;
     }
-  } else html += `<div class="muted">No joinable workouts from friends right now.</div>`;
-  html += `</div>`;
+    html += `</div>`;
+  } else {
+    html += homeEmpty(ICON_PEOPLE, 'No joinable workouts right now', `When a friend starts one you can join, it'll show up here.`);
+  }
 
   // Friend's Activity (lighter strip, in an elevated card to match Your Sessions)
-  html += `<h2 class="light">Friends' Activity</h2><div class="card feed-strip">`;
+  html += `<h2 class="light">Friends' Activity</h2>`;
   if(feed.length){
+    html += `<div class="card feed-strip">`;
     for(const f of feed){
       const who = await friendName(f.by);
       const ic = f.type==='pr' ? `<span class="act-chip act-pr">PR</span>` : `<span class="act-chip done">✓</span>`;
       html += `<div class="feed-item" onclick="profileView('${f.by}')" style="cursor:pointer">${ic} <b>${esc(who)}</b> ${esc(f.text)}</div>`;
     }
-  } else html += `<div class="muted">No recent activity from friends.</div>`;
-  html += `</div></div>`;
+    html += `</div>`;
+  } else {
+    // CTA label is honest either way: no friends yet -> "Add a friend", some friends -> invite more
+    html += homeEmpty(ICON_FEED, 'Nothing from your crew yet', `Friends' finished workouts will show up here.`,
+      `<span class="he-cta" onclick="showTab('friends')">${myFriends.length ? 'Invite another friend' : 'Add a friend'} →</span>`);
+  }
+  html += `</div>`;
   $('app').innerHTML = html;
 }
 
@@ -2948,8 +3030,10 @@ async function profileView(id){
       + (p.followsYou ? `<span class="muted" style="margin-left:8px;font-size:12px">Follows you</span>` : '');
   const actHtml = action?`<div style="margin:10px 0">${action}</div>`:'';
   // v147: surface recentActivity (PRs / weekly completions / streaks) — server already computes
-  // this (buildActivityFor in server.js) but the profile page never rendered it. Reuses the same
-  // .card.feed-strip / .feed-item / .act-chip styling as Home's "Friend's Activity" for consistency.
+  // this (buildActivityFor in server.js) but the profile page never rendered it. Same markup as
+  // Home's "Friends' Activity" strip, but since v222 Home's copy floats borderless (.home-head
+  // .card override) while this one keeps the bordered base .card — deliberate for now; extending
+  // the floating style beyond Home is a later step of the visual pass.
   const activity = p.recentActivity||[];
   const activityRows = activity.length
     ? activity.map(a=>{
