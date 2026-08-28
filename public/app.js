@@ -2151,16 +2151,50 @@ async function tplDelete(id){
     async ()=>{ const r = await H.delete('/api/templates/'+id); if(r.error) alert(r.error); else templatesPage(); });
 }
 // Jeff, Aug 28: the non-owner half of "delete a routine" -- takes a friend's shared routine out
-// of YOUR list only. A real confirm() since, like removeFromMyProfile, there's no undo offered.
+// of YOUR list only. v240: removal now gets an undo moment (toast below) instead of being
+// instantly permanent, so the confirm copy no longer claims "there's no undo".
 async function tplHide(id){
   const { shared } = await H.get('/api/templates');
   const t = shared.find(x=>x.id===id); if(!t) return;
-  confirmSheet('Remove routine?', `"${esc(t.name)}" comes off your own list only — your friend's routine is untouched. There's no undo.`, 'Remove routine', () => tplHideConfirmed(id));
+  confirmSheet('Remove routine?', `"${esc(t.name)}" comes off your own list only — your friend's routine is untouched.`, 'Remove routine', () => tplHideConfirmed(id, t.name));
 }
-async function tplHideConfirmed(id){
+async function tplHideConfirmed(id, name){
   const r = await H.post('/api/templates/'+id+'/hide', {});
   if(r && r.error){ alert(r.error); return; }
   templatesPage();
+  showUndoToast(`Removed "${esc(name)}"`, () => tplUnhide(id));
+}
+async function tplUnhide(id){
+  const r = await H.post('/api/templates/'+id+'/unhide', {});
+  if(r && r.error){ alert(r.error); return; }
+  // only re-render if the user is still ON the routines page — the toast outlives navigation,
+  // and yanking someone back to Routines from another tab because they tapped Undo is worse
+  // than letting the restored routine simply be there next time they look
+  if(document.querySelector('.tpl-page')) templatesPage();
+}
+// ---- Undo toast (v240) ----
+// A single transient bar above the nav offering to take back the action just taken. Same slot
+// and anatomy as #updateBar (which is rare enough that a brief overlap is acceptable — the toast
+// sits one z-index above and is gone in seconds). One at a time: showing a new one replaces the
+// old, and the old one's Undo is forfeited — by then its 6 seconds were nearly spent anyway.
+// Contract mirrors confirmSheet: callers esc() anything user-derived in msg; cb is undo action.
+let UNDO_CB = null, UNDO_TIMER = null;
+function dismissUndoToast(){
+  UNDO_CB = null;
+  if(UNDO_TIMER){ clearTimeout(UNDO_TIMER); UNDO_TIMER = null; }
+  const el = document.getElementById('undoToast');
+  if(el){ el.classList.remove('show'); setTimeout(()=>el.remove(), 250); }
+}
+function runUndoCb(){ const cb = UNDO_CB; dismissUndoToast(); if(cb) cb(); }
+function showUndoToast(msg, cb){
+  dismissUndoToast();
+  UNDO_CB = cb;
+  const el = document.createElement('div');
+  el.id = 'undoToast';
+  el.innerHTML = `<span class="ut-msg">${msg}</span><button onclick="runUndoCb()">Undo</button>`;
+  document.body.appendChild(el);
+  requestAnimationFrame(()=>el.classList.add('show'));
+  UNDO_TIMER = setTimeout(dismissUndoToast, 6000);
 }
 async function templateExercises(){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
