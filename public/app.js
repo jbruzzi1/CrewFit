@@ -1567,7 +1567,10 @@ async function showRecap(id){
         // the target as it was AT LOG TIME; the session's current range is only a fallback
         const cap = Number(l.targetRepsMax) || Number(l.targetReps) || r.ceiling;
         const hit = l===r.top && cap && rp >= cap;
-        const cls = warm||drop ? ' warm' : (hit ? ' top' : '');
+        // v236 (Jeff): the PR set's chip is FILLED green - it outranks 'top' (a PR that hit
+        // the range would otherwise show only the tint) and never applies to warm-ups/drops,
+        // which cannot be PRs anyway.
+        const cls = l.isPr ? ' prfill' : (warm||drop ? ' warm' : (hit ? ' top' : ''));
         const tag = warm ? 'warm-up · ' : drop ? 'drop · ' : '';
         return `<span class="rc-chip${cls}">${tag}${w>0?`${w} ${unitOf(l)} × ${rp}`:`${rp} reps`}${l.isPr?'<span class="star">★</span>':''}</span>`;
       }).join('')}</div></div>`;
