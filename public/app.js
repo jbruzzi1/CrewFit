@@ -371,7 +371,11 @@ async function openSession(id, opts){
   // Each participant finishes and posts their own recap independently now (s.posts, keyed by
   // userId — see server.js). "myPost" is MY OWN recap on this session, if I've posted one.
   const myPost = s.posts[ME.id];
-  // Inline edit mode for a saved (posted) workout: render the whole page editable.
+  // Inline edit mode for a saved (posted) workout: render the whole page editable. Creator-only --
+  // it edits the shared exercise list, which everyone else on this session is counting on. Jeff,
+  // Aug 28, first asked for non-creator parity here, then narrowed it to "I don't want to change
+  // the exercises - just my logged sets" (+ photos/notes/removing it from his profile) -- see the
+  // big comment above viewPost for where those actually live.
   if(EDITING_ID===id && isCreator && myPost){ renderWorkoutEdit(s); return; }
   const isParticipant = s.participants.includes(ME.id);
   // "in the workout" = you are actually part of it, not merely allowed to look at it
@@ -699,8 +703,28 @@ async function openSession(id, opts){
 // Opened when tapping a saved workout on a profile. Each participant posts their own recap
 // independently now (s.posts, keyed by userId — see server.js), so this needs to know WHOSE
 // recap to render: authorId. Falls back to the creator's for any old call site that doesn't
-// pass one yet. Creator-only ⋯ menu (edit/delete) is about the SESSION, not the recap — that
-// stays gated on isCreator regardless of whose recap is being viewed.
+// pass one yet.
+//
+// Jeff, Aug 28, asked twice, refining as he went. First: "I should be able to edit a workout
+// posted on my profile if I wasn't the creator ... just as if i was." Then, narrowing that:
+// "delete it off my page, edit my own sets (I don't want to change the exercises - just my logged
+// sets), photos, and my own notes." So the shared EXERCISE LIST (renderWorkoutEdit/
+// saveWorkoutEdit, "Edit session" in the ⋯ menu below) stays exactly what it always was --
+// creator-only, since it's a session-wide change every participant is counting on. Everything he
+// actually wanted lives here instead, all scoped to "my own," all reachable regardless of who
+// created the session:
+//   - photos: addPostPhoto/deletePhoto above, gated on isAuthor.
+//   - notes: editPostNotes below, gated on isAuthor.
+//   - logged sets: editPostedSet/savePostedSet/deletePostedSet below, in setRows() -- gated on
+//     pid===ME.id per set-row (never someone else's sets, even on your own shared workout), using
+//     PUT/DELETE /api/sessions/:id/log/:logId, which is already scoped to your own s.logs entry
+//     server-side and needs no permission change.
+//   - "delete it off my page": removeFromMyProfile below, POST /api/sessions/:id/remove-mine --
+//     deliberately its own new endpoint, not a variant of Leave Workout. Leave (v187) exists
+//     specifically to KEEP your history/credit when you step away; the comment above it explains
+//     an earlier version that erased history on leave was a real bug, fixed on purpose. This is the
+//     opposite, explicit ask, so it's a separate action with its own confirmation, never a side
+//     effect of leaving.
 async function viewPost(id, authorId){
   const s = await H.get('/api/sessions/'+id);
   if(!s || (s.error && !s._expired)){ alert(s && s.error ? s.error : 'Session not found'); return; }
@@ -739,7 +763,14 @@ async function viewPost(id, authorId){
   const logged = Object.keys(s.logs||{})
     .filter(pid => (s.logs[pid]||[]).length && (inTheWorkout || pid === s.creatorId))
     .sort((x,y) => (x===s.creatorId ? -1 : y===s.creatorId ? 1 : String(logNames[x]||'').localeCompare(String(logNames[y]||''))));
-  const setRows = ls => `<div class="pp-sets">${ls.map(l=>`<div class="pp-set">${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr">PR</span>':''}</div>`).join('')}</div>`;
+  // Jeff, Aug 28: "edit my own sets (I don't want to change the exercises - just my logged
+  // sets)" -- `mine` gates a tap-to-edit affordance per set-ROW, never per-exercise or
+  // per-workout, so a shared workout's OTHER participant's sets stay exactly as read-only as
+  // they always were even when yours right above them are editable. editPostedSet below uses
+  // the same PUT/DELETE /api/sessions/:id/log/:logId already used by the live in-workout
+  // "Edit set" sheet (editLogSet et al above) -- that route is keyed off req.userId's own
+  // s.logs entry server-side, so this needed no server change, just this entry point.
+  const setRows = (ls, mine) => `<div class="pp-sets">${ls.map(l=>`<div class="pp-set${mine?' pp-set-mine':''}"${mine?` onclick="editPostedSet('${id}','${authorId}','${l.id}')"`:''}>${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr">PR</span>':''}${mine?'<span class="pp-set-edit muted" style="font-size:11px">Edit</span>':''}</div>`).join('')}</div>`;
   // An approved swap replaces the exercise for the session, and openSession already titles the
   // card with the swapped-in name. This screen said the original, so the two disagreed about what
   // the lift even was. Same resolution here, so they agree.
@@ -766,7 +797,7 @@ async function viewPost(id, authorId){
       const nmRaw = pid===ME.id ? 'You' : logNames[pid];
       const label = needLabel ? esc(isUnknownName(nmRaw) ? 'Someone' : String(nmRaw).split(' ')[0]) : '';
       const who = (label || note) ? `<div class="pp-who">${[label, note].filter(Boolean).join(' ')}</div>` : '';
-      return who + setRows(ls);
+      return who + setRows(ls, pid===ME.id);
     }).filter(Boolean).join('');
     const setsHtml = blocks || `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">No sets logged</div>`;
     return `<div class="pp-ex"><div class="pp-ex-name">${esc(heading)}</div></div>${setsHtml}`;
@@ -789,6 +820,10 @@ async function viewPost(id, authorId){
   const photoStrip = media.length ? `<div class="pp-photos">${media.map((m,i)=>`<div class="pp-photo">${m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`}${isAuthor?`<button class="pp-photo-x" onclick="deletePhoto('${id}','${authorId}',${i})" aria-label="Delete photo">✕</button>`:''}</div>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
   const photos = (media.length || addPhotoRow) ? `<h2>Photos</h2>${photoStrip}${addPhotoRow}` : '';
   const notes = post.notes ? esc(post.notes) : '<span class="muted">How\'d it go?</span>';
+  // Jeff, Aug 28: "...my own notes on the workout" -- edit your own notes right here, same
+  // idempotent fetch-post-mutate-repost pattern as addPostPhoto/deletePhoto above, so this can
+  // never be reached for anyone else's recap.
+  const notesHeader = isAuthor ? `<h2 style="display:flex;align-items:center;justify-content:space-between">Notes<button class="sec sm" onclick="editPostNotes('${id}','${authorId}')">Edit</button></h2>` : `<h2>Notes</h2>`;
   // Jeff, Aug 28: "I made my most recent posted workout on my profile public and it still says
   // 'friends only'." The badge just below was showing s.visibility -- whether the SESSION itself is
   // joinable by friends or invite-only, set back on the create form -- which is a different setting
@@ -800,8 +835,16 @@ async function viewPost(id, authorId){
   const postVis = post.visibility || 'only_me';
   const postVisLabel = postVis==='public' ? 'Public' : postVis==='friends' ? 'Friends' : 'Only me';
   const hasFinishedPost = (s.history||[]).some(h=>h.userId===ME.id);
-  const dots = isCreator ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none"><button onclick="enterWorkoutEdit('${id}')">Edit session</button><button class="danger" onclick="deleteSession('${id}', ${hasFinishedPost})">Delete session</button></div>` : '';
-  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="showTab('home')">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    <h2>Notes</h2><div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
+  // Creator: "Edit session" (the shared exercise list) + "Delete session" (removes it for every
+  // participant) -- unchanged, exactly as it always was. Non-creator author: "Remove from my
+  // profile" instead (removeFromMyProfile below) -- erases YOUR OWN post/logs/history for this
+  // session so it's gone from your profile, without touching anyone else's. See the big comment
+  // above viewPost for the full reasoning.
+  const menuItems = isCreator
+    ? `<button onclick="enterWorkoutEdit('${id}')">Edit session</button><button class="danger" onclick="deleteSession('${id}', ${hasFinishedPost})">Delete session</button>`
+    : (isAuthor ? `<button class="danger" onclick="removeFromMyProfile('${id}')">Remove from my profile</button>` : '');
+  const dots = menuItems ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none">${menuItems}</div>` : '';
+  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="showTab('home')">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    ${notesHeader}<div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
   $('app').innerHTML = html;
   if(media.length>1){
     const strip=document.querySelector('.pp-photos');
@@ -875,6 +918,55 @@ async function addPostPhoto(id, authorId, input){
   const r = await H.post(`/api/sessions/${id}/post`, { notes: post.notes||'', media, visibility: post.visibility||'only_me' });
   if(r && r.error){ alert(r.error); return; }
   viewPost(id, authorId);
+}
+// Jeff, Aug 28: "...and my own notes on the workout." Same fetch-current-post -> mutate ->
+// re-POST /post pattern as addPostPhoto/deletePhoto just above, so media/visibility already on
+// the recap are preserved untouched -- this only ever changes the notes field.
+function editPostNotes(id, authorId){
+  H.get('/api/sessions/'+id).then(s => {
+    const post = (s && s.posts && s.posts[authorId]) || {};
+    textEntrySheet({
+      title:'Edit notes', label:'Notes', value: post.notes||'', placeholder:"How'd it go?", multiline:true, confirmLabel:'Save',
+      onConfirm: async v => {
+        const r = await H.post(`/api/sessions/${id}/post`, { notes: v||'', media: post.media||[], visibility: post.visibility||'only_me' });
+        if(r && r.error){ alert(r.error); return; }
+        viewPost(id, authorId);
+      }
+    });
+  });
+}
+// Jeff, Aug 28: "edit my own sets (I don't want to change the exercises - just my logged sets)."
+// Same sheet shape as the live in-workout "Edit set" (editLogSet/saveLogSet/delLogSet above),
+// just re-rendering viewPost() instead of the live log sheet when done, and reached only via
+// setRows()'s mine-gated onclick, so a tap here can only ever be on your own logged set.
+async function editPostedSet(id, authorId, logId){
+  const s = await H.get('/api/sessions/'+id);
+  const mine = (s.logs && s.logs[ME.id]) || [];
+  const l = mine.find(x => x.id === logId);
+  if(!l) return;
+  openSheetHtml(`
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="sheet-head"><h2>Edit set</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <div class="ex-sub">Set ${l.set||''}</div>
+      <label class="muted" style="font-size:12px">Weight (${unitOf(l)})</label>
+      <input id="ppEdW" type="number" inputmode="decimal" step="any" value="${l.weight}">
+      <label class="muted" style="font-size:12px">Reps</label>
+      <input id="ppEdR" type="number" inputmode="tel" pattern="[0-9]*" value="${l.reps}">
+      <button class="blue" onclick="savePostedSet('${id}','${authorId}','${logId}')">Save</button>
+      <button class="red" style="margin-top:8px" onclick="deletePostedSet('${id}','${authorId}','${logId}')">Delete set</button>
+    </div>`);
+}
+async function savePostedSet(id, authorId, logId){
+  const w = document.getElementById('ppEdW').value, r = document.getElementById('ppEdR').value;
+  const s = await H.put(`/api/sessions/${id}/log/${logId}`, { weight:w, reps:r });
+  if(s && s.error){ alert(s.error); return; }
+  closeSheet(); viewPost(id, authorId);
+}
+async function deletePostedSet(id, authorId, logId){
+  if(!confirm('Delete this set?')) return;
+  const s = await H.delete(`/api/sessions/${id}/log/${logId}`);
+  if(s && s.error){ alert(s.error); return; }
+  closeSheet(); viewPost(id, authorId);
 }
 async function acceptInvite(id){ await H.post(`/api/sessions/${id}/accept`,{}); openSession(id); }
 async function declineInvite(id){ if(!confirm('Decline this invite?')) return; await H.post(`/api/sessions/${id}/decline`,{}); home(); }
@@ -1493,6 +1585,18 @@ async function leaveWorkoutConfirmed(id, keep){
   if(r && r.error){ alert(r.error); return; }
   closeSheet();
   home();
+}
+// Jeff, Aug 28: "Once its posted on my page - I want to be able to delete it off my page."
+// Deliberately NOT Leave Workout above -- Leave (v187) exists specifically to KEEP your
+// history/credit when you step away (see its comment). This is the opposite, explicit ask: erase
+// your own post, logged sets, and history credit for this session so it's genuinely gone from your
+// profile. Never touches the creator's or any other participant's data. A real confirm() because,
+// unlike Leave, there is no "keep credit" option here -- this is meant to actually remove it.
+async function removeFromMyProfile(id){
+  if(!confirm('Remove this workout from your profile? Your notes, photos, logged sets, and workout credit for it will be gone. This cannot be undone.')) return;
+  const r = await H.post(`/api/sessions/${id}/remove-mine`, {});
+  if(r && r.error){ alert(r.error); return; }
+  showTab('me');
 }
 
 // ===== Inline edit mode for saved (posted) workouts =====
