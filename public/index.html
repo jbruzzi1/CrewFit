@@ -25,7 +25,7 @@
        itself to the new graphite would have turned all of those graphite too. --avatar exists so
        the "no photo yet" placeholder can change color on its own, matching this repo's own ink
        color rather than any accent -- see avatarColor() in app.js for why. */
-    :root { color-scheme: light; --bg:#fbfbfd; --card:#ffffff; --fg:#15181f; --muted:#6b7280; --green:#16a34a; --avatar:#2b2f38; --blue:#2563eb; --red:#dc2626; --line:#edeff2; }
+    :root { color-scheme: light; --shine:rgba(6,122,6,.14); --bg:#fbfbfd; --card:#ffffff; --fg:#15181f; --muted:#6b7280; --green:#16a34a; --avatar:#2b2f38; --blue:#2563eb; --red:#dc2626; --line:#edeff2; }
     * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
     html,body { margin:0; padding:0; background:var(--bg); color:var(--fg); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
     body { max-width:480px; margin:0 auto; padding-bottom:calc(72px + env(safe-area-inset-bottom)); }
@@ -510,8 +510,30 @@
        any of them — blue is the CTA colour and none of these are CTAs. */
     /* ---- workout recap (showRecap) — seen once after Log & Finish ---- */
     .rc-wrap { padding-top:calc(18px + env(safe-area-inset-top)); }
-    .rc-h1 { font-size:22px; font-weight:700; margin:2px 0 2px; letter-spacing:-.2px; }
-    .rc-sub { font-size:13px; color:var(--muted); margin:0 0 14px; }
+    /* v235 celebration: the recap opens like a win. One-shot CSS entrance - a self-drawing
+       check, then each block rises in order. All of it is decoration over content that is
+       already visible-safe: prefers-reduced-motion shows the finished state instantly. */
+    .rc-check { width:56px; height:56px; display:block; margin:6px auto 10px; }
+    .rc-check circle { stroke:var(--green); stroke-width:2.5; fill:none; stroke-dasharray:164; stroke-dashoffset:164; animation:rcDraw .5s ease-out forwards; }
+    .rc-check path { stroke:var(--green); stroke-width:3.2; fill:none; stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:34; stroke-dashoffset:34; animation:rcDraw .35s .4s ease-out forwards; }
+    @keyframes rcDraw { to { stroke-dashoffset:0; } }
+    @keyframes rcRise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
+    .rc-h1 { font-size:22px; font-weight:700; margin:2px 0 2px; letter-spacing:-.2px; text-align:center; animation:rcRise .45s .1s ease-out both; }
+    .rc-sub { text-align:center; font-size:13px; color:var(--muted); margin:0 0 14px; animation:rcRise .45s .18s ease-out both; }
+    .rc-streakline { display:flex; align-items:center; justify-content:center; gap:5px; color:var(--green); font-size:13px; font-weight:600; margin:6px 0 2px; animation:rcRise .45s .26s ease-out both; }
+    .rc-stats .rc-tile:nth-child(1) { animation:rcRise .45s .3s ease-out both; }
+    .rc-stats .rc-tile:nth-child(2) { animation:rcRise .45s .4s ease-out both; }
+    .rc-stats .rc-tile:nth-child(3) { animation:rcRise .45s .5s ease-out both; }
+    .rc-pr { animation:rcRise .5s .6s ease-out both; position:relative; overflow:hidden; }
+    .rc-pr::after { content:""; position:absolute; inset:0; transform:translateX(-110%); background:linear-gradient(115deg, transparent 30%, var(--shine) 50%, transparent 70%); animation:rcShine .9s 1.1s ease-out 1 both; pointer-events:none; }
+    @keyframes rcShine { to { transform:translateX(110%); } }
+    @keyframes prPop { 0% { transform:scale(.3); opacity:0; } 100% { transform:scale(1); opacity:1; } }
+    .type-tag-pr.pr-pop { animation:prPop .5s cubic-bezier(.34,1.56,.64,1) both; }
+    @media (prefers-reduced-motion: reduce) {
+      .rc-check circle, .rc-check path { animation:none; stroke-dashoffset:0; }
+      .rc-h1, .rc-sub, .rc-streakline, .rc-stats .rc-tile, .rc-pr, .type-tag-pr.pr-pop { animation:none; }
+      .rc-pr::after { animation:none; display:none; }
+    }
     .rc-stats { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:0 0 14px; }
     .rc-tile { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:11px 10px;
                box-shadow:0 6px 18px rgba(20,24,31,.06); text-align:center; }
@@ -742,6 +764,7 @@
        stylesheet so equal-specificity overrides win by order. */
     html.theme-dark {
         color-scheme: dark;
+        --shine:rgba(62,207,114,.20);
         --bg:#131417; --card:#1c1e22; --fg:#f1f2f4; --muted:#a2a7b0;
         --green:#3ecf72; --avatar:#454a54; --blue:#5a8bff; --red:#f3766a; --line:#2b2e34;
         --s1:#2b3a5c; --s2:#3a5488; --s3:#4a71b8; --s4:#5a8bff;
@@ -852,6 +875,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=234"></script>
+  <script src="app.js?v=235"></script>
 </body>
 </html>

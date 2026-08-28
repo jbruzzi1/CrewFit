@@ -1368,7 +1368,7 @@ function logSetType(key){
   const seg=document.getElementById('logTypeSeg'); if(!seg) return;
   seg.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on', c.getAttribute('data-t')===key));
 }
-function renderLogSets(s){
+function renderLogSets(s, justLoggedId){
   const list=document.getElementById('logSetList'); if(!list) return;
   const mine=(s.logs&&s.logs[ME.id])||[];
   const exLogs=mine.filter(l=>l.exerciseId===LOGVIEW.exId).sort((a,b)=>(a.set||0)-(b.set||0));
@@ -1386,7 +1386,7 @@ function renderLogSets(s){
       <div class="set-n">${l.set||'·'}</div>
       <div class="set-vals"><b>${Number(l.weight)||0} ${unitOf(l)}${suffixFor(l)}</b> · <span class="sub">${Number(l.reps)||0} reps${rirFor(l)}</span></div>
       <span class="type-tag ${TYPE_CLASS[l.setType]||'t-normal'}">${TYPE_LABEL[l.setType]||'Normal'}</span>
-      ${l.isPr?'<span class="type-tag type-tag-pr">PR</span>':''}
+      ${l.isPr?`<span class="type-tag type-tag-pr${l.id===justLoggedId?' pr-pop':''}">PR</span>`:''}
     </div>`).join('');
 }
 async function addLogSet(){
@@ -1402,7 +1402,11 @@ async function addLogSet(){
   // Leave what was typed in the boxes if it did not save. They were cleared unconditionally, so
   // a failed request threw the set away and you had to remember it and type it again.
   if(s.error){ alert(s.error); return; }
-  LOGVIEW.sid && renderLogSets(s);
+  // v235: the PR chip pops in ONLY on the set that was just logged - a re-render must not
+  // replay the animation on every old PR in the list. Newest `at` among my sets = this one.
+  const justMine = ((s.logs&&s.logs[ME.id])||[]).filter(l=>l.exerciseId===LOGVIEW.exId);
+  const newest = justMine.slice().sort((a,b)=>String(b.at).localeCompare(String(a.at)))[0];
+  LOGVIEW.sid && renderLogSets(s, newest && newest.isPr ? newest.id : null);
   document.getElementById('logW').value=''; document.getElementById('logR').value=''; if(rirEl) rirEl.value='';
   startRest();
   // Update the "✓ N sets logged" badge on the workout page behind this sheet right now, instead
@@ -1518,21 +1522,29 @@ async function showRecap(id){
 
   // "Next time" is about where you are NOW, which is exactly why it belongs here and NOT on the
   // saved copy — on a workout from three months ago it would name a weight you passed long ago.
-  let next=[];
+  let next=[], streakW=0;
   try{
-    const p = await H.get('/api/progress?weeks=4');
+    // weeks=26, not 4: streakWeeks is computed inside the requested window and would cap at 4
+    // (same lesson as the Home header). `ready` is window-independent.
+    const p = await H.get('/api/progress?weeks=26');
     const names = new Set(rows.map(r=>r.nm));
     next = ((p && p.ready) || []).filter(x=>names.has(x.exercise));
+    streakW = (p && p.streakWeeks) || 0;
   }catch(e){}
 
   // Finishing a workout you did not personally log is a real case (logged on paper, or only the
   // other participant logged). "Nice work" over three zeros and an empty card is a lie.
   if(!rows.length || !sets){ showTab('home'); return; }
   const fmt = n => Math.round(n).toLocaleString('en-US');
+  // v235 celebration: the recap OPENS like a win - a check that draws itself, then each block
+  // rises in sequence (pure CSS, one-shot, disabled under prefers-reduced-motion). The streak
+  // line only appears when a real streak exists - never a claim we can't stand behind.
   let h = `<div class="wrap rc-wrap">
+    <svg class="rc-check" viewBox="0 0 56 56" aria-hidden="true"><circle cx="28" cy="28" r="26"/><path d="M17 29.5l7.5 7.5L39 21"/></svg>
     <div class="rc-h1">Nice work</div>
     <div class="rc-sub">${esc(s.name||'Workout')} · ${rcDay(s.scheduledAt)}${
       (s.participants||[]).length>1?` · with ${s.participants.length-1} other${s.participants.length>2?'s':''}`:''}</div>
+    ${streakW>=2?`<div class="rc-streakline">${flameSvg()}${streakW}-week streak — still going</div>`:''}
     <div class="rc-stats">
       <div class="rc-tile"><div class="rc-n">${rows.length}</div><div class="rc-l">Exercises</div></div>
       <div class="rc-tile"><div class="rc-n">${sets}</div><div class="rc-l">Working sets</div></div>
