@@ -2972,9 +2972,25 @@ function avatarColor(seed){
 // ---- Profile (me + any friend) ----
 function flameSvg(){ return '<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;vertical-align:-1px"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>'; }
 function gearSvg(){ return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>'; }
+// v230: dark is the app's DEFAULT look; this device-local switch is the only way to go light
+// (the app deliberately does not follow the phone's setting - Jeff's call, Aug 28). The <head>
+// inline script stamps html.theme-dark from the same localStorage key before first paint.
+function currentTheme(){ try { return localStorage.getItem('crewfit_theme') || 'dark'; } catch(e){ return 'dark'; } }
+function toggleTheme(){
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  try { localStorage.setItem('crewfit_theme', next); } catch(e){}
+  document.documentElement.classList.toggle('theme-dark', next === 'dark');
+  const m = document.querySelector('meta[name=theme-color]');
+  if(m) m.content = next === 'dark' ? '#131417' : '#f7f8fa';
+  // update the row in place - close-and-reopen left two .sheet-back elements racing for 200ms
+  // (closeSheet's fade closure) and made the sheet re-slide on every tap
+  const v = document.getElementById('themeVal');
+  if(v) v.textContent = next === 'dark' ? 'Dark' : 'Light';
+}
 function openSettings(){
   const inner = `<div class="sheet"><div class="sheet-head"><h2>Settings</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
     <div class="sheet-list">
+      <button class="sheet-row" onclick="toggleTheme()">Appearance <span class="row-val" id="themeVal">${currentTheme()==='dark'?'Dark':'Light'}</span></button>
       <button class="sheet-row" onclick="closeSheet(); document.getElementById('av').click()">Edit photo</button>
       <button class="sheet-row" onclick="closeSheet(); editBio()">Edit bio</button>
       <button class="sheet-row" onclick="editDefaultGym()">Default gym <span class="row-val">${esc(ME.defaultGym || 'Not set')}</span></button>
