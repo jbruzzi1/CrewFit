@@ -79,11 +79,14 @@ console.log('deleting a shared workout cannot erase the other person\'s history'
   const after = await get(brian, '/api/progress?weeks=4');
   ok(after.prs.some(p => p.weight === 495), "Brian's record is untouched");
 
-  // Jeff takes himself out instead
+  // Jeff takes himself out instead. No body means keep defaults to true ("favoring not silently
+  // losing data") — and since v242 a keep-leave really does keep: sets survive so PRs/trends do.
+  // This assertion used to be the opposite ("Jeff's own sets went with him") — that codified the
+  // old delete-on-leave behavior, which erased every PR set in a workout the moment you left it.
   const left = await fetch(B + `/api/sessions/${s.id}/leave`, { method: 'POST', headers: jeff.H }).then(x => x.json());
   ok(left.ok, 'Jeff can remove it from his own profile');
   const jp = await get(jeff, '/api/progress?weeks=4');
-  ok(!jp.prs.some(p => p.weight === 315), "Jeff's own sets went with him");
+  ok(jp.prs.some(p => p.weight === 315), "Jeff's own record survives his keep-leave (v242)");
   const bp = await get(brian, '/api/progress?weeks=4');
   ok(bp.prs.some(p => p.weight === 495), "and Brian still has his");
   const still = await get(brian, '/api/sessions/' + s.id);

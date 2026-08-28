@@ -1466,7 +1466,18 @@ function sessionView(s, viewerId) {
     const posts = {};
     for (const [authorId, p] of Object.entries(s.posts || {}))
       posts[authorId] = canSeePostAuthor(p, authorId, viewerId) ? p : { hidden: true, visibility: p.visibility };
-    return Object.assign({}, s, { posts });
+    // v242: logs survive a keep-leave now, so a member view must decide which entries are
+    // shown. Your own always; a CURRENT member's always (that's the shared log sheet); a
+    // departed person's only when their published recap admits this viewer — a recap IS its
+    // author's sets (same principle as the reader tier below), but someone who left without
+    // posting shows as simply departed, sets stored but not on display.
+    const logs = {};
+    for (const [uid, arr] of Object.entries(s.logs || {})) {
+      const current = (s.participants || []).includes(uid) || s.creatorId === uid;
+      const viaPost = s.posts && s.posts[uid] && canSeePostAuthor(s.posts[uid], uid, viewerId);
+      if (uid === viewerId || current || viaPost) logs[uid] = arr;
+    }
+    return Object.assign({}, s, { posts, logs });
   }
   if (tier === 'stranger') return null;
 
@@ -1507,11 +1518,19 @@ function sessionView(s, viewerId) {
   for (const [authorId, p] of Object.entries(s.posts || {})) {
     if (canSeePostAuthor(p, authorId, viewerId)) {
       view.posts[authorId] = p;
-      if (tier === 'reader' && s.logs && s.logs[authorId]) view.logs[authorId] = s.logs[authorId];
+      // v242: every tier this loop reaches, not just 'reader'. A friend-tier viewer admitted by
+      // the very same recap visibility was still handed logs:{} and rendered "No sets logged" —
+      // a false claim about someone who logged plenty. The recap's own visibility is the gate;
+      // which tier the viewer happened to arrive through is not.
+      if (s.logs && s.logs[authorId]) view.logs[authorId] = s.logs[authorId];
     } else {
       view.posts[authorId] = { hidden: true, visibility: p.visibility };
     }
   }
+  // v242: your OWN sets come back to you on every tier — a departed viewer (alumni, or a
+  // still-mutual friend who left) kept their logs stored now, and "yourself and nobody else"
+  // has always been this view's rule for invited/joinRequests.
+  if (s.logs && Array.isArray(s.logs[viewerId]) && s.logs[viewerId].length) view.logs[viewerId] = s.logs[viewerId];
   // "Brian's already started - 2 sets in" is the fact that decides an invitation, and it survives
   // this change. It does not need Brian's SETS to say so, only how many there were: no weights,
   // no reps, nothing that belongs on his record. Counts only, and only for someone deciding.
@@ -1519,6 +1538,9 @@ function sessionView(s, viewerId) {
     const counts = {};
     for (const [pid, arr] of Object.entries(s.logs || {})) {
       if (!Array.isArray(arr) || !arr.length) continue;
+      // v242: only CURRENT people are "already started" — a departed person's surviving sets
+      // are history, not someone at the gym right now deciding your invitation for you.
+      if (!((s.participants || []).includes(pid) || s.creatorId === pid)) continue;
       const per = {};
       for (const l of arr) per[l.exerciseId] = (per[l.exerciseId] || 0) + 1;
       counts[pid] = per;
@@ -1529,12 +1551,15 @@ function sessionView(s, viewerId) {
 }
 
 // delete a session (creator only)
-// Who OTHER than me has logged sets in this workout. Only ever true for someone CURRENT — leaving
-// (see /leave below) always clears your own s.logs entry, so a departed alumni never shows up
-// here even though their history credit survives. That's deliberate: this is specifically "who
-// could inherit ownership right now", and ownership can only pass to someone still actually here.
+// Who OTHER than me has logged sets in this workout. Only ever true for someone CURRENT: this is
+// specifically "who could inherit ownership right now", and ownership can only pass to someone
+// still actually here. v242: a keep-leave no longer clears your s.logs entry (sets survive so
+// PRs/trends do — see /leave), so "has a logs entry" stopped implying "is still here"; current
+// now means being on the live roster — a participant, or the creator.
 function othersWhoLogged(s, meId) {
-  return Object.keys(s.logs || {}).filter(uid => uid !== meId && (s.logs[uid] || []).length);
+  return Object.keys(s.logs || {}).filter(uid => uid !== meId
+    && ((s.participants || []).includes(uid) || s.creatorId === uid)
+    && (s.logs[uid] || []).length);
 }
 // v187 (Leave Workout redesign): the broader "does anyone ELSE have a real stake in this workout"
 // check — CURRENT logged credit (othersWhoLogged) OR a permanent history row left behind by
@@ -1626,11 +1651,34 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // getting this default applied without ever asking, so both leaveWorkout call sites (the Leave
   // button and Delete's canLeave fallback) always route through the Save/Discard sheet and send
   // an explicit true or false — the default here only fires for a direct API caller.
-  if (!(req.body && req.body.keep === false)) creditFinish(s, me);
+  const discard = !!(req.body && req.body.keep === false);
+  if (!discard) creditFinish(s, me);
 
-  if (s.logs) delete s.logs[me];
+  // v242 (Jeff's list): your logged sets now SURVIVE a keep-leave. They used to be deleted
+  // unconditionally here, and since PRs, the strength trend, progression recommendations and
+  // (until v241) days-trained are ALL rebuilt from session logs, choosing "Keep my credit" and
+  // leaving still silently erased every PR you set in that workout. Keep means keep: the sets
+  // stay stored (sessionView decides who may still SEE them — for everyone else you simply show
+  // as departed), your swaps stay too (rebuildAllPrs attributes a set through s.variations, so
+  // deleting your swap would re-file those sets under the wrong exercise). Discard is still a
+  // real discard: "off day, I want out entirely" deletes the sets, and with them the PRs/trend
+  // points they fed — no credit means no credit.
+  if (discard) {
+    if (s.logs) delete s.logs[me];
+    for (const exId of Object.keys(s.variations || {})) {
+      if (s.variations[exId]) delete s.variations[exId][me];
+    }
+  }
   s.participants = (s.participants || []).filter(x => x !== me);
   s.invited      = (s.invited || []).filter(x => x !== me);
+  // v242 (cold-review catch): leaving withdraws your still-PENDING swap suggestions. Sets now
+  // survive a keep-leave, and the approve route deliberately renames the proposer's already-
+  // logged sets for that exercise (a swap approval is a statement of what was performed) — so a
+  // creator approving a stale pending swap months later would silently rewrite a departed
+  // person's kept sets and PRs with no involvement from them. An APPROVED swap stays: it was
+  // settled while they were here, and the kept s.variations entry is what attributes their
+  // surviving sets to the lift they actually did.
+  s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === me && e.status === 'pending'));
   // history is deliberately NOT touched here anymore. The old code unconditionally stripped your
   // own history row on leave, which meant choosing to Keep your credit and then leaving erased
   // that same credit in the very same request — and any ALREADY-earned credit from finishing
@@ -1639,9 +1687,6 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // else's, and is exactly what lets you still find this workout later (see the new 'alumni'
   // sessionTier below).
   if (s.attendance) delete s.attendance[me];
-  for (const exId of Object.keys(s.variations || {})) {
-    if (s.variations[exId]) delete s.variations[exId][me];
-  }
   // If the creator walks away, the workout needs a new owner or nobody can ever finish or edit
   // it. Ownership can only pass to someone CURRENT — othersWhoLogged, not the broader
   // othersWithCredit above, since a departed alumni is not here to own anything. If nobody

@@ -861,14 +861,17 @@ async function viewPost(id, authorId){
   // THE SHARED RESULT. This used to read s.logs[s.creatorId] and nothing else, so a training
   // partner's sets were stored, counted toward their own PRs, and displayed to precisely nobody.
   //
-  // Who sees whose: if you were IN the workout you see everyone in it; if you are just a friend
-  // scrolling someone's profile you see the creator's sets, exactly as before. GET
-  // /api/sessions/:id hands every participant's logs to any friend of the creator, so without
-  // this gate a friend-of-a-friend would be shown a partner's sets that partner never agreed to
-  // publish to them. Do not widen this without asking Jeff.
+  // Who sees whose: if you were IN the workout you see everyone in it; if you are an outside
+  // viewer you see the creator's sets, plus (v242) any author whose RECAP is visible to you —
+  // the server only sends an outside viewer a person's logs when that person's own recap
+  // visibility admits them (sessionView), so a visible post here is precisely "they published
+  // this to me". That per-author publish gate is what made widening beyond the creator safe;
+  // it used to be creator-only because the old server handed every participant's logs to any
+  // friend of the creator. Departed members' sets are stored but not sent unless posted.
   const inTheWorkout = (s.participants||[]).includes(ME.id) || s.creatorId === ME.id;
   const logged = Object.keys(s.logs||{})
-    .filter(pid => (s.logs[pid]||[]).length && (inTheWorkout || pid === s.creatorId))
+    .filter(pid => (s.logs[pid]||[]).length && (inTheWorkout || pid === s.creatorId
+      || pid === ME.id || (s.posts && s.posts[pid] && !s.posts[pid].hidden)))
     .sort((x,y) => (x===s.creatorId ? -1 : y===s.creatorId ? 1 : String(logNames[x]||'').localeCompare(String(logNames[y]||''))));
   // Jeff, Aug 28: "edit my own sets (I don't want to change the exercises - just my logged
   // sets)" -- `mine` gates a tap-to-edit affordance per set-ROW, never per-exercise or
