@@ -3399,6 +3399,11 @@ if(window.visualViewport){
 // test/client-hostile.mjs in a plain Node vm with no MutationObserver global at all.
 if(typeof MutationObserver !== 'undefined'){
   new MutationObserver(muts=>{
+    // v232 (Jeff): while any sheet is open, lock the page behind it - scrolling the Quick
+    // Workout routine picker was scrolling the screen underneath. One central body class
+    // (works for every sheet, however it was opened) plus overscroll-behavior in the CSS;
+    // recomputed on every add/remove so closeSheet's delayed .remove() unlocks it.
+    document.documentElement.classList.toggle('sheet-open', !!document.querySelector('.sheet-back'));  // on <html>: iOS scrolls html, not body
     for(const m of muts) for(const n of m.addedNodes)
       if(n.nodeType===1 && n.classList && n.classList.contains('sheet-back')){ syncSheetsToViewport(); return; }
   }).observe(document.body, {childList:true});
