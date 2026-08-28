@@ -1977,10 +1977,17 @@ async function templatesPage(){
   // gated). A friend's shared routine gets Remove instead of Delete -- same word Jeff would use,
   // but it can only ever take the routine out of YOUR OWN list (POST .../hide, see the comment
   // above GET /api/templates in server.js), never touch your friend's copy of it.
-  const row = (t)=>`<div class="lib-item"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${t.exercises.length} exercises</div></div>
+  // v226 (audit item 1): Use is the one visible action — it's what people tap most. Edit /
+  // Delete / Remove live in the same ⋯ overflow menu viewPost and openSession already use
+  // (pp-dots/pp-menu/togglePostMenu), so all three screens handle secondary actions one way and
+  // no solid-red button sits in the main list. Row is position:relative so the absolutely
+  // positioned .pp-menu anchors to its own row.
+  const row = (t)=>`<div class="lib-item" style="position:relative"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${t.exercises.length} exercises</div></div>
     <button class="sec sm" onclick="tplUse('${t.id}')">Use</button>
-    ${t.ownerId===ME.id?`<button class="sec sm" onclick="tplEdit('${t.id}')">Edit</button><button class="sec sm red" onclick="tplDelete('${t.id}')">Delete</button>`
-      :`<button class="sec sm red" onclick="tplHide('${t.id}')">Remove</button>`}</div>`;
+    <button class="pp-dots" onclick="togglePostMenu('${t.id}')" aria-label="More">\u22ef</button>
+    <div class="pp-menu" id="ppMenu-${t.id}" style="display:none">${t.ownerId===ME.id
+      ?`<button onclick="tplEdit('${t.id}')">Edit</button><button class="danger" onclick="tplDelete('${t.id}')">Delete</button>`
+      :`<button class="danger" onclick="tplHide('${t.id}')">Remove</button>`}</div></div>`;
   $('app').innerHTML = `<div class="wrap tpl-page">
     <div class="pick-head lib-head"><h1 style="flex:1">Routines</h1>
       <button class="icon-btn" onclick="tplNew()" title="New routine">＋</button></div>
