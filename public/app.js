@@ -94,6 +94,17 @@ function fmtWhen(iso){
 // .trim() matters: a name of "   " is truthy and used to render a completely blank <h1>.
 function sessTitle(s){ const n = (s && s.name || '').trim(); return n ? esc(n) : fmtWhen(s.scheduledAt); }
 function sessSub(s){ const n = (s && s.name || '').trim(); return n ? fmtWhen(s.scheduledAt) + ' · ' : ''; }
+// Has THIS user finished this session — the same signal that hides the "Log & Finish" button
+// elsewhere (see the local `hasFinished`/`hasFinishedPost` consts in openSession()/viewPost()) and
+// that server.js's own myWorkouts filter uses to decide a workout belongs on the profile. Jeff,
+// Aug 27: "When I log and finish a workout it should move off of my sessions and now onto my
+// profile" -- Log & Finish credits s.history the moment you tap it (creditFinish, in /lock), which
+// is also the moment it starts showing on your profile. Checking s.posts[userId] alone (whether
+// you went on to also save notes/a photo on the following screen) left a real gap: finished and on
+// your profile, but stuck "Live now" on Home until that separate, easy-to-skip save happened too.
+function hasFinishedSession(s, userId){
+  return !!(s && ((s.posts && s.posts[userId]) || (s.history||[]).some(h=>h.userId===userId)));
+}
 // "Live now" for the Home list: today's date (same local-midnight-to-midnight window fmtWhen
 // labels "Today") and not yet finished. Deliberately NOT "any unposted session up to now" — an
 // old abandoned draft from last week would then read as live forever, which is worse than not
@@ -101,7 +112,7 @@ function sessSub(s){ const n = (s && s.name || '').trim(); return n ? fmtWhen(s.
 // actually true). A session scheduled later today is still live now — you may not have logged
 // anything yet, but it's today's workout, not next week's.
 function isSessionLiveNow(s){
-  if(!s || (s.posts && s.posts[ME.id])) return false;
+  if(!s || hasFinishedSession(s, ME.id)) return false;
   const d = new Date(s.scheduledAt); if(isNaN(d)) return false;
   return startOfDay(d).getTime() === startOfDay(new Date()).getTime();
 }
@@ -249,14 +260,15 @@ async function home(){
   </div>`;
 
   // Your Sessions (prime spot) — only sessions you've accepted/joined (exclude pending invites),
-  // and only ones still open FOR YOU. Once YOU have finished and saved your own recap
-  // (s.posts[ME.id] is set — see POST /sessions/:id/post in server.js; each participant finishes
-  // independently now), it's done for you: it belongs in "My Workouts" on your profile, not in
-  // this active list — even if a training partner on the same session hasn't finished yet.
+  // and only ones still open FOR YOU. Once YOU have finished (hasFinishedSession — Log & Finish
+  // credits this the moment you tap it, same signal server.js's myWorkouts uses; each participant
+  // finishes independently), it's done for you: it belongs in "My Workouts" on your profile, not
+  // in this active list — even if a training partner on the same session hasn't finished yet, and
+  // even if you never went on to also save notes/a photo on the screen after Log & Finish.
   // Today's not-yet-finished session (if any) is pulled to the top with a "Live now" badge —
   // .sort() is stable (every browser this app targets), so this only reorders the live ones
   // forward and otherwise leaves everything exactly where the API's date order put it.
-  const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && !(s.posts && s.posts[ME.id]))
+  const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && !hasFinishedSession(s, ME.id))
     .sort((a,b) => (isSessionLiveNow(b)?1:0) - (isSessionLiveNow(a)?1:0));
   html += `<h2>Your Sessions</h2><div class="card">`;
   if(yours.length){
