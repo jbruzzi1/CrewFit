@@ -512,7 +512,12 @@
        away · .up (solid green) go, and it is the only one that is tappable. No brand blue in
        any of them — blue is the CTA colour and none of these are CTAs. */
     /* ---- workout recap (showRecap) — seen once after Log & Finish ---- */
-    .rc-wrap { padding-top:calc(18px + env(safe-area-inset-top)); }
+    /* v237 (Jeff): no dead gap under Done on a short recap - the wrap is a min-full-height
+       column and the CTA takes margin-top:auto, so the button settles at the bottom of the
+       screen when content is short and simply follows the content when it is long. Not fixed
+       chrome: it scrolls like everything else. */
+    .rc-wrap { padding-top:calc(18px + env(safe-area-inset-top)); display:flex; flex-direction:column; min-height:100vh;  /* border-box: the wrap's own nav-clearance padding is inside this */ }
+    .rc-wrap .rc-cta { margin-top:auto; padding-top:18px; }
     /* v235 celebration: the recap opens like a win. One-shot CSS entrance - a self-drawing
        check, then each block rises in order. All of it is decoration over content that is
        already visible-safe: prefers-reduced-motion shows the finished state instantly. */
@@ -882,6 +887,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=236"></script>
+  <script src="app.js?v=237"></script>
 </body>
 </html>
