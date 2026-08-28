@@ -2476,12 +2476,15 @@ async function progressScreen(){
   d.weeks.forEach((w,i)=>{
     const x=i*(cw+gap), h=Math.max(3,(BH-BB-BT)*w.days/maxd), y=BH-BB-h;
     const cur=i===d.weeks.length-1;
-    const shade = w.days<=1?'var(--s1)': w.days<=2?'var(--s2)': w.days<=3?'var(--s3)':'var(--s4)';
+    // v227 (audit item 3): an empty week is a faint unlabeled stub, not a bar with a printed
+    // "0" — the eye already reads a short bar as "nothing happened"; ten zeros in a row was
+    // the loudest thing on the chart. Zero weeks also get their own fill so 0 and 1 differ.
+    const shade = w.days===0?'var(--line)': w.days<=1?'var(--s1)': w.days<=2?'var(--s2)': w.days<=3?'var(--s3)':'var(--s4)';
     bars+=`<rect x="${x}" y="${y}" width="${cw}" height="${h}" rx="4" fill="${shade}" ${cur?'stroke="#2563eb" stroke-width="2"':''}/>`;
     // Per-bar counts earn their place at 4 and 13 bars. At 26 they become a wall of digits
     // above a chart whose job at that zoom is shape, not exact counts — the bar height and
-    // shade already carry it, and the value is still available on tap.
-    if(d.weeks.length <= 13)
+    // shade already carry it, and the value is still available on tap. Zero is never printed.
+    if(d.weeks.length <= 13 && w.days > 0)
       bars+=`<text x="${x+cw/2}" y="${y-3.5}" text-anchor="middle" font-size="9.5" font-weight="700" fill="${cur?'#15181f':'#5c6470'}">${w.days}</text>`;
     hits+=`<rect x="${x-gap/2}" y="0" width="${cw+gap}" height="${BH-BB}" fill="transparent"><title>Week of ${w.weekOf}: ${w.days} day${w.days===1?'':'s'}</title></rect>`;
     if(i===0||cur) xlab+=`<text x="${cur?BW:0}" y="${BH-6}" text-anchor="${cur?'end':'start'}" font-size="9.5" fill="#5c6470">${cur?'this week':shortDate(w.weekOf)}</text>`;
@@ -2525,10 +2528,22 @@ async function progressScreen(){
     <h2>Consistency</h2>
     <div class="card">
       <div class="kpi"><div>
-        ${d.weeks.some(w=>w.days)
-          ? `<div class="hero">${d.avgPerWeek}<span class="hero-u"> days/week average</span></div>
-             <div class="hero-cap">over ${(PROG_RANGES.find(r=>r.weeks===d.weeks.length)||{label:d.weeks.length+' weeks'}).label.toLowerCase()}</div>`
-          : `<div class="hero" style="font-size:17px">No workouts logged yet</div>`}
+        ${(()=>{
+          // v227: the headline average starts at your FIRST ACTIVE WEEK in the window, not the
+          // window's start — someone 3 weeks into the app was seeing "0.4 days/week average"
+          // because ten pre-signup weeks divided their honest effort. The caption dates the
+          // window ("since Aug 10") so the number stays a true claim either way; when the
+          // whole window is active it keeps the range label ("over 3 months").
+          if(!d.weeks.some(w=>w.days)) return `<div class="hero" style="font-size:17px">No workouts logged yet</div>`;
+          const firstIdx = d.weeks.findIndex(w=>w.days>0);
+          const active = d.weeks.slice(firstIdx);
+          const avg = (active.reduce((a,w)=>a+w.days,0)/active.length).toFixed(1);
+          const cap = firstIdx===0
+            ? `over ${(PROG_RANGES.find(r=>r.weeks===d.weeks.length)||{label:d.weeks.length+' weeks'}).label.toLowerCase()}`
+            : `since ${shortDate(active[0].weekOf)}`;
+          return `<div class="hero">${avg}<span class="hero-u"> days/week average</span></div>
+             <div class="hero-cap">${cap}</div>`;
+        })()}
       </div>${d.streakWeeks>0?`<span class="streak">${d.streakWeeks}-week streak</span>`:''}</div>
       ${d.weeks.some(w=>w.days)
         ? `<svg viewBox="0 0 ${BW} ${BH}" width="100%" style="display:block" role="img"
