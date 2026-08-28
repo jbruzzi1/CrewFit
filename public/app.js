@@ -789,9 +789,19 @@ async function viewPost(id, authorId){
   const photoStrip = media.length ? `<div class="pp-photos">${media.map((m,i)=>`<div class="pp-photo">${m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`}${isAuthor?`<button class="pp-photo-x" onclick="deletePhoto('${id}','${authorId}',${i})" aria-label="Delete photo">✕</button>`:''}</div>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
   const photos = (media.length || addPhotoRow) ? `<h2>Photos</h2>${photoStrip}${addPhotoRow}` : '';
   const notes = post.notes ? esc(post.notes) : '<span class="muted">How\'d it go?</span>';
+  // Jeff, Aug 28: "I made my most recent posted workout on my profile public and it still says
+  // 'friends only'." The badge just below was showing s.visibility -- whether the SESSION itself is
+  // joinable by friends or invite-only, set back on the create form -- which is a different setting
+  // from post.visibility, the one actually controlling who can see THIS RECAP on your profile (the
+  // "Only me / Friends / Public" segmented control on the Save/Edit screen, exactly what Jeff had
+  // just changed to Public). s.visibility only ever has two values, so this badge could never even
+  // read "Public" no matter what you set. Show the recap's own visibility instead -- same field,
+  // same wording, as the segmented control that sets it.
+  const postVis = post.visibility || 'only_me';
+  const postVisLabel = postVis==='public' ? 'Public' : postVis==='friends' ? 'Friends' : 'Only me';
   const hasFinishedPost = (s.history||[]).some(h=>h.userId===ME.id);
   const dots = isCreator ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none"><button onclick="enterWorkoutEdit('${id}')">Edit session</button><button class="danger" onclick="deleteSession('${id}', ${hasFinishedPost})">Delete session</button></div>` : '';
-  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="showTab('home')">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${s.visibility==='friends'?'Friends-only':'Private'}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    <h2>Notes</h2><div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
+  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="showTab('home')">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    <h2>Notes</h2><div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
   $('app').innerHTML = html;
   if(media.length>1){
     const strip=document.querySelector('.pp-photos');
