@@ -22,6 +22,14 @@ because you wrote it.
 
 - **Always render before showing Jeff.** Playwright, 390×844 @2x, full page, check the
   console for `pageerror`. Never describe a visual change you have not looked at.
+- **Pin fixed bars before any full-page screenshot** (Jeff, Aug 28: the nav kept landing mid-
+  image). Playwright's fullPage stitching paints `position:fixed` elements at the viewport
+  position, so on tall pages the bottom nav / `#updateBar` / `.sticky-bar` float mid-screenshot.
+  Before capturing, convert them to `position:absolute` with `top: documentHeight - barHeight`
+  (nav flush at the bottom; updateBar its usual offset above), and restore afterwards if the
+  script keeps interacting. Overlays that cover the viewport (`.sheet-back`, `.crop-overlay`)
+  get pinned to `window.scrollY` instead. Write this as a shared helper once per session and
+  use it for every full-page shot.
 - **Review with fresh eyes.** Before showing him, spawn a subagent to review the diff and
   the screenshot cold — without your reasoning for why it should work. It catches what
   you are blind to precisely because you decided it.
@@ -40,10 +48,18 @@ because you wrote it.
 
 ## Design constants
 
-- Blue `--blue:#2563eb` is the brand color — CTAs and the active nav tab only. Green is the avatar accent, nothing more. No gradients on the header.
+(Rewritten Aug 28, 2026 after the whole-app visual pass, v221–v240. The old text here described the light-only v140 language.)
+
+- **Two themes, dark by default.** The app defaults to dark; Settings → Appearance toggles it (localStorage `crewfit_theme`, stamped on `<html>` as `theme-dark` by an inline head script BEFORE first paint — never let a page flash light). Phone-native `prefers-color-scheme` switching was deliberately removed at Jeff's request; the toggle is the only control. Every visual change must be rendered and checked in BOTH themes.
+- **The dark palette lives in ONE block at the end of the stylesheet**, every selector prefixed `:where(html.theme-dark)` — the zero-specificity wrapper is load-bearing. A plain `html.theme-dark button` outranked `.nav button` and turned the whole nav green (v230). Add dark overrides only inside that block, only with `:where()`.
+- **Color is a language: blue = actions, green = achievements, gold = live status.** Blue (`--blue`, #2563eb light) is CTAs and the active nav tab. Green is exclusively earned things — PR pills (solid green fill), the streak dot, the recap celebration. Muted gold #d7a04a marks "Live now" ONLY. No amber/orange anywhere else (Jeff: "Halloween feel"), no gradients. In dark theme, white-text fills use the deeper steps (#1f8a4c green, #3b6de8 blue); the bright dark accents (#3ecf72 / #5a8bff) are for text and borders only — they fail contrast as backgrounds.
+- **"No windows" airiness.** Near-white/near-black page background with borderless floating cards (soft shadow, no border) — except inside sheets, where cards keep a hairline (`.sheet .card`). No boxed-in header bars. Empty states render OPEN — icon, line, optional CTA (`homeEmpty`) — never inside a card box.
+- **A card renders only when it has content** (v222, app-wide since v225). An empty section shows its open empty state, not an empty box.
+- **The stat row never renders a zero.** Stats are drawn from a priority pool and simply not shown when they'd be 0 ("0 PRs this week" is demoralizing and useless). Jeff explicitly likes the "Last workout: Tuesday · Pull Day" line — keep it.
 - **Discoverability beats minimalism.** Never hide an empty state; a new user must be able to find the feature.
 - **But never state something about the user you can't stand behind.** v163 told Jeff "One session logged" on a lift he had not logged. Discoverable and wrong is worse than quiet. If a sentence claims something about their history, it has to be right every time.
-- Light theme, white cards on warm off-white, elevated rounded cards with soft shadows (the v140 language), bottom nav.
+- **Confirmations are in-app sheets (`confirmSheet`), never browser `confirm()`** — browser dialogs speak no design language and ignore the theme.
+- Feed rows: every row's leading mark (photo thumb, check, PR pill) sits in a fixed 36px `.feed-lead` column so names always start at the same x (Jeff, Aug 28).
 
 ## Do NOT "fix" these — already verified correct
 

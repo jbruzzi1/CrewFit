@@ -229,6 +229,11 @@ console.log('\nv187: finishing is PER PERSON — one participant\'s Log & Finish
   ok(hist.length === 1, `their history credit is still intact, and was not duplicated (${hist.length} row(s))`);
   ok(!db2.sessions[finished.id].participants.includes(participant.user.id), 'and they are still removed as a participant');
 
+  console.log("\nJeff's list, Aug 28: a finished-then-left workout still counts as a day trained — /leave deletes your s.logs entry, and days trained used to be counted only from logs, so this workout silently vanished from the header stats and the streak");
+  const progAfter = await fetch(B + '/api/progress', { headers: { Authorization: 'Bearer ' + participant.token } }).then(r => r.json());
+  ok(progAfter.thisWeek >= 1, `the day they trained (135x5, finished, then left) still counts (thisWeek=${progAfter.thisWeek})`);
+  ok(progAfter.streakWeeks >= 1, `and the streak still stands (streakWeeks=${progAfter.streakWeeks})`);
+
   console.log('\na departed participant\'s credit blocks delete just like a CURRENT participant\'s would');
   // the partner above already left `finished` and still holds a history row there — this is
   // exactly the shape a plain "who has logged" check misses, since their s.logs entry is gone.

@@ -68,6 +68,7 @@ console.log('remove (hide) takes a shared routine out of my list only, and undo 
   const back = mine.shared.find(x => x.id === t.id);
   ok(!!back, 'the routine is back in my shared list after undo');
   ok(back && back.hiddenBy === undefined, 'and the restored row does not echo hiddenBy');
+  ok(back && back.ownerName === 'Casey', `v239: shared rows carry who shared them (saw: ${back && back.ownerName})`);
 
   r = await post(jeff, `/api/templates/${t.id}/unhide`);
   ok(r.status === 200, 'unhide is idempotent — a double-tapped Undo is not an error');
