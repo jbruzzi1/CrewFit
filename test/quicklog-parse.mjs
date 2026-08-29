@@ -132,5 +132,20 @@ P('I just did 225 x 3', { ...base, weight: 225, reps: 3 });
 P('Warm-up. 95 for 12.', { ...base, setType: 'warmup', weight: 95, reps: 12 }, 'punctuation + hyphen');
 P('NORMAL SET 45 AT 8 REPS', { ...base, setType: 'normal', weight: 45, reps: 8 }, 'all caps');
 
+console.log('\nevery advertised placeholder example actually parses, with its named set type (v246)');
+{
+  const examples = vm.runInContext('QL_EXAMPLES', ctx);
+  ok(Array.isArray(examples) && examples.length >= 4, `the example rotation exists (${examples.length} entries)`);
+  const TYPE_WORDS = { normal: 'normal', 'warm up': 'warmup', 'drop set': 'drop', failure: 'failure' };
+  for (const ex of examples) {
+    // placeholder shape: Say &ldquo;PHRASE&rdquo; - pull the phrase out and parse it
+    const phrase = ex.replace(/^Say &ldquo;/, '').replace(/&rdquo;$/, '');
+    const got = parse(phrase);
+    ok(got && got.weight !== null && got.reps !== null, `example parses to a full set: ${JSON.stringify(phrase)} -> ${JSON.stringify(got)}`);
+    const named = Object.keys(TYPE_WORDS).find(w => phrase.toLowerCase().startsWith(w));
+    if (named) ok(got && got.setType === TYPE_WORDS[named], `and its named type registers (${named} -> ${got && got.setType})`);
+  }
+}
+
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
 process.exit(fails ? 1 : 0);

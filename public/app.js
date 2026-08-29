@@ -1558,12 +1558,15 @@ function qlParse(){
 // of how to say the logging"). A different worked example each time the sheet opens, so over a
 // week of training you passively see the whole range of what it understands - without a single
 // line of instructional UI. STATIC strings only; they render into a placeholder attribute.
+// v246 (Jeff): every example NAMES its set type, so saying the type out loud is taught the
+// same passive way as everything else. Each quoted phrase must actually parse - the test
+// suite extracts this list and runs every one through parseQuickLog.
 const QL_EXAMPLES = [
-  'Say &ldquo;135 for 8, 2 RIR&rdquo;',
-  'Say &ldquo;45 lbs at 8 reps&rdquo;',
-  'Say &ldquo;warm up, 95 for 12&rdquo;',
-  'Say &ldquo;225 x 3&rdquo;',
-  'Say &ldquo;8 reps at 85, 2 RIR&rdquo;',
+  'Say &ldquo;Normal, 135 for 8, 2 RIR&rdquo;',
+  'Say &ldquo;Normal, 45 lbs at 8 reps&rdquo;',
+  'Say &ldquo;Warm up, 95 for 12&rdquo;',
+  'Say &ldquo;Drop set, 90 for 12&rdquo;',
+  'Say &ldquo;Failure, 185 for 9&rdquo;',
 ];
 function qlExample(){ return QL_EXAMPLES[Math.floor(Math.random()*QL_EXAMPLES.length)]; }
 let QL_WATCH = null, QL_LAST = '';
