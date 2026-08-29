@@ -3514,16 +3514,45 @@ function toggleTheme(){
   if(v) v.textContent = next === 'dark' ? 'Dark' : 'Light';
 }
 function openSettings(){
+  // v249, Jeff Aug 29 (video): tapping "Default gym" used to skip the closeSheet() every other
+  // row here does before opening its sub-flow -- it went straight to editDefaultGym() with the
+  // Settings sheet still open underneath. That let a SECOND full-viewport .sheet-back (Default
+  // Gym, from openSheetHtml in textEntrySheet()) stack directly on top of the first, which is
+  // exactly the state the rest of this file assumes never happens: the comment above _teConfirm
+  // in textEntrySheet() already says "only one text-entry sheet is ever open at a time, same as
+  // closeSheet()'s single .sheet-back assumption elsewhere in this file." Two consequences, both
+  // visible in Jeff's recording: (1) every tap while Default Gym was open dimmed the profile page
+  // through TWO stacked rgba(0,0,0,.35) backdrops instead of one, which reads as the page itself
+  // darkening from an unrelated tap ("affecting things behind it"); (2) closeSheet() only ever
+  // removes the LAST-appended .sheet-back, and it captures that specific element in a closure
+  // before its 200ms fade-out timer runs -- so a closeSheet() aimed at the (still fully live,
+  // still tappable) Settings sheet while Default Gym sat on top of it removed the ORIGINAL
+  // Settings sheet on its own independent timer regardless of what had since stacked above it,
+  // leaving Default Gym's sheet orphaned over a fully bright, fully interactive profile page once
+  // Settings' timer fired -- exactly what frames 010-011 of the video show. Adding closeSheet()
+  // here, matching every sibling row, means Settings is always gone before Default Gym ever
+  // opens: at most one sheet-back ever exists, so neither failure mode is reachable.
   const inner = `<div class="sheet"><div class="sheet-head"><h2>Settings</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
     <div class="sheet-list">
       <button class="sheet-row" onclick="toggleTheme()">Appearance <span class="row-val" id="themeVal">${currentTheme()==='dark'?'Dark':'Light'}</span></button>
       <button class="sheet-row" onclick="closeSheet(); document.getElementById('av').click()">Edit photo</button>
       <button class="sheet-row" onclick="closeSheet(); editBio()">Edit bio</button>
-      <button class="sheet-row" onclick="editDefaultGym()">Default gym <span class="row-val">${esc(ME.defaultGym || 'Not set')}</span></button>
+      <button class="sheet-row" onclick="closeSheet(); editDefaultGym()">Default gym <span class="row-val">${esc(ME.defaultGym || 'Not set')}</span></button>
       <button class="sheet-row" onclick="closeSheet(); pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
-      <button class="sheet-row" onclick="toggleStreakReminders()">Streak reminders <span class="row-val">${ME.notifyStreakReminders!==false?'On':'Off'}</span></button>
+      <button class="sheet-row" onclick="toggleStreakReminders()">Streak reminders <span class="row-val" id="streakRemVal">${ME.notifyStreakReminders!==false?'On':'Off'}</span></button>
       <button class="sheet-row red" onclick="closeSheet(); confirmResetWorkouts()">Reset workouts</button>
-      <button class="sheet-row red" onclick="closeSheet(); logout()">Log out</button>
+    </div>
+    <!-- v249, Jeff Aug 29 (video): "the log out button is the same size and very close to the
+    reset workout button" -- they shared .sheet-row.red (Reset workouts' own destructive-red
+    styling) with only a hairline divider between them, so a genuinely harmless, fully reversible
+    action (Log out) read as being exactly as risky as an irreversible one (Reset workouts
+    permanently deletes every workout, log, and PR -- see confirmResetWorkouts() above) and sat a
+    thin border away from it. Log out now drops the red styling -- red is reserved for actually
+    destructive actions app-wide -- and moves into its own grouped section with a real gap above
+    it, the same grouped-list pattern iOS Settings uses to keep a sign-out action visually apart
+    from destructive ones. -->
+    <div class="sheet-list" style="margin-top:14px">
+      <button class="sheet-row" onclick="closeSheet(); logout()">Log out</button>
     </div>
   </div>`;
   openSheetHtml(inner);
@@ -3727,7 +3756,18 @@ function editDefaultGym(){
 async function toggleStreakReminders(){
   const next = !(ME.notifyStreakReminders!==false);
   const r = await H.post('/api/me/notify-prefs',{streakReminders:next});
-  if(r.streakReminders!==undefined){ ME.notifyStreakReminders=r.streakReminders; openSettings(); }
+  // v249 (cold-review catch on the Default-gym stacking fix): this used to call openSettings()
+  // again on success, same as Default gym did before its own fix -- reopening a sheet that's
+  // already open appends a SECOND full-viewport .sheet-back on top of the still-live original
+  // (this row has no closeSheet() before it either, so the overlap wasn't even a brief fade-race:
+  // the first sheet stayed fully live and fully shown, permanently, until manually dismissed one
+  // tap at a time). Fixed the same way toggleTheme() already was, per the comment above it -
+  // update the row's own text in place instead of closing-and-reopening the whole sheet.
+  if(r.streakReminders!==undefined){
+    ME.notifyStreakReminders=r.streakReminders;
+    const v = document.getElementById('streakRemVal');
+    if(v) v.textContent = ME.notifyStreakReminders!==false ? 'On' : 'Off';
+  }
 }
 async function uploadAvatar(input){
   const file = input.files && input.files[0];
