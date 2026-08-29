@@ -271,9 +271,14 @@ async function home(){
   const weekAgoMs = Date.now() - 7*86400e3;
   const earnedPrs = ((prog && prog.prs) || []).filter(p => p.source === 'earned' && !p.firstLog);
   const prsThisWeek = earnedPrs.filter(p => new Date(p.at).getTime() >= weekAgoMs).length;
-  // Records store weight as a number in the USER'S unit and carry no unit field — prog.unit is
-  // the display unit, exactly how the Progress tab's prLabel does it. Raw-number compare is
-  // therefore unit-consistent too.
+  // v249 (audit finding): this comment used to claim records "carry no unit field" and are
+  // therefore safe to label with prog.unit, the page's current unit preference — that was true
+  // only by accident, because rebuildAllPrs() (server.js) used to silently drop the unit a PR was
+  // actually logged in. Now that it's carried through (see the comment there), a record logged in
+  // kg reads back as kg here too, same as the Progress tab's prLabel. The raw-number sort just
+  // below is comparing different EXERCISES' weights against each other regardless of unit either
+  // way — an existing, separate simplification (picking "best" by biggest number, not adjusted
+  // per lift) this fix does not touch.
   const best = earnedPrs.filter(p => Number(p.weight) > 0).sort((a,b) => Number(b.weight) - Number(a.weight))[0] || null;
   const withFriends = mine.filter(s => (s.participants||[]).some(x => x && x !== ME.id)).length;
   const statPool = [];
@@ -286,7 +291,7 @@ async function home(){
   if(thisWeek >= 1) statPool.push({ num: thisWeek, lbl: thisWeek === 1 ? 'day trained this week' : 'days trained this week' });
   if(prsThisWeek >= 1) statPool.push({ num: prsThisWeek, lbl: prsThisWeek === 1 ? 'PR this week' : 'PRs this week' });
   if(mine.length >= 1) statPool.push({ num: mine.length, lbl: mine.length === 1 ? 'workout logged' : 'workouts logged' });
-  if(best) statPool.push({ num: `${best.weight} ${(prog && prog.unit) || 'lb'}`, lbl: 'best ' + best.exercise });
+  if(best) statPool.push({ num: `${best.weight} ${unitOf(best)}`, lbl: 'best ' + best.exercise });
   if(withFriends >= 1) statPool.push({ num: withFriends, lbl: 'with friends' });
   const stats = statPool.slice(0, 3);
   const homeAvatarHtml = ME && ME.avatar
@@ -793,11 +798,21 @@ async function openSession(id, opts){
       // refusing it, so the button here stays real and actionable; this line is only about not
       // pretending the earlier answer never happened.
       const declined = myJoinReq && myJoinReq.status==='rejected';
+      // v249 (audit finding, cold-review-caught follow-up): this used to unconditionally offer
+      // "Message {host}" here too, wired to openChat() = document.getElementById('chatInput').focus()
+      // — but #chatInput only renders when canChat is true (isCreator || isParticipant || pendingMe,
+      // above chatBlock). The first fix here just deleted the button outright, reasoning that nobody
+      // in THIS branch could have canChat true — wrong: respondHere requires !sessionHasAnyPost(s), so
+      // a genuinely INVITED person (pendingMe true, #chatInput really rendered) whose session already
+      // has a posted recap by the time they look at it lands in this joinable branch too, not
+      // respondHere, and could message the host just fine. Gating the button on canChat itself — the
+      // actual thing #chatInput's presence depends on — keeps it working for that overlap case while
+      // still removing it for the real dead-button case (never invited, never joined, canChat false).
       html += `${declined ? `<div class="muted" style="padding:0 2px 10px">${esc(host)} declined your last request — you can ask again.</div>` : ''}
       <button class="btn-answer" onclick="requestJoin('${s.id}')">Join in?</button>
-      <div class="answer-aside">
+      ${canChat ? `<div class="answer-aside">
         <button class="linkbtn" onclick="openChat('${s.id}')">Message ${esc(host)}</button>
-      </div>`;
+      </div>` : ''}`;
     }
   } else {
     html += crewBlock + chatBlock;
@@ -876,6 +891,16 @@ async function viewPost(id, authorId){
     .filter(pid => (s.logs[pid]||[]).length && (inTheWorkout || pid === s.creatorId
       || pid === ME.id || (s.posts && s.posts[pid] && !s.posts[pid].hidden)))
     .sort((x,y) => (x===s.creatorId ? -1 : y===s.creatorId ? 1 : String(logNames[x]||'').localeCompare(String(logNames[y]||''))));
+  // v249 (audit finding): "No sets logged" below used to fire whenever nobody's VISIBLE sets
+  // landed on this exercise — but a departed participant's recap can be hidden from this viewer
+  // by their own privacy setting (Only me / Friends) while their sets are still real, still
+  // stored, still logged. The server never sends this viewer their sets at all in that case (see
+  // sessionView), so there is no way to know which exercises that person logged — only that a
+  // hidden recap exists at all (view.posts still carries a {hidden:true} placeholder for it,
+  // unlike a person with no recap and nothing to hide). So this can't be exercise-precise; it
+  // hedges every otherwise-empty card once ANY hidden recap is in the mix, trading a little
+  // over-caution for never flatly claiming "nobody logged this" when someone plausibly did.
+  const hasHiddenPost = Object.values(s.posts || {}).some(p => p && p.hidden);
   // Jeff, Aug 28: "edit my own sets (I don't want to change the exercises - just my logged
   // sets)" -- `mine` gates a tap-to-edit affordance per set-ROW, never per-exercise or
   // per-workout, so a shared workout's OTHER participant's sets stay exactly as read-only as
@@ -912,7 +937,9 @@ async function viewPost(id, authorId){
       const who = (label || note) ? `<div class="pp-who">${[label, note].filter(Boolean).join(' ')}</div>` : '';
       return who + setRows(ls, pid===ME.id);
     }).filter(Boolean).join('');
-    const setsHtml = blocks || `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">No sets logged</div>`;
+    const setsHtml = blocks || (hasHiddenPost
+      ? `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">Sets not shared</div>`
+      : `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">No sets logged</div>`);
     return `<div class="pp-ex"><div class="pp-ex-name">${esc(heading)}</div></div>${setsHtml}`;
   }).join('');
   // Jeff, Aug 28: "I want to be able to add or change the picture i added later once its on my
@@ -1140,7 +1167,10 @@ async function saveRoutine(id){
     }
   });
 }
-async function openChat(id){ document.getElementById('chatInput').focus(); }
+// v249 (audit finding): a null guard, belt-and-suspenders alongside removing the one dead call
+// site that reached this with no #chatInput on the page (see the joinable-friend-tier comment
+// above) — so a future caller added the same way fails quietly instead of throwing.
+async function openChat(id){ const el=document.getElementById('chatInput'); if(el) el.focus(); }
 async function sendChat(id){
   const t=$('chatInput').value; if(!t.trim()) return;
   const r = await H.post(`/api/sessions/${id}/comments`,{text:t});
@@ -2753,10 +2783,18 @@ function shortDate(iso){
   const d=new Date(iso+'T00:00:00Z'); if(isNaN(d)) return iso;
   return d.toLocaleDateString(undefined,{month:'short',day:'numeric',timeZone:'UTC'});
 }
-function prLabel(p,U){
+// v249 (audit finding): this used to label every PR's weight with U, the page's CURRENT unit
+// preference, no matter what unit the record itself was actually logged in — the same "each
+// logged set... keeps reading in the unit it was typed in" rule myUnit()/unitOf() already follow
+// everywhere else (see the comment above unitOf). A kg lifter's record now correctly carries its
+// own p.unit (server fix in rebuildAllPrs), so this reads that instead of assuming it matches
+// whatever unit the viewer happens to be on right now — the only case this changes anything is a
+// PR set in one unit that's still on record after the user later switched preference, which used
+// to silently relabel it as the wrong unit's number.
+function prLabel(p){
   const w=Number(p.weight)||0;
   if(w===0) return `${p.reps} reps`;
-  return `${w} ${U} × ${p.reps}`;
+  return `${w} ${unitOf(p)} × ${p.reps}`;
 }
 
 // Strength trend chart. Single series, so no legend — the chip above names it. Selective
@@ -2973,16 +3011,16 @@ async function progressScreen(){
         if(p.source==='entered') return `<div class="pr pr-self">
           <div><div class="pr-n">${esc(p.exercise)} <span class="self-tag">you entered</span></div>
             <div class="pr-d">Starting best · beat it to set a record</div></div>
-          <div class="pr-r"><div class="pr-w">${prLabel(p,U)}</div>
+          <div class="pr-r"><div class="pr-w">${prLabel(p)}</div>
             ${p.goal?`<div class="pr-goal">goal ${p.goal} ${U}</div>`:''}</div></div>`;
         if(p.beatSeed) return `<div class="pr pr-beat">
           <div><div class="pr-n">${esc(p.exercise)}</div>
             <div class="pr-beat-was">Beat the <b>${p.seedWeight} × ${p.seedReps}</b> you entered</div></div>
-          <div class="pr-r"><div class="pr-w">${prLabel(p,U)}</div>
+          <div class="pr-r"><div class="pr-w">${prLabel(p)}</div>
             <div class="beat-chip">▲ Record beaten</div></div></div>`;
         return `<div class="pr">
           <div><div class="pr-n">${esc(p.exercise)}</div><div class="pr-d">${fmtDate(p.at)}</div></div>
-          <div class="pr-r"><div class="pr-w">${prLabel(p,U)}</div>
+          <div class="pr-r"><div class="pr-w">${prLabel(p)}</div>
             ${p.goal?`<div class="pr-goal">goal ${p.goal} ${U}</div>`:''}</div></div>`;
       }).join('')
     : `<div class="muted" style="padding:8px 2px">Log a workout — your first set of any exercise is a record.</div>`;

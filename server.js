@@ -1476,6 +1476,18 @@ function sessionTier(s, viewerId) {
   return 'stranger';
 }
 
+// v248: whether userId may still finish (/lock) or write/edit their own recap (/post) on this
+// session — a CURRENT participant/creator, or someone who left with `keep` (their history row
+// survives a keep-leave; see the comment above /leave). A plain s.participants.includes(userId)
+// check alone 403'd a keep-leaver out of editing the recap they had already posted BEFORE leaving,
+// and out of ever posting one for the first time AFTER leaving to make their kept sets visible —
+// exactly the credit `keep` exists to protect, quietly undone the moment they stepped away. Same
+// 'alumni' fact sessionTier already grants VIEW access on; this is the matching WRITE-side check.
+function canFinishOrPost(s, userId) {
+  return s.creatorId === userId || (s.participants || []).includes(userId)
+    || (s.history || []).some(h => h.userId === userId);
+}
+
 // A recap carries its OWN visibility, chosen by whoever wrote it — and now every participant has
 // their own, independent of everyone else's. "only me" has to mean only me even to people who
 // were in the same workout; p is one entry of s.posts, authorId is the key it lives under.
@@ -1742,6 +1754,18 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // settled while they were here, and the kept s.variations entry is what attributes their
   // surviving sets to the lift they actually did.
   s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === me && e.status === 'pending'));
+  // v248 (audit finding): joinRequests was never touched by leaving. POST /log and POST /suggest
+  // both treat "an APPROVED join request exists for this user" as authorization on its own,
+  // independent of s.participants — that's the door someone who joined via request came in
+  // through. Leaving removed them from s.participants but left that request sitting at
+  // status:'approved' forever, so it kept working as a standing key: a departed join-requester
+  // could still log sets into (and suggest swaps on) a workout they had just left. It also meant
+  // tapping "Join in?" again afterwards (see /join above: any existing row, approved or not, just
+  // flips to 'pending' and re-notifies the creator) silently reopened a stale approved request
+  // instead of filing an honest new one. Leaving now clears the request itself — same "only your
+  // own stuff" scope as everything else here — so nothing is left behind to authorize against,
+  // and asking back in starts a clean request like anyone else's first ask.
+  s.joinRequests = (s.joinRequests || []).filter(j => j.userId !== me);
   // history is deliberately NOT touched here anymore. The old code unconditionally stripped your
   // own history row on leave, which meant choosing to Keep your credit and then leaving erased
   // that same credit in the very same request — and any ALREADY-earned credit from finishing
@@ -1794,6 +1818,10 @@ app.post('/api/sessions/:id/remove-mine', auth, async (req, res) => {
   for (const exId of Object.keys(s.variations || {})) {
     if (s.variations[exId]) delete s.variations[exId][me];
   }
+  // v248: same joinRequests cleanup as /leave (see the comment above it) — this route is meant to
+  // erase every trace of me on this session, so a leftover approved join request quietly granting
+  // /log or /suggest access afterwards is the one thing that would be even more wrong here than there.
+  s.joinRequests = (s.joinRequests || []).filter(j => j.userId !== me);
   if (s.creatorId === me) {
     const currentOthers = othersWhoLogged(s, me);
     s.creatorId = currentOthers.length ? currentOthers[0] : null;
@@ -2058,6 +2086,12 @@ function stripUserFromSession(s, userId) {
   for (const exId of Object.keys(s.variations || {})) {
     if (s.variations[exId]) delete s.variations[exId][userId];
   }
+  // v249 (audit finding, same root cause as /leave's joinRequests fix above): an approved join
+  // request is a standing authorization on its own for POST /log and POST /suggest (see
+  // canFinishOrPost's sibling check there), independent of s.participants — "strips every trace"
+  // was not true while that row could still be sitting there afterward, letting a reset user keep
+  // writing into a session /me/reset-workouts was supposed to have erased them from entirely.
+  s.joinRequests = (s.joinRequests || []).filter(j => j.userId !== userId);
 }
 
 // Scoped to req.userId ONLY — never a body param, so this can never be pointed at anyone else,
@@ -2082,10 +2116,20 @@ app.post('/api/me/reset-workouts', auth, async (req, res) => {
   for (const s of Object.values(DB.sessions)) {
     ensureSessionShape(s);
     const isCreator = s.creatorId === me;
+    // v249 (audit finding): this used to miss s.posts[me]/s.logs[me] — unlike remove-mine's own
+    // hasConnection check just above, which already covers both. A discard-leave (keep:false)
+    // deletes s.logs[me] and removes participants/invited, but a recap posted BEFORE that leave
+    // (s.posts[me]) is untouched by it (see the comment above /leave: discard only ever erases
+    // logs/variations, never a recap), and discard skips creditFinish so no history row exists
+    // either. That combination — no participants, no invited, no history, but a real recap still
+    // sitting on the session — read as "not touched" and reset-workouts skipped it entirely,
+    // leaving that stale recap fully visible after a user asked to erase everything they'd logged.
     const isTouched = isCreator
       || (s.participants || []).includes(me)
       || (s.invited || []).includes(me)
-      || (s.history || []).some(h => h.userId === me);
+      || (s.history || []).some(h => h.userId === me)
+      || (s.posts && s.posts[me])
+      || (s.logs && s.logs[me]);
     if (!isTouched) continue;
     if (isCreator) {
       const others = othersWithCredit(s, me);
@@ -2820,8 +2864,18 @@ function rebuildAllPrs() {
         // just excluded from the celebratory feed/activity items (see groupPrsForFeed).
         const firstLog = bestLog === chronological[0];
         DB.prs[userId] = DB.prs[userId] || {};
+        // v249 (audit finding): `unit` was dropped here, even though bestLog.weight is stored in
+        // WHATEVER unit that specific set was logged in (kg bars move in 2.5s, lb in 5s — see the
+        // comparator above, which correctly normalizes through toLb(l.weight, l.unit) before
+        // picking a winner). Once written here without its unit, recordsFor()'s beatSeed check
+        // (toLb(e.weight, e.unit)) silently treated e.unit as undefined -> lb, so a kg PR's real
+        // weight was compared as if it were that many POUNDS: a 100kg squat (≈220lb) could lose a
+        // beatSeed check against a 90kg seed (≈198lb) because 100 < toLb(90,'kg')≈198 numerically,
+        // even though 100kg genuinely beats 90kg. Every kg lifter's "Record beaten" celebration was
+        // wrong on this axis, and the client (prLabel) had no unit to trust for display either.
         DB.prs[userId][name] = { exercise: name, weight: Number(bestLog.weight) || 0,
-          reps: Number(bestLog.reps) || 0, at: bestLog._performedAt || bestLog.at, firstLog };
+          reps: Number(bestLog.reps) || 0, unit: bestLog.unit || 'lb',
+          at: bestLog._performedAt || bestLog.at, firstLog };
       }
     }
   }
@@ -2871,7 +2925,7 @@ app.post('/api/sessions/:id/lock', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
-  if (!s.participants.includes(req.userId))
+  if (!canFinishOrPost(s, req.userId))
     return res.status(403).json({ error: 'not in this workout' });
   // creditFinish is idempotent per user — tapping "Log & Finish" twice must not push a second
   // history row for THIS person, inflating their own workout count, streak and weekly volume.
@@ -2888,7 +2942,7 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
-  if (!s.participants.includes(req.userId)) return res.status(403).json({ error: 'not in this workout' });
+  if (!canFinishOrPost(s, req.userId)) return res.status(403).json({ error: 'not in this workout' });
   const { notes, media, visibility } = req.body || {};
   const vis = ['only_me','friends','public'].includes(visibility) ? visibility : 'only_me';
   const incoming = Array.isArray(media) ? media : [];
