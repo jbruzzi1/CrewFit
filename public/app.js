@@ -1300,7 +1300,7 @@ async function openLogSheet(sid, exId){
       <div class="add-row ql-row">
         <div class="ql-field">
           <button type="button" class="ql-mic-btn" aria-label="Hold to speak" onpointerdown="qlMicDown(event)" onpointerup="qlMicUp()" onpointercancel="qlMicUp()"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-          <input id="qlText" placeholder="${qlExample()}" autocomplete="off" autocapitalize="off" oninput="qlParse()" onfocus="qlWatchStart()" onblur="qlWatchStop()">
+          <input id="qlText" placeholder="${qlExample()}" autocomplete="off" autocapitalize="off" oninput="qlParse()" onfocus="qlWatchStart()" onblur="qlWatchStop()" onpointerdown="qlBoxDown(event)" onpointermove="qlBoxMove(event)" onpointerup="qlBoxUp()" onpointercancel="qlBoxCancel()" onclick="qlBoxClick(event)">
         </div>
         <button class="add-btn" id="qlGo" onclick="qlLog()" disabled>&#10003; Log</button>
       </div>
@@ -1404,16 +1404,79 @@ function logSetType(key){
 // - A unit that CONFLICTS with the account's unit ("100 kg" said by an lb-configured account)
 //   fills nothing at all: silently logging 100 lb would be false data, and converting silently
 //   would surprise. The person just types that one normally.
+// SPOKEN numbers -> digits (v245, Jeff live on his phone: "I said 8 and it wrote it out as
+// eight and wouldn't let me log"). In-app speech recognition writes small numbers as WORDS
+// where the keyboard writes digits, so the parser has to read both. Handles plain words
+// ("eight", "forty five"), hundreds ("one hundred and thirty five"), gym-speak shorthand
+// ("one thirty five" = 135, "two twenty five" = 225, "two oh five" = 205), and half-steps
+// ("point five", "and a half"). Deliberately NO homophone guessing: "for"/"to"/"won" are never
+// treated as 4/2/1 - "for" is a separator and "to failure" is a set type, and a wrong number
+// is the one thing this parser must never produce.
+const QL_ONES = { zero:0, oh:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8,
+  nine:9, ten:10, eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16,
+  seventeen:17, eighteen:18, nineteen:19 };
+const QL_TENS = { twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90 };
+function qlWordsToDigits(t){
+  const words = t.split(' ');
+  const out = [];
+  let i = 0;
+  const isNum = w => (w in QL_ONES) || (w in QL_TENS) || w === 'hundred';
+  while(i < words.length){
+    if(!isNum(words[i]) || (words[i] === 'hundred' && !out.length && i === 0)){ out.push(words[i]); i++; continue; }
+    // collect one spoken-number run
+    const run = [];
+    let j = i;
+    while(j < words.length){
+      const w = words[j];
+      if(isNum(w)) { run.push(w); j++; continue; }
+      if(w === 'and' && j+1 < words.length && (isNum(words[j+1]) || words[j+1] === 'a')
+         && run[run.length-1] === 'hundred'){ j++; continue; }        // "one hundred and five"
+      break;
+    }
+    // evaluate the run left to right
+    let total = 0, cur = 0, k = 0, bad = false;
+    while(k < run.length && !bad){
+      const w = run[k];
+      if(w === 'hundred'){ cur = (cur || 1) * 100; total += cur; cur = 0; k++; continue; }
+      const v = (w in QL_TENS) ? QL_TENS[w] : QL_ONES[w];
+      if(cur === 0){ cur = v; k++; continue; }
+      if(cur >= 1 && cur <= 9 && k === 1 && (w in QL_TENS || (v >= 10 && v <= 19) || w === 'oh' || w === 'zero')){
+        // gym shorthand: "one thirty five"=135, "two fifteen"=215, "two oh five"=205
+        cur = cur * 100 + v; k++;
+        if((w === 'oh' || w === 'zero') && k < run.length && run[k] in QL_ONES && QL_ONES[run[k]] <= 9){ cur += QL_ONES[run[k]]; k++; }
+        continue;
+      }
+      if(cur % 10 === 0 && cur % 100 !== 0 && v <= 9){ cur += v; k++; continue; }   // "forty" + "five"
+      if(cur >= 100 && v <= 99 && cur % 100 === 0){ cur += v; k++; continue; }      // "one thirty" + ... (already merged) / "200" + "twenty five"
+      bad = true;                                        // a shape we don't understand - leave the words alone
+    }
+    if(bad){ for(const w of run) out.push(w); i = j; continue; }
+    total += cur;
+    // decimals said out loud: "point five" / "and a half"
+    let dec = '';
+    if(words[j] === 'point' && j+1 < words.length && words[j+1] in QL_ONES && QL_ONES[words[j+1]] <= 9){ dec = '.' + QL_ONES[words[j+1]]; j += 2; }
+    else if(words[j] === 'and' && words[j+1] === 'a' && words[j+2] === 'half'){ dec = '.5'; j += 3; }
+    out.push(String(total) + dec);
+    i = j;
+  }
+  return out.join(' ');
+}
 // Pure function so test/quicklog-parse.mjs can hammer phrasings without a DOM.
 function parseQuickLog(raw){
   if(raw === undefined || raw === null) return null;
   // NO regex lookbehind anywhere in this file: iOS Safari before 16.4 throws a SyntaxError at
   // PARSE time for it, which would brick the entire app for anyone on an older iPhone.
-  let t = String(raw).toLowerCase().replace(/[,;:!?"'“”]+/g,' ')
+  let t = String(raw).toLowerCase().replace(/[,;:!?"'“”-]+/g,' ')
     .replace(/\.(?!\d)/g,' ')                               // strip periods EXCEPT decimal points
     .replace(/(\d)([a-z])/g,'$1 $2').replace(/([a-z])(\d)/g,'$1 $2')   // "45lbs" -> "45 lbs", "rir2" -> "rir 2"
     .replace(/\s+/g,' ').trim();
   if(!t) return null;
+  t = qlWordsToDigits(t);
+  // MIXED digit/word decimals (Jeff, Aug 29: "what if I say 2 POINT 5?"): speech can emit the
+  // digits but leave "point"/"and a half" as words - "132 point 5", "222 and a half". Without
+  // this, "132 point 5 for 5" fell through to the "5 for 5" pattern and produced a WRONG weight.
+  // Runs after word conversion, so fully spoken forms land here too.
+  t = t.replace(/(\d+)\s+point\s+(\d)\b/g, '$1.$2').replace(/(\d+)\s+and\s+a\s+half\b/g, '$1.5');
   const out = { setType:null, weight:null, reps:null, rir:null, unit:null };
   // "3 sets of 8" - the sets COUNT is stripped with its word, number and all, BEFORE anything
   // numeric is read. We log one set at a time, and without this the no-separator weight capture
@@ -1463,7 +1526,7 @@ function parseQuickLog(raw){
     if(m){ out.weight = Number(m[1]); t = ''; }
   }
   // RIR, from whatever is left: "rir 2", "2 rir", "2 in reserve", "2 in the tank"
-  m = t.match(/\brir\s*(?:of\s*)?(\d+)\b/) || t.match(/\b(\d+)\s*(?:rir|in\s+(?:the\s+)?(?:reserve|tank))\b/);
+  m = t.match(/\brir\s*(?:of\s*)?(\d+(?:\.\d+)?)\b/) || t.match(/\b(\d+(?:\.\d+)?)\s*(?:rir|in\s+(?:the\s+)?(?:reserve|tank))\b/);
   if(m) out.rir = Number(m[1]);
   if(out.setType===null && out.weight===null && out.reps===null && out.rir===null && out.unit===null) return null;
   return out;
@@ -1562,6 +1625,46 @@ function qlMicDown(ev){
 function qlMicUp(){
   if(QL_REC){ try{ QL_REC.stop(); }catch(e){} }
   qlRecUi(false);
+}
+// v245 (Jeff: "press anywhere and hold on the box for the mic to open - not just the mic"):
+// the WHOLE box is a hold target. A quick tap still just focuses it for typing - the two are
+// told apart by time: held past 400ms without letting go or sliding away = start recording.
+// On release after a hold, the click that iOS fires afterwards is swallowed (QL_HELD) and the
+// box blurred, so the keyboard doesn't pop up over the end of a voice log. The mic button keeps
+// its instant press-to-talk - no delay there, since a press on the mic can only mean one thing.
+let QL_HOLD_T = null, QL_HELD = false, QL_HX = 0, QL_HY = 0, QL_CAP = null;
+function qlBoxDown(ev){
+  if(QL_REC) return;
+  // capture so pointermove keeps reporting to the box after the finger/cursor drifts off it -
+  // touch does this implicitly, mouse does not, and the slide-away cancel below needs the moves
+  try{ if(ev && ev.target && ev.target.setPointerCapture && ev.pointerId !== undefined){ ev.target.setPointerCapture(ev.pointerId); QL_CAP = { el: ev.target, id: ev.pointerId }; } }catch(e){}
+  QL_HELD = false; QL_HX = ev.clientX || 0; QL_HY = ev.clientY || 0;
+  if(QL_HOLD_T) clearTimeout(QL_HOLD_T);
+  QL_HOLD_T = setTimeout(()=>{ QL_HOLD_T = null; QL_HELD = true; qlMicDown(null); }, 400);
+}
+function qlReleaseCap(){ if(QL_CAP){ try{ QL_CAP.el.releasePointerCapture(QL_CAP.id); }catch(e){} QL_CAP = null; } }
+function qlBoxMove(ev){
+  // a finger that slides is scrolling or selecting, not holding
+  if(QL_HOLD_T && (Math.abs((ev.clientX||0)-QL_HX) > 12 || Math.abs((ev.clientY||0)-QL_HY) > 12)) qlBoxCancel();
+}
+function qlBoxCancel(){
+  if(QL_HOLD_T){ clearTimeout(QL_HOLD_T); QL_HOLD_T = null; }
+  if(QL_HELD){ qlMicUp(); QL_HELD = false; }
+  // hand the rest of the gesture back to the page - a cancelled hold that keeps the capture
+  // would swallow the scroll the person is clearly trying to do (cold-review catch)
+  qlReleaseCap();
+}
+function qlBoxUp(){
+  if(QL_HOLD_T){ clearTimeout(QL_HOLD_T); QL_HOLD_T = null; }   // released early: it was a tap - let focus happen
+  if(QL_HELD) qlMicUp();                                        // released after hold: stop recording (QL_HELD stays set for the click suppressor)
+  qlReleaseCap();
+}
+function qlBoxClick(ev){
+  if(!QL_HELD) return;                                          // ordinary tap: type away
+  QL_HELD = false;
+  if(ev && ev.preventDefault) ev.preventDefault();
+  const b = document.getElementById('qlText');
+  if(b) setTimeout(()=>b.blur(), 0);                            // keep the keyboard from popping over a finished voice log
 }
 async function qlLog(){
   qlParse();     // belt-and-braces: parse whatever is in the box RIGHT NOW, however it got there
