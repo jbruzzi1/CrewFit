@@ -104,6 +104,29 @@ P('3 sets of 8 reps', { ...base, reps: 8 }, 'a sets COUNT is never misread as a 
 P('3 sets of 8 reps at 135', { ...base, weight: 135, reps: 8 }, 'sets count stripped, weight still found');
 P('8 reps 85 60', { ...base, reps: 8 }, 'TWO leftover bare numbers: keep the reps that were plainly said, refuse to guess which number is the weight');
 
+console.log("\nspoken numbers (Jeff live on his phone, Aug 29: 'I said 8 and it wrote it out as eight and wouldn't let me log')");
+P('eight reps at eighty five', { ...base, weight: 85, reps: 8 }, "Jeff's case: in-app speech writes words");
+P('forty five at eight reps', { ...base, weight: 45, reps: 8 }, 'compound tens');
+P('forty-five at eight reps', { ...base, weight: 45, reps: 8 }, 'hyphenated compound');
+P('one thirty five for eight', { ...base, weight: 135, reps: 8 }, 'gym shorthand: "one thirty five" = 135');
+P('two twenty five for three', { ...base, weight: 225, reps: 3 }, '"two twenty five" = 225');
+P('two fifteen for five', { ...base, weight: 215, reps: 5 }, '"two fifteen" = 215');
+P('two oh five for five', { ...base, weight: 205, reps: 5 }, '"two oh five" = 205');
+P('one hundred and thirty five for eight', { ...base, weight: 135, reps: 8 }, 'full hundreds with "and"');
+P('two twenty two and a half for six', { ...base, weight: 222.5, reps: 6 }, '"and a half" = .5');
+P('one thirty two point five for five', { ...base, weight: 132.5, reps: 5 }, 'spoken "point five"');
+P('warm up ninety five for twelve', { ...base, setType: 'warmup', weight: 95, reps: 12 }, 'set type + words');
+P('eighty five at eight reps with two rir', { ...base, weight: 85, reps: 8, rir: 2 }, 'everything as words');
+P('eight reps', { ...base, reps: 8 }, 'a lone spoken "eight reps" fills reps');
+P('to failure one eighty five for nine', { ...base, setType: 'failure', weight: 185, reps: 9 }, '"to" is never mistaken for 2');
+P('three sets of eight reps at one thirty five', { ...base, weight: 135, reps: 8 }, 'spoken sets count still stripped safely');
+
+console.log("\nmixed digit/word decimals (Jeff, Aug 29: 'What if I say 2 POINT 5?')");
+P('132 point 5 for 5', { ...base, weight: 132.5, reps: 5 }, 'digits + spoken "point" (was a WRONG-number trap: read as 5 for 5)');
+P('222 and a half for 6', { ...base, weight: 222.5, reps: 6 }, 'digits + "and a half"');
+P('185 for 5, 2 point 5 rir', { ...base, weight: 185, reps: 5, rir: 2.5 }, '2 POINT 5 as an RIR');
+P('2 point 5 rir, 185 for 5', { ...base, weight: 185, reps: 5, rir: 2.5 }, 'same, said first');
+
 console.log('\ndictation noise');
 P('I just did 225 x 3', { ...base, weight: 225, reps: 3 });
 P('Warm-up. 95 for 12.', { ...base, setType: 'warmup', weight: 95, reps: 12 }, 'punctuation + hyphen');
