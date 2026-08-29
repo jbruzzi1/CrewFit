@@ -589,9 +589,14 @@ app.post('/api/exercises/custom', auth, async (req, res) => {
 });
 
 // ---- Profile (per-user, viewable by anyone logged in) ----
-function profileOf(id, viewerId) {
+// localToday: the CALLER's own local day (see the comment above currentStreak) — only honored
+// below when id === viewerId, i.e. this is genuinely a self-view. Whoever is viewing someone
+// ELSE's profile has no way to know that person's timezone, so a friend's streak still falls back
+// to the server's UTC approximation, same as it always has.
+function profileOf(id, viewerId, localToday) {
   const u = DB.users[id];
   if (!u) return null;
+  const selfToday = id === viewerId ? localToday : undefined;
   // workouts completed: distinct sessions with a history entry by this user,
   // OR sessions this user posted (saved) — both count as a completed workout
   const completed = new Set();
@@ -676,8 +681,8 @@ function profileOf(id, viewerId) {
     // counts from publicUser above stay public.
     prCount: isApproved ? prs.length : null,
     prs: isApproved ? prs.slice().sort((a,b)=> new Date(b.at) - new Date(a.at)) : [],
-    streak: isApproved ? currentStreak(id) : null,
-    recentActivity: isApproved ? buildActivityFor(id) : [],
+    streak: isApproved ? currentStreak(id, selfToday) : null,
+    recentActivity: isApproved ? buildActivityFor(id, selfToday) : [],
     limited: !isApproved        // so the profile can say why it is thin rather than look empty
   };
 }
@@ -708,27 +713,39 @@ function groupPrsForFeed(prs, weekAgo) {
   return [{ type: 'pr', at, text: `hit ${recent.length} new PRs this week (${label})` }];
 }
 // Recent activity for a single user: PRs, weekly completions, streaks (most recent first)
-function buildActivityFor(userId) {
+// localToday: only ever pass this when userId is the caller themselves (see the comment above
+// currentStreak) — profileOf only forwards it on a self-view, never a friend's.
+function buildActivityFor(userId, localToday) {
   const items = [];
   const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
   const prs = (DB.prs && DB.prs[userId]) ? Object.values(DB.prs[userId]) : [];
   items.push(...groupPrsForFeed(prs, weekAgo));
-  let count = 0;
+  let count = 0, latest = 0;
   for (const s of Object.values(DB.sessions)) {
     for (const h of (s.history || [])) {
-      if (h.userId === userId && new Date(h.date).getTime() >= weekAgo) count++;
+      if (h.userId === userId) { const t = new Date(h.date).getTime(); if (t >= weekAgo) { count++; if (t > latest) latest = t; } }
     }
   }
-  if (count > 0) items.push({ type: 'completed', at: new Date().toISOString(), text: `completed ${count} workout${count > 1 ? 's' : ''} this week` });
-  const streak = currentStreak(userId);
-  if (streak >= 2) items.push({ type: 'streak', at: new Date().toISOString(), text: `hit a ${streak} day workout streak` });
+  // v247: both rows below used to stamp new Date().toISOString() — "right now", the moment the
+  // feed happens to be requested — instead of a real timestamp, so they permanently sorted above
+  // every actually-timestamped recap/PR row every time the feed was opened (same bug class v239
+  // already fixed for the friends-feed 'completed' row below). `latest` is the real date of the
+  // most recent contributing workout; a streak of 2+ always requires a session dated today or
+  // yesterday (see currentStreak), which is always inside this 7-day window, so `latest` already
+  // reflects it correctly without a second history scan.
+  if (count > 0) items.push({ type: 'completed', at: new Date(latest).toISOString(), text: `completed ${count} workout${count > 1 ? 's' : ''} this week` });
+  const streak = currentStreak(userId, localToday);
+  if (streak >= 2) items.push({ type: 'streak', at: new Date(latest).toISOString(), text: `hit a ${streak} day workout streak` });
   items.sort((a, b) => new Date(b.at) - new Date(a.at));
   return items;
 }
 
-app.get('/api/profile/me', auth, (req, res) => res.json(profileOf(req.userId, req.userId)));
+app.get('/api/profile/me', auth, (req, res) => res.json(profileOf(req.userId, req.userId, req.query.localToday)));
+// A friend's profile also accepts localToday for forward-compatibility, but profileOf only ever
+// actually uses it when id===viewerId — passing your own local day while looking at someone
+// else's profile does nothing, on purpose (see the comment above profileOf).
 app.get('/api/profile/:id', auth, async (req, res) => {
-  const p = profileOf(req.params.id, req.userId);
+  const p = profileOf(req.params.id, req.userId, req.query.localToday);
   if (!p) return res.status(404).json({ error: 'user not found' });
   res.json(p);
 });
@@ -924,7 +941,37 @@ app.get('/api/friends', auth, async (req, res) => {
 // ---- Activity feed (Friend's Activity) ----
 // Shows friends' COMPLETED activity: PRs they hit + workouts they finished this week + current streak.
 // Invites live in their own "Invites Awaiting" section on Home, not here.
-function currentStreak(userId){
+//
+// v247, cold-review catch: session history is now stamped with the PERSON'S OWN local calendar day
+// (see creditFinish above), but this function used to always define "today"/"yesterday" as the
+// SERVER's UTC day. Those two were fine while both sides used UTC, but once storage moved to local
+// dates they could disagree for several hours every evening — exactly the window
+// STREAK_REMINDER_HOUR_UTC fires in for US users, so the streak-loss reminder itself could
+// misjudge someone as having broken a streak they were still on. Every one of these functions now
+// takes an optional localToday (validated YYYY-MM-DD) and prefers it when given. It is only ever
+// safe to pass when the caller IS the subject — their own live request is the only place a
+// "local today" can be trusted to belong to userId — so it is threaded through /streak-status and
+// /profile/me (self-view) but deliberately NOT through anyone viewing a FRIEND's profile/feed, nor
+// through the background reminder timer (no request to ask); those keep the original UTC
+// approximation, unchanged from before this file.
+function isValidLocalDateStr(s) {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split('-').map(Number);
+  if (y < 2000 || y > 2100) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  // catches out-of-range month/day too (Date.UTC rolls Feb 30 into March, so it round-trips wrong)
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+// Calendar-day arithmetic on the YYYY-MM-DD string itself, anchored through Date.UTC so it never
+// depends on what timezone THIS SERVER PROCESS happens to run in (a `new Date(str+'T12:00')` trick
+// like rcDay's in app.js only works in the browser, where "local" reliably means the user's zone).
+function shiftDateStr(dateStr, deltaDays) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + deltaDays);
+  return dt.toISOString().slice(0, 10);
+}
+function currentStreak(userId, localToday){
   // collect distinct completion dates from session history
   const days = new Set();
   for (const s of Object.values(DB.sessions)) {
@@ -933,20 +980,19 @@ function currentStreak(userId){
     }
   }
   if (!days.size) return 0;
-  const has = d => days.has(d);
-  const key = d => d.toISOString().slice(0,10);
+  const today = isValidLocalDateStr(localToday) ? localToday : new Date().toISOString().slice(0, 10);
   let streak = 0;
-  let cur = new Date();
+  let cur = today;
   // allow streak to count if last workout was today or yesterday
-  if (!has(key(cur))) { cur.setDate(cur.getDate()-1); if (!has(key(cur))) return 0; }
-  while (has(key(cur))) { streak++; cur.setDate(cur.getDate()-1); }
+  if (!days.has(cur)) { cur = shiftDateStr(cur, -1); if (!days.has(cur)) return 0; }
+  while (days.has(cur)) { streak++; cur = shiftDateStr(cur, -1); }
   return streak;
 }
 // Task #63 (streak-loss reminders). Whether userId has a completed session dated TODAY —
 // pulled out of currentStreak() as its own check because streakStatusFor() below needs it
 // independently of the streak count (a streak of 0 with trainedToday true is still "safe today").
-function trainedToday(userId) {
-  const today = new Date().toISOString().slice(0, 10);
+function trainedToday(userId, localToday) {
+  const today = isValidLocalDateStr(localToday) ? localToday : new Date().toISOString().slice(0, 10);
   for (const s of Object.values(DB.sessions))
     for (const h of (s.history || []))
       if (h.userId === userId && h.date === today) return true;
@@ -958,13 +1004,13 @@ function trainedToday(userId) {
 // first session would be discoverable and wrong, the exact thing CLAUDE.md warns against) AND not
 // having trained yet today. See test/streak-reminders.mjs for the full worked-example spec this
 // was built against.
-function streakStatusFor(userId) {
-  const streak = currentStreak(userId);
-  const today = trainedToday(userId);
+function streakStatusFor(userId, localToday) {
+  const streak = currentStreak(userId, localToday);
+  const today = trainedToday(userId, localToday);
   return { streak, trainedToday: today, atRisk: streak >= 2 && !today };
 }
 app.get('/api/me/streak-status', auth, async (req, res) => {
-  res.json(streakStatusFor(req.userId));
+  res.json(streakStatusFor(req.userId, req.query.localToday));
 });
 // Not exposed via HTTP on purpose — a "send everyone their reminder now" endpoint would be a way
 // to spam every user's push notifications on demand. Called only by the background timer below.
@@ -1012,7 +1058,11 @@ app.get('/api/feed', auth, async (req, res) => {
     if (count > 0) items.push({ type: 'completed', by: fid, at: new Date(latest).toISOString(), text: `completed ${count} workout${count>1?'s':''} this week` });
     // Current streak
     const streak = currentStreak(fid);
-    if (streak >= 2) items.push({ type: 'streak', by: fid, at: new Date().toISOString(), text: `hit a ${streak} day workout streak` });
+    // v247: same fix as 'completed' just above, applied here too (it was missed the first time
+    // around) — a streak of 2+ always has a session dated today or yesterday, which is always
+    // inside this same 7-day window, so `latest` (computed just above) is already the real date
+    // of that most recent training day rather than "whenever the feed happens to be requested".
+    if (streak >= 2) items.push({ type: 'streak', by: fid, at: new Date(latest).toISOString(), text: `hit a ${streak} day workout streak` });
   }
   // v239: friends' posted recaps from the week - the feed's first VISUAL rows. Same
   // visibility gate as everywhere else (canSeePostAuthor); the thumbnail is only sent when the
@@ -1579,7 +1629,19 @@ function othersWithCredit(s, meId) {
 // never pushes a second row for someone who already has one, so tapping Finish twice cannot
 // inflate their own workout count, streak or weekly volume. Mutates s.history in place; callers
 // are responsible for save(DB).
-function creditFinish(s, userId) {
+// v247: `date` used to always be new Date().toISOString().slice(0,10) — the server's UTC calendar
+// day, not the user's. There's no stored per-user timezone (see the streak-reminder note above
+// STREAK_REMINDER_HOUR_UTC), but the browser tapping Finish already knows its own local day, so
+// the client sends it and the server trusts it when it looks like a real date — falling back to
+// the old UTC-today behavior for anything missing or malformed, which is exactly what every
+// pre-v247 client still sends. Without this, anyone west of UTC finishing an evening workout (US
+// evening is already "tomorrow" in UTC) got it credited to the wrong calendar day — corrupting
+// their streak and weekly volume, not just a cosmetic label.
+// isValidLocalDateStr (not just LOCAL_DATE_RE, see currentStreak above) also rejects a
+// regex-shaped but impossible date (2026-13-45, 2026-02-30) and an absurd year — a value like that
+// would otherwise permanently corrupt this one row's sort position (a future date sorts above
+// everything, forever) rather than just falling back like a merely-missing one does.
+function creditFinish(s, userId, localDate) {
   if (s.history.some(h => h.userId === userId)) return false;
   const exNames = s.exercises.map(e => {
     const v = s.variations[e.id] && s.variations[e.id][userId];
@@ -1590,7 +1652,8 @@ function creditFinish(s, userId) {
     const lib = EX_LIB.find(x => x.name === n);
     if (lib) lib.muscle_groups.forEach(m => mgs.add(m));
   }
-  s.history.push({ userId, date: new Date().toISOString().slice(0, 10), muscleGroups: [...mgs], exercises: exNames });
+  const date = isValidLocalDateStr(localDate) ? localDate : new Date().toISOString().slice(0, 10);
+  s.history.push({ userId, date, muscleGroups: [...mgs], exercises: exNames });
   return true;
 }
 
@@ -1652,7 +1715,7 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // button and Delete's canLeave fallback) always route through the Save/Discard sheet and send
   // an explicit true or false — the default here only fires for a direct API caller.
   const discard = !!(req.body && req.body.keep === false);
-  if (!discard) creditFinish(s, me);
+  if (!discard) creditFinish(s, me, req.body && req.body.localDate);
 
   // v242 (Jeff's list): your logged sets now SURVIVE a keep-leave. They used to be deleted
   // unconditionally here, and since PRs, the strength trend, progression recommendations and
@@ -2812,7 +2875,8 @@ app.post('/api/sessions/:id/lock', auth, async (req, res) => {
     return res.status(403).json({ error: 'not in this workout' });
   // creditFinish is idempotent per user — tapping "Log & Finish" twice must not push a second
   // history row for THIS person, inflating their own workout count, streak and weekly volume.
-  if (creditFinish(s, req.userId)) await save(DB);
+  // localDate: the client's own today (YYYY-MM-DD) — see the comment on creditFinish for why.
+  if (creditFinish(s, req.userId, req.body && req.body.localDate)) await save(DB);
   res.json(sessionView(s, req.userId));
 });
 

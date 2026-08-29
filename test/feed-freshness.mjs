@@ -208,6 +208,62 @@ console.log('\nv239 recap rows: a friend\'s posted recap shows in the feed, thum
     "an only_me recap stays out of Alice's feed even though it was posted seconds ago");
 }
 
+console.log("\nv247: a 'streak' summary row used to be stamped new Date().toISOString() (now), same bug v239 already fixed for 'completed' — a fresh recap posted afterward must still sort above it");
+{
+  // Both brand-new accounts, friended only to each other — /api/feed caps at 8 items (res.json
+  // items.slice(0,8)), and Alice's feed is already crowded with everything the earlier blocks in
+  // this file built, which would truncate a real ordering result off the end for the wrong reason.
+  // A clean pair sidesteps that entirely.
+  const faye = await post('/api/register', { username: 'faye', pin: 'pass1234', displayName: 'Faye' }).then(r => r.json());
+  const dave = await post('/api/register', { username: 'dave', pin: 'pass1234', displayName: 'Dave' }).then(r => r.json());
+  await post('/api/friends/request', { username: 'dave' }, faye.token);
+  await post('/api/friends/accept', { from: faye.user.id }, dave.token);
+
+  // Build a real 2-day streak via two real /lock calls with explicit localDate (v247's own new
+  // mechanism), matching currentStreak's own UTC-day definition of "today"/"yesterday" rather than
+  // reaching into the DB to fake it.
+  const utcToday = new Date().toISOString().slice(0, 10);
+  const utcYesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const y = await post('/api/sessions', { name: 'Streak Day One', visibility: 'friends',
+    scheduledAt: new Date(Date.now() - 24 * 3600 * 1000).toISOString(), exercises: [{ name: 'Overhead Press' }],
+    inviteUsernames: [] }, dave.token).then(r => r.json());
+  await post(`/api/sessions/${y.id}/log`, { exerciseId: y.exercises[0].id, weight: 65, reps: 8, set: 1 }, dave.token);
+  await post(`/api/sessions/${y.id}/lock`, { localDate: utcYesterday }, dave.token);
+
+  const t = await post('/api/sessions', { name: 'Streak Day Two', visibility: 'friends',
+    scheduledAt: new Date().toISOString(), exercises: [{ name: 'Overhead Press' }],
+    inviteUsernames: [] }, dave.token).then(r => r.json());
+  await post(`/api/sessions/${t.id}/log`, { exerciseId: t.exercises[0].id, weight: 70, reps: 8, set: 1 }, dave.token);
+  await post(`/api/sessions/${t.id}/lock`, { localDate: utcToday }, dave.token);
+
+  let feed = await get('/api/feed', faye.token).then(r => r.json());
+  const streakItem = feed.find(f => f.type === 'streak' && f.by === dave.user.id);
+  ok(!!streakItem, `Dave's streak row reached Faye's feed (saw: ${feed.filter(f=>f.by===dave.user.id).map(f=>f.type).join(', ') || 'nothing from Dave'})`);
+  ok(streakItem && /2 day workout streak/.test(streakItem.text), `and names it correctly (saw: ${streakItem && streakItem.text})`);
+
+  // Now Dave posts a recap seconds later — a genuinely fresher, real-timestamped event. If the
+  // streak row were still stamped "now" at feed-build time, it would tie or beat this every time
+  // the feed is re-requested; with the fix it carries the streak's actual last-trained day, always
+  // in the past relative to a recap posted after it.
+  await post(`/api/sessions/${t.id}/post`, { notes: 'felt strong', visibility: 'friends', media: [] }, dave.token);
+  feed = await get('/api/feed', faye.token).then(r => r.json());
+  const iStreak = feed.findIndex(f => f.type === 'streak' && f.by === dave.user.id);
+  const iRecap = feed.findIndex(f => f.type === 'recap' && f.sessionId === t.id);
+  ok(iRecap !== -1 && iStreak !== -1 && iRecap < iStreak,
+    `the fresh recap sorts above the streak row (recap at ${iRecap}, streak at ${iStreak})`);
+
+  // And the profile's own Recent Activity gets the identical fix (buildActivityFor, not just the
+  // friends feed) — same assertion, on Dave's own profile.
+  const daveProfile = await get(`/api/profile/${dave.user.id}`, dave.token).then(r => r.json());
+  const own = daveProfile.recentActivity || [];
+  const iOwnStreak = own.findIndex(a => a.type === 'streak');
+  ok(iOwnStreak !== -1, "Dave's own profile also shows the streak");
+  // recentActivity has no recap rows (those are a feed-only, other-people-viewing concept), so
+  // instead assert directly: the streak's own timestamp is not within the last few seconds.
+  const streakAgeMs = Date.now() - new Date(own[iOwnStreak].at).getTime();
+  ok(streakAgeMs > 5000, `the streak's own timestamp is the real training day, not "just now" (age ${streakAgeMs}ms)`);
+}
+
 try { srv && srv.kill(); } catch {}
 rmSync(DIR, { recursive: true, force: true });
 await testDb.drop();

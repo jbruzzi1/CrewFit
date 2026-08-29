@@ -72,6 +72,10 @@ async function nameOf(id){
 function fmtDate(s){ const d=new Date(s); return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
 // Shared by fmtWhen and isSessionLiveNow, which both need "what calendar day is this, locally".
 function startOfDay(x){ const y = new Date(x); y.setHours(0,0,0,0); return y; }
+// "Today" in the phone's own timezone, as YYYY-MM-DD — never toISOString().slice(0,10), which is
+// UTC-today and can already be tomorrow for a US evening. Sent to /lock (see lock() below) so the
+// server credits Finish to the calendar day the person actually experienced it on.
+function localDateStr(d){ d=d||new Date(); const pad=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
 // Whole calendar days between today and iso — negative means iso is in the past. Used to decide
 // whether a friend's joinable workout is still current (see the Friends' Workouts section of
 // home() below), separately from fmtWhen's Today/Tomorrow/Yesterday display wording.
@@ -420,10 +424,9 @@ async function home(){
 let SESSION_SILENT_SEQ = 0;
 // A silent refresh is "for" this exact sheet — the one open when it was kicked off — not just
 // "any sheet at all": editLogSet stacks a second .sheet-back on top of the log sheet without
-// closing it, and closeSheet() only ever targets the first .sheet-back in document order, so a
-// generic .sheet-back.show selector here would false-positive against a leaked, never-removed
-// sheet from an earlier edit/delete. Checking the specific element openLogSheet stamped onto
-// LOGVIEW avoids that.
+// closing it, so while both are open a generic .sheet-back.show selector here would match
+// whichever one is on top, not necessarily this one. Checking the specific element openLogSheet
+// stamped onto LOGVIEW avoids that ambiguity regardless of which sheet closeSheet() targets.
 function logSheetStillOpenFor(sid){
   return !!(LOGVIEW && LOGVIEW.sid===sid && LOGVIEW.sheetEl
     && document.body.contains(LOGVIEW.sheetEl) && LOGVIEW.sheetEl.classList.contains('show'));
@@ -1326,8 +1329,7 @@ async function openLogSheet(sid, exId){
   // Stamped onto LOGVIEW so a background silent refresh (see openSession's opts.silent) can
   // check THIS exact sheet's presence/visibility, not just "some .sheet-back.show exists
   // somewhere" — editLogSet stacks a second .sheet-back on top of this one without closing it,
-  // and closeSheet() only ever targets the first .sheet-back in document order, so a generic
-  // selector here would false-positive (or worse, false-negative) once that's happened.
+  // so while both are open a generic selector here could match either one.
   LOGVIEW.sheetEl = sheet;
   renderLogSets(s);
   // The advice belongs HERE, at the moment the weight is chosen — not only on a tab the user
@@ -1759,7 +1761,9 @@ async function saveLogSet(logId){
   const s=await H.put(`/api/sessions/${LOGVIEW.sid}/log/${logId}`,{weight:w,reps:r,setType:t,rir});
   if(s.error){ alert(s.error); return; }
   const sid = LOGVIEW.sid;
-  closeSheet(); openLogSheet(LOGVIEW.sid, LOGVIEW.exId);
+  // closeAllSheets, not closeSheet — this can be stacked on top of the log sheet it opened from
+  // (editLogSet), and both are about to be replaced by the fresh one below.
+  closeAllSheets(); openLogSheet(LOGVIEW.sid, LOGVIEW.exId);
   if(sid) openSession(sid, {silent:true});
 }
 async function delLogSet(logId){
@@ -1769,7 +1773,8 @@ async function delLogSetConfirmed(logId){
   const s=await H.delete(`/api/sessions/${LOGVIEW.sid}/log/${logId}`);
   if(s.error){ alert(s.error); return; }
   const sid = LOGVIEW.sid;
-  closeSheet(); openLogSheet(LOGVIEW.sid, LOGVIEW.exId);
+  // closeAllSheets, not closeSheet — same reasoning as saveLogSet above.
+  closeAllSheets(); openLogSheet(LOGVIEW.sid, LOGVIEW.exId);
   if(sid) openSession(sid, {silent:true});
 }
 let REST_TIMER=null;
@@ -1780,7 +1785,7 @@ function startRest(){
   clearInterval(REST_TIMER);
   REST_TIMER=setInterval(()=>{ sec--; const el=document.getElementById('restN'); if(el) el.textContent=`${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`; if(sec<=0){ clearInterval(REST_TIMER); box.innerHTML=''; } },1000);
 }
-async function lock(id){ await H.post(`/api/sessions/${id}/lock`); showSavePage(id); }
+async function lock(id){ await H.post(`/api/sessions/${id}/lock`,{localDate:localDateStr()}); showSavePage(id); }
 
 // The LAST screen of finishing a workout: Log & Finish -> save page (notes, photo, visibility)
 // -> here. Seen once, then gone. Jeff's call: this is a moment, not a record — the permanent copy
@@ -1915,12 +1920,15 @@ async function showSavePage(id){
   const s = await H.get('/api/sessions/'+id);
   if(!s || s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
   const exNames = (s.exercises||[]).map(e=>(s.variations&&s.variations[e.id]&&s.variations[e.id][ME.id]?s.variations[e.id][ME.id].swapTo:e.name));
-  // rcDay already does String(v||'').slice — this was the one place that did not, and scheduledAt
-  // is stored exactly as sent. A creator who posts a number here killed the Save screen for every
-  // participant who opens it, not just their own. This stops the crash; it does not make the date
-  // right — a value that is not an ISO string still reads "Invalid Date" in the line below. Making
-  // it read correctly means changing what this screen shows, so it is not smuggled in here.
-  const when = s.scheduledAt ? fmtDate(String(s.scheduledAt).slice(0,10)) : '';
+  // v247: this used to slice scheduledAt down to its date-only substring ("2026-08-28") and
+  // re-parse THAT, which Date() reads as UTC midnight — then fmtDate rendered it in local time.
+  // For anyone west of UTC that is a different calendar day with a fabricated clock time (an
+  // evening workout showed as the PREVIOUS day, ~8pm). scheduledAt already carries the real
+  // time, exactly like every other screen that shows it (sessTitle/sessSub/fmtWhen never slice
+  // it) — passing it straight to fmtDate is both simpler and correct. new Date() never throws on
+  // a malformed value (unlike .slice on a bare number, the v138 crash this used to guard), so
+  // nothing here needs the String()/slice defense anymore.
+  const when = s.scheduledAt ? fmtDate(s.scheduledAt) : '';
   // MY OWN recap-in-progress — each participant posts independently (s.posts, keyed by userId).
   const post = (s.posts && s.posts[ME.id]) || {};
   const vis = post.visibility || 'only_me';
@@ -2044,7 +2052,7 @@ function leaveWorkout(id, alreadyFinished){
   openSheetHtml(inner);
 }
 async function leaveWorkoutConfirmed(id, keep){
-  const r = await H.post(`/api/sessions/${id}/leave`, {keep});
+  const r = await H.post(`/api/sessions/${id}/leave`, {keep, localDate:localDateStr()});
   if(r && r.error){ alert(r.error); return; }
   closeSheet();
   home();
@@ -2424,9 +2432,9 @@ async function tplEditCopy(id){
 // and cannot be styled for dark mode). Same anatomy as the Reset workouts sheet: title, one
 // plain-language explanation, the action in red, Cancel. Callers esc() anything user-derived
 // they put in title/body.
-// The sheet closes ITSELF (not via closeSheet, which removes the FIRST .sheet-back in the
-// document — wrong one when this confirm is stacked on top of an already-open sheet, e.g.
-// deleting a set from the edit sheet).
+// The sheet closes ITSELF via its own tracked element (not via closeSheet) so dismissing the
+// confirm can never be confused with dismissing whatever sheet it may be stacked on top of, e.g.
+// deleting a set from the edit sheet.
 let CONFIRM_CB = null, CONFIRM_EL = null;
 function dismissConfirm(){ const el = CONFIRM_EL; CONFIRM_CB = null; CONFIRM_EL = null;
   if(el){ el.classList.remove('show'); setTimeout(()=>el.remove(),200); } }
@@ -2441,9 +2449,9 @@ function confirmSheet(title, body, label, cb, danger=true){
       <button class="sheet-row${danger?' red':''}" onclick="runConfirmCb()">${label}</button>
       <button class="sheet-row" onclick="dismissConfirm()">Cancel</button>
     </div></div>`);
-  // the confirm's OWN backdrop dismisses the confirm — openSheetHtml's generic handler calls
-  // closeSheet(), which removes the FIRST .sheet-back and would pull the sheet out from UNDER
-  // a stacked confirm (cold-review catch)
+  // the confirm's OWN backdrop dismisses the confirm, not whatever it's stacked on — overriding
+  // openSheetHtml's generic backdrop handler (which would call closeSheet() and remove a
+  // different sheet) with one scoped to this exact element (cold-review catch)
   CONFIRM_EL.onclick = (e)=>{ if(e.target===CONFIRM_EL) dismissConfirm(); };
 }
 // "1 exercises" was on half the screens in the app (Jeff, Aug 28)
@@ -3257,7 +3265,21 @@ function exDetail(name){
   sheet.onclick=(e)=>{ if(e.target===sheet) closeSheet(); }; document.body.appendChild(sheet);
   requestAnimationFrame(()=>sheet.classList.add('show'));
 }
-function closeSheet(){ const s=document.querySelector('.sheet-back'); if(s){ s.classList.remove('show'); setTimeout(()=>s.remove(),200); } }
+// v247: used to be document.querySelector('.sheet-back') — the FIRST .sheet-back in document
+// order, i.e. the OLDEST open sheet. Almost every call site only ever has one sheet open, so this
+// went unnoticed, but editLogSet stacks a second .sheet-back on top of the still-open log sheet
+// (tapping a set row while the log sheet is up), and the first-in-order one is the log sheet
+// underneath, not the edit-set sheet on top. Cancel/✕ on the edit-set sheet was closing the log
+// sheet behind it instead of itself, and Save's closeSheet() call was doing the same — leaving
+// the actual edit-set sheet node behind as a zombie that ate an extra tap to clear. Closing the
+// LAST .sheet-back instead closes whichever sheet is topmost/frontmost, which is always the one
+// whose own ✕/backdrop/Cancel the person just tapped.
+function closeSheet(){ const l=document.querySelectorAll('.sheet-back'); const s=l[l.length-1]; if(s){ s.classList.remove('show'); setTimeout(()=>s.remove(),200); } }
+// For the couple of call sites (saveLogSet, delLogSetConfirmed) that are about to replace
+// EVERYTHING currently open with one freshly-reloaded sheet — closeSheet() alone would only take
+// down the topmost one, leaving whatever is stacked underneath (stale pre-edit data) to resurface
+// later as a zombie once the fresh sheet closes (cold-review catch, v247).
+function closeAllSheets(){ document.querySelectorAll('.sheet-back').forEach(s=>{ s.classList.remove('show'); setTimeout(()=>s.remove(),200); }); }
 function openSheetHtml(inner){ const s=document.createElement('div'); s.className='sheet-back'; s.onclick=(e)=>{ if(e.target===s) closeSheet(); }; s.innerHTML=inner; document.body.appendChild(s); requestAnimationFrame(()=>s.classList.add('show')); return s; }
 // A single in-app bottom sheet for free-text entry. Jeff, Aug 27: "when I go to add a bio or
 // notes etc I don't want a separate iPhone style pop up to happen to input... I want it to stay
@@ -3877,7 +3899,10 @@ if(typeof document !== 'undefined' && typeof document.addEventListener === 'func
 // ---- Boot ----
 (async ()=>{
   if(TOKEN){
-    try{ ME = await H.get('/api/profile/me'); }catch(e){ ME=null; }
+    // v247: localToday lets the server's streak/"trained today" logic agree with how it now
+    // stores YOUR OWN history (see localDateStr's own comment) instead of drifting apart for a
+    // few hours every evening.
+    try{ ME = await H.get('/api/profile/me?localToday='+localDateStr()); }catch(e){ ME=null; }
   }
   if(TOKEN && ME && ME.id){ $('nav').classList.remove('hidden'); home(); }
   else { TOKEN=''; localStorage.removeItem('crewfit_token'); authScreen(); }
