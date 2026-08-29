@@ -218,6 +218,41 @@ console.log('\ncreator + the ONLY other credit is a departed (non-current) histo
   ok(!(s.history || []).some(h => h.userId === jeff.user.id), "Jeff's own credit for it is gone");
 }
 
+console.log("\nv249 (audit finding): a discard-leave-then-reset used to leave a stale recap behind — isTouched only checked participants/invited/history, never s.posts[me]/s.logs[me], so a session where Jeff had posted a recap and then discard-left (no participants, no invited, no history left on it at all) read as 'not touched' and reset-workouts skipped it entirely, leaving that old recap fully visible to Brian even after Jeff asked to erase everything he'd logged");
+{
+  const dan = await reg('reset_dan', 'pass1234', 'DanHost');
+  await post('/api/friends/request', { username: 'reset_dan' }, jeff.token);
+  await post('/api/friends/accept', { from: jeff.user.id }, dan.token);
+
+  const s = await post('/api/sessions', {
+    name: 'Stale Recap Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Lat Pulldown' }],
+    inviteUsernames: ['reset_jeff'], visibility: 'private',
+  }, dan.token);
+  await post('/api/sessions/' + s.id + '/accept', {}, jeff.token);
+  const exId = s.exercises[0].id;
+  await post('/api/sessions/' + s.id + '/log', { exerciseId: exId, weight: 120, reps: 10 }, jeff.token);
+  const posted = await post('/api/sessions/' + s.id + '/post', { notes: 'quick pump', visibility: 'friends', media: [] }, jeff.token);
+  ok(!posted.error, `Jeff posts a recap while still a participant, as always (got ${posted.error})`);
+  const left = await post('/api/sessions/' + s.id + '/leave', { keep: false }, jeff.token);
+  ok(!!left.left, `Jeff discard-leaves — no credit kept, no history added (got ${JSON.stringify(left)})`);
+
+  const before = await readDb(testDb.url);
+  const sBefore = before.sessions[s.id];
+  ok(!(sBefore.participants || []).includes(jeff.user.id), 'sanity: Jeff is off participants after the discard-leave');
+  ok(!(sBefore.history || []).some(h => h.userId === jeff.user.id), 'sanity: no history row exists — discard never called creditFinish');
+  ok(!!(sBefore.posts && sBefore.posts[jeff.user.id]), "sanity: the recap Jeff posted BEFORE leaving is still sitting on the session — this is the exact gap");
+
+  const r = await post('/api/me/reset-workouts', { confirm: true }, jeff.token);
+  ok(r.ok === true, 'reset runs ok');
+  ok(r.sessionsCleared === 1, `the session with only a stale recap and no other trace is still recognized as touched and cleared (got ${r.sessionsCleared})`);
+
+  const after = await readDb(testDb.url);
+  const sAfter = after.sessions[s.id];
+  ok(!!sAfter, "Dan's session itself still exists — Jeff was never its creator");
+  ok(!(sAfter.posts && sAfter.posts[jeff.user.id]), "the stale recap is genuinely gone after reset, not left behind for Dan to keep seeing");
+  ok(!(sAfter.logs && sAfter.logs[jeff.user.id]), "and there is nothing left in logs for Jeff either");
+}
+
 console.log("\naccount identity survives completely untouched — only what Jeff LOGGED is gone");
 {
   const meBefore = await get('/api/profile/' + jeff.user.id, jeff.token).then(r => r.json());

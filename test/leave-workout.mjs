@@ -549,6 +549,109 @@ console.log('\na creator who leaves their OWN workout (creatorId goes null once 
   ok((creatorView.exercises || []).some(e => e.name === 'Bicep Curl'), 'the plan they built is still visible to them');
 }
 
+console.log("\nv248 (audit finding): a keep-leaver could VIEW their own alumni workout (fixed above) but could never WRITE to it — POST /post and /lock both still gated on s.participants.includes, which a keep-leave removes you from. So editing a recap you posted BEFORE leaving, or posting one for the FIRST time after leaving to make your kept sets visible, both silently 403'd.");
+{
+  const author = await reg('leave_author', 'pass1234', 'Author');
+  const ally = await reg('leave_ally', 'pass1234', 'Ally');
+  const s = await post('/api/sessions', {
+    name: 'Push Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Incline Press' }],
+    inviteUsernames: ['leave_ally'], visibility: 'private',
+  }, author.token);
+  await post('/api/sessions/' + s.id + '/accept', {}, ally.token);
+  const exId = s.exercises[0].id;
+  await post('/api/sessions/' + s.id + '/log', { exerciseId: exId, weight: 135, reps: 8 }, author.token);
+
+  console.log('  editing a recap posted BEFORE a keep-leave');
+  const posted = await post('/api/sessions/' + s.id + '/post', { notes: 'felt good', visibility: 'friends', media: [] }, author.token);
+  ok(!posted.error, `posting while still a participant works, as always (got ${posted.error})`);
+  await post('/api/sessions/' + s.id + '/leave', { keep: true }, author.token);
+  const edited = await post('/api/sessions/' + s.id + '/post', { notes: 'actually crushed it', visibility: 'friends', media: [] }, author.token);
+  ok(!edited.error, `editing that same recap AFTER a keep-leave no longer 403s (got ${JSON.stringify(edited.error)})`);
+  ok(edited.posts && edited.posts[author.user.id] && edited.posts[author.user.id].notes === 'actually crushed it',
+    'the edit actually took (notes updated)');
+
+  console.log('  posting a recap for the FIRST TIME after a keep-leave (never posted before leaving)');
+  const s2 = await post('/api/sessions', {
+    name: 'Pull Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Lat Pulldown' }],
+    inviteUsernames: ['leave_ally'], visibility: 'private',
+  }, author.token);
+  await post('/api/sessions/' + s2.id + '/accept', {}, ally.token);
+  await post('/api/sessions/' + s2.id + '/log', { exerciseId: s2.exercises[0].id, weight: 100, reps: 10 }, author.token);
+  await post('/api/sessions/' + s2.id + '/leave', { keep: true }, author.token);
+  const firstPost = await post('/api/sessions/' + s2.id + '/post', { notes: 'first post after leaving', visibility: 'friends', media: [] }, author.token);
+  ok(!firstPost.error, `posting for the first time after a keep-leave works (got ${JSON.stringify(firstPost.error)})`);
+  ok(firstPost.posts && firstPost.posts[author.user.id] && firstPost.posts[author.user.id].notes === 'first post after leaving',
+    'the new post actually saved, with the kept sets now attributable to a real recap');
+
+  console.log('  /lock after a keep-leave stays idempotent (already credited) rather than 403ing');
+  const relock = await post('/api/sessions/' + s2.id + '/lock', {}, author.token);
+  ok(!relock.error, `re-locking after a keep-leave does not error (got ${JSON.stringify(relock.error)})`);
+  const historyRows = (relock.history || []).filter(h => h.userId === author.user.id);
+  ok(historyRows.length === 1, `and does not push a second history row — still idempotent (got ${historyRows.length})`);
+
+  console.log('  a genuine stranger still cannot post to or lock someone else\'s session');
+  const outsider = await reg('leave_outsider', 'pass1234', 'Outsider');
+  const strangerPost = await fetch(B + '/api/sessions/' + s2.id + '/post', { method: 'POST', headers: { ...J, Authorization: 'Bearer ' + outsider.token }, body: JSON.stringify({ notes: 'hi', visibility: 'friends', media: [] }) });
+  ok(strangerPost.status === 403, `an unrelated stranger is still 403'd from posting (got ${strangerPost.status})`);
+  const strangerLock = await fetch(B + '/api/sessions/' + s2.id + '/lock', { method: 'POST', headers: { ...J, Authorization: 'Bearer ' + outsider.token }, body: '{}' });
+  ok(strangerLock.status === 403, `and from locking (got ${strangerLock.status})`);
+}
+
+console.log("\nv248 (audit finding): /leave never touched s.joinRequests, so a departed join-requester's request stayed status:'approved' forever — and POST /log and POST /suggest both treat an approved join request as authorization on its own, independent of s.participants. Leaving removed them from participants but that stale approved row alone kept /log and /suggest working, and re-tapping \"Join in?\" afterwards just flipped that same stale row back to 'pending' (see /join above) instead of filing an honest new request.");
+{
+  const host = await reg('leave_host', 'pass1234', 'Host');
+  const joiner = await reg('leave_joiner', 'pass1234', 'Joiner');
+  await post('/api/friends/request', { username: 'leave_joiner' }, host.token);
+  await post('/api/friends/accept', { from: host.user.id }, joiner.token);
+  const s = await post('/api/sessions', {
+    name: 'Leg Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Back Squat' }],
+    inviteUsernames: [], visibility: 'friends',
+  }, host.token);
+
+  console.log('  joining via an approved join request, then leaving');
+  const requested = await post('/api/sessions/' + s.id + '/join', { note: 'count me in' }, joiner.token);
+  ok(!requested.error, `filing the join request works (got ${requested.error})`);
+  const withReq = await fetch(B + '/api/sessions/' + s.id, { headers: { Authorization: 'Bearer ' + host.token } }).then(r => r.json());
+  const jr = (withReq.joinRequests || []).find(j => j.userId === joiner.user.id);
+  ok(jr && jr.status === 'pending', 'the host sees it pending');
+  const approved = await post('/api/sessions/' + s.id + '/join/' + jr.id + '/approve', {}, host.token);
+  ok(!approved.error, `host approves it (got ${approved.error})`);
+  const logged = await post('/api/sessions/' + s.id + '/log', { exerciseId: s.exercises[0].id, weight: 185, reps: 5 }, joiner.token);
+  ok(!logged.error, `an approved join-requester can log sets, as always (got ${JSON.stringify(logged.error)})`);
+  const left = await post('/api/sessions/' + s.id + '/leave', { keep: true }, joiner.token);
+  ok(!!left.left, `leaving works (got ${JSON.stringify(left)})`);
+
+  console.log('  the now-departed approved request no longer authorizes anything');
+  const logAfterLeave = await fetch(B + '/api/sessions/' + s.id + '/log', { method: 'POST', headers: { ...J, Authorization: 'Bearer ' + joiner.token }, body: JSON.stringify({ exerciseId: s.exercises[0].id, weight: 190, reps: 3 }) });
+  ok(logAfterLeave.status === 403, `logging after leaving is refused, not silently allowed via the stale approved request (got ${logAfterLeave.status})`);
+  const suggestAfterLeave = await fetch(B + '/api/sessions/' + s.id + '/suggest', { method: 'POST', headers: { ...J, Authorization: 'Bearer ' + joiner.token }, body: JSON.stringify({ exerciseId: s.exercises[0].id, swapTo: 'Front Squat' }) });
+  ok(suggestAfterLeave.status === 403, `suggesting a swap after leaving is refused the same way (got ${suggestAfterLeave.status})`);
+
+  console.log('  the stale request is actually gone, not just ignored — a fresh "Join in?" starts a clean new one');
+  const afterLeaveView = await fetch(B + '/api/sessions/' + s.id, { headers: { Authorization: 'Bearer ' + host.token } }).then(r => r.json());
+  ok(!(afterLeaveView.joinRequests || []).some(j => j.userId === joiner.user.id), 'the old approved request row is gone from the session entirely');
+  const rejoined = await post('/api/sessions/' + s.id + '/join', { note: 'can I come back' }, joiner.token);
+  ok(!rejoined.error, `asking to join again works cleanly (got ${rejoined.error})`);
+  const freshView = await fetch(B + '/api/sessions/' + s.id, { headers: { Authorization: 'Bearer ' + host.token } }).then(r => r.json());
+  const freshJr = (freshView.joinRequests || []).find(j => j.userId === joiner.user.id);
+  ok(freshJr && freshJr.status === 'pending' && freshJr.note === 'can I come back', 'it is a genuine new pending request, not a stale row flipped back over');
+
+  console.log('  the same cleanup happens on /remove-mine, not just /leave');
+  const s2 = await post('/api/sessions', {
+    name: 'Arm Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Barbell Curl' }],
+    inviteUsernames: [], visibility: 'friends',
+  }, host.token);
+  const req2 = await post('/api/sessions/' + s2.id + '/join', {}, joiner.token);
+  ok(!req2.error, `filing the second join request works (got ${req2.error})`);
+  const view2 = await fetch(B + '/api/sessions/' + s2.id, { headers: { Authorization: 'Bearer ' + host.token } }).then(r => r.json());
+  const jr2 = (view2.joinRequests || []).find(j => j.userId === joiner.user.id);
+  await post('/api/sessions/' + s2.id + '/join/' + jr2.id + '/approve', {}, host.token);
+  const removed = await post('/api/sessions/' + s2.id + '/remove-mine', {}, joiner.token);
+  ok(!!removed.removed, `remove-mine works (got ${JSON.stringify(removed)})`);
+  const logAfterRemove = await fetch(B + '/api/sessions/' + s2.id + '/log', { method: 'POST', headers: { ...J, Authorization: 'Bearer ' + joiner.token }, body: JSON.stringify({ exerciseId: s2.exercises[0].id, weight: 50, reps: 10 }) });
+  ok(logAfterRemove.status === 403, `remove-mine also revokes the approved join request, not just /leave (got ${logAfterRemove.status})`);
+}
+
 try { srv && srv.kill(); } catch {}
 rmSync(DIR, { recursive: true, force: true });
 await testDb.drop();
