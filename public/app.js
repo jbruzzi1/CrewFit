@@ -1297,6 +1297,13 @@ async function openLogSheet(sid, exId){
       <div class="ex-sub">${repLabel(e) ? `Target: <b>${e.defaultSets} × ${repLabel(e)}</b> · ` : ''}Last time: <b>${esc(last)}</b></div>
       <div id="logRec"></div>
       <div id="logSetList"></div>
+      <div class="add-row ql-row">
+        <div class="ql-field">
+          <svg class="ql-mic" width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <input id="qlText" placeholder="&ldquo;45 at 8 reps, 2 RIR&rdquo;" autocomplete="off" autocapitalize="off" oninput="qlParse()">
+        </div>
+        <button class="add-btn" id="qlGo" onclick="qlLog()" disabled>&#10003; Log</button>
+      </div>
       <div class="seg" id="logTypeSeg">
         ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" data-t="${t.key}" onclick="logSetType('${t.key}')">${t.label}</div>`).join('')}
       </div>
@@ -1379,6 +1386,117 @@ function useSuggested(w){
 function logSetType(key){
   const seg=document.getElementById('logTypeSeg'); if(!seg) return;
   seg.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on', c.getAttribute('data-t')===key));
+}
+// ---- Quick log (v243) ----
+// One box on the log sheet that understands a whole set said (via the keyboard's mic) or typed
+// in one line: "45 lbs at 8 reps", "185 for 5", "225 x 3", "8 reps at 45", "warm up 135 for 10",
+// "normal set, 45 at 8, 2 RIR". Jeff, Aug 29: "I want to be able to voice text 'I did 45lbs at
+// 8 reps' and it will log that set... say 'normal set, 45lbs at 8 reps, 2 RIR' and it fills
+// everything in for me."
+//
+// Design rules, in order of importance:
+// - NEVER log something the person didn't say. The parser is deterministic; anything it isn't
+//   sure about it simply doesn't fill in. The parse result lands in the REAL weight/reps/RIR
+//   fields and the type chips - visible before anything saves - and the checkmark goes through
+//   addLogSet(), the exact same code path (same validation, PR detection, celebration) as +Add.
+// - Only ever ADD to the form: a partial phrase fills the parts it names and leaves whatever
+//   was already typed in the other boxes alone. Garbage fills nothing.
+// - A unit that CONFLICTS with the account's unit ("100 kg" said by an lb-configured account)
+//   fills nothing at all: silently logging 100 lb would be false data, and converting silently
+//   would surprise. The person just types that one normally.
+// Pure function so test/quicklog-parse.mjs can hammer phrasings without a DOM.
+function parseQuickLog(raw){
+  if(raw === undefined || raw === null) return null;
+  // NO regex lookbehind anywhere in this file: iOS Safari before 16.4 throws a SyntaxError at
+  // PARSE time for it, which would brick the entire app for anyone on an older iPhone.
+  let t = String(raw).toLowerCase().replace(/[,;:!?"'“”]+/g,' ')
+    .replace(/\.(?!\d)/g,' ')                               // strip periods EXCEPT decimal points
+    .replace(/(\d)([a-z])/g,'$1 $2').replace(/([a-z])(\d)/g,'$1 $2')   // "45lbs" -> "45 lbs", "rir2" -> "rir 2"
+    .replace(/\s+/g,' ').trim();
+  if(!t) return null;
+  const out = { setType:null, weight:null, reps:null, rir:null, unit:null };
+  // "3 sets of 8" - the sets COUNT is stripped with its word, number and all, BEFORE anything
+  // numeric is read. We log one set at a time, and without this the no-separator weight capture
+  // below would happily read "3 sets of 8 reps" as 3 lb x 8 (a wrong number, which this parser
+  // must never produce).
+  t = t.replace(/\b\d+\s*sets?\b(\s*of\b)?/g,' ');
+  // set type words (checked before stripping; "normal set" is an explicit normal)
+  if(/\bwarm\s*-?\s*ups?\b/.test(t)) out.setType='warmup';
+  else if(/\bdrop(\s*sets?)?\b/.test(t)) out.setType='drop';
+  else if(/\b(to\s+)?failure\b/.test(t)) out.setType='failure';
+  else if(/\bnormal(\s*sets?)?\b/.test(t)) out.setType='normal';
+  t = t.replace(/\b(warm\s*-?\s*ups?|drop\s*sets?|drop|to\s+failure|failure|normal\s*sets?|normal|sets?)\b/g,' ');
+  // units: note which was said, then strip the word
+  if(/\b(lbs?|pounds?)\b/.test(t)) out.unit='lb';
+  else if(/\b(kgs?|kilos?|kilograms?)\b/.test(t)) out.unit='kg';
+  t = t.replace(/\b(lbs?|pounds?|kgs?|kilos?|kilograms?)\b/g,' ');
+  // filler words that dictation loves
+  t = t.replace(/\b(i|did|just|do|doing|done|logged|log|a|an|the|of|and|left|then|each)\b/g,' ').replace(/\s+/g,' ').trim();
+  // Weight/reps come FIRST, and are STRIPPED before RIR is looked for (cold-review catch):
+  // dictation can drop the pause in "185 for 5, 2 in reserve" and produce "185 for 52 in
+  // reserve" - with RIR matched first that read as rir 52 and NOTHING else, discarding the
+  // weight and reps that were plainly said. Weight-first keeps 185x52 (visibly wrong in the
+  // form, easy to fix) instead of silently swallowing the whole line into an RIR.
+  let m = t.match(/(\d+(?:\.\d+)?)\s*(?:at|@|for|x|by|times|\*)\s*(\d+(?:\.\d+)?)(?:\s*reps?)?\b/);
+  if(m){ out.weight = Number(m[1]); out.reps = Number(m[2]); t = t.replace(m[0],' '); }
+  else {
+    // no separator word at all: "85 8 reps" (said as "85 lbs, 8 reps" - the unit word and comma
+    // are already stripped by here). Weight first, then the reps-keyworded number.
+    m = t.match(/(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s*reps?\b/);
+    if(m){ out.weight = Number(m[1]); out.reps = Number(m[2]); t = t.replace(m[0],' '); }
+    else {
+      // reps-first: "8 reps at 45", or reps alone: "8 reps" (bodyweight)
+      m = t.match(/(\d+(?:\.\d+)?)\s*reps?\b(?:\s*(?:at|@|with|on)\s*(\d+(?:\.\d+)?))?/);
+      if(m){ out.reps = Number(m[1]); if(m[2] !== undefined) out.weight = Number(m[2]); t = t.replace(m[0],' '); }
+      else {
+        // a lone number next to a said unit is a weight ("245 pounds")
+        m = out.unit ? t.match(/^(\d+(?:\.\d+)?)$/) : null;
+        if(m){ out.weight = Number(m[1]); t = t.replace(m[0],' '); }
+      }
+    }
+  }
+  // reps found but no weight, and exactly ONE bare number is left over ("8 reps 85", "8 reps,
+  // 85 lbs") - weight is the only slot it can be (RIR and a sets count both require their
+  // keyword and were already taken above). Anything more than one lone number stays unread.
+  if(out.reps !== null && out.weight === null){
+    m = t.replace(/\s+/g,' ').trim().match(/^(\d+(?:\.\d+)?)$/);
+    if(m){ out.weight = Number(m[1]); t = ''; }
+  }
+  // RIR, from whatever is left: "rir 2", "2 rir", "2 in reserve", "2 in the tank"
+  m = t.match(/\brir\s*(?:of\s*)?(\d+)\b/) || t.match(/\b(\d+)\s*(?:rir|in\s+(?:the\s+)?(?:reserve|tank))\b/);
+  if(m) out.rir = Number(m[1]);
+  if(out.setType===null && out.weight===null && out.reps===null && out.rir===null && out.unit===null) return null;
+  return out;
+}
+function qlSync(){
+  const go=document.getElementById('qlGo'), r=document.getElementById('logR');
+  if(go) go.disabled = !(r && Number(r.value) > 0);
+}
+function qlParse(){
+  const box=document.getElementById('qlText'); if(!box) return;
+  const p = parseQuickLog(box.value);
+  // conflicting unit -> fill NOTHING (see the block comment above); everything else fills only
+  // the parts actually said, leaving already-typed boxes alone
+  if(p && !(p.unit && p.unit !== myUnit())){
+    if(p.weight!==null){ const w=document.getElementById('logW'); if(w){ w.value=p.weight; if(typeof updateLoadHint==='function') updateLoadHint(); } }
+    if(p.reps!==null){ const el=document.getElementById('logR'); if(el) el.value=p.reps; }
+    if(p.rir!==null){ const el=document.getElementById('logRir'); if(el) el.value=p.rir; }
+    if(p.setType!==null) logSetType(p.setType);
+  }
+  qlSync();
+}
+async function qlLog(){
+  const r=document.getElementById('logR');
+  if(!(r && Number(r.value) > 0)) return;
+  // disable BEFORE the await - a double-tap during the network round trip logged the set twice
+  // (cold-review catch); qlSync() at the end restores the true state either way
+  const go=document.getElementById('qlGo'); if(go) go.disabled=true;
+  await addLogSet();
+  // addLogSet clears the weight/reps boxes only on a successful save - mirror that, so a failed
+  // save keeps the spoken line around for a retry instead of throwing it away
+  const box=document.getElementById('qlText');
+  if(box && r && !r.value) box.value='';
+  qlSync();
 }
 function renderLogSets(s, justLoggedId){
   const list=document.getElementById('logSetList'); if(!list) return;
