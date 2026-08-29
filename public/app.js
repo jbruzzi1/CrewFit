@@ -1299,8 +1299,8 @@ async function openLogSheet(sid, exId){
       <div id="logSetList"></div>
       <div class="add-row ql-row">
         <div class="ql-field">
-          <svg class="ql-mic" width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-          <input id="qlText" placeholder="&ldquo;45 at 8 reps, 2 RIR&rdquo;" autocomplete="off" autocapitalize="off" oninput="qlParse()">
+          <button type="button" class="ql-mic-btn" aria-label="Hold to speak" onpointerdown="qlMicDown(event)" onpointerup="qlMicUp()" onpointercancel="qlMicUp()"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+          <input id="qlText" placeholder="${qlExample()}" autocomplete="off" autocapitalize="off" oninput="qlParse()" onfocus="qlWatchStart()" onblur="qlWatchStop()">
         </div>
         <button class="add-btn" id="qlGo" onclick="qlLog()" disabled>&#10003; Log</button>
       </div>
@@ -1485,7 +1485,86 @@ function qlParse(){
   }
   qlSync();
 }
+// v244: iOS keyboard DICTATION does not fire input events while it streams text into the box
+// (Jeff hit this live: he dictated, the text was sitting right there, and the Log button stayed
+// dark and untappable). No event is reliable across iOS versions for dictation, so while the box
+// has focus a small watcher polls its VALUE and re-parses whenever it actually changed. Cheap
+// (4x/second, only while focused, self-stops when the sheet is gone) and catches every way text
+// can arrive: dictation, autocorrect, paste from the toolbar, password-manager fills.
+// The placeholder IS the how-to (Jeff, Aug 29: "the section with the mic should give an example
+// of how to say the logging"). A different worked example each time the sheet opens, so over a
+// week of training you passively see the whole range of what it understands - without a single
+// line of instructional UI. STATIC strings only; they render into a placeholder attribute.
+const QL_EXAMPLES = [
+  'Say &ldquo;135 for 8, 2 RIR&rdquo;',
+  'Say &ldquo;45 lbs at 8 reps&rdquo;',
+  'Say &ldquo;warm up, 95 for 12&rdquo;',
+  'Say &ldquo;225 x 3&rdquo;',
+  'Say &ldquo;8 reps at 85, 2 RIR&rdquo;',
+];
+function qlExample(){ return QL_EXAMPLES[Math.floor(Math.random()*QL_EXAMPLES.length)]; }
+let QL_WATCH = null, QL_LAST = '';
+function qlWatchStart(){
+  if(QL_WATCH) return;
+  const box = document.getElementById('qlText');
+  QL_LAST = box ? box.value : '';
+  QL_WATCH = setInterval(()=>{
+    const b = document.getElementById('qlText');
+    // stop when the sheet closed while focused (blur doesn't reliably fire on element removal)
+    // OR when focus has moved on - the id would match a NEW sheet's box and the watcher would
+    // then be comparing it against the OLD sheet's last value (cold-review catch)
+    if(!b || document.activeElement !== b){ qlWatchStop(); return; }
+    if(b.value !== QL_LAST){ QL_LAST = b.value; qlParse(); }
+  }, 250);
+}
+function qlWatchStop(){ if(QL_WATCH){ clearInterval(QL_WATCH); QL_WATCH = null; } }
+// v244: press-and-hold the mic to record IN the app (Jeff: "click and hold the microphone and
+// it automatically begins recording"). Walkie-talkie shape: hold = listening, release = done.
+// Uses the browser's own speech recognition where it exists (iOS Safari 14.5+); where it
+// doesn't, the press just focuses the box so the keyboard's mic is one tap away - never a dead
+// button. The transcript streams into the box live and re-parses as it grows, so the fields
+// fill while you're still talking. Recording state shows in the LIVE gold (that's what gold
+// means in this app), never red.
+let QL_REC = null;
+function qlRecUi(on){
+  // the LAST .ql-field: for ~200ms after closeSheet a dismissed sheet is still in the DOM
+  // animating out, and querySelector would style THAT one (cold-review catch)
+  const fields = document.querySelectorAll('.ql-field');
+  const f = fields.length ? fields[fields.length-1] : null;
+  if(f) f.classList.toggle('ql-rec', on);
+  const b = document.getElementById('qlText');
+  // while listening, an empty box says so; the moment words arrive they replace it anyway
+  if(b){ if(on){ b.dataset.ph = b.placeholder; b.placeholder = 'Listening…'; } else if(b.dataset.ph){ b.placeholder = b.dataset.ph; } }
+}
+function qlMicDown(ev){
+  if(ev && ev.preventDefault) ev.preventDefault();               // no text-select / scroll on hold
+  if(QL_REC) return;   // a second finger while already listening must not orphan the first recognition (cold-review catch)
+  try{ if(ev && ev.target && ev.target.setPointerCapture && ev.pointerId !== undefined) ev.target.setPointerCapture(ev.pointerId); }catch(e){}
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const box = document.getElementById('qlText');
+  if(!SR){ if(box) box.focus(); return; }
+  try{
+    QL_REC = new SR();
+    QL_REC.continuous = true;
+    QL_REC.interimResults = true;
+    QL_REC.onresult = (e)=>{
+      let txt = '';
+      for(let i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript;
+      const b = document.getElementById('qlText');
+      if(b){ b.value = txt; QL_LAST = txt; qlParse(); }
+    };
+    QL_REC.onend = ()=>{ QL_REC = null; qlRecUi(false); };
+    QL_REC.onerror = ()=>{ QL_REC = null; qlRecUi(false); if(box) box.focus(); };  // mic denied/unavailable -> keyboard path
+    QL_REC.start();
+    qlRecUi(true);
+  }catch(err){ QL_REC = null; qlRecUi(false); if(box) box.focus(); }
+}
+function qlMicUp(){
+  if(QL_REC){ try{ QL_REC.stop(); }catch(e){} }
+  qlRecUi(false);
+}
 async function qlLog(){
+  qlParse();     // belt-and-braces: parse whatever is in the box RIGHT NOW, however it got there
   const r=document.getElementById('logR');
   if(!(r && Number(r.value) > 0)) return;
   // disable BEFORE the await - a double-tap during the network round trip logged the set twice
