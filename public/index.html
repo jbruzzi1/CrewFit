@@ -517,6 +517,14 @@
     .add-row input::placeholder { color:#aeb4be; }
     .add-btn { flex:0 0 auto; width:auto; margin:0; background:transparent; color:var(--blue); border:1px solid var(--blue); border-radius:10px; padding:11px 16px; font-size:14px; font-weight:600; }
     .add-btn:active { background:rgba(37,99,235,.08); }
+    /* v243 quick log: the say-it-or-type-it box above the set-type chips. Blue accent border says
+       "this is the fast lane"; the checkmark disables until the parse (or manual typing) has put
+       real reps in the form, so it can never log a set that isn't visible in the fields below. */
+    .ql-row { margin:0 0 14px; }
+    .ql-field { position:relative; flex:1 1 0; min-width:0; }
+    .ql-field input { width:100%; padding-left:37px; border:1.5px solid var(--blue); }
+    .ql-mic { position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--blue); pointer-events:none; }
+    .ql-row .add-btn:disabled { opacity:.35; }
     .rest { display:inline-flex; align-items:center; gap:8px; margin-top:14px; padding:8px 12px; background:#eef1f5; border-radius:999px; font-size:12px; color:var(--muted); }
     .rest b { color:var(--fg); font-size:14px; font-weight:700; }
     .note { font-size:11px; color:var(--muted); margin-top:14px; }
@@ -905,6 +913,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=242"></script>
+  <script src="app.js?v=243"></script>
 </body>
 </html>

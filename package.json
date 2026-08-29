@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/wiring.mjs && node test/client-hostile.mjs && node test/pgmini.mjs && node test/db-layer.mjs && node test/progression.mjs && node test/data-safety.mjs && node test/accounts.mjs && node test/sharing.mjs && node test/targets.mjs && node test/exposure.mjs && node test/boot-shape.mjs && node test/limits.mjs && node test/ratelimit.mjs && node test/follow.mjs && node test/per-user-recap.mjs && node test/vapid-persistence.mjs && node test/streak-reminders.mjs && node test/leave-workout.mjs && node test/reset-workouts.mjs && node test/friends-workouts.mjs && node test/session-missed.mjs && node test/create-flow-draft-persist.mjs && node test/trend-picks.mjs && node test/feed-freshness.mjs && node test/rir.mjs && node test/templates-hide.mjs"
+    "test": "node test/wiring.mjs && node test/client-hostile.mjs && node test/pgmini.mjs && node test/db-layer.mjs && node test/progression.mjs && node test/data-safety.mjs && node test/accounts.mjs && node test/sharing.mjs && node test/targets.mjs && node test/exposure.mjs && node test/boot-shape.mjs && node test/limits.mjs && node test/ratelimit.mjs && node test/follow.mjs && node test/per-user-recap.mjs && node test/vapid-persistence.mjs && node test/streak-reminders.mjs && node test/leave-workout.mjs && node test/reset-workouts.mjs && node test/friends-workouts.mjs && node test/session-missed.mjs && node test/create-flow-draft-persist.mjs && node test/trend-picks.mjs && node test/feed-freshness.mjs && node test/rir.mjs && node test/templates-hide.mjs && node test/quicklog-parse.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",
