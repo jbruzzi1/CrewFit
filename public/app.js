@@ -1,6 +1,11 @@
 const API = '';
 let TOKEN = localStorage.getItem('crewfit_token') || '';
 let ME = null;
+// v250 (audit finding): bumped by every NEW sheet opened (openSheetHtml) and every tab switch
+// (showTab) -- lets a slow-resolving background save (editBio/editDefaultGym) tell "the user is
+// still right where they were when I started" from "they've moved on since," without being fooled
+// by its OWN sheet's unrelated close-and-fade. See the comment above stillOnProfileWithNothingElseOpen.
+let UI_EPOCH = 0;
 const H = {
   _req(method,p,b){ return fetch(API+p,{method,headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},body:b?JSON.stringify(b):undefined})
     .then(async res=>{
@@ -194,6 +199,7 @@ async function doReg(){ try {
 // was otherwise never cleared by navigating away, so the Workouts tab stayed stuck in "Pick
 // replacement" forever and later taps filed swaps against a workout you had long since left.
 function showTab(tab, keepModes){
+  UI_EPOCH++; // v250: a tab switch also counts as "the user moved on" -- see the comment above it
   if(!keepModes) resetTransientModes();
   document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
   if(tab==='home') home(); else if(tab==='progress') progressScreen(); else if(tab==='lib') library(); else if(tab==='templates') templates(); else if(tab==='friends') friends(); else if(tab==='me') meScreen();
@@ -444,6 +450,14 @@ function logSheetStillOpenFor(sid){
 // elsewhere, it just quietly does nothing.
 async function openSession(id, opts){
   const silent = !!(opts && opts.silent);
+  // v250 (audit follow-up): same gap as profileView()/followList()/viewPost() -- a real
+  // (non-silent) call here is a navigation to a full-screen view without a tab switch or new
+  // sheet. A silent background refresh is NOT a navigation (it updates the sheet already on
+  // screen), so it must not bump this -- doing so would make a legitimate fast-resolving
+  // editBio/editDefaultGym save on the SAME screen look stale for no reason. Bumped up front,
+  // before the fetch below, so a slow unrelated save can't resolve in the gap between this tap
+  // and the fetch finishing and still think it's on the old screen.
+  if(!silent) UI_EPOCH++;
   const mySeq = silent ? ++SESSION_SILENT_SEQ : null;
   const s = await H.get('/api/sessions/'+id);
   if(!s || s.error){ if(!silent && !s._expired) alert(s && s.error ? s.error : 'Session not found'); return; }
@@ -851,6 +865,9 @@ async function openSession(id, opts){
 //     opposite, explicit ask, so it's a separate action with its own confirmation, never a side
 //     effect of leaving.
 async function viewPost(id, authorId){
+  // v250 (audit follow-up): same gap as profileView()/followList() -- tapping a workout card from
+  // the Profile tab lands here without a tab switch or new sheet.
+  UI_EPOCH++;
   const s = await H.get('/api/sessions/'+id);
   if(!s || (s.error && !s._expired)){ alert(s && s.error ? s.error : 'Session not found'); return; }
   s.participants = s.participants || [];
@@ -2472,6 +2489,19 @@ function runConfirmCb(){ const cb = CONFIRM_CB; dismissConfirm(); if(cb) cb(); }
 // danger=false renders the action without red — for confirms that are choices, not destruction
 // (declining an invite is not framed as destructive, same as the invite banner's Decline).
 function confirmSheet(title, body, label, cb, danger=true){
+  // v250 (audit finding): a double-tap on whatever opens this -- very easy on a touchscreen,
+  // especially a scary destructive button -- used to call confirmSheet() twice before the first
+  // sheet's own onclick was even relevant, stacking two confirm sheets and overwriting
+  // CONFIRM_CB/CONFIRM_EL to point only at the newer one. dismissConfirm()/runConfirmCb() (wired to
+  // every button on every confirm sheet) read those globals, not a reference to whichever physical
+  // sheet a tap actually landed on -- so once the topmost sheet was dismissed, the first one's
+  // Cancel/Delete buttons called dismissConfirm()/runConfirmCb() against already-null globals and
+  // did nothing. Not a brief fade-race like closeSheet()'s: nothing was ever closing the first
+  // sheet, so it sat there fully visible and fully tappable-looking, permanently dead, with no way
+  // out but reloading. If one is already open, remove it immediately (no fade -- there's nothing to
+  // animate away FROM, the new one is about to cover the same spot) so at most one confirm sheet's
+  // buttons are ever wired to the live globals.
+  if(CONFIRM_EL){ CONFIRM_EL.remove(); CONFIRM_CB = null; CONFIRM_EL = null; }
   CONFIRM_CB = cb;
   CONFIRM_EL = openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>${title}</h2><button class="sec sm" onclick="dismissConfirm()">✕</button></div>
     ${body ? `<div class="muted" style="padding:0 2px 14px; font-size:13px; line-height:1.5">${body}</div>` : ''}
@@ -3318,7 +3348,7 @@ function closeSheet(){ const l=document.querySelectorAll('.sheet-back'); const s
 // down the topmost one, leaving whatever is stacked underneath (stale pre-edit data) to resurface
 // later as a zombie once the fresh sheet closes (cold-review catch, v247).
 function closeAllSheets(){ document.querySelectorAll('.sheet-back').forEach(s=>{ s.classList.remove('show'); setTimeout(()=>s.remove(),200); }); }
-function openSheetHtml(inner){ const s=document.createElement('div'); s.className='sheet-back'; s.onclick=(e)=>{ if(e.target===s) closeSheet(); }; s.innerHTML=inner; document.body.appendChild(s); requestAnimationFrame(()=>s.classList.add('show')); return s; }
+function openSheetHtml(inner){ UI_EPOCH++; const s=document.createElement('div'); s.className='sheet-back'; s.onclick=(e)=>{ if(e.target===s) closeSheet(); }; s.innerHTML=inner; document.body.appendChild(s); requestAnimationFrame(()=>s.classList.add('show')); return s; }
 // A single in-app bottom sheet for free-text entry. Jeff, Aug 27: "when I go to add a bio or
 // notes etc I don't want a separate iPhone style pop up to happen to input... I want it to stay
 // within the app." The browser's own prompt() is a native OS dialog entirely outside the app's
@@ -3598,6 +3628,12 @@ async function setUnits(u){
   closeSheet();
 }
 async function profileView(id){
+  // v250 (audit follow-up): this is a real navigation to a full-screen view -- possibly someone
+  // ELSE's profile, reached from followList() below without ever touching showTab() or the nav
+  // tab. Must bump UI_EPOCH so a slow editBio/editDefaultGym save started before this navigation
+  // can tell it's no longer looking at the screen it was launched from. See the comment above
+  // stillOnProfileWithNothingElseOpen.
+  UI_EPOCH++;
   const p = await H.get('/api/profile/'+id);
   const isMe = id===ME.id;
   const avatar = p.avatar
@@ -3699,6 +3735,10 @@ async function profileView(id){
 // as workouts/PRs — gated server-side on the same isApproved rule as the rest of the profile, so a
 // private account's lists stay private to non-approved viewers.
 async function followList(id, kind){
+  // v250 (audit follow-up): same reasoning as profileView() above -- a real navigation away from
+  // whatever was on screen, reachable from the profile's Followers/Following stat without a tab
+  // switch or new sheet.
+  UI_EPOCH++;
   const list = await H.get(`/api/profile/${id}/${kind}`);
   const title = kind==='followers' ? 'Followers' : 'Following';
   const backBtn = `<div class="pp-head"><button class="sec sm" onclick="profileView('${id}')">← Back</button></div>`;
@@ -3735,10 +3775,28 @@ async function toggleFollow(id, state){
   if(r && r.error){ alert(r.error); return; }
   profileView(id);   // re-render from the server's fresh youFollow so the button is always right
 }
+// v250 (audit finding): editBio/editDefaultGym below both fire their real side effect (a full
+// navigate back to the profile, or reopening Settings) from an async .then() -- an arbitrary,
+// network-latency-bound delay after Save was tapped, not the next tick. By the time a slow save
+// resolves the user may already be looking at something else entirely: another sheet they opened,
+// or a different tab. Barging in at that point with a stale reopen/navigate is not just visually
+// jarring -- for editBio it silently yanks the user off whatever they moved on to and back to
+// their own profile with zero warning. Same principle openSession's own `silent` refresh already
+// applies (see SESSION_SILENT_SEQ/logSheetStillOpenFor above): a background response is only
+// allowed to act on the screen if that screen is still actually the one in front of the user.
+function stillOnProfileWithNothingElseOpen(epochAtStart){
+  if(UI_EPOCH !== epochAtStart) return false;
+  // dataset.tab is 'me' (the nav button's own key) even though its visible label is "Profile" --
+  // see index.html's nav markup.
+  const activeTab = document.querySelector('.nav button.active');
+  return !!activeTab && activeTab.dataset.tab === 'me';
+}
 function editBio(){
   textEntrySheet({
     title:'Your bio', label:'Bio', value:ME.bio||'', placeholder:'Tell people about yourself', multiline:true,
-    onConfirm: v => { H.post('/api/me/bio',{bio:v}).then(r=>{ if(r.bio!==undefined){ ME.bio=r.bio; profileView(ME.id); } }); }
+    // epoch captured synchronously, right as Save is tapped (before the network round trip) --
+    // the moment right after this sheet's own close, before anything else has had a chance to open
+    onConfirm: v => { const epoch=UI_EPOCH; H.post('/api/me/bio',{bio:v}).then(r=>{ if(r.bio!==undefined){ ME.bio=r.bio; if(stillOnProfileWithNothingElseOpen(epoch)) profileView(ME.id); } }); }
   });
 }
 // Prefills the Location field on every new workout you create (and Quick Workout) so you're not
@@ -3747,7 +3805,7 @@ function editBio(){
 function editDefaultGym(){
   textEntrySheet({
     title:'Default gym', label:'Prefills new workouts', value:ME.defaultGym||'', placeholder:'e.g. Equinox Downtown',
-    onConfirm: v => { H.post('/api/me/default-gym',{defaultGym:v}).then(r=>{ if(r.defaultGym!==undefined){ ME.defaultGym=r.defaultGym; openSettings(); } }); }
+    onConfirm: v => { const epoch=UI_EPOCH; H.post('/api/me/default-gym',{defaultGym:v}).then(r=>{ if(r.defaultGym!==undefined){ ME.defaultGym=r.defaultGym; if(stillOnProfileWithNothingElseOpen(epoch)) openSettings(); } }); }
   });
 }
 // Task #63: "you're about to lose your streak" push reminder, opt-out toggle. Only matters if

@@ -702,7 +702,14 @@ function groupPrsForFeed(prs, weekAgo) {
   if (!recent.length) return [];
   if (recent.length === 1) {
     const p = recent[0];
-    return [{ type: 'pr', at: p.at, text: `hit a new PR on ${p.exercise} (${p.weight}×${p.reps})` }];
+    // v250 (audit finding): this printed the raw weight number with no unit -- the same ambiguity
+    // v248 fixed for the profile PR list (prLabel/unitOf in app.js), just never ported to this
+    // feed text. A kg PR read as an unlabeled number here, genuinely ambiguous with lb and, if
+    // misread, off by more than 2x. Matches prLabel's own formatting, including the bodyweight
+    // case (weight 0 -- a pull-up-style PR -- has no meaningful unit, so it reads as plain reps).
+    const w = Number(p.weight) || 0;
+    const weightPart = w === 0 ? `${p.reps} reps` : `${w} ${p.unit || 'lb'} × ${p.reps}`;
+    return [{ type: 'pr', at: p.at, text: `hit a new PR on ${p.exercise} (${weightPart})` }];
   }
   const at = recent.map(p => p.at).sort().slice(-1)[0];   // latest timestamp in the group, for feed ordering
   const names = recent.map(p => p.exercise);
@@ -1543,11 +1550,26 @@ function sessionView(s, viewerId) {
   }
   if (tier === 'stranger') return null;
 
+  // v250 (privacy audit finding): 'reader' exists ONLY so a published recap isn't blocked by
+  // session privacy (see the comment above anyVisiblePost) — a stranger who can see just ONE
+  // participant's public recap was never meant to get the rest of the session along with it. Every
+  // other tier reaching this object actually has (or is being offered) a real place in the workout
+  // — friend/invited are deciding whether to join, alumni actually trained it — so they keep seeing
+  // the organizer's note and the location; reader does not. `suggestedEdits` (the swap-proposal
+  // conversation) is unaffected by this flag — it was already, and remains, gated separately below
+  // on tier === 'invited' only; friend and alumni never saw it, before or after this fix. Left
+  // `participants`/`exercises` as they were for every tier including reader: exercises are needed
+  // to label the one recap a reader is actually allowed to see (viewPost), and raw participant ids
+  // without resolvable names (nameOf only resolves an ACTUAL friend, see its own comment) are a much
+  // smaller exposure than free-text personal content — and blanking the array risks a new dishonest
+  // "0 people" claim on any screen that also renders a headcount from it.
+  const seesFullPlan = tier === 'friend' || tier === 'invited' || tier === 'alumni';
   // The plan, and nothing that belongs to the people doing it.
   const view = {
     id: s.id, creatorId: s.creatorId, scheduledAt: s.scheduledAt, status: s.status,
-    visibility: s.visibility, name: s.name, location: s.location, lengthMin: s.lengthMin,
-    creatorNote: s.creatorNote, equipment: s.equipment || [],
+    visibility: s.visibility, name: s.name, location: seesFullPlan ? s.location : undefined,
+    lengthMin: s.lengthMin,
+    creatorNote: seesFullPlan ? s.creatorNote : undefined, equipment: s.equipment || [],
     exercises: s.exercises || [], participants: s.participants || [],
     // Whether the creator has finished their own portion — not privacy-sensitive (just a
     // boolean, no one's actual data), so available to every non-member tier alike rather than
@@ -1558,8 +1580,9 @@ function sessionView(s, viewerId) {
     // you", the Respond block, and being able to suggest a swap before accepting all vanished.
     // Everyone else who was asked and has not answered is a fact about them, not about you.
     invited: (Array.isArray(s.invited) && s.invited.includes(viewerId)) ? [viewerId] : [],
-    // who proposed swapping what is a conversation between the people in the workout
-    suggestedEdits: (tier === 'invited' || tier === 'reader') ? (s.suggestedEdits || []) : [],
+    // who proposed swapping what is a conversation between the people in the workout — a stranger
+    // reading a public recap was never one of them (v250: this used to include 'reader' too).
+    suggestedEdits: tier === 'invited' ? (s.suggestedEdits || []) : [],
     // your OWN swap comes back; nobody else's
     variations: pickMine(s.variations, viewerId),
     attendance: {}, history: [],
@@ -1822,6 +1845,14 @@ app.post('/api/sessions/:id/remove-mine', auth, async (req, res) => {
   // erase every trace of me on this session, so a leftover approved join request quietly granting
   // /log or /suggest access afterwards is the one thing that would be even more wrong here than there.
   s.joinRequests = (s.joinRequests || []).filter(j => j.userId !== me);
+  // v250 (audit finding): /leave withdraws a still-pending swap suggestion when you go (see the
+  // comment above its own suggestedEdits filter) but this route — meant to erase EVERY trace of me,
+  // stronger than /leave — never did. A pending suggestion left behind here could still be approved
+  // later, which rewrites the proposer's logged sets for that exercise; with everything else about
+  // me already gone from this session, that's a swap credited to someone with no footprint left to
+  // have actually proposed it. An approved one stays, same reasoning as /leave: it was settled while
+  // I was still here.
+  s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === me && e.status === 'pending'));
   if (s.creatorId === me) {
     const currentOthers = othersWhoLogged(s, me);
     s.creatorId = currentOthers.length ? currentOthers[0] : null;
@@ -2092,6 +2123,13 @@ function stripUserFromSession(s, userId) {
   // was not true while that row could still be sitting there afterward, letting a reset user keep
   // writing into a session /me/reset-workouts was supposed to have erased them from entirely.
   s.joinRequests = (s.joinRequests || []).filter(j => j.userId !== userId);
+  // v250 (audit finding, same root cause again): a still-pending swap suggestion is the other
+  // standing reference "strips every trace" missed — /leave withdraws it (see the comment above its
+  // own suggestedEdits filter) but this shared helper never did, even though reset's own comment
+  // above this function says history is ALWAYS cleared here, stronger than /leave. Left behind, it
+  // could still be approved later and rewrite logged sets attributed to a user this function just
+  // erased every other trace of. An approved one stays — it was settled before the reset.
+  s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === userId && e.status === 'pending'));
 }
 
 // Scoped to req.userId ONLY — never a body param, so this can never be pointed at anyone else,
