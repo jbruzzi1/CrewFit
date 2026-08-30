@@ -163,15 +163,21 @@ console.log('\nan invited person can look at the workout before deciding');
 console.log('\na workout is called the same thing on every screen it appears on');
 {
   // Tapping "Push Day" and landing on a page headed "Aug 14, 5:00 PM" reads like the wrong
-  // workout opened. All three views share sessTitle/sessSub so they cannot drift apart again.
+  // workout opened. The read-only views (openSession, viewPost) share sessTitle/sessSub so they
+  // cannot drift apart again. renderWorkoutEdit (Aug 30: workout names became editable there) is
+  // deliberately NOT one of these two anymore — it shows the name in an <input>, not a static
+  // heading, since you're meant to change it there — so it's checked separately just below,
+  // against the same underlying field (s.name) rather than against sessTitle(s).
   const src = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   const heads = src.match(/<h1 class="sess-date">[^<]*<\/h1>/g) || [];
-  ok(heads.length >= 3, `every session view has a heading (${heads.length} found)`);
+  ok(heads.length >= 2, `every read-only session view has a heading (${heads.length} found)`);
   ok(heads.every(h => h.includes('sessTitle(s)')),
      `and all of them use the same one — ${heads.filter(h => !h.includes('sessTitle(s)')).join(' ') || 'all consistent'}`);
   ok(/function sessTitle\(s\)\{[^}]*\.trim\(\)/.test(src.replace(/\s+/g, ' ').replace(/ /g, '')) ||
      /sessTitle[\s\S]{0,200}trim\(\)/.test(src),
      'a name of only spaces falls back to the date instead of rendering a blank title');
+  ok(/id="editWName"[^>]*value="\$\{esc\(s\.name\|\|''\)\}"/.test(src),
+     'the edit-mode name field starts pre-filled with the workout\'s actual current name');
 }
 
 console.log('\na workout name is stored trimmed');
