@@ -517,26 +517,22 @@
     .add-row input::placeholder { color:#aeb4be; }
     .add-btn { flex:0 0 auto; width:auto; margin:0; background:transparent; color:var(--blue); border:1px solid var(--blue); border-radius:10px; padding:11px 16px; font-size:14px; font-weight:600; }
     .add-btn:active { background:rgba(37,99,235,.08); }
-    /* v243 quick log: the say-it-or-type-it box above the set-type chips. Blue accent border says
-       "this is the fast lane"; the checkmark disables until the parse (or manual typing) has put
-       real reps in the form, so it can never log a set that isn't visible in the fields below. */
-    .ql-row { margin:0 0 14px; }
-    .ql-field { position:relative; flex:1 1 0; min-width:0; }
-    .ql-field input { width:100%; padding-left:46px; border:1.5px solid var(--blue); }
-    /* v244: the mic is a hold-to-record button now, not a decoration. touch-action:none keeps a
-       press-and-hold from scrolling the sheet. Recording state is the LIVE gold - gold means
-       "happening right now" in this app - never red. Width 44 breathes: the icon centers ~14px
-       off the pill edge (Jeff: it sat too close at 38), and 44px is also the Apple-recommended
-       minimum touch target for the hold gesture. */
-    /* Selector is doubled (.ql-field .ql-mic-btn) on purpose: the generic ".add-row button"
-       rule outranks a single class and was collapsing this to width:auto - a 17px icon jammed
-       against the pill edge (Jeff spotted it: "the mic looks too close to the edge"). */
-    .ql-field .ql-mic-btn { position:absolute; left:1px; top:1px; bottom:1px; width:44px; display:flex; align-items:center; justify-content:center; background:none; border:none; margin:0; padding:0; color:var(--blue); touch-action:none; border-radius:10px 0 0 10px; }
-    .ql-field.ql-rec input { border-color:#f59e0b; }
-    .ql-field.ql-rec .ql-mic-btn { color:#b45309; animation:qlPulse 1.1s ease-in-out infinite; }
+    /* v257: Jeff, Aug 30 - the v243 quick-log box (a whole separate blue-bordered input+button
+       row above the real weight/reps/RIR row) was "taking over" the log-set sheet -- its border
+       drew the eye and its position, first after the recommendation box, is exactly where a
+       thumb reflexively lands, so he kept typing into it by mistake instead of the real fields
+       just below. The smart parsing (parseQuickLog, still untouched) already only ever WROTE
+       into the real weight/reps/RIR/type fields -- the box itself was never the source of truth,
+       just a transcription surface -- so removing it costs nothing functionally: a small icon-
+       only mic button (.ql-mic-icon below, sized to match the row's other inputs) sits right in
+       the real add-row instead, exactly where Jeff asked for it ("by the spot we type in the
+       info"). Recording state is the LIVE gold - gold means "happening right now" in this app -
+       never red, same rule the old .ql-field.ql-rec state followed.
+       touch-action:none keeps a press-and-hold from scrolling the sheet. */
+    .ql-mic-icon { touch-action:none; width:41px; height:41px; }
+    .ql-mic-icon.ql-rec { color:#b45309; border-color:#f59e0b; animation:qlPulse 1.1s ease-in-out infinite; }
     @keyframes qlPulse { 50% { opacity:.4; } }
-    @media (prefers-reduced-motion: reduce){ .ql-field.ql-rec .ql-mic-btn { animation:none; } }
-    .ql-row .add-btn:disabled { opacity:.35; }
+    @media (prefers-reduced-motion: reduce){ .ql-mic-icon.ql-rec { animation:none; } }
     .rest { display:inline-flex; align-items:center; gap:8px; margin-top:14px; padding:8px 12px; background:#eef1f5; border-radius:999px; font-size:12px; color:var(--muted); }
     .rest b { color:var(--fg); font-size:14px; font-weight:700; }
     .note { font-size:11px; color:var(--muted); margin-top:14px; }
@@ -869,9 +865,8 @@
       /* -- amber -> muted gold -- */
       :where(html.theme-dark) .session-live { background:rgba(215,160,74,.06); border-left-color:#d7a04a; }
       :where(html.theme-dark) .live-badge { background:rgba(215,160,74,.15); color:#d7a04a; }
-      /* v244 quick-log recording state: same muted gold as the rest of dark's "live" language */
-      :where(html.theme-dark) .ql-field.ql-rec input { border-color:#d7a04a; }
-      :where(html.theme-dark) .ql-field.ql-rec .ql-mic-btn { color:#d7a04a; }
+      /* v244/v257 quick-log recording state: same muted gold as the rest of dark's "live" language */
+      :where(html.theme-dark) .ql-mic-icon.ql-rec { color:#d7a04a; border-color:#d7a04a; }
       :where(html.theme-dark) .act-chip.act-pr, :where(html.theme-dark) .type-tag.type-tag-pr { background:#1f8a4c; color:#fff; }
       :where(html.theme-dark) .pp-pr { background:#1f8a4c; color:#fff; }
       :where(html.theme-dark) .rc-chip.prfill { background:#1f8a4c; color:#fff; }
@@ -928,6 +923,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=256"></script>
+  <script src="app.js?v=257"></script>
 </body>
 </html>
