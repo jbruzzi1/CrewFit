@@ -693,10 +693,13 @@ async function openSession(id, opts){
       jr += `<div class="card"><div class="req"><div class="av">${esc((await nameOf(j.userId)||'?')[0]||'?')}</div><div class="rc"><b>${esc(await nameOf(j.userId))}</b> wants to join${j.note?` — <i>"${esc(j.note)}"</i>`:''}</div><div class="ra"><button class="sm ok" onclick="approveJoin('${s.id}','${j.id}')">Approve</button><button class="sm no" onclick="rejectJoin('${s.id}','${j.id}')">Reject</button></div></div></div>`;
     }
   }
-  // Back goes BACK. It was wired to Home, so arriving from a profile or the feed dumped you
-  // somewhere you had never been. There is no router here, so the tab you were on IS the answer.
-  const backTab = (document.querySelector('.nav button.active') || {}).dataset
-    ? document.querySelector('.nav button.active').dataset.tab : 'home';
+  // Back goes BACK. It used to be hardcoded to a fixed target, so arriving from a profile or the
+  // feed dumped you somewhere you had never been. v254 fix: this button is real browser-history
+  // Back now (history.back()), same as the hardware/gesture Back button -- it returns to whatever
+  // screen actually pushed the entry below this one, not a guess about which tab you were on
+  // (that guess, kept for a while as an improvement over the hardcoded target, still went to the
+  // wrong PLACE within a tab -- e.g. landing on the Friends tab's list instead of the specific
+  // friend's profile you actually came from).
 
   // A pending invitee does not need a head count — "1 person" counts the creator alone and reads
   // like an empty workout. What is actually true is that everyone is waiting on you.
@@ -744,7 +747,7 @@ async function openSession(id, opts){
     ? `<button onclick="${myPost?`enterWorkoutEdit('${s.id}')`:`editSession('${s.id}')`}">Edit session</button><button class="danger" onclick="deleteSession('${s.id}', ${hasFinished})">Delete session</button>`
     : '';
   const sessDots = sessMenuItems ? `<button class="pp-dots" onclick="togglePostMenu('${s.id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${s.id}" style="display:none">${sessMenuItems}</div>` : '';
-  let html = `<div class="wrap"><div class="pp-head"><button class="sec sm" onclick="showTab('${backTab}')">← Back</button>${sessDots}</div>
+  let html = `<div class="wrap"><div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button>${sessDots}</div>
     <h1 class="sess-date">${sessTitle(s)}</h1>
     <div class="muted sess-meta">${sessSub(s)}${vis} · ${who}</div>
     ${facts?`<div class="tag">${facts}</div>`:''}
@@ -1097,7 +1100,12 @@ async function viewPost(id, authorId, opts){
     ? `<button onclick="enterWorkoutEdit('${id}')">Edit session</button><button class="danger" onclick="deleteSession('${id}', ${hasFinishedPost})">Delete session</button>`
     : (isAuthor ? `<button class="danger" onclick="removeFromMyProfile('${id}')">Remove from my profile</button>` : '');
   const dots = menuItems ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none">${menuItems}</div>` : '';
-  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="showTab('home')">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    ${notesHeader}<div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
+  // v254 fix (Jeff, Aug 30): this in-page Back button was hardcoded to showTab('home') -- reached
+  // from a profile's "My Workouts" tile (or the feed), it always dumped you on Home instead of
+  // wherever you actually tapped in from. history.back() replays the same real browser-history
+  // pop the hardware/gesture Back button already uses, landing on whatever screen pushed the
+  // entry below this one (see viewPost's own navigated()/landOn() call just below this template).
+  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    ${notesHeader}<div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
   $('app').innerHTML = html;
   if(!silent){ const st={t:'post', id, authorId}; fromHistory ? landOn(st) : navigated(st); }
   if(media.length>1){
@@ -4041,11 +4049,14 @@ async function profileView(id, opts){
   // UI_EPOCH itself, so profileView pushing its own {t:'profile',id} on top would double-push one
   // history entry per tap on the Me tab. `opts.fromHistory` means this came from popstate (see
   // renderNavState) -- land, don't push again.
-  // NOT gated on id===ME.id -- that used to be the check here, but it's wrong: followList's own
-  // "← Back" button calls plain profileView(id) with no opts, and id is ME.id whenever you reached
-  // Followers/Following FROM YOUR OWN profile. Gating on isMe silently skipped the scroll reset and
-  // left a stale {t:'followList',...} entry on top of history in exactly that case -- a real
-  // instance of the "starts in the middle" bug this fix exists to close, caught in cold review.
+  // NOT gated on id===ME.id -- that used to be the check here, but it's wrong: plenty of genuine
+  // navigations here can legitimately resolve to id===ME.id (a feed item about your own activity,
+  // a friend-row tap that happens to be you, viewing your own followers/following) without going
+  // through meScreen() at all. Gating on isMe silently skipped the scroll reset and left a stale
+  // entry on top of history in exactly that case -- a real instance of the "starts in the middle"
+  // bug this fix exists to close, caught in cold review. meScreen() (the 'me' TAB's render target)
+  // is the ONE deliberate exception, and it opts in explicitly with {silent:true} rather than this
+  // function guessing from id alone -- see meScreen() below.
   const silent = !!(opts && opts.silent);
   const fromHistory = !!(opts && opts.fromHistory);
   if(!silent) UI_EPOCH++;
@@ -4160,7 +4171,13 @@ async function followList(id, kind, opts){
   UI_EPOCH++;
   const list = await H.get(`/api/profile/${id}/${kind}`);
   const title = kind==='followers' ? 'Followers' : 'Following';
-  const backBtn = `<div class="pp-head"><button class="sec sm" onclick="profileView('${id}')">← Back</button></div>`;
+  // v254 fix: this used to call profileView(id) directly, which PUSHES A NEW {t:'profile',id}
+  // entry on top of the one already sitting right below this screen's own -- so tapping this
+  // button "back to profile" looked right, but left a stale duplicate profile entry in history:
+  // a hardware/gesture Back press right after landed you back on THIS followers/following list
+  // instead of actually leaving the profile. history.back() pops instead of pushing, so it can't
+  // create that duplicate (same fix shape as backToSessionAfterSwapPicker).
+  const backBtn = `<div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button></div>`;
   if(!Array.isArray(list)){
     $('app').innerHTML = `<div class="wrap">${backBtn}<h1>${title}</h1>
       <div class="card muted" style="text-align:center;padding:20px">This list is private.</div>
