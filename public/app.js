@@ -1042,7 +1042,24 @@ if(typeof document !== 'undefined' && typeof document.addEventListener === 'func
 // Comments on a POSTED recap — a separate thread from the live-workout Chat (see loadChat /
 // sendChat below), stored on the post itself (server.js: s.posts[authorId].comments) rather than
 // the session's shared chat, so an old "at the gym, rack 3" message never shows up here.
-async function sendPostComment(id, authorId){ const t=$('chatInput').value; if(!t.trim()) return; await H.post(`/api/sessions/${id}/posts/${authorId}/comments`,{text:t}); $('chatInput').value=''; viewPost(id, authorId); }
+// v251 (audit finding): sendPostComment here and deletePhotoConfirmed/addPostPhoto/editPostNotes's
+// onConfirm/savePostedSet/deletePostedSetConfirmed below all end an await chain by unconditionally
+// re-rendering (or, for the set-edit pair, closing the edit sheet and re-rendering) the posted-
+// workout view -- same stale-response-barges-in shape editBio/editDefaultGym were fixed for in
+// v250 (see the comment above stillOnProfileWithNothingElseOpen), just never applied here: leave a
+// comment, delete/add a photo, edit your notes, or edit/delete one of your own logged sets, then
+// navigate away before it resolves, and the response used to pull the screen back to this recap
+// regardless of where the user had moved on to. Guarded the same way, with the more general
+// nothingNavigatedSince() (these don't need stillOnProfileWithNothingElseOpen's extra "and it's
+// specifically the Profile tab" check -- any navigation away at all means don't barge back in).
+async function sendPostComment(id, authorId){
+  const t=$('chatInput').value; if(!t.trim()) return;
+  const epoch=UI_EPOCH;
+  await H.post(`/api/sessions/${id}/posts/${authorId}/comments`,{text:t});
+  if(!nothingNavigatedSince(epoch)) return;
+  const inp=$('chatInput'); if(inp) inp.value='';
+  viewPost(id, authorId);
+}
 async function loadPostComments(id, authorId){
   const box=$('chatbox'); if(!box) return;
   const cs=await H.get(`/api/sessions/${id}/posts/${authorId}/comments`);
@@ -1066,13 +1083,14 @@ async function deletePhoto(id, authorId, idx){
   confirmSheet('Delete photo?', 'The photo comes off your recap — the workout and your sets stay.', 'Delete photo', () => deletePhotoConfirmed(id, authorId, idx));
 }
 async function deletePhotoConfirmed(id, authorId, idx){
+  const epoch=UI_EPOCH;
   const s = await H.get('/api/sessions/'+id);
   const post = s && s.posts && s.posts[authorId];
   if(!post) return;
   const media = (post.media||[]).filter((_,i)=>i!==idx);
   const r = await H.post(`/api/sessions/${id}/post`, { notes: post.notes||'', media, visibility: post.visibility||'only_me' });
   if(r && r.error){ alert(r.error); return; }
-  viewPost(id, authorId);
+  if(nothingNavigatedSince(epoch)) viewPost(id, authorId);
 }
 // Add (or, paired with deletePhoto above, effectively replace) a photo/video on an already-posted
 // recap. Same MAX-4 / one-video-max rules as the save page's addWorkoutMedia -- re-fetches the
@@ -1081,6 +1099,7 @@ async function addPostPhoto(id, authorId, input){
   const files = Array.from(input.files || []);
   input.value = '';
   if(!files.length) return;
+  const epoch=UI_EPOCH;
   const s = await H.get('/api/sessions/'+id);
   const post = (s && s.posts && s.posts[authorId]) || {};
   const media = Array.isArray(post.media) ? post.media.slice() : [];
@@ -1100,7 +1119,7 @@ async function addPostPhoto(id, authorId, input){
   }
   const r = await H.post(`/api/sessions/${id}/post`, { notes: post.notes||'', media, visibility: post.visibility||'only_me' });
   if(r && r.error){ alert(r.error); return; }
-  viewPost(id, authorId);
+  if(nothingNavigatedSince(epoch)) viewPost(id, authorId);
 }
 // Jeff, Aug 28: "...and my own notes on the workout." Same fetch-current-post -> mutate ->
 // re-POST /post pattern as addPostPhoto/deletePhoto just above, so media/visibility already on
@@ -1111,9 +1130,10 @@ function editPostNotes(id, authorId){
     textEntrySheet({
       title:'Edit notes', label:'Notes', value: post.notes||'', placeholder:"How'd it go?", multiline:true, confirmLabel:'Save',
       onConfirm: async v => {
+        const epoch=UI_EPOCH;
         const r = await H.post(`/api/sessions/${id}/post`, { notes: v||'', media: post.media||[], visibility: post.visibility||'only_me' });
         if(r && r.error){ alert(r.error); return; }
-        viewPost(id, authorId);
+        if(nothingNavigatedSince(epoch)) viewPost(id, authorId);
       }
     });
   });
@@ -1140,18 +1160,23 @@ async function editPostedSet(id, authorId, logId){
     </div>`);
 }
 async function savePostedSet(id, authorId, logId){
+  const epoch=UI_EPOCH;
   const w = document.getElementById('ppEdW').value, r = document.getElementById('ppEdR').value;
   const s = await H.put(`/api/sessions/${id}/log/${logId}`, { weight:w, reps:r });
   if(s && s.error){ alert(s.error); return; }
-  closeSheet(); viewPost(id, authorId);
+  // closeSheet() closes whatever .sheet-back is currently topmost -- correct when the user is
+  // still looking at the Edit-set sheet this save came from, wrong if they've since closed it and
+  // opened something else entirely (that unrelated sheet would get closed instead).
+  if(nothingNavigatedSince(epoch)){ closeSheet(); viewPost(id, authorId); }
 }
 async function deletePostedSet(id, authorId, logId){
   confirmSheet('Delete set?', "The set comes off your logged workout — there's no undo.", 'Delete set', () => deletePostedSetConfirmed(id, authorId, logId));
 }
 async function deletePostedSetConfirmed(id, authorId, logId){
+  const epoch=UI_EPOCH;
   const s = await H.delete(`/api/sessions/${id}/log/${logId}`);
   if(s && s.error){ alert(s.error); return; }
-  closeSheet(); viewPost(id, authorId);
+  if(nothingNavigatedSince(epoch)){ closeSheet(); viewPost(id, authorId); }
 }
 async function acceptInvite(id){ await H.post(`/api/sessions/${id}/accept`,{}); openSession(id); }
 async function declineInvite(id){
@@ -2123,10 +2148,20 @@ async function removeFromMyProfileConfirmed(id){
 let INLINE_DIRTY = false;
 function markDirty(){ INLINE_DIRTY = true; }
 function enterWorkoutEdit(id){ EDITING_ID = id; openSession(id); }
+// v251 (cold-review follow-up on the audit's posted-workout-cluster fix): same unguarded
+// await-then-navigate shape as sendPostComment/deletePhotoConfirmed/etc. above -- tap Cancel or
+// Save changes on an inline workout edit, then navigate away before the request(s) resolve, and
+// the stale response used to yank the user back to the recap regardless of where they'd moved on
+// to. Guarded the same way with nothingNavigatedSince(). The writes themselves stay unconditional
+// in saveWorkoutEditConfirmed below (only the final navigation is gated) -- the user explicitly
+// tapped Save, so the edit should still go through even if they've since moved on; only barging
+// back onto the old recap afterward is the part that needs to not happen.
 async function exitWorkoutEdit(id){
   if(INLINE_DIRTY){ confirmSheet('Discard changes?', 'Your edits to this workout will be lost.', 'Discard changes', () => { INLINE_DIRTY = false; exitWorkoutEdit(id); }); return; }
   EDITING_ID = null;
+  const epoch=UI_EPOCH;
   const s = await H.get('/api/sessions/'+id);
+  if(!nothingNavigatedSince(epoch)) return;
   if(s && s.posts && s.posts[ME.id]) viewPost(id, ME.id); else openSession(id);
 }
 function renderInlineThumbs(){
@@ -2234,8 +2269,16 @@ async function saveWorkoutEdit(id){
 // Re-reads the session and the edit rows itself - the page under the confirm sheet is
 // unchanged, and a callback must not lean on the outer call's locals.
 async function saveWorkoutEditConfirmed(id){
-  const s = await H.get('/api/sessions/'+id);
-  if(!s||s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
+  const epoch=UI_EPOCH;
+  // v251 (cold-review catch on the cold-review catch): these reads used to happen AFTER the
+  // H.get below -- but H.get is an await, and if the user navigates away while it's in flight,
+  // $('app').innerHTML has already been replaced by the time execution resumes, so
+  // querySelectorAll('.inex-row') would find nothing. That used to silently turn an explicitly-
+  // requested save into a wrong "Add at least one exercise" alert popping up on whatever screen
+  // the user had moved on to, AND drop the save entirely -- exactly the outcome nothingNavigatedSince
+  // below is supposed to prevent, just reached through the read side instead of the write side.
+  // Reading the edit screen's own inputs synchronously, before anything awaits, is what
+  // savePostedSet already does for its own inputs (ppEdW/ppEdR) -- this just matches that.
   const rows=[...document.querySelectorAll('.inex-row')];
   const exercises=rows.map(r=>{ const eid=r.dataset.ex;
     return { id:eid, name:(document.getElementById('inex-name-'+eid)||{}).value||'Exercise',
@@ -2245,12 +2288,14 @@ async function saveWorkoutEditConfirmed(id){
   });
   if(!exercises.length){ alert('Add at least one exercise'); return; }
   const notes=document.getElementById('saveNotes').value;
+  const s = await H.get('/api/sessions/'+id);
+  if(!s||s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
   const r1=await H.put('/api/sessions/'+id,{ name:s.name, scheduledAt:s.scheduledAt, visibility:s.visibility, exercises, invited:(s.invited||[]), location:s.location, lengthMin:s.lengthMin, creatorNote:s.creatorNote });
   if(r1&&r1.error){ alert(r1.error); return; }
   const r2=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'only_me' });
   if(r2&&r2.error){ alert(r2.error); return; }
   INLINE_DIRTY=false; EDITING_ID=null;
-  if(s.posts && s.posts[ME.id]) viewPost(id, ME.id); else openSession(id);
+  if(nothingNavigatedSince(epoch)){ if(s.posts && s.posts[ME.id]) viewPost(id, ME.id); else openSession(id); }
 }
 
 // ---- Create flow ----
@@ -3358,12 +3403,24 @@ function openSheetHtml(inner){ UI_EPOCH++; const s=document.createElement('div')
 // so every other prompt()-based text entry in the app (bio, default gym, a workout-changes
 // note, template naming) gets the same in-app sheet, and multi-line fields get a real,
 // multi-row textarea instead of one line.
+// v251 (audit finding): same double-tap shape confirmSheet() was fixed for in v250, but worse --
+// a double-tap on whatever opens this (edit bio, default gym, workout notes, template naming...)
+// used to stack two sheets, each with its own id="teVal" field. window._teConfirm/_teCancel got
+// overwritten to the SECOND call's closure, but $('teVal') = getElementById('teVal') resolves to
+// the FIRST matching id in document order -- the first (hidden, stale) sheet -- so tapping Save on
+// the sheet you can actually see read and submitted the OTHER sheet's old value, then closeSheet()
+// only removed the topmost sheet, leaving the first one behind as a visible zombie. Not just a
+// stuck popup like the confirmSheet bug -- silently wrong data saved. Tracked the same way:
+// removing any already-open text-entry sheet immediately before opening a new one, so at most one
+// ever exists and $('teVal') can only ever resolve to it.
+let TE_EL = null;
 function textEntrySheet({title, label, value, placeholder, multiline, confirmLabel, cancelLabel, onConfirm, onCancel}){
+  if(TE_EL){ TE_EL.remove(); TE_EL = null; }
   const cur = value||'';
   const field = multiline
     ? `<textarea id="teVal" placeholder="${esc(placeholder||'')}" style="min-height:110px">${esc(cur)}</textarea>`
     : `<input id="teVal" placeholder="${esc(placeholder||'')}" value="${esc(cur)}" autocomplete="off">`;
-  openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>${esc(title)}</h2></div>
+  TE_EL = openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>${esc(title)}</h2></div>
     ${label?`<label class="muted">${esc(label)}</label>`:''}
     ${field}
     <div style="display:flex;gap:10px;margin-top:16px">
@@ -3371,10 +3428,15 @@ function textEntrySheet({title, label, value, placeholder, multiline, confirmLab
       <button class="blue" style="flex:1" onclick="_teConfirm()">✓ ${esc(confirmLabel||'Save')}</button>
     </div></div>`);
   // Stashed on window (not a closure the buttons' inline onclick can reach) and reassigned per
-  // open -- only one text-entry sheet is ever open at a time, same as closeSheet()'s single
-  // .sheet-back assumption elsewhere in this file.
-  window._teConfirm = ()=>{ const v=$('teVal').value; closeSheet(); onConfirm(v); };
-  window._teCancel = ()=>{ closeSheet(); if(onCancel) onCancel(); };
+  // open -- only one text-entry sheet is ever open at a time (now actually enforced above, not
+  // just assumed), same as closeSheet()'s single .sheet-back assumption elsewhere in this file.
+  // Also guards the narrower double-submit variant of the same bug: closeSheet()'s own 200ms
+  // fade leaves the sheet (and its buttons) present-but-fading, so a second rapid tap on Save/
+  // Cancel itself -- not just on whatever opened the sheet -- could otherwise still hit a live
+  // handler and fire onConfirm/onCancel a second time. Rebinding both to a no-op the instant
+  // either fires makes any further tap on that same fading sheet inert.
+  window._teConfirm = ()=>{ const v=$('teVal').value; TE_EL=null; window._teConfirm=window._teCancel=()=>{}; closeSheet(); onConfirm(v); };
+  window._teCancel = ()=>{ TE_EL=null; window._teConfirm=window._teCancel=()=>{}; closeSheet(); if(onCancel) onCancel(); };
   setTimeout(()=>{ const i=$('teVal'); if(i) i.focus(); }, 60);
 }
 
@@ -3768,12 +3830,19 @@ function setWorkoutView(v){
   if(ME&&ME.id) profileView(ME.id);
 }
 async function toggleFollow(id, state){
+  // v251 (audit finding): this await can take a while on a slow connection, and until now the
+  // profileView(id) below fired unconditionally once it resolved -- if the user had since tapped
+  // away to a different tab or a different profile, the stale response barged them right back to
+  // this one. Same staleness shape as editBio/editDefaultGym's stillOnProfileWithNothingElseOpen
+  // (see the comment above it), just without that helper's extra "and specifically the Profile
+  // tab" requirement -- this only needs to know nothing navigated away at all since the tap.
+  const epoch = UI_EPOCH;
   // none -> request to follow; requested -> cancel the request; following -> unfollow
   const r = (state === 'none' || !state)
     ? await H.post('/api/follow/'+id,{})
     : await H.post('/api/unfollow/'+id,{});
   if(r && r.error){ alert(r.error); return; }
-  profileView(id);   // re-render from the server's fresh youFollow so the button is always right
+  if(nothingNavigatedSince(epoch)) profileView(id);   // re-render from the server's fresh youFollow so the button is always right
 }
 // v250 (audit finding): editBio/editDefaultGym below both fire their real side effect (a full
 // navigate back to the profile, or reopening Settings) from an async .then() -- an arbitrary,
@@ -3784,8 +3853,12 @@ async function toggleFollow(id, state){
 // their own profile with zero warning. Same principle openSession's own `silent` refresh already
 // applies (see SESSION_SILENT_SEQ/logSheetStillOpenFor above): a background response is only
 // allowed to act on the screen if that screen is still actually the one in front of the user.
+// v251: factored out of stillOnProfileWithNothingElseOpen below so callers that don't specifically
+// need "and it's the Profile tab" (toggleFollow, the posted-workout action cluster -- see their own
+// comments) can use the same UI_EPOCH staleness check on its own.
+function nothingNavigatedSince(epochAtStart){ return UI_EPOCH === epochAtStart; }
 function stillOnProfileWithNothingElseOpen(epochAtStart){
-  if(UI_EPOCH !== epochAtStart) return false;
+  if(!nothingNavigatedSince(epochAtStart)) return false;
   // dataset.tab is 'me' (the nav button's own key) even though its visible label is "Profile" --
   // see index.html's nav markup.
   const activeTab = document.querySelector('.nav button.active');

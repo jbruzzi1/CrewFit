@@ -1899,6 +1899,13 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
     const f = DB.users[req.userId].friends.find(fid => normUser(DB.users[fid] && DB.users[fid].username) === normUser(un));
     if (f) invites.push(f);
   }
+  // v251 (audit finding): same gap as /decline just above -- the creator re-editing the invite
+  // list can silently drop someone who has a pending swap suggestion in, same as them declining
+  // outright. Whoever falls out of the invite list this way loses that pending suggestion too.
+  const dropped = (s.invited || []).filter(uid => !invites.includes(uid));
+  if (dropped.length) {
+    s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(dropped.includes(e.proposedBy) && e.status === 'pending'));
+  }
   s.invited = invites;
   }
   s.updatedAt = new Date().toISOString();
@@ -1926,6 +1933,16 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   ensureSessionShape(s);
   if (!Array.isArray(s.invited) || !s.invited.includes(req.userId)) return res.status(403).json({ error: 'not invited' });
   s.invited = s.invited.filter(x => x !== req.userId);
+  // v251 (audit finding): /suggest allows a still-invited (not yet accepted) person to propose a
+  // swap before deciding -- that's the whole point of letting an invite hold a suggestion (see the
+  // comment there). Declining used to leave that pending suggestion behind, same root cause as
+  // /leave, remove-mine and stripUserFromSession all already guard against: a pending swap outranks
+  // everything else on an exercise card (app.js's pendingSwap/offerSwap), so it silently blocked
+  // every OTHER invitee from proposing their own swap on that exercise for someone no longer even
+  // connected to the session -- and if the creator approved it anyway, notified the decliner about
+  // a workout they said no to. An approved one stays, same reasoning as those three: it was settled
+  // while they were still deciding.
+  s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === req.userId && e.status === 'pending'));
   await save(DB);
   notify(s.creatorId, { title: 'Invite declined', body: `${DB.users[req.userId].displayName} declined your workout` });
   res.json(sessionView(s, req.userId));
