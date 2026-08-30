@@ -164,6 +164,7 @@ function authScreen(){
         <button id="regBtn" onclick="doReg()">Create account</button>
       </div>
     </div></div>`;
+  window.scrollTo(0,0);
 }
 function showReg(){ const b=document.getElementById('regbox'); if(b) b.style.display = b.style.display==='none'?'block':'none'; }
 let _chkTimer;
@@ -192,7 +193,36 @@ async function doReg(){ try {
   if(($('rp').value||'').length < 6){ alert('Password must be at least 6 characters.'); return; }
   const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value}); if(r.token){ setToken(r.token,r.user); home(); } else alert(r.error||'register failed'); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
 
-// ---- Nav ----
+// ---- Nav / browser Back ----
+// v254 (Jeff): "when I press back I want the page I was just on, not Home" -- nothing in this app
+// ever touched the History API, so the hardware/gesture Back button had no in-app stack to walk
+// and just left/reloaded instead.
+//
+// `navigated(state)` is called at every GENUINE navigation (never a silent same-screen refresh --
+// same !silent rule the scroll-reset below piggybacks on) to push a history entry and scroll to
+// the top of the new screen. `landOn(state)` does the same bookkeeping WITHOUT pushing, for the
+// one case that must not: popstate's own handler below, since the browser already moved the
+// history pointer itself -- pushing again there would insert a duplicate entry and break Forward.
+// Functions that support being reached this way take an `opts.fromHistory` flag and call whichever
+// of the two applies; see openSession/viewPost/profileView/followList/libOpenMuscle/library.
+//
+// Deliberately scoped to screens that redraw from a plain id (tabs, a session, a post, a profile,
+// a follow list, a library / a muscle group) -- multi-step flows with real in-progress state (the
+// create-flow / routine-editor screens, already guarded by TPL_MODE/EDITING_*/resetTransientModes)
+// keep their existing explicit Cancel/Back buttons untouched rather than risk reconstructing that
+// state wrong from a bare history entry: Back from inside one of those lands you on the last
+// screen that WAS tracked, same as tapping Cancel does today -- not a regression, just not (yet)
+// its own step in the stack.
+let CURRENT_NAV_STATE = {t:'tab', tab:'home'};
+function navigated(state){
+  CURRENT_NAV_STATE = state;
+  window.scrollTo(0,0);
+  history.pushState(state, '', location.href);
+}
+function landOn(state){
+  CURRENT_NAV_STATE = state;
+  window.scrollTo(0,0);
+}
 // keepModes is passed ONLY by the two places that deliberately open the library in a mode:
 // openAddExercises (adding to a draft) and openSwapPicker (choosing a replacement). Every other
 // route here is a person tapping the bottom nav, and that has to be an escape hatch — SWAP_MODE
@@ -202,8 +232,40 @@ function showTab(tab, keepModes){
   UI_EPOCH++; // v250: a tab switch also counts as "the user moved on" -- see the comment above it
   if(!keepModes) resetTransientModes();
   document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
-  if(tab==='home') home(); else if(tab==='progress') progressScreen(); else if(tab==='lib') library(); else if(tab==='templates') templates(); else if(tab==='friends') friends(); else if(tab==='me') meScreen();
+  if(tab==='home') home(); else if(tab==='progress') progressScreen(); else if(tab==='lib') library({silent:true}); else if(tab==='templates') templates(); else if(tab==='friends') friends(); else if(tab==='me') meScreen();
+  navigated({t:'tab', tab});
 }
+// v254: the popstate target for a {t:'tab',...} entry -- deliberately NOT routed through showTab
+// itself, since showTab always pushes a fresh entry (right, for a real tap; wrong here, where the
+// browser already moved the pointer for us).
+function renderTabState(tab){
+  resetTransientModes();
+  document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
+  if(tab==='home') home(); else if(tab==='progress') progressScreen(); else if(tab==='lib') library({silent:true}); else if(tab==='templates') templates(); else if(tab==='friends') friends(); else if(tab==='me') meScreen();
+}
+function renderNavState(st){
+  if(st.t==='tab') renderTabState(st.tab);
+  else if(st.t==='session') openSession(st.id, {fromHistory:true});
+  else if(st.t==='post') viewPost(st.id, st.authorId, {fromHistory:true});
+  else if(st.t==='profile') profileView(st.id, {fromHistory:true});
+  else if(st.t==='followList') followList(st.id, st.kind, {fromHistory:true});
+  else if(st.t==='muscle') libOpenMuscle(st.m, {fromHistory:true});
+  else if(st.t==='library') library({fromHistory:true});
+  else renderTabState('home');   // an old/unrecognized entry (e.g. a stray 'sheet' marker) -- never strand the user on nothing
+}
+// A tab-state landing needs its own landOn() call (nothing inside home()/library()/etc. does it,
+// unlike the id-based screens below, which each call navigated()/landOn() themselves).
+function popToNavState(st){
+  renderNavState(st);
+  if(st.t==='tab') landOn(st);
+}
+window.addEventListener('popstate', (e)=>{
+  // A sheet's own history entry (see openSheetHtml/closeSheet below) means Back should just
+  // dismiss it, exactly like tapping its ✕ -- not touch the screen underneath, which is already
+  // showing correctly and shouldn't be re-rendered (and re-scrolled) out from under the user.
+  if(document.querySelectorAll('.sheet-back').length){ closeSheet(true); return; }
+  popToNavState(e.state || {t:'tab', tab:'home'});
+});
 // Everything here is a half-finished intention. None of it should survive walking away from the
 // screen that started it, and each one caused a real bug by doing so.
 function resetTransientModes(){
@@ -229,7 +291,13 @@ const ICON_FEED = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><
 const ICON_LIST = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><rect x="4" y="3.5" width="16" height="17" rx="3" stroke="#9ca3af" stroke-width="1.6"/><path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4.5" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
 
 // ---- Home / sessions (Option B: split sections) ----
-async function home(){
+async function home(opts){
+  // v254: opts.silent -- declineInvite is the one caller that refreshes Home IN PLACE (dismissing
+  // an invite banner, still looking at Home) rather than genuinely navigating here; every other
+  // caller (tab tap, boot, Cancel out of create-flow, leaving/deleting a workout, resetting stats)
+  // really is landing on Home from somewhere else, so those stay non-silent. Without this gate the
+  // scrollTo(0,0) below would yank a scrolled Home back to the top just from dismissing a banner.
+  const silent = !!(opts && opts.silent);
   // weeks=26, not 4: streakWeeks is computed inside the requested window, so a 4-week request
   // silently caps the streak stat at "4 week streak" — false for anyone on a longer run.
   const [sessions, feed, _fr, prog] = await Promise.all([
@@ -427,6 +495,7 @@ async function home(){
   }
   html += `</div>`;
   $('app').innerHTML = html;
+  if(!silent) window.scrollTo(0,0);
 }
 
 // Bumped on every silent refresh kicked off below, so an older, slower response can never
@@ -450,6 +519,19 @@ function logSheetStillOpenFor(sid){
 // elsewhere, it just quietly does nothing.
 async function openSession(id, opts){
   const silent = !!(opts && opts.silent);
+  const fromHistory = !!(opts && opts.fromHistory);   // v254: reached via popstate -- land, don't push again
+  // v254: opts.quiet is DELIBERATELY separate from opts.silent, not another name for the same
+  // thing. silent's meaning predates this fix and is narrow and specific -- SESSION_SILENT_SEQ/
+  // logSheetStillOpenFor below gate it to exactly one case: a background refresh behind a still-
+  // open log sheet, and the whole function returns early (before ever rendering) if that specific
+  // sheet isn't open. sendChat/suggest/approve/reject/approveJoin/rejectJoin/requestJoin/
+  // enterWorkoutEdit/exitWorkoutEdit/saveWorkoutEditConfirmed all re-render this SAME session
+  // screen after an action taken ON it, with no log sheet involved -- passing silent:true for
+  // those (an earlier draft of this fix did) made the function bail out at the logSheetStillOpenFor
+  // check and never render at all, silently no-op'ing e.g. every Approve/Reject tap. quiet:true
+  // renders normally (UI_EPOCH still bumps, exactly as these callers' pre-v254 plain openSession(id)
+  // calls always did) and only skips the new navigated()/landOn() scroll+history call below.
+  const quiet = !!(opts && opts.quiet);
   // v250 (audit follow-up): same gap as profileView()/followList()/viewPost() -- a real
   // (non-silent) call here is a navigation to a full-screen view without a tab switch or new
   // sheet. A silent background refresh is NOT a navigation (it updates the sheet already on
@@ -836,6 +918,12 @@ async function openSession(id, opts){
   // own time, and a silent refresh must not land on whatever screen the user has since moved to.
   if(silent && (mySeq !== SESSION_SILENT_SEQ || !logSheetStillOpenFor(id))) return;
   $('app').innerHTML = html;
+  // v254 (Jeff): tapping into a screen used to leave the window wherever it happened to be
+  // scrolled from the PREVIOUS screen, so a session opened after scrolling halfway down Home
+  // could render already scrolled to the middle. A silent background refresh (this same render,
+  // fired after logging a set) must NOT do this -- it would yank you away from the exact set row
+  // you're mid-workout on. Same !silent gate as everything else in this function.
+  if(!silent && !quiet){ const st={t:'session', id}; fromHistory ? landOn(st) : navigated(st); }
   if(isPosted) loadPostComments(s.id, ME.id); else loadChat(s);
 }
 // ===== Dedicated POSTED-WORKOUT view (read-only, like an Instagram/Hevy post) =====
@@ -864,10 +952,18 @@ async function openSession(id, opts){
 //     an earlier version that erased history on leave was a real bug, fixed on purpose. This is the
 //     opposite, explicit ask, so it's a separate action with its own confirmation, never a side
 //     effect of leaving.
-async function viewPost(id, authorId){
+async function viewPost(id, authorId, opts){
   // v250 (audit follow-up): same gap as profileView()/followList() -- tapping a workout card from
   // the Profile tab lands here without a tab switch or new sheet.
-  UI_EPOCH++;
+  // v254: opts.silent is the same shape as openSession's -- editing a comment/photo/note/set FROM
+  // this exact screen quietly re-renders it afterward (see sendPostComment/deletePhoto/
+  // addPostPhoto/editPostNotes/savePostedSet/deletePostedSetConfirmed below), and that must not
+  // bump the epoch, push a history entry, or reset scroll -- you're still reading the same recap,
+  // possibly scrolled down to the exact set you just edited. opts.fromHistory is popstate's own
+  // "land, don't push again" signal (see openSession).
+  const silent = !!(opts && opts.silent);
+  const fromHistory = !!(opts && opts.fromHistory);
+  if(!silent) UI_EPOCH++;
   const s = await H.get('/api/sessions/'+id);
   if(!s || (s.error && !s._expired)){ alert(s && s.error ? s.error : 'Session not found'); return; }
   s.participants = s.participants || [];
@@ -1003,6 +1099,7 @@ async function viewPost(id, authorId){
   const dots = menuItems ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none">${menuItems}</div>` : '';
   const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="showTab('home')">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    ${notesHeader}<div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
   $('app').innerHTML = html;
+  if(!silent){ const st={t:'post', id, authorId}; fromHistory ? landOn(st) : navigated(st); }
   if(media.length>1){
     const strip=document.querySelector('.pp-photos');
     const dots=document.querySelectorAll('#ppDots-'+id+' .pp-dot');
@@ -1058,7 +1155,7 @@ async function sendPostComment(id, authorId){
   await H.post(`/api/sessions/${id}/posts/${authorId}/comments`,{text:t});
   if(!nothingNavigatedSince(epoch)) return;
   const inp=$('chatInput'); if(inp) inp.value='';
-  viewPost(id, authorId);
+  viewPost(id, authorId, {silent:true});
 }
 async function loadPostComments(id, authorId){
   const box=$('chatbox'); if(!box) return;
@@ -1090,7 +1187,7 @@ async function deletePhotoConfirmed(id, authorId, idx){
   const media = (post.media||[]).filter((_,i)=>i!==idx);
   const r = await H.post(`/api/sessions/${id}/post`, { notes: post.notes||'', media, visibility: post.visibility||'only_me' });
   if(r && r.error){ alert(r.error); return; }
-  if(nothingNavigatedSince(epoch)) viewPost(id, authorId);
+  if(nothingNavigatedSince(epoch)) viewPost(id, authorId, {silent:true});
 }
 // Add (or, paired with deletePhoto above, effectively replace) a photo/video on an already-posted
 // recap. Same MAX-4 / one-video-max rules as the save page's addWorkoutMedia -- re-fetches the
@@ -1119,7 +1216,7 @@ async function addPostPhoto(id, authorId, input){
   }
   const r = await H.post(`/api/sessions/${id}/post`, { notes: post.notes||'', media, visibility: post.visibility||'only_me' });
   if(r && r.error){ alert(r.error); return; }
-  if(nothingNavigatedSince(epoch)) viewPost(id, authorId);
+  if(nothingNavigatedSince(epoch)) viewPost(id, authorId, {silent:true});
 }
 // Jeff, Aug 28: "...and my own notes on the workout." Same fetch-current-post -> mutate ->
 // re-POST /post pattern as addPostPhoto/deletePhoto just above, so media/visibility already on
@@ -1133,7 +1230,7 @@ function editPostNotes(id, authorId){
         const epoch=UI_EPOCH;
         const r = await H.post(`/api/sessions/${id}/post`, { notes: v||'', media: post.media||[], visibility: post.visibility||'only_me' });
         if(r && r.error){ alert(r.error); return; }
-        if(nothingNavigatedSince(epoch)) viewPost(id, authorId);
+        if(nothingNavigatedSince(epoch)) viewPost(id, authorId, {silent:true});
       }
     });
   });
@@ -1167,7 +1264,7 @@ async function savePostedSet(id, authorId, logId){
   // closeSheet() closes whatever .sheet-back is currently topmost -- correct when the user is
   // still looking at the Edit-set sheet this save came from, wrong if they've since closed it and
   // opened something else entirely (that unrelated sheet would get closed instead).
-  if(nothingNavigatedSince(epoch)){ closeSheet(); viewPost(id, authorId); }
+  if(nothingNavigatedSince(epoch)){ closeSheet(); viewPost(id, authorId, {silent:true}); }
 }
 async function deletePostedSet(id, authorId, logId){
   confirmSheet('Delete set?', "The set comes off your logged workout — there's no undo.", 'Delete set', () => deletePostedSetConfirmed(id, authorId, logId));
@@ -1176,7 +1273,7 @@ async function deletePostedSetConfirmed(id, authorId, logId){
   const epoch=UI_EPOCH;
   const s = await H.delete(`/api/sessions/${id}/log/${logId}`);
   if(s && s.error){ alert(s.error); return; }
-  if(nothingNavigatedSince(epoch)){ closeSheet(); viewPost(id, authorId); }
+  if(nothingNavigatedSince(epoch)){ closeSheet(); viewPost(id, authorId, {silent:true}); }
 }
 // v252 (audit finding): acceptInvite/declineInvite/requestJoin/requestChanges below all fired
 // their navigation unconditionally after an await, the same barge-in shape v250/v251 already
@@ -1186,7 +1283,7 @@ async function deletePostedSetConfirmed(id, authorId, logId){
 async function acceptInvite(id){ const epoch=UI_EPOCH; await H.post(`/api/sessions/${id}/accept`,{}); if(nothingNavigatedSince(epoch)) openSession(id); }
 async function declineInvite(id){
   confirmSheet('Decline invite?', 'The workout comes off your Home.', 'Decline invite',
-    async () => { const epoch=UI_EPOCH; await H.post(`/api/sessions/${id}/decline`,{}); if(nothingNavigatedSince(epoch)) home(); }, false);
+    async () => { const epoch=UI_EPOCH; await H.post(`/api/sessions/${id}/decline`,{}); if(nothingNavigatedSince(epoch)) home({silent:true}); }, false);
 }
 // The requester's half of the join-request flow — approveJoin/rejectJoin (below) are the
 // creator's half, and already existed; this side never had a button to actually fire the request
@@ -1195,12 +1292,12 @@ async function requestJoin(id){
   const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/join`,{});
   if(r && r.error){ alert(r.error); return; }
-  if(nothingNavigatedSince(epoch)) openSession(id);
+  if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
 }
 function requestChanges(id){
   textEntrySheet({
     title:'Request changes', label:'What changes do you want?', placeholder:'e.g. swap Bench for Incline Bench', multiline:true, confirmLabel:'Send',
-    onConfirm: async v => { if(!v.trim()) return; const epoch=UI_EPOCH; await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+v}); if(nothingNavigatedSince(epoch)) openSession(id); }
+    onConfirm: async v => { if(!v.trim()) return; const epoch=UI_EPOCH; await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+v}); if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true}); }
   });
 }
 async function saveRoutine(id){
@@ -1229,7 +1326,7 @@ async function sendChat(id){
   // v252 (audit finding): both the clear and the re-open used to fire unconditionally -- if the
   // user had already navigated away, $('chatInput') could be gone entirely (a wrong-screen crash,
   // not just a barge-in) on top of yanking them back to a session they'd left.
-  if(nothingNavigatedSince(epoch)){ $('chatInput').value=''; openSession(id); }
+  if(nothingNavigatedSince(epoch)){ $('chatInput').value=''; openSession(id, {quiet:true}); }
 }
 async function loadChat(s){
   const box=$('chatbox'); if(!box) return;
@@ -1253,10 +1350,40 @@ async function loadChat(s){
   }).join('');
 }
 
+// v254: openSwapPicker() reaches the library via showTab('lib', true), which pushes its own
+// {t:'tab',tab:'lib'} entry (a real tab switch, complete with nav-highlight change) on top of the
+// session's own entry. Cancelling/picking undoes that excursion by popping back to where the
+// session was, via history.go() -- letting the popstate handler quietly re-render the session
+// from the entry that was already sitting underneath, rather than performing a fresh navigation
+// of its own.
+//
+// An earlier version instead did history.replaceState({t:'session',id}, ...) on top of the
+// picker's entry, then rendered the session directly. That looked right but left two CONSECUTIVE,
+// identical {t:'session',id} entries on the stack: the one pushed when the session was first
+// opened, plus the replaced one where the library entry used to be. A single Back press then only
+// walked from the duplicate back to the original -- still landing on the session -- so it took a
+// SECOND press to actually leave (live-verified broken via Playwright: one Back after
+// swapCancel() left the user stranded on the session instead of returning to where they opened it
+// from).
+//
+// A next attempt just did a bare history.back() -- correct for the picker's ROOT screen (exactly
+// one entry pushed by showTab), but the picker's root only shows muscle-group tiles, not a flat
+// exercise list: drilling into a category (the normal way to find something to swap, via
+// libOpenMuscle -- see renderLibGroups) pushes a SECOND {t:'muscle',m} entry on top of the
+// picker's own, since that tap is indistinguishable from a genuine library navigation. A single
+// history.back() from there only pops the muscle entry, landing back on the picker's root (cold
+// review caught this, confirmed by reading libOpenMuscle/renderLibGroups) -- the exact "needs a
+// second Back press" bug this function exists to eliminate, just one level deeper. So instead of
+// assuming exactly one entry, pop however many were actually pushed since the picker opened:
+// SWAP_ENTRY_HISTORY_LEN captures history.length at that moment (see openSwapPicker), and the
+// difference from the current length is exactly the picker's own excursion, at whatever depth.
+function backToSessionAfterSwapPicker(){
+  const delta = history.length - SWAP_ENTRY_HISTORY_LEN;
+  history.go(delta > 0 ? -delta : -1);
+}
 function swapCancel(){
-  const id = SWAP_SESSION;
   SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;
-  openSession(id || '');
+  backToSessionAfterSwapPicker();
 }
 async function swapPick(name){
   const id = SWAP_SESSION;
@@ -1266,9 +1393,9 @@ async function swapPick(name){
   SWAP_SESSION = null; SWAP_FROM = null;
   const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/suggest`,{exerciseId:fromId, swapTo:name});
-  if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) openSession(id || '');
+  if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) backToSessionAfterSwapPicker();
 }
-async function suggest(id){ const epoch=UI_EPOCH; const r=await H.post(`/api/sessions/${id}/suggest`,{exerciseId:$('swEx').value,swapTo:$('swTo').value}); if(r.error)alert(r.error); else if(nothingNavigatedSince(epoch)) openSession(id); }
+async function suggest(id){ const epoch=UI_EPOCH; const r=await H.post(`/api/sessions/${id}/suggest`,{exerciseId:$('swEx').value,swapTo:$('swTo').value}); if(r.error)alert(r.error); else if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true}); }
 
 // ---- The collaborate half: five buttons that called functions nobody ever wrote ----
 // Approve/Reject on a suggested swap, Approve/Reject on a join request, and the door into the
@@ -1281,22 +1408,22 @@ async function suggest(id){ const epoch=UI_EPOCH; const r=await H.post(`/api/ses
 async function approve(id, editId){
   const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/suggest/${editId}/approve`, {});
-  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id);
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
 }
 async function reject(id, editId){
   const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/suggest/${editId}/reject`, {});
-  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id);
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
 }
 async function approveJoin(id, reqId){
   const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/join/${reqId}/approve`, {});
-  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id);
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
 }
 async function rejectJoin(id, reqId){
   const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/join/${reqId}/reject`, {});
-  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id);
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
 }
 // Opens the Workouts library in "pick a replacement" mode. library() already renders a
 // "Pick replacement" header when SWAP_MODE is set, and tapping an exercise there already calls
@@ -1310,6 +1437,7 @@ function openSwapPicker(id, exerciseId){
   SWAP_MODE = true; SWAP_SESSION = id; SWAP_FROM = exerciseId;
   LIB_ADDMODE = false;   // exRowHtml tests SWAP_MODE first, so leaving this set makes "+ Add
                          // exercise" silently file swap suggestions against the old workout
+  SWAP_ENTRY_HISTORY_LEN = history.length;   // see backToSessionAfterSwapPicker's comment
   showTab('lib', true);
 }
 // ---------- Per-exercise set logger (Hevy/Strong style) ----------
@@ -1382,6 +1510,7 @@ async function openLogSheet(sid, exId){
   const exLogs = mine.filter(l=>l.exerciseId===exId);
   const bestLog = exLogs.slice().sort((a,b)=>((Number(b.weight)||0)*(Number(b.reps)||0))-((Number(a.weight)||0)*(Number(a.reps)||0)))[0];
   const last = bestLog ? `${bestLog.weight} × ${bestLog.reps}` : '—';
+  history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet = document.createElement('div'); sheet.className='sheet-back';
   sheet.innerHTML = `
     <div class="sheet" onclick="event.stopPropagation()">
@@ -1837,6 +1966,7 @@ async function editLogSet(logId){
   const s=await H.get('/api/sessions/'+LOGVIEW.sid);
   const mine=(s.logs&&s.logs[ME.id])||[];
   const l=mine.find(x=>x.id===logId); if(!l) return;
+  history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet=document.createElement('div'); sheet.className='sheet-back';
   sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
@@ -2070,6 +2200,7 @@ async function showSavePage(id){
     <button class="btn-primary" onclick="saveWorkout('${id}')">Save</button>
     <a class="linkbtn" style="display:block;text-align:center;margin-top:10px" onclick="editSession('${id}')">Edit workout details</a>
   </div>`;
+  window.scrollTo(0,0);
   window.__saveMedia = media.map(m=>({ type:m.type, src:m.src }));
   window.__saveVis = vis;
   // render existing media as thumbnails
@@ -2191,7 +2322,10 @@ async function removeFromMyProfileConfirmed(id){
 // ===== Inline edit mode for saved (posted) workouts =====
 let INLINE_DIRTY = false;
 function markDirty(){ INLINE_DIRTY = true; }
-function enterWorkoutEdit(id){ EDITING_ID = id; openSession(id); }
+// v254: silent -- renderWorkoutEdit is one of the flows deliberately excluded from history
+// tracking (see the comment above CURRENT_NAV_STATE), so entering/exiting it must not push its
+// own entry or reset scroll; Back from inside it lands wherever was last tracked, same as Cancel.
+function enterWorkoutEdit(id){ EDITING_ID = id; openSession(id, {quiet:true}); }
 // v251 (cold-review follow-up on the audit's posted-workout-cluster fix): same unguarded
 // await-then-navigate shape as sendPostComment/deletePhotoConfirmed/etc. above -- tap Cancel or
 // Save changes on an inline workout edit, then navigate away before the request(s) resolve, and
@@ -2206,7 +2340,11 @@ async function exitWorkoutEdit(id){
   const epoch=UI_EPOCH;
   const s = await H.get('/api/sessions/'+id);
   if(!nothingNavigatedSince(epoch)) return;
-  if(s && s.posts && s.posts[ME.id]) viewPost(id, ME.id); else openSession(id);
+  // v254: quiet/silent, same reasoning as enterWorkoutEdit() above -- edit mode was never pushed to
+  // history, so landing back on the session/post must not push a duplicate entry either. viewPost's
+  // opts.silent has no logSheetStillOpenFor-style gate (unlike openSession's), so it's safe as-is;
+  // openSession needs opts.quiet specifically -- see openSession's own comment for why.
+  if(s && s.posts && s.posts[ME.id]) viewPost(id, ME.id, {silent:true}); else openSession(id, {quiet:true});
 }
 function renderInlineThumbs(){
   const t = document.getElementById('thumbs'); if(!t) return; t.innerHTML='';
@@ -2272,6 +2410,7 @@ function renderWorkoutEdit(s){
     <button class="sec" onclick="exitWorkoutEdit('${s.id}')">Cancel</button>
     <button class="btn-primary" onclick="saveWorkoutEdit('${s.id}')">Save changes</button>
   </div>`;
+  window.scrollTo(0,0);
   renderInlineThumbs();
 }
 function addInex(){
@@ -2371,7 +2510,8 @@ async function saveWorkoutEditConfirmed(id, exercisesIn, notesIn, epochIn){
   const r2=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'only_me' });
   if(r2&&r2.error){ alert(r2.error); return; }
   INLINE_DIRTY=false; EDITING_ID=null;
-  if(nothingNavigatedSince(epoch)){ if(s.posts && s.posts[ME.id]) viewPost(id, ME.id); else openSession(id); }
+  // v254: quiet/silent, same reasoning as exitWorkoutEdit() -- edit mode was never pushed to history.
+  if(nothingNavigatedSince(epoch)){ if(s.posts && s.posts[ME.id]) viewPost(id, ME.id, {silent:true}); else openSession(id, {quiet:true}); }
 }
 
 // ---- Create flow ----
@@ -2413,6 +2553,7 @@ async function createFlow(){
     </div>
     <h2>Invite friends</h2><div id="invList" class="card">${invRows}</div>
     ${EDITING_SESSION ? '<button class="blue" onclick="submitSession()">Save changes</button>' : '<button class="blue" onclick="submitSession()">Create workout</button>'}</div>`;
+  window.scrollTo(0,0);
   renderDraft();
 }
 // This function was written TWICE, at two places in this file. The second one silently replaced
@@ -2570,6 +2711,7 @@ async function templatesPage(){
     <div class="muted" style="font-size:13px;margin:4px 2px 12px">Reusable workouts. Build one, then use it to start a new session in a tap.</div>
     ${mine.length?mine.map(row).join(''):homeEmpty(ICON_LIST, 'No routines yet', 'Tap + to create one, or save a finished workout as a routine.')}
     ${shared.length?`<div class="lib-cat" style="margin-top:12px">Shared by friends</div>`+shared.map(row).join(''):''}</div>`;
+  window.scrollTo(0,0);
 }
 function tplNew(){
   TPL_MODE.active=true; TPL_MODE.id=null; TPL_MODE.name=''; TPL_MODE.copy=false;
@@ -2618,8 +2760,17 @@ async function tplEditCopy(id){
 // confirm can never be confused with dismissing whatever sheet it may be stacked on top of, e.g.
 // deleting a set from the edit sheet.
 let CONFIRM_CB = null, CONFIRM_EL = null;
+// v254: this closes CONFIRM_EL directly rather than via closeSheet() (see the comment above), so
+// it needs its own copy of closeSheet()'s history.replaceState fixup -- the confirm sheet always
+// pushed its own {t:'sheet'} entry (via openSheetHtml), and that entry has to be collapsed away
+// when it was the ONLY sheet open, exactly like closeSheet()'s l.length===1 case, or a later Back
+// press lands on a stale 'sheet' marker instead of the real underlying screen.
 function dismissConfirm(){ const el = CONFIRM_EL; CONFIRM_CB = null; CONFIRM_EL = null;
-  if(el){ el.classList.remove('show'); setTimeout(()=>el.remove(),200); } }
+  if(el){
+    const wasOnlySheet = document.querySelectorAll('.sheet-back').length===1;
+    el.classList.remove('show'); setTimeout(()=>el.remove(),200);
+    if(wasOnlySheet) history.replaceState(CURRENT_NAV_STATE, '', location.href);
+  } }
 function runConfirmCb(){ const cb = CONFIRM_CB; dismissConfirm(); if(cb) cb(); }
 // danger=false renders the action without red — for confirms that are choices, not destruction
 // (declining an invite is not framed as destructive, same as the invite banner's Decline).
@@ -2636,7 +2787,13 @@ function confirmSheet(title, body, label, cb, danger=true){
   // out but reloading. If one is already open, remove it immediately (no fade -- there's nothing to
   // animate away FROM, the new one is about to cover the same spot) so at most one confirm sheet's
   // buttons are ever wired to the live globals.
-  if(CONFIRM_EL){ CONFIRM_EL.remove(); CONFIRM_CB = null; CONFIRM_EL = null; }
+  if(CONFIRM_EL){
+    // same fixup as dismissConfirm() -- the OLD confirm's pushed entry must be collapsed before
+    // the new one (below) pushes its own, or the two stack up into one extra phantom 'sheet' entry.
+    const wasOnlySheet = document.querySelectorAll('.sheet-back').length===1;
+    CONFIRM_EL.remove(); CONFIRM_CB = null; CONFIRM_EL = null;
+    if(wasOnlySheet) history.replaceState(CURRENT_NAV_STATE, '', location.href);
+  }
   CONFIRM_CB = cb;
   CONFIRM_EL = openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>${title}</h2><button class="sec sm" onclick="dismissConfirm()">✕</button></div>
     ${body ? `<div class="muted" style="padding:0 2px 14px; font-size:13px; line-height:1.5">${body}</div>` : ''}
@@ -2716,6 +2873,7 @@ async function templateExercises(){
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button>
     <button class="blue" onclick="finishTemplate()">✓ ${TPL_MODE.id?'Save changes':(TPL_MODE.copy?'Save as my routine':'Create routine')}</button></div>`;
+  window.scrollTo(0,0);
   renderDraft();
 }
 // v253 (audit finding): this was `closeSheet();templatesPage()` inline -- every OTHER way out of
@@ -2828,6 +2986,7 @@ function dragReorder(container, arr, onChange){
 function rmEx(i){ DRAFT.exercises.splice(i,1); renderDraft(); }
 function editDraftEx(i){
   const e = DRAFT.exercises[i]; if(!e) return;
+  history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet = document.createElement('div'); sheet.className='sheet-back';
   sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
@@ -2984,7 +3143,7 @@ function prLabel(p){
 // Strength trend chart. Single series, so no legend — the chip above names it. Selective
 // labels only (never a number on every point). Values are reachable by tap, not hover only.
 let TREND_PICK = '__overall';
-function setTrendPick(k){ TREND_PICK=k; progressScreen(); }
+function setTrendPick(k){ TREND_PICK=k; progressScreen({silent:true}); }
 function trendChart(d, U){
   const t = d.trend || {lifts:[], overall:[], allNames:[], picks:[]};
   // Stashed here (not just read inside openTrendPicker) so the picker sheet always reflects
@@ -3100,12 +3259,17 @@ async function saveTrendPicks(){
   const r = await H.post('/api/me/trend-picks', { picks: TRENDPICK_SEL });
   if(r && r.error){ alert(r.error); return; }
   closeSheet();
-  progressScreen();
+  progressScreen({silent:true});
 }
 
-async function progressScreen(){
+async function progressScreen(opts){
+  // v254: opts.silent -- setProgWeeks/setTrendPick both re-invoke this to refresh the SAME screen
+  // in place after tapping a range/trend pill roughly mid-page; without silent gating the plain
+  // scrollTo(0,0) below would yank the screen back to the top on every pill tap, same class of
+  // regression openSession's opts.silent already guards against.
+  const silent = !!(opts && opts.silent);
   const d = await H.get('/api/progress?weeks='+PROG_WEEKS);
-  if(!d || d.error){ $('app').innerHTML = `<div class="wrap"><h1>Progress</h1><div class="muted">Couldn\'t load progress.</div></div>`; return; }
+  if(!d || d.error){ $('app').innerHTML = `<div class="wrap"><h1>Progress</h1><div class="muted">Couldn\'t load progress.</div></div>`; if(!silent) window.scrollTo(0,0); return; }
   const U = d.unit || 'lb';
   // Bodyweight lifts store weight 0; "at 0 lb" reads as a bug on every one of these rows.
   const WL = w => (Number(w)>0 ? `${w} ${U}` : 'bodyweight');
@@ -3256,8 +3420,9 @@ async function progressScreen(){
     <h2>Personal records</h2>
     <div class="card">${prHtml}</div>
   </div>`;
+  if(!silent) window.scrollTo(0,0);
 }
-function setProgWeeks(w){ PROG_WEEKS=w; progressScreen(); }
+function setProgWeeks(w){ PROG_WEEKS=w; progressScreen({silent:true}); }
 
 // ---- Library (two views: muscle groups -> exercises) ----
 const LIB_MUSCLES = ['chest','lats','traps','biceps','triceps','forearms','shoulders','abdominals','quads','hamstrings','glutes','calves','cardio'];
@@ -3280,6 +3445,10 @@ let QUICK_ADD_MODE = false;
 let SWAP_MODE = false;
 let SWAP_SESSION = null;
 let SWAP_FROM = null;
+// v254 Finding-4 fix: history.length at the moment the picker opened, so cancel/pick can pop
+// back exactly as many entries as browsing inside the picker actually pushed -- see
+// backToSessionAfterSwapPicker's comment just above openSwapPicker.
+let SWAP_ENTRY_HISTORY_LEN = 0;
 function openAddExercises(){
   // stash details typed so far on the workout form
   if($('loc')) DRAFT.location = $('loc').value;
@@ -3309,7 +3478,15 @@ function libDone(){
   }
   TPL_MODE.active ? templateExercises() : createFlow();
 }
-async function library(){
+async function library(opts){
+  // v254: library() is BOTH the 'lib' tab root (via showTab/renderTabState, which pass
+  // opts.silent -- they already own the nav push/scroll for the tab switch, same reasoning as
+  // friends()/home()) AND a real drill-BACK target from libOpenMuscle's "‹ All muscles" button
+  // (no opts -- a genuine in-app nav, pushes its own {t:'library'} entry) and from popstate
+  // restoring that entry (opts.fromHistory -- land, don't push again). submitCreateEx's
+  // same-screen refresh after adding a custom exercise also passes opts.silent.
+  const silent = !!(opts && opts.silent);
+  const fromHistory = !!(opts && opts.fromHistory);
   LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
   const lib = await H.get('/api/exercises');
   window._LIB2 = lib;
@@ -3337,6 +3514,7 @@ async function library(){
     <div class="pick-list" id="lib2"></div>
   </div>`;
   renderLibGroups();
+  if(!silent){ const st={t:'library'}; fromHistory ? landOn(st) : navigated(st); }
 }
 function renderLibGroups(){
   const lib = window._LIB2;
@@ -3364,7 +3542,11 @@ function renderLibGroups(){
   }).join('');
   $('lib2').innerHTML = blocks;
 }
-function libOpenMuscle(m){
+function libOpenMuscle(m, opts){
+  // v254: same silent/fromHistory shape as library() -- see its comment just above. The only
+  // silent caller is submitCreateEx's same-screen refresh; the only fromHistory caller is popstate.
+  const silent = !!(opts && opts.silent);
+  const fromHistory = !!(opts && opts.fromHistory);
   LIB_STATE.view='muscle'; LIB_STATE.muscle=m; LIB_STATE.eq=''; LIB_STATE.q='';
   const eqs = [...new Set(window._LIB2.filter(e=>(e.muscle_groups||[]).includes(m)).flatMap(eqFamilies))];
   const head = LIB_ADDMODE
@@ -3389,6 +3571,7 @@ function libOpenMuscle(m){
     <div class="pick-list" id="lib2"></div>
   </div>`;
   renderLibExercises();
+  if(!silent){ const st={t:'muscle', m}; fromHistory ? landOn(st) : navigated(st); }
 }
 function pickEq2(el){
   LIB_STATE.eq = el.dataset.eq;
@@ -3448,6 +3631,7 @@ function renderLibExercises(){
 function openCreateEx(presetMuscle){
   const msel = LIB_MUSCLES.map(m=>`<option value="${m}" ${presetMuscle===m?'selected':''}>${m}</option>`).join('');
   const eqOpts = EQ_FAMILY.map(f=>`<option value="${f.key}">${f.label}</option>`).join('');
+  history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet = document.createElement('div'); sheet.className='sheet-back';
   sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
@@ -3468,12 +3652,13 @@ async function submitCreateEx(){
   const muscle=$('ceMg').value;
   const payload={ name, muscle_groups:[muscle], equipment:[eqLabel($('ceEq').value).toLowerCase()], level:$('ceLv').value, is_compound:$('ceType').value==='1' };
   const r = await H.post('/api/exercises/custom', payload);
-  if(r.error) alert(r.error); else { closeSheet(); if(LIB_STATE.view==='muscle') libOpenMuscle(LIB_STATE.muscle); else library(); }
+  if(r.error) alert(r.error); else { closeSheet(); if(LIB_STATE.view==='muscle') libOpenMuscle(LIB_STATE.muscle, {silent:true}); else library({silent:true}); }
 }
 function exDetail(name){
   const e = window._LIB2.find(x=>x.name===name); if(!e) return;
   const sets = e.defaultSets||3, reps=e.defaultReps||10;
   const eqs = eqList(e).map(x=>esc(x)).join(', ')||'—';
+  history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>${esc(e.name)}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
@@ -3496,13 +3681,42 @@ function exDetail(name){
 // the actual edit-set sheet node behind as a zombie that ate an extra tap to clear. Closing the
 // LAST .sheet-back instead closes whichever sheet is topmost/frontmost, which is always the one
 // whose own ✕/backdrop/Cancel the person just tapped.
-function closeSheet(){ const l=document.querySelectorAll('.sheet-back'); const s=l[l.length-1]; if(s){ s.classList.remove('show'); setTimeout(()=>s.remove(),200); } }
+// v254: `fromPopstate` is passed ONLY by the popstate handler above (Back while a sheet is open),
+// which has already moved the history pointer itself -- this must not touch history in that case.
+// Closing via the sheet's own UI (✕, backdrop tap, a confirm action) is the normal case: that
+// sheet's own pushed entry (see openSheetHtml below) is still sitting on top of the stack, so it's
+// replaced with CURRENT_NAV_STATE -- otherwise it'd leave a stale 'sheet' marker for a later Back
+// to land on, and Back right after closing would need an extra press to get past it. Only done when
+// this was the LAST sheet in the stack (l.length===1): a sheet closing out of a still-stacked group
+// leaves its own entry alone, since the sheet beneath it is still open and still needs its own
+// Back press.
+function closeSheet(fromPopstate){
+  const l=document.querySelectorAll('.sheet-back'); const s=l[l.length-1];
+  if(s){ s.classList.remove('show'); setTimeout(()=>s.remove(),200); }
+  if(s && !fromPopstate && l.length===1) history.replaceState(CURRENT_NAV_STATE, '', location.href);
+}
 // For the couple of call sites (saveLogSet, delLogSetConfirmed) that are about to replace
 // EVERYTHING currently open with one freshly-reloaded sheet — closeSheet() alone would only take
 // down the topmost one, leaving whatever is stacked underneath (stale pre-edit data) to resurface
 // later as a zombie once the fresh sheet closes (cold-review catch, v247).
-function closeAllSheets(){ document.querySelectorAll('.sheet-back').forEach(s=>{ s.classList.remove('show'); setTimeout(()=>s.remove(),200); }); }
-function openSheetHtml(inner){ UI_EPOCH++; const s=document.createElement('div'); s.className='sheet-back'; s.onclick=(e)=>{ if(e.target===s) closeSheet(); }; s.innerHTML=inner; document.body.appendChild(s); requestAnimationFrame(()=>s.classList.add('show')); return s; }
+// v254: closeAllSheets() closes EVERY open sheet at once (saveLogSet/delLogSetConfirmed use it
+// because editLogSet stacks a second sheet on top of the log sheet it opened from -- see their own
+// comments). However many {t:'sheet'} entries were pushed while those sheets were open, none of
+// them are live afterward, so they're all collapsed back to CURRENT_NAV_STATE here -- otherwise a
+// later Back press pops through stale 'sheet' markers with no sheet left to dismiss, and the
+// popstate handler's own fallback for an unrecognized state strands the user on the Home tab
+// rather than wherever they actually were. Both callers immediately reopen a fresh sheet right
+// after this (openLogSheet), which pushes its own new entry on top -- net one entry per one
+// actually-open sheet, same invariant closeSheet()/dismissConfirm() keep for the single-sheet case.
+function closeAllSheets(){
+  const hadSheets = document.querySelectorAll('.sheet-back').length > 0;
+  document.querySelectorAll('.sheet-back').forEach(s=>{ s.classList.remove('show'); setTimeout(()=>s.remove(),200); });
+  if(hadSheets) history.replaceState(CURRENT_NAV_STATE, '', location.href);
+}
+// v254: pushes its own {t:'sheet'} history entry so the hardware/gesture Back button dismisses
+// the sheet (via the popstate handler above) instead of leaving the app entirely or landing on
+// whatever screen was last tracked underneath. See closeSheet()'s comment for the matching half.
+function openSheetHtml(inner){ UI_EPOCH++; history.pushState({t:'sheet'}, '', location.href); const s=document.createElement('div'); s.className='sheet-back'; s.onclick=(e)=>{ if(e.target===s) closeSheet(); }; s.innerHTML=inner; document.body.appendChild(s); requestAnimationFrame(()=>s.classList.add('show')); return s; }
 // A single in-app bottom sheet for free-text entry. Jeff, Aug 27: "when I go to add a bio or
 // notes etc I don't want a separate iPhone style pop up to happen to input... I want it to stay
 // within the app." The browser's own prompt() is a native OS dialog entirely outside the app's
@@ -3564,6 +3778,7 @@ async function templates(){
   if(!mine.length && !shared.length) html += `<div class="card muted">No routines created. Create a workout and choose "Save as routine".</div>`;
   html += `</div>`;
   $('app').innerHTML = html;
+  window.scrollTo(0,0);
 }
 async function useTpl(id){
   const { mine, shared } = await H.get('/api/templates');
@@ -3582,7 +3797,14 @@ function avatarHtml(x, cls){
     ? `<img class="${cls}" src="${esc(x.avatar)}" alt="">`
     : `<div class="${cls}" style="background:${avatarColor(x.username)};color:#fff">${initial}</div>`;
 }
-async function friends(){
+async function friends(opts){
+  // v254: friends() is a pure tab root (only reached via showTab, which already resets scroll/
+  // history for the tab switch) -- EXCEPT it's also re-invoked by acceptRequest/rejectRequest/
+  // acceptFollow/rejectFollow to quietly refresh the same list in place after an approve/reject
+  // tap. opts.silent (set by those 4) keeps the scroll-to-top below from firing on that quiet
+  // refresh -- without it, approving a request halfway down a long list would yank the screen
+  // back to the top, same class of bug openSession's opts.silent already guards against.
+  const silent = !!(opts && opts.silent);
   const data = await H.get('/api/friends');
   const f = data.friends||[]; const inc = data.incoming||[]; const out = data.outgoing||[]; const freq = data.followRequests||[];
   const flame = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>';
@@ -3635,6 +3857,7 @@ async function friends(){
     <h2>Friends</h2>
     ${f.length ? `<div class="card" style="padding:6px 12px">${friendRows}</div>` : friendRows}
   </div>`;
+  if(!silent) window.scrollTo(0,0);
 }
 async function friendSearch(){
   const q = ($('fu').value||'').trim();
@@ -3669,22 +3892,22 @@ async function sendRequest(username, btn){
 async function acceptRequest(id){
   const epoch=UI_EPOCH;
   const r = await H.post('/api/friends/accept',{from:id});
-  if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends();
+  if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends({silent:true});
 }
 async function rejectRequest(id){
   const epoch=UI_EPOCH;
   const r = await H.post('/api/friends/reject',{from:id});
-  if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends();
+  if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends({silent:true});
 }
 async function acceptFollow(id){
   const epoch=UI_EPOCH;
   const r = await H.post('/api/follow-requests/'+id+'/accept',{});
-  if(r && r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends();
+  if(r && r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends({silent:true});
 }
 async function rejectFollow(id){
   const epoch=UI_EPOCH;
   const r = await H.post('/api/follow-requests/'+id+'/reject',{});
-  if(r && r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends();
+  if(r && r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends({silent:true});
 }
 // Design cleanup, Aug 27: this used to hash the seed into one of 8 colors, so friends, requests,
 // search results and chat all showed a scatter of random reds/purples/oranges -- and since it's a
@@ -3805,13 +4028,27 @@ async function setUnits(u){
   ME.units = r.units;
   closeSheet();
 }
-async function profileView(id){
+async function profileView(id, opts){
   // v250 (audit follow-up): this is a real navigation to a full-screen view -- possibly someone
   // ELSE's profile, reached from followList() below without ever touching showTab() or the nav
   // tab. Must bump UI_EPOCH so a slow editBio/editDefaultGym save started before this navigation
   // can tell it's no longer looking at the screen it was launched from. See the comment above
   // stillOnProfileWithNothingElseOpen.
-  UI_EPOCH++;
+  // v254: `opts.silent` covers two different callers, both wanting the same thing (don't bump
+  // UI_EPOCH, don't touch scroll/history): toggleFollow / editBio / avatar-upload / setWorkoutView
+  // re-rendering the SAME profile already on screen (possibly someone else's), AND meScreen()
+  // (the 'me' TAB's render target) -- showTab() already pushes {t:'tab',tab:'me'} and bumps
+  // UI_EPOCH itself, so profileView pushing its own {t:'profile',id} on top would double-push one
+  // history entry per tap on the Me tab. `opts.fromHistory` means this came from popstate (see
+  // renderNavState) -- land, don't push again.
+  // NOT gated on id===ME.id -- that used to be the check here, but it's wrong: followList's own
+  // "← Back" button calls plain profileView(id) with no opts, and id is ME.id whenever you reached
+  // Followers/Following FROM YOUR OWN profile. Gating on isMe silently skipped the scroll reset and
+  // left a stale {t:'followList',...} entry on top of history in exactly that case -- a real
+  // instance of the "starts in the middle" bug this fix exists to close, caught in cold review.
+  const silent = !!(opts && opts.silent);
+  const fromHistory = !!(opts && opts.fromHistory);
+  if(!silent) UI_EPOCH++;
   const p = await H.get('/api/profile/'+id);
   const isMe = id===ME.id;
   const avatar = p.avatar
@@ -3907,15 +4144,19 @@ async function profileView(id){
     ${isPrivate ? privateBlock : ''}
     ${isMe?`<button class="sec" style="margin-top:18px" onclick="logout()">Log out</button>`:''}
   </div>`;
+  if(!silent){ const st={t:'profile', id}; fromHistory ? landOn(st) : navigated(st); }
 }
 // Jeff, Aug 26: "click on the number of followers or following and it show me who." The counts
 // were already public (publicUser, server.js) but the lists themselves are the same private detail
 // as workouts/PRs — gated server-side on the same isApproved rule as the rest of the profile, so a
 // private account's lists stay private to non-approved viewers.
-async function followList(id, kind){
+async function followList(id, kind, opts){
   // v250 (audit follow-up): same reasoning as profileView() above -- a real navigation away from
   // whatever was on screen, reachable from the profile's Followers/Following stat without a tab
   // switch or new sheet.
+  // v254: no silent-refresh caller exists for this screen (nothing re-renders it in place), so
+  // only opts.fromHistory applies -- popstate landing here, don't push a duplicate entry.
+  const fromHistory = !!(opts && opts.fromHistory);
   UI_EPOCH++;
   const list = await H.get(`/api/profile/${id}/${kind}`);
   const title = kind==='followers' ? 'Followers' : 'Following';
@@ -3924,6 +4165,7 @@ async function followList(id, kind){
     $('app').innerHTML = `<div class="wrap">${backBtn}<h1>${title}</h1>
       <div class="card muted" style="text-align:center;padding:20px">This list is private.</div>
     </div>`;
+    const st={t:'followList', id, kind}; fromHistory ? landOn(st) : navigated(st);
     return;
   }
   const rows = list.length ? list.map(x=>`
@@ -3938,12 +4180,13 @@ async function followList(id, kind){
   $('app').innerHTML = `<div class="wrap">${backBtn}<h1>${title}</h1>
     <div class="card" style="padding:6px 12px">${rows}</div>
   </div>`;
+  const st={t:'followList', id, kind}; fromHistory ? landOn(st) : navigated(st);
 }
 function setWorkoutView(v){
   window.__wview = v;
   const g=document.getElementById('vtGrid'), l=document.getElementById('vtList');
   if(g){ g.className = v==='grid'?'on':''; l.className = v==='list'?'on':''; }
-  if(ME&&ME.id) profileView(ME.id);
+  if(ME&&ME.id) profileView(ME.id, {silent:true});
 }
 async function toggleFollow(id, state){
   // v251 (audit finding): this await can take a while on a slow connection, and until now the
@@ -3958,7 +4201,7 @@ async function toggleFollow(id, state){
     ? await H.post('/api/follow/'+id,{})
     : await H.post('/api/unfollow/'+id,{});
   if(r && r.error){ alert(r.error); return; }
-  if(nothingNavigatedSince(epoch)) profileView(id);   // re-render from the server's fresh youFollow so the button is always right
+  if(nothingNavigatedSince(epoch)) profileView(id, {silent:true});   // re-render from the server's fresh youFollow so the button is always right
 }
 // v250 (audit finding): editBio/editDefaultGym below both fire their real side effect (a full
 // navigate back to the profile, or reopening Settings) from an async .then() -- an arbitrary,
@@ -3985,7 +4228,7 @@ function editBio(){
     title:'Your bio', label:'Bio', value:ME.bio||'', placeholder:'Tell people about yourself', multiline:true,
     // epoch captured synchronously, right as Save is tapped (before the network round trip) --
     // the moment right after this sheet's own close, before anything else has had a chance to open
-    onConfirm: v => { const epoch=UI_EPOCH; H.post('/api/me/bio',{bio:v}).then(r=>{ if(r.bio!==undefined){ ME.bio=r.bio; if(stillOnProfileWithNothingElseOpen(epoch)) profileView(ME.id); } }); }
+    onConfirm: v => { const epoch=UI_EPOCH; H.post('/api/me/bio',{bio:v}).then(r=>{ if(r.bio!==undefined){ ME.bio=r.bio; if(stillOnProfileWithNothingElseOpen(epoch)) profileView(ME.id, {silent:true}); } }); }
   });
 }
 // Prefills the Location field on every new workout you create (and Quick Workout) so you're not
@@ -4122,10 +4365,12 @@ async function applyCrop(type){
   // unconditionally so the new avatar is correct whenever they do land back on a profile.
   const epoch=UI_EPOCH;
   const r = await H.post('/api/me/avatar',{ data: out, type: type||'image/jpeg' });
-  if(r.avatar){ ME.avatar = r.avatar; if(nothingNavigatedSince(epoch)) profileView(ME.id); }
+  if(r.avatar){ ME.avatar = r.avatar; if(nothingNavigatedSince(epoch)) profileView(ME.id, {silent:true}); }
   else alert(r.error||'upload failed');
 }
-function meScreen(){ profileView(ME.id); }
+// v254: silent -- this is the 'me' tab's render target (via showTab/renderTabState), which already
+// owns the nav push/scroll/UI_EPOCH bump for the tab switch. See profileView's own comment.
+function meScreen(){ profileView(ME.id, {silent:true}); }
 function logout(){ localStorage.removeItem('crewfit_token'); TOKEN=''; ME=null; $('nav').classList.add('hidden'); authScreen(); }
 
 // ---- Push ----
@@ -4251,7 +4496,18 @@ async function tryBoot(){
     // few hours every evening.
     try{ ME = await H.get('/api/profile/me?localToday='+localDateStr()); }catch(e){ ME=null; }
   }
-  if(TOKEN && ME && ME.id){ $('nav').classList.remove('hidden'); home(); return; }
+  if(TOKEN && ME && ME.id){
+    $('nav').classList.remove('hidden');
+    // v254: establishes a sane baseline history entry on boot -- without this the very first
+    // real navigation's navigated() call pushes ON TOP OF whatever entry the browser created for
+    // the bare page load (no state object at all), so a single Back press from one screen in
+    // landed nowhere recognizable. replaceState (not pushState) since this isn't a navigation,
+    // just labeling the entry that's already here.
+    CURRENT_NAV_STATE = {t:'tab', tab:'home'};
+    history.replaceState(CURRENT_NAV_STATE, '', location.href);
+    home();
+    return;
+  }
   if(TOKEN && !(ME && ME._expired)){
     // Not a CONFIRMED-invalid session (H._req would already have cleared TOKEN and shown the
     // login screen itself if it were) -- just an inconclusive failure. Offer a retry instead of
@@ -4267,6 +4523,7 @@ function bootRetryScreen(){
     <div class="muted">Couldn't reach the server. Check your connection and try again.</div>
     <button class="blue" style="margin-top:20px" onclick="tryBoot()">Retry</button>
   </div>`;
+  window.scrollTo(0,0);
 }
 (async ()=>{
   await tryBoot();

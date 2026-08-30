@@ -129,7 +129,20 @@ const ctx = {
   console: { log() {}, warn() {}, error() {} }, document: doc,
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   fetch: mockFetch,
-  location: { href: '/', pathname: '/', search: '', hash: '' }, history: { replaceState() {}, pushState() {} },
+  location: { href: '/', pathname: '/', search: '', hash: '' },
+  // v254: app.js now registers a top-level window.addEventListener('popstate', ...) (the Back-
+  // button fix) and calls history.pushState/replaceState from openSheetHtml/closeSheet/navigated/
+  // landOn -- these need to be real enough not to throw, even in tests that don't care about nav.
+  // v254 Finding-4 fix: swapCancel/swapPick now undo the swap-picker's own history entries via
+  // history.go(-delta) (delta computed from history.length) instead of directly re-rendering the
+  // session, so this needs its own call counter (see the historyGo entry in calls() below) rather
+  // than being folded into window.openSession's stub -- the real re-render happens indirectly, via
+  // a popstate event this no-event-loop harness never fires, exactly like pushState/replaceState
+  // below are counted-but-inert rather than simulated. `length` is a fixed stand-in (this file
+  // doesn't exercise openSwapPicker, so SWAP_ENTRY_HISTORY_LEN is never actually set -- the exact
+  // pop-count math is covered by test/audit-v254-nav.mjs instead; this file is only about the
+  // barge-in guard, i.e. whether backToSessionAfterSwapPicker fires at all).
+  history: { replaceState() {}, pushState() {}, length: 1, go() { ctx.window.__historyGoCalls = (ctx.window.__historyGoCalls || 0) + 1; } }, addEventListener() {}, removeEventListener() {}, scrollTo() {},
   navigator: { userAgent: 'node', serviceWorker: { register: () => Promise.resolve() }, onLine: true },
   setTimeout, clearTimeout, setInterval, clearInterval, alert: (msg) => { alertLog.push(msg); }, confirm: () => true, prompt: () => null,
   requestAnimationFrame: f => setTimeout(f, 0), matchMedia: () => ({ matches: false, addEventListener() {} }),
@@ -205,6 +218,7 @@ const calls = () => ({
   home: vm.runInContext('window.__homeCalls || 0', ctx),
   friends: vm.runInContext('window.__friendsCalls || 0', ctx),
   showRecap: vm.runInContext('window.__showRecapCalls || 0', ctx),
+  historyGo: vm.runInContext('window.__historyGoCalls || 0', ctx),
 });
 // Shared runner for the simple single-await, unconditional-nav-after-await shape (v252 sweep):
 // starts the call, simulates the user navigating away SYNCHRONOUSLY (before the mocked request
@@ -603,8 +617,11 @@ await checkFastPath('sendChat', () => sendChat('sess1'), '/api/sessions/sess1/co
 
 console.log('\nswapPick');
 vm.runInContext(`SWAP_SESSION='sess1'; SWAP_FROM='ex1'; SWAP_MODE=true;`, ctx);
-await checkNavGuard('swapPick', () => { vm.runInContext(`SWAP_SESSION='sess1'; SWAP_FROM='ex1'; SWAP_MODE=true;`, ctx); return swapPick('Incline Press'); }, '/api/sessions/sess1/suggest', 'openSession');
-await checkFastPath('swapPick', () => { vm.runInContext(`SWAP_SESSION='sess1'; SWAP_FROM='ex1'; SWAP_MODE=true;`, ctx); return swapPick('Incline Press'); }, '/api/sessions/sess1/suggest', 'openSession');
+// v254 Finding-4 fix: swapPick's success path now pops the swap-picker's history entries via
+// history.go(-delta) (see backToSessionAfterSwapPicker in app.js) instead of calling openSession
+// directly, so the barge-in guard is now proven against the historyGo counter, not openSession's.
+await checkNavGuard('swapPick', () => { vm.runInContext(`SWAP_SESSION='sess1'; SWAP_FROM='ex1'; SWAP_MODE=true;`, ctx); return swapPick('Incline Press'); }, '/api/sessions/sess1/suggest', 'historyGo');
+await checkFastPath('swapPick', () => { vm.runInContext(`SWAP_SESSION='sess1'; SWAP_FROM='ex1'; SWAP_MODE=true;`, ctx); return swapPick('Incline Press'); }, '/api/sessions/sess1/suggest', 'historyGo');
 
 console.log('\nsuggest');
 await checkNavGuard('suggest', () => suggest('sess1'), '/api/sessions/sess1/suggest', 'openSession');
