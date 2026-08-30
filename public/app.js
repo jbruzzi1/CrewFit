@@ -755,7 +755,7 @@ async function openSession(id, opts){
     ${s.creatorNote?`<div class="sess-note">${esc(s.creatorNote)}</div>`:''}`;
   {
     const actions = [];
-    if(!hasFinished && (isParticipant || isCreator)) actions.push(`<button class="blue sm" onclick="lock('${s.id}')">Log & Finish</button>`);
+    if(!hasFinished && (isParticipant || isCreator)) actions.push(`<button class="blue sm" onclick="confirmLogFinish('${s.id}')">Log & Finish</button>`);
     if(!isCreator && isParticipant){
       // Jeff, Aug 19: workouts you were invited into (not ones you created) had no way to make go
       // away at all — Edit/Delete are creator-only, always have been, so an invite the creator
@@ -1096,9 +1096,14 @@ async function viewPost(id, authorId, opts){
   // profile" instead (removeFromMyProfile below) -- erases YOUR OWN post/logs/history for this
   // session so it's gone from your profile, without touching anyone else's. See the big comment
   // above viewPost for the full reasoning.
+  // Jeff, Aug 30: "open re-activate a closed logged workout if needed" -- your own finish-credit,
+  // undoable regardless of whether you're the creator (finishing is per-person, unlike the shared
+  // exercise list Edit session governs), so this is gated on isAuthor/hasFinishedPost alone and
+  // folded into whichever branch below actually applies. See reactivateWorkout's own comment.
+  const reactivateBtn = (isAuthor && hasFinishedPost) ? `<button onclick="reactivateWorkout('${id}','${authorId}')">Reactivate workout</button>` : '';
   const menuItems = isCreator
-    ? `<button onclick="enterWorkoutEdit('${id}')">Edit session</button><button class="danger" onclick="deleteSession('${id}', ${hasFinishedPost})">Delete session</button>`
-    : (isAuthor ? `<button class="danger" onclick="removeFromMyProfile('${id}')">Remove from my profile</button>` : '');
+    ? `<button onclick="enterWorkoutEdit('${id}')">Edit session</button>${reactivateBtn}<button class="danger" onclick="deleteSession('${id}', ${hasFinishedPost})">Delete session</button>`
+    : (isAuthor ? `${reactivateBtn}<button class="danger" onclick="removeFromMyProfile('${id}')">Remove from my profile</button>` : '');
   const dots = menuItems ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none">${menuItems}</div>` : '';
   // v254 fix (Jeff, Aug 30): this in-page Back button was hardcoded to showTab('home') -- reached
   // from a profile's "My Workouts" tile (or the feed), it always dumped you on Home instead of
@@ -2025,6 +2030,16 @@ function startRest(){
   clearInterval(REST_TIMER);
   REST_TIMER=setInterval(()=>{ sec--; const el=document.getElementById('restN'); if(el) el.textContent=`${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`; if(sec<=0){ clearInterval(REST_TIMER); box.innerHTML=''; } },1000);
 }
+// Jeff, Aug 30: "I accidentally logged my work[out]... should we put an 'are you sure' style
+// button when logging instead of reactivating." Log & Finish used to fire lock() on a single tap
+// with no way back short of reactivateWorkout() (viewPost's ⋯ menu, added the same day) -- this is
+// the preventive fix at the source, so the mistake mostly stops happening in the first place;
+// Reactivate stays as the safety net for a tap that already happened (or for wanting to add one
+// more set after finishing). danger:false -- this isn't a destructive action like Delete/Discard,
+// just the one that was too easy to trigger by accident.
+function confirmLogFinish(id){
+  confirmSheet('Log & finish this workout?', "This locks in today's credit toward your streak and weekly volume. You can Reactivate it afterward from the ⋯ menu if you tapped by mistake or want to add more.", 'Log & Finish', () => lock(id), false);
+}
 async function lock(id){ await H.post(`/api/sessions/${id}/lock`,{localDate:localDateStr()}); showSavePage(id); }
 
 // The LAST screen of finishing a workout: Log & Finish -> save page (notes, photo, visibility)
@@ -2326,6 +2341,25 @@ async function removeFromMyProfileConfirmed(id){
   // v252 (audit finding): same unconditional-navigation shape as the rest of this cluster.
   if(nothingNavigatedSince(epoch)) showTab('me');
 }
+// Jeff, Aug 30: "open re-activate a closed logged workout if needed" -- Log & Finish credits
+// s.history the instant it's tapped (creditFinish, in /lock), and that credit is otherwise
+// permanent by design (see the othersWithCredit comment in server.js -- leaving a workout
+// deliberately never clears it). This is the one deliberate exception: you can undo YOUR OWN
+// finish-credit -- for an accidental tap (confirmLogFinish above is the preventive fix at the
+// source; this is the safety net for a tap that already happened) or just to add more sets before
+// really finishing. Scoped narrowly on purpose, via /unlock: it only ever removes your own
+// history-credit row, never your logged sets, never your posted recap, never anyone else's
+// credit. Once undone, the workout drops off "My Workouts" and reappears in your live Sessions
+// with Log & Finish offered again, exactly as if you'd never tapped it.
+async function reactivateWorkout(id, authorId){
+  confirmSheet('Reactivate this workout?', "This undoes Log & Finish so it moves back to your active Sessions — it won't count toward your streak or weekly volume again until you finish it. Your logged sets and posted recap are untouched.", 'Reactivate workout', () => reactivateWorkoutConfirmed(id, authorId), false);
+}
+async function reactivateWorkoutConfirmed(id, authorId){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/unlock`, {});
+  if(r && r.error){ alert(r.error); return; }
+  if(nothingNavigatedSince(epoch)) viewPost(id, authorId, {silent:true});
+}
 
 // ===== Inline edit mode for saved (posted) workouts =====
 let INLINE_DIRTY = false;
@@ -2366,6 +2400,11 @@ function renderInlineThumbs(){
   });
   refreshAddBtn();
 }
+// Jeff, Aug 30: "I also want to be able to edit the name of the workouts after logged also" --
+// PUT /api/sessions/:id already accepted a `name` field (saveWorkoutEditConfirmed's payload just
+// echoed the unchanged fetched name back), so this only needed a client-side field: an editable
+// #editWName input in place of the previous static title, threaded through saveWorkoutEdit/
+// saveWorkoutEditConfirmed below the same way exercises/notes already were.
 function renderWorkoutEdit(s){
   INLINE_DIRTY=false;
   // Reached only by the creator editing their OWN already-posted recap (see openSession's
@@ -2385,8 +2424,8 @@ function renderWorkoutEdit(s){
     </div>`).join('');
   $('app').innerHTML = `<div class="wrap edit-mode">
     <div class="edit-banner">✎ Editing — tap Save when done</div>
-    <h1 class="sess-date">${sessTitle(s)}</h1>
-    ${sessSub(s) ? `<div class="muted sess-meta">${fmtWhen(s.scheduledAt)}</div>` : ''}
+    <label class="muted">Workout name</label><input id="editWName" placeholder="e.g. Chest & Back" value="${esc(s.name||'')}" oninput="markDirty()">
+    <div class="muted sess-meta">${fmtWhen(s.scheduledAt)}</div>
     <h2>Workout</h2>
     <div id="inexList">${exRows}</div>
     <button class="sec" onclick="addInex()">+ Add exercise</button>
@@ -2450,6 +2489,7 @@ async function saveWorkoutEdit(id){
   });
   if(!exercises.length){ alert('Add at least one exercise'); return; }
   const notes=(document.getElementById('saveNotes')||{}).value;
+  const name=((document.getElementById('editWName')||{}).value||'').trim();
   const epoch=UI_EPOCH;
   const s = await H.get('/api/sessions/'+id);
   if(!s||s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
@@ -2477,7 +2517,7 @@ async function saveWorkoutEdit(id){
     // Every other *Confirmed function fed by a confirmSheet (deleteSessionConfirmed,
     // deletePhotoConfirmed, etc.) captures its own fresh epoch at the moment its confirm button
     // actually fires, for the same reason -- this now matches that.
-    if(nothingNavigatedSince(epoch)) confirmSheet('Save changes?', esc(plur(touched.length,'friend')) + ' logged sets on: ' + esc(touched.join(', ')) + '. Saving detaches those sets.', 'Save anyway', () => saveWorkoutEditConfirmed(id, exercises, notes));
+    if(nothingNavigatedSince(epoch)) confirmSheet('Save changes?', esc(plur(touched.length,'friend')) + ' logged sets on: ' + esc(touched.join(', ')) + '. Saving detaches those sets.', 'Save anyway', () => saveWorkoutEditConfirmed(id, exercises, notes, name));
     return;
   }
   // No conflict to confirm -- this IS the explicit write the user asked for, so it goes through
@@ -2486,7 +2526,7 @@ async function saveWorkoutEdit(id){
   // The ORIGINAL epoch is passed through here too -- see the comment above saveWorkoutEditConfirmed
   // for why letting it capture its own, fresh epoch here would miss navigation that happened during
   // THIS function's own await, above.
-  return saveWorkoutEditConfirmed(id, exercises, notes, epoch);
+  return saveWorkoutEditConfirmed(id, exercises, notes, name, epoch);
 }
 // the part of saveWorkoutEdit that runs once the detach warning (if any) is accepted.
 // exercises/notes/epoch are passed down from saveWorkoutEdit's own synchronous read and epoch
@@ -2497,9 +2537,9 @@ async function saveWorkoutEdit(id){
 // compare the epoch to itself and always pass, even though the actual Save tap is now stale. Falls
 // back to reading the DOM and capturing its own epoch only if called with nothing supplied, so
 // nothing else that might call this directly is broken by the change.
-async function saveWorkoutEditConfirmed(id, exercisesIn, notesIn, epochIn){
+async function saveWorkoutEditConfirmed(id, exercisesIn, notesIn, nameIn, epochIn){
   const epoch = (typeof epochIn === 'number') ? epochIn : UI_EPOCH;
-  let exercises = exercisesIn, notes = notesIn;
+  let exercises = exercisesIn, notes = notesIn, name = nameIn;
   if(!exercises){
     const rows=[...document.querySelectorAll('.inex-row')];
     exercises=rows.map(r=>{ const eid=r.dataset.ex;
@@ -2509,11 +2549,17 @@ async function saveWorkoutEditConfirmed(id, exercisesIn, notesIn, epochIn){
         defaultRepsMax:Number((document.getElementById('inex-repsmax-'+eid)||{}).value)||undefined };
     });
     notes=(document.getElementById('saveNotes')||{}).value;
+    name=((document.getElementById('editWName')||{}).value||'').trim();
   }
   if(!exercises.length){ alert('Add at least one exercise'); return; }
   const s = await H.get('/api/sessions/'+id);
   if(!s||s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
-  const r1=await H.put('/api/sessions/'+id,{ name:s.name, scheduledAt:s.scheduledAt, visibility:s.visibility, exercises, invited:(s.invited||[]), location:s.location, lengthMin:s.lengthMin, creatorNote:s.creatorNote });
+  // The workout's name, editable here since Aug 30 -- falls back to whatever was already saved
+  // (s.name) only when name itself is missing entirely (the untouched-DOM fallback above, or a
+  // stray direct call with nothing supplied), never just because it was typed blank -- an
+  // intentionally cleared name is a real choice (sessTitle() already falls back to the date when
+  // blank) and must actually save as blank, not silently snap back to the old name.
+  const r1=await H.put('/api/sessions/'+id,{ name:(typeof name==='string' ? name : s.name), scheduledAt:s.scheduledAt, visibility:s.visibility, exercises, invited:(s.invited||[]), location:s.location, lengthMin:s.lengthMin, creatorNote:s.creatorNote });
   if(r1&&r1.error){ alert(r1.error); return; }
   const r2=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'only_me' });
   if(r2&&r2.error){ alert(r2.error); return; }
@@ -2628,9 +2674,10 @@ function workoutNow(){
   QUICK_ADD_MODE = true;
   openAddExercises();
 }
-async function createQuickWorkout(){
+async function createQuickWorkout(name){
+  const n = (name||'').trim();
   const r = await H.post('/api/sessions', {
-    name: 'Quick Workout',
+    name: n || 'Quick Workout',
     scheduledAt: new Date().toISOString(),
     visibility: 'private',
     exercises: DRAFT.exercises,
@@ -2659,7 +2706,10 @@ function quickUseRoutine(id){
   closeSheet();
   DRAFT.exercises = t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}));
   QUICK_ADD_MODE = false; LIB_ADDMODE = false;
-  createQuickWorkout();
+  // Jeff, Aug 30: "I want to be able to name quick workouts" -- default the naming prompt to the
+  // routine's own name (it's usually exactly what you'd type anyway) but still let it be changed
+  // or cleared, same as the picked-exercises path in libDone() below.
+  promptQuickWorkoutName(t.name);
 }
 async function editSession(id){
   const s = await H.get('/api/sessions/'+id);
@@ -3481,10 +3531,35 @@ function libDone(){
     // showTab(), not home() directly: entering the picker went through showTab('lib', true), which
     // highlighted the Workouts nav tab, and only showTab() un-highlights it again.
     if(!DRAFT.exercises.length){ showTab('home'); return; }
-    createQuickWorkout();
+    promptQuickWorkoutName();
     return;
   }
   TPL_MODE.active ? templateExercises() : createFlow();
+}
+// Jeff, Aug 30: "I want to be able to name quick workouts" -- Quick Workout always hardcoded the
+// name to the literal string "Quick Workout" (see createQuickWorkout above). This is the one place
+// both quick-workout entry points (picking exercises one at a time in libDone() above, and picking
+// a saved routine in quickUseRoutine above) funnel through on their way to actually creating the
+// session, so the prompt lives here once rather than twice. defaultName is the routine's own name
+// when coming from quickUseRoutine, or blank when coming from the picked-exercises path -- either
+// way Skip/blank falls back to the same "Quick Workout" createQuickWorkout() always used, so doing
+// nothing still behaves exactly like it did before this feature existed.
+function promptQuickWorkoutName(defaultName){
+  textEntrySheet({
+    title:'Name this workout', label:'Workout name', value: defaultName||'', placeholder:'Quick Workout', confirmLabel:'Start', cancelLabel:'Skip',
+    onConfirm: name => createQuickWorkout(name),
+    onCancel: () => createQuickWorkout(defaultName||''),
+  });
+  // Tapping the backdrop must behave exactly like Skip (create with the default name), not
+  // textEntrySheet's normal backdrop behavior of just closing with nothing done -- unlike every
+  // other textEntrySheet caller (editBio, editPostNotes, ...), the thing being named here doesn't
+  // exist yet. Dismissing without creating it would strand the already-picked exercises with
+  // QUICK_ADD_MODE already cleared and no session ever created, so the very next tap of the
+  // picker's own "Done" button (still QUICK_ADD_MODE:false at that point) would fall through into
+  // the wrong flow entirely (createFlow()'s full wizard) instead of trying to create the quick
+  // workout again. Reuses window._teCancel — the exact same double-tap-guarded path Skip itself
+  // runs — rather than duplicating it here.
+  if(TE_EL) TE_EL.onclick = (e)=>{ if(e.target===TE_EL) window._teCancel(); };
 }
 async function library(opts){
   // v254: library() is BOTH the 'lib' tab root (via showTab/renderTabState, which pass

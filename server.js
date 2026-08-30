@@ -3077,6 +3077,26 @@ app.post('/api/sessions/:id/lock', auth, async (req, res) => {
   res.json(sessionView(s, req.userId));
 });
 
+// Undo YOUR OWN Log & Finish — Jeff, Aug 30: "open re-activate a closed logged workout if
+// needed." creditFinish above is meant to be a permanent record in general (see the
+// othersWithCredit comment above it — leaving a workout deliberately never clears it), so this is
+// a narrow, explicit exception, not a general-purpose unlock: it removes only the caller's own
+// s.history row and nothing else. s.logs (their actual logged sets) and s.posts (their posted
+// recap, if any) are left completely untouched — only the "this counts as finished" flag on it —
+// so tapping this can never lose anything they've already saved, and it can never touch another
+// participant's credit. Idempotent, same as /lock: calling it with no history row present is a
+// harmless no-op. Streak, PRs and weekly volume are all derived from s.history at query time (see
+// currentStreak/rebuildAllPrs et al), so removing a row here needs no other cache invalidated.
+app.post('/api/sessions/:id/unlock', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  const before = s.history.length;
+  s.history = s.history.filter(h => h.userId !== req.userId);
+  if (s.history.length !== before) await save(DB);
+  res.json(sessionView(s, req.userId));
+});
+
 // Save YOUR OWN recap for this workout (notes + media + visibility) — any participant, not just
 // the creator. Jeff, Aug 19: "I want photos and notes to stay separate for each user." One session
 // now holds one recap per participant, each with its own visibility; this never reads or
