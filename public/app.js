@@ -1178,23 +1178,29 @@ async function deletePostedSetConfirmed(id, authorId, logId){
   if(s && s.error){ alert(s.error); return; }
   if(nothingNavigatedSince(epoch)){ closeSheet(); viewPost(id, authorId); }
 }
-async function acceptInvite(id){ await H.post(`/api/sessions/${id}/accept`,{}); openSession(id); }
+// v252 (audit finding): acceptInvite/declineInvite/requestJoin/requestChanges below all fired
+// their navigation unconditionally after an await, the same barge-in shape v250/v251 already
+// fixed elsewhere (toggleFollow, the posted-workout cluster, etc.) -- tap Accept, then switch tabs
+// before the request resolves, and the stale response used to yank the screen back to the session
+// regardless of where the user had moved on to. Guarded the same way with nothingNavigatedSince().
+async function acceptInvite(id){ const epoch=UI_EPOCH; await H.post(`/api/sessions/${id}/accept`,{}); if(nothingNavigatedSince(epoch)) openSession(id); }
 async function declineInvite(id){
   confirmSheet('Decline invite?', 'The workout comes off your Home.', 'Decline invite',
-    async () => { await H.post(`/api/sessions/${id}/decline`,{}); home(); }, false);
+    async () => { const epoch=UI_EPOCH; await H.post(`/api/sessions/${id}/decline`,{}); if(nothingNavigatedSince(epoch)) home(); }, false);
 }
 // The requester's half of the join-request flow — approveJoin/rejectJoin (below) are the
 // creator's half, and already existed; this side never had a button to actually fire the request
 // from, even though the server route has been there all along.
 async function requestJoin(id){
+  const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/join`,{});
   if(r && r.error){ alert(r.error); return; }
-  openSession(id);
+  if(nothingNavigatedSince(epoch)) openSession(id);
 }
 function requestChanges(id){
   textEntrySheet({
     title:'Request changes', label:'What changes do you want?', placeholder:'e.g. swap Bench for Incline Bench', multiline:true, confirmLabel:'Send',
-    onConfirm: async v => { if(!v.trim()) return; await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+v}); openSession(id); }
+    onConfirm: async v => { if(!v.trim()) return; const epoch=UI_EPOCH; await H.post(`/api/sessions/${id}/comments`,{text:'Request changes: '+v}); if(nothingNavigatedSince(epoch)) openSession(id); }
   });
 }
 async function saveRoutine(id){
@@ -1215,11 +1221,15 @@ async function saveRoutine(id){
 async function openChat(id){ const el=document.getElementById('chatInput'); if(el) el.focus(); }
 async function sendChat(id){
   const t=$('chatInput').value; if(!t.trim()) return;
+  const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/comments`,{text:t});
   // this used to throw the response away, so a refused message simply disappeared and the box
   // cleared as though it had sent
   if(!r || r.error){ alert((r && r.error) === 'forbidden' ? 'Only people in this workout can post here.' : ((r && r.error) || 'That did not send. Try again.')); return; }
-  $('chatInput').value=''; openSession(id);
+  // v252 (audit finding): both the clear and the re-open used to fire unconditionally -- if the
+  // user had already navigated away, $('chatInput') could be gone entirely (a wrong-screen crash,
+  // not just a barge-in) on top of yanking them back to a session they'd left.
+  if(nothingNavigatedSince(epoch)){ $('chatInput').value=''; openSession(id); }
 }
 async function loadChat(s){
   const box=$('chatbox'); if(!box) return;
@@ -1254,10 +1264,11 @@ async function swapPick(name){
   const fromId = SWAP_FROM;
   SWAP_MODE = false;
   SWAP_SESSION = null; SWAP_FROM = null;
+  const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/suggest`,{exerciseId:fromId, swapTo:name});
-  if(r.error) alert(r.error); else openSession(id || '');
+  if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) openSession(id || '');
 }
-async function suggest(id){ const r=await H.post(`/api/sessions/${id}/suggest`,{exerciseId:$('swEx').value,swapTo:$('swTo').value}); if(r.error)alert(r.error); else openSession(id); }
+async function suggest(id){ const epoch=UI_EPOCH; const r=await H.post(`/api/sessions/${id}/suggest`,{exerciseId:$('swEx').value,swapTo:$('swTo').value}); if(r.error)alert(r.error); else if(nothingNavigatedSince(epoch)) openSession(id); }
 
 // ---- The collaborate half: five buttons that called functions nobody ever wrote ----
 // Approve/Reject on a suggested swap, Approve/Reject on a join request, and the door into the
@@ -1265,21 +1276,27 @@ async function suggest(id){ const r=await H.post(`/api/sessions/${id}/suggest`,{
 // of the swap flow (swapPick/swapCancel, just above) was already written too. Only these five
 // wrappers were missing — so the buttons rendered, looked exactly like live ones, and did nothing.
 // A dead button is indistinguishable from a working one until you press it.
+// v252 (audit finding): all four below re-opened the session unconditionally after their await,
+// same barge-in shape as swapPick/suggest just above -- guarded the same way.
 async function approve(id, editId){
+  const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/suggest/${editId}/approve`, {});
-  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else openSession(id);
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id);
 }
 async function reject(id, editId){
+  const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/suggest/${editId}/reject`, {});
-  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else openSession(id);
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id);
 }
 async function approveJoin(id, reqId){
+  const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/join/${reqId}/approve`, {});
-  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else openSession(id);
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id);
 }
 async function rejectJoin(id, reqId){
+  const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/join/${reqId}/reject`, {});
-  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else openSession(id);
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id);
 }
 // Opens the Workouts library in "pick a replacement" mode. library() already renders a
 // "Pick replacement" header when SWAP_MODE is set, and tapping an exercise there already calls
@@ -2086,14 +2103,18 @@ function refreshAddBtn(){
 }
 async function saveWorkout(id){
   const notes=document.getElementById('saveNotes').value;
+  const epoch=UI_EPOCH;
   const r=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'only_me' });
   if(r && r.error){ alert(r.error); return; }
-  showRecap(id);          // the recap is the LAST thing, after saving — notes and photos are done
+  // v252 (audit finding): showRecap used to fire unconditionally after the await, same barge-in
+  // shape as the rest of this cluster.
+  if(nothingNavigatedSince(epoch)) showRecap(id);          // the recap is the LAST thing, after saving — notes and photos are done
 }
 async function deleteSession(id, alreadyFinished){
   confirmSheet('Delete workout?', "This removes the workout for everyone in it — not just you. There's no undo.", 'Delete workout', () => deleteSessionConfirmed(id, alreadyFinished));
 }
 async function deleteSessionConfirmed(id, alreadyFinished){
+  const epoch=UI_EPOCH;
   const r = await H.delete(`/api/sessions/${id}`);
   // Someone else has real credit tied to this workout (current or a departed partner's history),
   // so deleting would erase their training record too. Offer to take yourself out instead — the
@@ -2103,9 +2124,13 @@ async function deleteSessionConfirmed(id, alreadyFinished){
   // NOT keeping your own credit, even if you'd already logged real sets today you never meant to
   // throw away. Routes through the exact same Save/Discard sheet the Leave button uses instead of
   // guessing on your behalf.
-  if(r && r.canLeave) return leaveWorkout(id, alreadyFinished);
+  // v252 (audit finding): both branches used to act unconditionally after the delete resolved --
+  // navigating away mid-delete could pop the Leave-workout choice sheet on top of whatever the
+  // user had moved on to, or send them home from a screen they weren't on. The delete itself
+  // already happened either way; only what happens next is gated.
+  if(r && r.canLeave){ if(nothingNavigatedSince(epoch)) return leaveWorkout(id, alreadyFinished); return; }
   else if(r && r.error){ alert(r.error); return; }
-  else home();
+  else if(nothingNavigatedSince(epoch)) home();
 }
 // v187 (Leave Workout redesign), Jeff Aug 19-20. Two doors lead here: the Leave button (any
 // non-creator participant) and Delete's canLeave fallback above (creator, when someone else's
@@ -2124,10 +2149,14 @@ function leaveWorkout(id, alreadyFinished){
   openSheetHtml(inner);
 }
 async function leaveWorkoutConfirmed(id, keep){
+  const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/leave`, {keep, localDate:localDateStr()});
   if(r && r.error){ alert(r.error); return; }
-  closeSheet();
-  home();
+  // v252 (audit finding): closeSheet()/home() used to fire unconditionally -- closeSheet() acts on
+  // whatever sheet is topmost right now, not a reference to the one this leave came from, so a
+  // stale response could close an unrelated sheet the user had opened since, on top of yanking
+  // them home.
+  if(nothingNavigatedSince(epoch)){ closeSheet(); home(); }
 }
 // Jeff, Aug 28: "Once its posted on my page - I want to be able to delete it off my page."
 // Deliberately NOT Leave Workout above -- Leave (v187) exists specifically to KEEP your
@@ -2139,9 +2168,11 @@ async function removeFromMyProfile(id){
   confirmSheet('Remove from my profile?', 'Your notes, photos, logged sets, and workout credit for this workout will be gone. This cannot be undone.', 'Remove from my profile', () => removeFromMyProfileConfirmed(id));
 }
 async function removeFromMyProfileConfirmed(id){
+  const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/remove-mine`, {});
   if(r && r.error){ alert(r.error); return; }
-  showTab('me');
+  // v252 (audit finding): same unconditional-navigation shape as the rest of this cluster.
+  if(nothingNavigatedSince(epoch)) showTab('me');
 }
 
 // ===== Inline edit mode for saved (posted) workouts =====
@@ -2238,9 +2269,18 @@ function addInex(){
   document.getElementById('inexList').appendChild(div); markDirty();
 }
 function removeInex(id){ const el=document.querySelector('.inex-row[data-ex="'+id+'"]'); if(el) el.remove(); markDirty(); }
+// v252 (audit finding, twice fixed once more): this is the function actually wired to the visible
+// "Save changes" button, and had the IDENTICAL bug saveWorkoutEditConfirmed's own H.get already
+// got fixed for in v251 -- reading .inex-row/saveNotes AFTER awaiting H.get, so navigating away
+// while that fetch was in flight tore down $('app').innerHTML before the read ever happened,
+// turning the tap into a wrong "Add at least one exercise" alert on the wrong screen and silently
+// dropping the save. Fixed the same way here (read first, await second) -- but reordering this
+// function's own read/await isn't sufficient by itself: it then hands off to
+// saveWorkoutEditConfirmed, and if that function re-read the DOM itself a second time, the SAME
+// race would just reopen one level down, after THIS function's own await. So the exercises/notes
+// read here are now passed straight through instead, and saveWorkoutEditConfirmed only falls back
+// to reading the DOM itself when called with nothing supplied (which no longer happens from here).
 async function saveWorkoutEdit(id){
-  const s = await H.get('/api/sessions/'+id);
-  if(!s||s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
   const rows=[...document.querySelectorAll('.inex-row')];
   const exercises=rows.map(r=>{ const eid=r.dataset.ex;
     return { id:eid, name:(document.getElementById('inex-name-'+eid)||{}).value||'Exercise',
@@ -2249,6 +2289,10 @@ async function saveWorkoutEdit(id){
       defaultRepsMax:Number((document.getElementById('inex-repsmax-'+eid)||{}).value)||undefined };
   });
   if(!exercises.length){ alert('Add at least one exercise'); return; }
+  const notes=(document.getElementById('saveNotes')||{}).value;
+  const epoch=UI_EPOCH;
+  const s = await H.get('/api/sessions/'+id);
+  if(!s||s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
   // Friend-set warning: exercises removed (or id changed) that ANY other user logged sets against
   const origIds=(s.exercises||[]).map(e=>e.id);
   const newIds=exercises.map(e=>e.id);
@@ -2260,34 +2304,53 @@ async function saveWorkoutEdit(id){
     if(who.length) touched.push((ex&&ex.name)||'exercise');
   }
   if(touched.length){
-    confirmSheet('Save changes?', esc(plur(touched.length,'friend')) + ' logged sets on: ' + esc(touched.join(', ')) + '. Saving detaches those sets.', 'Save anyway', () => saveWorkoutEditConfirmed(id));
+    // The confirm sheet itself is a UI action, not the write -- if the user has already moved on
+    // while this fetch was in flight, popping "Save changes?" over whatever they're doing now
+    // would be a barge-in with no context, so it's gated the same as any other stale navigation.
+    // The write it would lead to hasn't happened yet and still needs the user's explicit tap.
+    // v252 cold-review catch: epoch is deliberately NOT passed through into the confirm callback
+    // here -- openSheetHtml (which confirmSheet calls) bumps UI_EPOCH itself the instant the sheet
+    // opens, same as any other navigation, so reusing this function's own pre-sheet epoch would
+    // make saveWorkoutEditConfirmed's final nothingNavigatedSince check compare against a value
+    // that's already one behind by the time the sheet even exists -- permanently false, not a race,
+    // so "Save anyway" would never reopen the recap even on an instant tap with no real navigation.
+    // Every other *Confirmed function fed by a confirmSheet (deleteSessionConfirmed,
+    // deletePhotoConfirmed, etc.) captures its own fresh epoch at the moment its confirm button
+    // actually fires, for the same reason -- this now matches that.
+    if(nothingNavigatedSince(epoch)) confirmSheet('Save changes?', esc(plur(touched.length,'friend')) + ' logged sets on: ' + esc(touched.join(', ')) + '. Saving detaches those sets.', 'Save anyway', () => saveWorkoutEditConfirmed(id, exercises, notes));
     return;
   }
-  saveWorkoutEditConfirmed(id); return;
+  // No conflict to confirm -- this IS the explicit write the user asked for, so it goes through
+  // with what was read at the top of this function regardless of anything that's happened since.
+  // Returned (not just fired) so this function's own promise reflects the write actually finishing.
+  // The ORIGINAL epoch is passed through here too -- see the comment above saveWorkoutEditConfirmed
+  // for why letting it capture its own, fresh epoch here would miss navigation that happened during
+  // THIS function's own await, above.
+  return saveWorkoutEditConfirmed(id, exercises, notes, epoch);
 }
 // the part of saveWorkoutEdit that runs once the detach warning (if any) is accepted.
-// Re-reads the session and the edit rows itself - the page under the confirm sheet is
-// unchanged, and a callback must not lean on the outer call's locals.
-async function saveWorkoutEditConfirmed(id){
-  const epoch=UI_EPOCH;
-  // v251 (cold-review catch on the cold-review catch): these reads used to happen AFTER the
-  // H.get below -- but H.get is an await, and if the user navigates away while it's in flight,
-  // $('app').innerHTML has already been replaced by the time execution resumes, so
-  // querySelectorAll('.inex-row') would find nothing. That used to silently turn an explicitly-
-  // requested save into a wrong "Add at least one exercise" alert popping up on whatever screen
-  // the user had moved on to, AND drop the save entirely -- exactly the outcome nothingNavigatedSince
-  // below is supposed to prevent, just reached through the read side instead of the write side.
-  // Reading the edit screen's own inputs synchronously, before anything awaits, is what
-  // savePostedSet already does for its own inputs (ppEdW/ppEdR) -- this just matches that.
-  const rows=[...document.querySelectorAll('.inex-row')];
-  const exercises=rows.map(r=>{ const eid=r.dataset.ex;
-    return { id:eid, name:(document.getElementById('inex-name-'+eid)||{}).value||'Exercise',
-      defaultSets:Number((document.getElementById('inex-sets-'+eid)||{}).value||3),
-      defaultReps:Number((document.getElementById('inex-reps-'+eid)||{}).value||10),
-      defaultRepsMax:Number((document.getElementById('inex-repsmax-'+eid)||{}).value)||undefined };
-  });
+// exercises/notes/epoch are passed down from saveWorkoutEdit's own synchronous read and epoch
+// snapshot, taken the instant Save was tapped (see the comments above saveWorkoutEdit) -- both
+// re-reading the DOM and re-capturing UI_EPOCH here independently would miss navigation that
+// happened during saveWorkoutEdit's OWN await, before this function was ever called: capturing a
+// "fresh" epoch here would already reflect that navigation, making nothingNavigatedSince below
+// compare the epoch to itself and always pass, even though the actual Save tap is now stale. Falls
+// back to reading the DOM and capturing its own epoch only if called with nothing supplied, so
+// nothing else that might call this directly is broken by the change.
+async function saveWorkoutEditConfirmed(id, exercisesIn, notesIn, epochIn){
+  const epoch = (typeof epochIn === 'number') ? epochIn : UI_EPOCH;
+  let exercises = exercisesIn, notes = notesIn;
+  if(!exercises){
+    const rows=[...document.querySelectorAll('.inex-row')];
+    exercises=rows.map(r=>{ const eid=r.dataset.ex;
+      return { id:eid, name:(document.getElementById('inex-name-'+eid)||{}).value||'Exercise',
+        defaultSets:Number((document.getElementById('inex-sets-'+eid)||{}).value||3),
+        defaultReps:Number((document.getElementById('inex-reps-'+eid)||{}).value||10),
+        defaultRepsMax:Number((document.getElementById('inex-repsmax-'+eid)||{}).value)||undefined };
+    });
+    notes=(document.getElementById('saveNotes')||{}).value;
+  }
   if(!exercises.length){ alert('Add at least one exercise'); return; }
-  const notes=document.getElementById('saveNotes').value;
   const s = await H.get('/api/sessions/'+id);
   if(!s||s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
   const r1=await H.put('/api/sessions/'+id,{ name:s.name, scheduledAt:s.scheduledAt, visibility:s.visibility, exercises, invited:(s.invited||[]), location:s.location, lengthMin:s.lengthMin, creatorNote:s.creatorNote });
@@ -2350,6 +2413,7 @@ async function submitSession(){
   const scheduledAt = dt? new Date(dt).toISOString() : new Date().toISOString();
   const payload={scheduledAt,visibility:vis,name,exercises:DRAFT.exercises,inviteUsernames:DRAFT.inviteUsernames,location,lengthMin:lengthMin?Number(lengthMin):null,creatorNote};
   const editing = EDITING_SESSION;                 // captured: it is cleared before we navigate
+  const epoch=UI_EPOCH;
   const r = editing
     ? await H.put('/api/sessions/'+editing, payload)
     : await H.post('/api/sessions', payload);
@@ -2363,7 +2427,9 @@ async function submitSession(){
   // something already reachable without a popup -- "Save as routine" on this same create form,
   // "Save this routine" on every session's detail page, and now "Routine" in Quick Workout too.
   // An interruption on every save just trains you to reflex-tap past it.
-  home();
+  // v252 (audit finding): home() used to fire unconditionally -- the session was still
+  // created/edited either way (that write is above, unconditional), only the navigation is gated.
+  if(nothingNavigatedSince(epoch)) home();
 }
 let EDITING_SESSION = null;
 // A NEW workout starts empty. createFlow() cannot do this itself — it is also where you land
@@ -3554,21 +3620,28 @@ async function sendRequest(username, btn){
   if(r.error){ alert(r.error); return; }
   if(btn){ btn.textContent='Requested'; btn.className='sm'; btn.disabled=true; btn.style.background='var(--line)'; btn.style.borderColor='transparent'; btn.style.color='var(--muted)'; }
 }
+// v252 (audit finding): all four below re-rendered the Friends tab unconditionally after their
+// await, same barge-in shape as the rest of this round -- tap Accept, switch to Home before it
+// resolves, and the stale response used to snap the screen back to Friends anyway.
 async function acceptRequest(id){
+  const epoch=UI_EPOCH;
   const r = await H.post('/api/friends/accept',{from:id});
-  if(r.error) alert(r.error); else friends();
+  if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends();
 }
 async function rejectRequest(id){
+  const epoch=UI_EPOCH;
   const r = await H.post('/api/friends/reject',{from:id});
-  if(r.error) alert(r.error); else friends();
+  if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends();
 }
 async function acceptFollow(id){
+  const epoch=UI_EPOCH;
   const r = await H.post('/api/follow-requests/'+id+'/accept',{});
-  if(r && r.error) alert(r.error); else friends();
+  if(r && r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends();
 }
 async function rejectFollow(id){
+  const epoch=UI_EPOCH;
   const r = await H.post('/api/follow-requests/'+id+'/reject',{});
-  if(r && r.error) alert(r.error); else friends();
+  if(r && r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends();
 }
 // Design cleanup, Aug 27: this used to hash the seed into one of 8 colors, so friends, requests,
 // search results and chat all showed a scatter of random reds/purples/oranges -- and since it's a
@@ -3991,8 +4064,13 @@ async function applyCrop(type){
   ctx.restore();
   const out = canvas.toDataURL(type && type.indexOf('png')>=0 ? 'image/png' : 'image/jpeg', 0.9);
   closeCropper();
+  // v252 (audit finding): _crop.done above only guards against double-tapping applyCrop itself --
+  // it says nothing about whether the user has since navigated away, so the profileView() below
+  // used to barge back onto whatever screen they'd moved on to. ME.avatar is still updated
+  // unconditionally so the new avatar is correct whenever they do land back on a profile.
+  const epoch=UI_EPOCH;
   const r = await H.post('/api/me/avatar',{ data: out, type: type||'image/jpeg' });
-  if(r.avatar){ ME.avatar = r.avatar; profileView(ME.id); }
+  if(r.avatar){ ME.avatar = r.avatar; if(nothingNavigatedSince(epoch)) profileView(ME.id); }
   else alert(r.error||'upload failed');
 }
 function meScreen(){ profileView(ME.id); }

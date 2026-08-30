@@ -1977,6 +1977,12 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
   const edit = s.suggestedEdits.find(e => e.id === req.params.editId);
   if (!edit) return res.status(404).json({ error: 'edit not found' });
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator approves' });
+  // v252 (audit finding): without this, a double-tap or a stale second tab could approve AND
+  // reject the same suggestion -- approve already renames logged sets and rebuilds PRs below, none
+  // of which reject undoes, so the edit would end up marked 'rejected' while its effects were still
+  // live and the proposer had already been told (wrongly) it was approved. Once it's no longer
+  // pending, neither route touches it again.
+  if (edit.status !== 'pending') return res.status(400).json({ error: 'already decided' });
   edit.status = 'approved';
   s.variations[edit.exerciseId] = Object.assign({}, s.variations[edit.exerciseId], { [edit.proposedBy]: { swapTo: edit.swapTo, reason: 'swap' } });
   // Sets now carry the exercise name frozen at log time, which is what stops an unrelated edit
@@ -2004,6 +2010,9 @@ app.post('/api/sessions/:id/suggest/:editId/reject', auth, async (req, res) => {
   const edit = s.suggestedEdits.find(e => e.id === req.params.editId);
   if (!edit) return res.status(404).json({ error: 'edit not found' });
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator approves' });
+  // v252: same guard as approve above -- a stale reject after it's already been approved (or
+  // already rejected) must not silently flip a decided edit back and forth.
+  if (edit.status !== 'pending') return res.status(400).json({ error: 'already decided' });
   edit.status = 'rejected';
   await save(DB);
   res.json(sessionView(s, req.userId));
@@ -2052,6 +2061,10 @@ app.post('/api/sessions/:id/join/:reqId/approve', auth, async (req, res) => {
   ensureSessionShape(s);
   const jr = s.joinRequests.find(j => j.id === req.params.reqId);
   if (!jr || s.creatorId !== req.userId) return res.status(403).json({ error: 'forbidden' });
+  // v252 (audit finding): same missing-status-guard shape as suggest/approve+reject above -- a
+  // double-tap or stale second tab could approve AND reject the same join request, leaving the
+  // requester added to participants while the request itself reads 'rejected' (or vice versa).
+  if (jr.status !== 'pending') return res.status(400).json({ error: 'already decided' });
   jr.status = 'approved';
   if (!s.participants.includes(jr.userId)) s.participants.push(jr.userId);
   await save(DB);
@@ -2065,6 +2078,8 @@ app.post('/api/sessions/:id/join/:reqId/reject', auth, async (req, res) => {
   ensureSessionShape(s);
   const jr = s.joinRequests.find(j => j.id === req.params.reqId);
   if (!jr || s.creatorId !== req.userId) return res.status(403).json({ error: 'forbidden' });
+  // v252: same guard as approve above.
+  if (jr.status !== 'pending') return res.status(400).json({ error: 'already decided' });
   jr.status = 'rejected';
   await save(DB);
   notify(jr.userId, { title: 'Join declined', body: `${DB.users[s.creatorId].displayName} declined your join request` });
