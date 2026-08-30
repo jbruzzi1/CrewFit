@@ -118,7 +118,11 @@ const ctx = {
     removeItem(k) { delete this._store[k]; },
   },
   fetch: (...a) => mockFetch(...a),
-  location: { href: '/', pathname: '/', search: '', hash: '' }, history: { replaceState() {}, pushState() {} },
+  location: { href: '/', pathname: '/', search: '', hash: '' },
+  // v254: app.js now registers a top-level window.addEventListener('popstate', ...) (the Back-
+  // button fix) and calls history.pushState/replaceState from openSheetHtml/closeSheet/navigated/
+  // landOn -- these need to be real enough not to throw, even in tests that don't care about nav.
+  history: { replaceState() {}, pushState() {} }, addEventListener() {}, removeEventListener() {}, scrollTo() {},
   navigator: { userAgent: 'node', serviceWorker: { register: () => Promise.resolve() }, onLine: true },
   setTimeout, clearTimeout, setInterval, clearInterval, alert() {}, confirm: () => true, prompt: () => null,
   requestAnimationFrame: f => setTimeout(f, 0), matchMedia: () => ({ matches: false, addEventListener() {} }),

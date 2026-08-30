@@ -27,7 +27,11 @@ const doc = { getElementById: () => el(), querySelector: () => el(), querySelect
 const ctx = { console: { log() {}, warn() {}, error() {} }, document: doc,
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   fetch: () => Promise.resolve({ json: () => Promise.resolve([]), ok: true, status: 200, text: () => Promise.resolve('') }),
-  location: { href: '/', pathname: '/', search: '', hash: '' }, history: { replaceState() {}, pushState() {} },
+  location: { href: '/', pathname: '/', search: '', hash: '' },
+  // v254: app.js now registers a top-level window.addEventListener('popstate', ...) (the Back-
+  // button fix) and calls history.pushState/replaceState from openSheetHtml/closeSheet/navigated/
+  // landOn -- these need to be real enough not to throw, even in tests that don't care about nav.
+  history: { replaceState() {}, pushState() {} }, addEventListener() {}, removeEventListener() {}, scrollTo() {},
   navigator: { userAgent: 'node', serviceWorker: { register: () => Promise.resolve() }, onLine: true },
   setTimeout, clearTimeout, setInterval, clearInterval, alert() {}, confirm: () => true, prompt: () => null,
   requestAnimationFrame: f => setTimeout(f, 0), matchMedia: () => ({ matches: false, addEventListener() {} }),
