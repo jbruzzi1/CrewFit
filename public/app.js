@@ -1518,7 +1518,7 @@ async function openLogSheet(sid, exId){
   const recName = (myVar && myVar.swapTo) || e.name;
   const libEntry = (await libByName())[e.name];
   const loadType = libEntry && libEntry.loadType ? libEntry.loadType : '';
-  LOGVIEW = { sid, exId, loadType };
+  LOGVIEW = { sid, exId, loadType, recName };
   const mine = (s.logs && s.logs[ME.id]) || [];
   const exLogs = mine.filter(l=>l.exerciseId===exId);
   const bestLog = exLogs.slice().sort((a,b)=>((Number(b.weight)||0)*(Number(b.reps)||0))-((Number(a.weight)||0)*(Number(a.reps)||0)))[0];
@@ -1560,8 +1560,37 @@ async function openLogSheet(sid, exId){
   // The advice belongs HERE, at the moment the weight is chosen — not only on a tab the user
   // has to remember to open before leaving for the gym. Loaded after the sheet is on screen
   // so it never delays opening.
+  refreshLogRec();
+}
+// Jeff, Aug 30: "the 'when to add weight next' shows when you tap to log a set. I feel most
+// people ... I do a set and THEN tap log a set. so I would see the added weight after my set."
+// This box used to fetch/render exactly once, the moment the sheet opened -- fine for the very
+// FIRST set of an exercise (there is nothing else to base it on yet but past sessions), but it
+// then sat frozen for the rest of the exercise even as more sets got logged. recommendationsFor
+// (server.js) already looks at whatever is in s.logs for TODAY's session, not just finished ones
+// -- it was only ever the CLIENT that never asked again. Calling this again after every addLogSet
+// (below) turns it from a one-time pre-set prediction into live, running feedback: log your first
+// set and the box updates using what you actually just did, same as looking at it again after
+// setting the bar down instead of before picking it up.
+// Reads recName AND the sheet element itself at call time, into the closure below, rather than
+// re-reading LOGVIEW once the fetch resolves — LOGVIEW is one shared global reused for whichever
+// log sheet is currently open (editLogSet/saveLogSet reassign it to a freshly reopened sheet), so
+// a slow response landing after the user closed this sheet and opened a DIFFERENT exercise's would
+// otherwise render THIS exercise's stale advice into the NEW sheet's #logRec (cold-review catch).
+// A second, same-sheet race is also possible: log two sets back-to-back (nothing blocks the
+// "+ Add" button while the previous refresh is still in flight) and the two GETs can resolve out
+// of order, painting set 1's now-stale advice over set 2's correct one with no error and nothing
+// visibly wrong. Guarded with a per-sheet counter stashed directly on the element (sheetEl
+// already uniquely identifies "this open sheet" — no separate map to keep in sync) — each call
+// stamps the next number and only the response matching the CURRENT stamp is allowed to render.
+function refreshLogRec(){
+  const recName = LOGVIEW && LOGVIEW.recName;
+  const sheetEl = LOGVIEW && LOGVIEW.sheetEl;
+  if(!recName || !sheetEl) return;
+  const mySeq = (sheetEl._recSeq = (sheetEl._recSeq||0) + 1);
   H.get('/api/progress/exercise/'+encodeURIComponent(recName)).then(r=>{
-    const box=document.getElementById('logRec'); if(!box||!r||r.error) return;
+    if(sheetEl._recSeq !== mySeq) return;   // superseded by a newer refresh on this same sheet
+    const box=sheetEl.querySelector('#logRec'); if(!box||!r||r.error) return;
     const U=r.unit||'lb';
     // A pull-up or dip stores weight 0 — "at 0 lb" reads as a bug, "at bodyweight" reads as English.
     const W=w=>(Number(w)>0? `${w} ${U}` : 'bodyweight');
@@ -1887,7 +1916,18 @@ async function addLogSet(){
     const justMine = ((s.logs&&s.logs[ME.id])||[]).filter(l=>l.exerciseId===LOGVIEW.exId);
     const newest = justMine.slice().sort((a,b)=>String(b.at).localeCompare(String(a.at)))[0];
     LOGVIEW.sid && renderLogSets(s, newest && newest.isPr ? newest.id : null);
-    document.getElementById('logW').value=''; document.getElementById('logR').value=''; if(rirEl) rirEl.value='';
+    // Jeff, Aug 30: "how do we think we can make this more convenient" -- weight and reps used to
+    // clear to blank after every set, so three straight sets of the same weight meant retyping
+    // the same numbers three times. Straight sets (same weight, same reps) are the overwhelmingly
+    // common case, so the boxes now carry the just-logged weight/reps forward instead -- still one
+    // tap to change if the next set is different, but nothing to retype if it isn't. RIR is
+    // deliberately NOT carried over: it is a per-set read on how much was left in the tank, and a
+    // stale leftover number here would misrecord effort on a set it was never actually true for
+    // (e.g. 2 RIR on set 1, all-out on set 3) — silently wrong is worse than asking again.
+    document.getElementById('logW').value=w; document.getElementById('logR').value=r; if(rirEl) rirEl.value='';
+    // Live feedback instead of a one-time prediction — see refreshLogRec's own comment. Fire-and-
+    // forget: the sets list above has already updated and must not wait on this.
+    refreshLogRec();
     startRest();
     // Update the "✓ N sets logged" badge on the workout page behind this sheet right now, instead
     // of only the next time it's opened. Fire-and-forget on purpose — the sheet above has already
