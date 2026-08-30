@@ -192,6 +192,16 @@ function defaultTargetFor(nameOrEx) {
 
 // One exercise as it should be stored: whatever the user actually chose wins, and anything they
 // left alone is derived. `|| 10` used to sit here, which is how a plank ended up with ten reps.
+// v253 (audit finding): assumes `e` is already a plain object -- e.defaultReps etc. throw the
+// instant it isn't (null, a string, a number, an array...). Every one of this function's four
+// call sites is an `async` route handler; the global app.get/post/put/... wrapper near the top of
+// this file already forwards that throw to the error middleware instead of crashing the process
+// (confirmed directly: a real POST with exercises:[null] returns a plain 500 and the server keeps
+// serving every other request afterward) -- so the actual bug is a confusing, unhandled-looking
+// "Something went wrong" 500 for ordinary bad input, not a whole-app outage. Every other malformed-
+// input case in this file returns a clean 400; this one didn't, purely because nothing here checked
+// the shape before handing it to withDefaults. See isPlainExercise below -- every call site now
+// rejects a malformed element with a normal 400 before it ever reaches here.
 function withDefaults(e) {
   const name = capStr(e && e.name, 80);             // another user's exercise name renders in your app
   const d = defaultTargetFor(name);
@@ -204,6 +214,10 @@ function withDefaults(e) {
     defaultRepsMax: (max && max !== reps) ? max : undefined,
   };
 }
+// Guards withDefaults' assumption above. Deliberately permissive about WHAT the object contains
+// (withDefaults already coerces every field inside it) -- this only rejects the shape that throws:
+// not an object, null, or an array standing in for one.
+function isPlainExercise(e) { return !!e && typeof e === 'object' && !Array.isArray(e); }
 
 // Attach the derived target to a library entry for the client, without mutating EX_LIB.
 function withTarget(e) {
@@ -1150,6 +1164,9 @@ app.post('/api/templates/:id/unhide', auth, async (req, res) => {
 app.post('/api/templates', auth, async (req, res) => {
   const { name, exercises } = req.body || {};
   if (!name || !Array.isArray(exercises) || !exercises.length) return res.status(400).json({ error: 'name + exercises required' });
+  // v253 (audit finding, see isPlainExercise above) -- a non-object element would have thrown
+  // inside withDefaults below, returning a generic 500 instead of a clean 400.
+  if (!exercises.every(isPlainExercise)) return res.status(400).json({ error: 'invalid exercise' });
   const id = 't_' + uid();
   const t = { id, ownerId: req.userId, name: capStr(name, 80), exercises: exercises.map(withDefaults) };
   if (!DB.templates) DB.templates = {};
@@ -1163,7 +1180,11 @@ app.put('/api/templates/:id', auth, async (req, res) => {
   if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
   const { name, exercises } = req.body || {};
   if (name) t.name = capStr(name, 80);
-  if (Array.isArray(exercises) && exercises.length) t.exercises = exercises.map(withDefaults);
+  if (Array.isArray(exercises) && exercises.length) {
+    // v253 (audit finding, see isPlainExercise above) -- same generic-500 risk as POST /api/templates.
+    if (!exercises.every(isPlainExercise)) return res.status(400).json({ error: 'invalid exercise' });
+    t.exercises = exercises.map(withDefaults);
+  }
   await save(DB);
   // stripHidden matters here specifically: once a friend has hidden this routine, t.hiddenBy is
   // populated, and this is the response an owner gets back on every completely ordinary edit
@@ -1302,6 +1323,9 @@ app.post('/api/sessions', auth, async (req, res) => {
   // add lifts as you go instead of planning them first. Every other creation path (the normal
   // create-flow) still enforces at least one exercise on its own side before it ever calls this.
   if (!Array.isArray(exercises)) return res.status(400).json({ error: 'needs exercises' });
+  // v253 (audit finding, see isPlainExercise above) -- a non-object element would have thrown
+  // inside withDefaults below, returning a generic 500 instead of a clean 400.
+  if (!exercises.every(isPlainExercise)) return res.status(400).json({ error: 'invalid exercise' });
   const id = newSessionId();
   const ex = exercises.map((e, i) => Object.assign({ id: 'e_' + uid(), order: i }, withDefaults(e)));
   const invites = [];
@@ -1546,7 +1570,17 @@ function sessionView(s, viewerId) {
       const viaPost = s.posts && s.posts[uid] && canSeePostAuthor(s.posts[uid], uid, viewerId);
       if (uid === viewerId || current || viaPost) logs[uid] = arr;
     }
-    return Object.assign({}, s, { posts, logs });
+    // v253 (audit finding): this Object.assign spreads the raw session, so joinRequests — every
+    // pending/approved/rejected request to join, INCLUDING each requester's free-text note — went
+    // out unfiltered to every current participant, not just the creator. Approving/rejecting is
+    // already creator-only in the client (app.js gates that UI on isCreator), but the data itself
+    // was never gated the same way, so anyone in the workout could read who'd asked to join and
+    // what they wrote by inspecting the response. Only the creator needs the full list to decide
+    // on it; everyone else gets the same "yourself and nobody else" treatment as invited/logs
+    // above (in the rare case they've also filed their own request).
+    const joinRequests = (s.creatorId === viewerId) ? (s.joinRequests || [])
+      : (s.joinRequests || []).filter(j => j.userId === viewerId);
+    return Object.assign({}, s, { posts, logs, joinRequests });
   }
   if (tier === 'stranger') return null;
 
@@ -1573,7 +1607,8 @@ function sessionView(s, viewerId) {
     exercises: s.exercises || [], participants: s.participants || [],
     // Whether the creator has finished their own portion — not privacy-sensitive (just a
     // boolean, no one's actual data), so available to every non-member tier alike rather than
-    // gated per-tier. Uses the real s.history, unlike the empty `history: []` below.
+    // gated per-tier. Uses the real s.history, same source `history` below now draws its own
+    // (viewer-only) slice from.
     creatorFinished: (s.history || []).some(h => h.userId === s.creatorId),
     // You are told about YOURSELF and nobody else. Emptying this entirely also erased the fact
     // that the viewer is invited, which is what the whole invitation screen keys on — "waiting on
@@ -1585,7 +1620,17 @@ function sessionView(s, viewerId) {
     suggestedEdits: tier === 'invited' ? (s.suggestedEdits || []) : [],
     // your OWN swap comes back; nobody else's
     variations: pickMine(s.variations, viewerId),
-    attendance: {}, history: [],
+    attendance: {},
+    // v253 (audit finding): this was unconditionally `[]` for every non-member tier, breaking the
+    // same "yourself and nobody else" rule every sibling field here follows. It mattered most for
+    // 'alumni' — someone who left a workout with Leave's "keep my credit" option (see the /leave
+    // comment) genuinely has a history row for it, and GET /api/sessions runs every session
+    // through this same function, so home()'s own `mine` filter (public/app.js) — which is what
+    // decides the "Last workout: Tuesday · Pull Day" line Jeff specifically wanted kept accurate —
+    // silently dropped any workout you'd kept credit for but were no longer a current participant
+    // in. The credit itself was never lost server-side, it just never reached the screen that's
+    // supposed to show it.
+    history: (s.history || []).filter(h => h.userId === viewerId),
     // Same "yourself and nobody else" rule as `invited` above. Was unconditionally empty for
     // every non-member tier, which erased the viewer's OWN join request along with everyone
     // else's — the client had no way to tell "never asked" from "already asked, waiting on the
@@ -1798,16 +1843,26 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // sessionTier below).
   if (s.attendance) delete s.attendance[me];
   // If the creator walks away, the workout needs a new owner or nobody can ever finish or edit
-  // it. Ownership can only pass to someone CURRENT — othersWhoLogged, not the broader
-  // othersWithCredit above, since a departed alumni is not here to own anything. If nobody
-  // current is left either, creatorId goes explicitly null rather than pointing at nobody: it
-  // still displays and can still be reopened by anyone with a real connection to it (an alumni
-  // history row, a friend, and so on), it just has no one who can edit or delete it until someone
-  // new takes it over — which nothing in this codebase currently does, so today that means never;
-  // an orphaned workout stays exactly as it was left.
+  // it. Ownership can only pass to someone CURRENT, never a departed alumni — a departed person
+  // is not here to own anything. If nobody current is left either, creatorId goes explicitly null
+  // rather than pointing at nobody: it still displays and can still be reopened by anyone with a
+  // real connection to it (an alumni history row, a friend, and so on), it just has no one who can
+  // edit or delete it until someone new takes it over — which nothing in this codebase currently
+  // does, so today that means never; an orphaned workout stays exactly as it was left.
   if (s.creatorId === me) {
+    // v253 (audit finding): this used to be othersWhoLogged(s, me) alone with nothing to fall
+    // back to — which only counts a CURRENT participant who has already logged at least one set.
+    // A participant who accepted an invite but hasn't logged anything yet (the workout hasn't
+    // started, or they simply haven't gotten to their exercise) is every bit as CURRENT as one who
+    // has, but was invisible to this check — so the creator leaving handed the workout to nobody
+    // (creatorId: null, permanently unowned per the comment above) even though a real person was
+    // still sitting right there in s.participants. Prefer someone who's actually logged something
+    // (more likely to still be actively training it right now); fall back to any other current
+    // participant rather than orphaning the workout for no reason.
     const currentOthers = othersWhoLogged(s, me);
-    s.creatorId = currentOthers.length ? currentOthers[0] : null;
+    // s.participants was already filtered to exclude `me` above, so this is every OTHER current
+    // participant, logged or not.
+    s.creatorId = currentOthers.length ? currentOthers[0] : (s.participants.length ? s.participants[0] : null);
     if (s.creatorId && !s.participants.includes(s.creatorId)) s.participants.push(s.creatorId);
   }
   rebuildAllPrs();
@@ -1888,6 +1943,9 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   if (typeof b.creatorNote === 'string') s.creatorNote = capStr(b.creatorNote, 2000);
   if (b.visibility) s.visibility = b.visibility === 'friends' ? 'friends' : 'private';
   if (Array.isArray(b.exercises)) {
+    // v253 (audit finding, see isPlainExercise above) -- a non-object element would have
+    // thrown, both at `e.id` right below and inside withDefaults, returning a generic 500.
+    if (!b.exercises.every(isPlainExercise)) return res.status(400).json({ error: 'invalid exercise' });
     s.exercises = b.exercises.map((e, i) => Object.assign({
       id: (e.id && s.exercises.find(x => x.id === e.id)) ? e.id : 'e_' + uid(),
       order: i,
@@ -1943,6 +2001,14 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   // a workout they said no to. An approved one stays, same reasoning as those three: it was settled
   // while they were still deciding.
   s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === req.userId && e.status === 'pending'));
+  // v253 (audit finding): same root cause as the suggestedEdits fix just above, and the same gap
+  // /leave's own comment already documents fixing for itself (v248) — /join lets a friend request
+  // to join a session independently of any invitation, so someone can be BOTH invited AND holding
+  // a join request at once. Declining the invite never touched that request, so a still-PENDING
+  // one sat there as a standing "approve me" button the creator could tap later and silently add
+  // back someone who had explicitly said no. An already-APPROVED request stays, same reasoning as
+  // /leave: it was settled while they were still around, not left dangling.
+  s.joinRequests = (s.joinRequests || []).filter(j => !(j.userId === req.userId && j.status === 'pending'));
   await save(DB);
   notify(s.creatorId, { title: 'Invite declined', body: `${DB.users[req.userId].displayName} declined your workout` });
   res.json(sessionView(s, req.userId));
@@ -2915,11 +2981,18 @@ function rebuildAllPrs() {
       // badge that appears on almost every set stops meaning anything.
       let bestW = -1, bestR = -1, bestLog = null;
       for (const l of chronological) {
+        l.isPr = false;                       // cleared for every set; the winner is set below
+        // v253 (audit finding): warm-ups and drop sets are deliberately NOT working sets (Jeff's
+        // call — see WORKING_SET_TYPES/isWorkingSet above, and CLAUDE.md). The two other places
+        // that decide "did this count" already skip them (search isWorkingSet(l) above), but this
+        // PR-picking loop never did — a heavy warm-up or an easy drop set could become someone's
+        // recorded all-time PR, and everything downstream (the profile PR card, the celebratory
+        // feed item, beatSeed's "new record" check) trusted it as real.
+        if (!isWorkingSet(l)) continue;
         // compare in lb regardless of what each set was typed in
         const w = toLb(l.weight, l.unit), r = Number(l.reps) || 0;
         const better = r > 0 && (w > bestW || (w === bestW && r > bestR));
         if (better) { bestW = w; bestR = r; bestLog = l; }
-        l.isPr = false;                       // cleared for every set; the winner is set below
       }
       if (bestLog) {
         bestLog.isPr = true;
