@@ -320,5 +320,35 @@ console.log("\nswapCancel(): undoes however many entries the swap-picker excursi
     `cancelling after drilling into a muscle group pops BOTH entries pushed since the picker opened (got ${JSON.stringify(historyLog)})`);
 }
 
+console.log("\nin-page '← Back' buttons use real history.back(), not a hardcoded or duplicate-pushing destination");
+{
+  // Jeff, Aug 30 (live on v254, after the popstate/history mechanism above already shipped):
+  // "im on my profile then clicking on a workout then clicking back and its taking me to the home
+  // page". Root cause: viewPost's own in-PAGE '← Back' button (independent of the hardware/
+  // gesture Back button the rest of this file tests) was still hardcoded to onclick="showTab('home')"
+  // -- a leftover from before this file's history mechanism existed, never touched by that work
+  // because it doesn't go through popstate at all, it's a plain onclick. Same inspection turned up
+  // two more of the same class: openSession's own header Back button used to compute a 'backTab'
+  // guess from the currently-highlighted nav tab (closer, but still wrong for e.g. Friends tab ->
+  // a friend's profile -> their workout -> Back, which landed on the Friends LIST, not the specific
+  // profile you came from) and followList's Back button called profileView(id) directly, which
+  // PUSHES a new entry rather than popping -- leaving a stale duplicate that made a hardware Back
+  // press right after land back on the followers/following list instead of leaving the profile
+  // (same duplicate-entry shape as the swapCancel bug above). All three now just call
+  // history.back(), replaying the same real pop the hardware/gesture Back button already uses.
+  const backButtonSites = [
+    { label: 'openSession (session detail header)', re: /class="pp-head"><button class="sec sm" onclick="history\.back\(\)">.*\$\{sessDots\}/ },
+    { label: 'viewPost (posted recap header)', re: /class="pp-head"><button class="sec sm" onclick="history\.back\(\)">.*\$\{dots\}/ },
+    { label: 'followList (followers/following header)', re: /const backBtn = `<div class="pp-head"><button class="sec sm" onclick="history\.back\(\)">/ },
+  ];
+  for (const site of backButtonSites) {
+    ok(site.re.test(SRC), `${site.label} Back button calls history.back()`);
+  }
+  ok(!/onclick="showTab\('home'\)">.{0,30}Back/.test(SRC),
+    "no in-page Back button is hardcoded to showTab('home') anymore");
+  ok(!/onclick="profileView\('\$\{id\}'\)">.{0,30}Back/.test(SRC),
+    "no in-page Back button re-pushes a duplicate profileView(id) entry anymore");
+}
+
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
 process.exit(fails ? 1 : 0);
