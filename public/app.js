@@ -1795,7 +1795,15 @@ function renderLogSets(s, justLoggedId){
       ${l.isPr?`<span class="type-tag type-tag-pr${l.id===justLoggedId?' pr-pop':''}">PR</span>`:''}
     </div>`).join('');
 }
+// v253 (audit finding): the single most-tapped action in the whole app — logging a set — had no
+// double-tap guard at all, unlike everywhere else this exact class of bug has already been found
+// and fixed (confirmSheet's stacking guard, applyCrop's _crop.done, the approve/reject status
+// guards). A fast double-tap (easy mid-workout, especially chasing a PR) fired two overlapping
+// POSTs and logged the same set twice. Same shape as applyCrop's guard: block re-entry for the
+// duration of the network round-trip, release it whether the save succeeded or failed.
+let ADDLOG_BUSY = false;
 async function addLogSet(){
+  if(ADDLOG_BUSY) return;
   const w=document.getElementById('logW').value, r=document.getElementById('logR').value;
   const rirEl=document.getElementById('logRir'), rir=rirEl?rirEl.value:'';
   // reps are required — a set with a weight and no reps used to save as reps:0, which then
@@ -1804,21 +1812,26 @@ async function addLogSet(){
   if(!(Number(r) > 0)){ alert('How many reps did you do?'); return; }
   const seg=document.getElementById('logTypeSeg');
   const type=(seg&&seg.querySelector('.chip.on'))?seg.querySelector('.chip.on').getAttribute('data-t'):'normal';
-  const s=await H.post(`/api/sessions/${LOGVIEW.sid}/log`,{exerciseId:LOGVIEW.exId,weight:w,reps:r,setType:type,rir});
-  // Leave what was typed in the boxes if it did not save. They were cleared unconditionally, so
-  // a failed request threw the set away and you had to remember it and type it again.
-  if(s.error){ alert(s.error); return; }
-  // v235: the PR chip pops in ONLY on the set that was just logged - a re-render must not
-  // replay the animation on every old PR in the list. Newest `at` among my sets = this one.
-  const justMine = ((s.logs&&s.logs[ME.id])||[]).filter(l=>l.exerciseId===LOGVIEW.exId);
-  const newest = justMine.slice().sort((a,b)=>String(b.at).localeCompare(String(a.at)))[0];
-  LOGVIEW.sid && renderLogSets(s, newest && newest.isPr ? newest.id : null);
-  document.getElementById('logW').value=''; document.getElementById('logR').value=''; if(rirEl) rirEl.value='';
-  startRest();
-  // Update the "✓ N sets logged" badge on the workout page behind this sheet right now, instead
-  // of only the next time it's opened. Fire-and-forget on purpose — the sheet above has already
-  // been updated and must not wait on this.
-  if(LOGVIEW.sid) openSession(LOGVIEW.sid, {silent:true});
+  ADDLOG_BUSY = true;
+  try {
+    const s=await H.post(`/api/sessions/${LOGVIEW.sid}/log`,{exerciseId:LOGVIEW.exId,weight:w,reps:r,setType:type,rir});
+    // Leave what was typed in the boxes if it did not save. They were cleared unconditionally, so
+    // a failed request threw the set away and you had to remember it and type it again.
+    if(s.error){ alert(s.error); return; }
+    // v235: the PR chip pops in ONLY on the set that was just logged - a re-render must not
+    // replay the animation on every old PR in the list. Newest `at` among my sets = this one.
+    const justMine = ((s.logs&&s.logs[ME.id])||[]).filter(l=>l.exerciseId===LOGVIEW.exId);
+    const newest = justMine.slice().sort((a,b)=>String(b.at).localeCompare(String(a.at)))[0];
+    LOGVIEW.sid && renderLogSets(s, newest && newest.isPr ? newest.id : null);
+    document.getElementById('logW').value=''; document.getElementById('logR').value=''; if(rirEl) rirEl.value='';
+    startRest();
+    // Update the "✓ N sets logged" badge on the workout page behind this sheet right now, instead
+    // of only the next time it's opened. Fire-and-forget on purpose — the sheet above has already
+    // been updated and must not wait on this.
+    if(LOGVIEW.sid) openSession(LOGVIEW.sid, {silent:true});
+  } finally {
+    ADDLOG_BUSY = false;
+  }
 }
 async function editLogSet(logId){
   const s=await H.get('/api/sessions/'+LOGVIEW.sid);
@@ -2435,11 +2448,17 @@ let EDITING_SESSION = null;
 // A NEW workout starts empty. createFlow() cannot do this itself — it is also where you land
 // coming back from the exercise picker, and clearing there would throw away what you just added.
 // Without this, "+ New workout" opened pre-filled with the last workout you edited.
+// v253 (audit finding): TPL_MODE.active/id left true here (leaked in from a template edit backed
+// out of, or a routine used mid-create — see tplBack's comment) meant libDone(), reached later via
+// this exact flow's own "+ Add exercise", would route back into the ROUTINE editor instead of this
+// create-flow, and "Save changes" would silently overwrite that unrelated routine. Belt-and-braces
+// alongside the tplBack fix: a brand new workout always starts with TPL_MODE genuinely off.
 function newWorkout(){
   // Prefilled from Settings > Default gym, if set — edited or cleared here the same as any other
   // draft field, this is just where its value starts.
   DRAFT = { exercises:[], inviteUsernames:[], location: (ME && ME.defaultGym) || '' };
   EDITING_SESSION = null; EDITING_TPL = null; EDITING_ID = null;
+  if(typeof TPL_MODE === 'object' && TPL_MODE) { TPL_MODE.active = false; TPL_MODE.id = null; TPL_MODE.name = ''; TPL_MODE.copy = false; }
   createFlow();
 }
 function cancelCreate(){ EDITING_SESSION=null; EDITING_TPL=null; home(); }
@@ -2452,6 +2471,11 @@ function cancelCreate(){ EDITING_SESSION=null; EDITING_TPL=null; home(); }
 function workoutNow(){
   DRAFT = { exercises:[], inviteUsernames:[], location: (ME && ME.defaultGym) || '' };
   EDITING_SESSION = null; EDITING_TPL = null; EDITING_ID = null;
+  // v253: QUICK_ADD_MODE (set below) is checked before TPL_MODE.active in libDone(), so this
+  // flow's own "Done" is not actually reachable through the leak newWorkout() above guards
+  // against — cleared here anyway so a Quick Workout never starts with stale routine-editor state
+  // sitting around, same "walking away clears it" principle as resetTransientModes().
+  if(typeof TPL_MODE === 'object' && TPL_MODE) { TPL_MODE.active = false; TPL_MODE.id = null; TPL_MODE.name = ''; TPL_MODE.copy = false; }
   QUICK_ADD_MODE = true;
   openAddExercises();
 }
@@ -2687,13 +2711,25 @@ async function templateExercises(){
     ? `<input id="tplNameEdit" class="tpl-name-edit" value="${esc(TPL_MODE.name||'')}" placeholder="Routine name" autocomplete="off">`
     : `<h1>${esc(TPL_MODE.name||'Routine')}</h1>`;
   $('app').innerHTML = `<div class="wrap create-flow">
-    <button class="sec sm" onclick="closeSheet();templatesPage()">← Back</button>
+    <button class="sec sm" onclick="tplBack()">← Back</button>
     ${nameField}
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button>
     <button class="blue" onclick="finishTemplate()">✓ ${TPL_MODE.id?'Save changes':(TPL_MODE.copy?'Save as my routine':'Create routine')}</button></div>`;
   renderDraft();
 }
+// v253 (audit finding): this was `closeSheet();templatesPage()` inline -- every OTHER way out of
+// TPL_MODE (finishTemplate on success, resetTransientModes via showTab) clears TPL_MODE.active/
+// id/name/copy; this was the one exit that didn't. The leak survives templatesPage() (a direct
+// call, not through showTab, by design -- see its own comment) and survives tplUse() too, so the
+// very next ordinary "+ New workout" -> "Browse templates" -> "Use a routine" -> "+ Add exercise"
+// -> "Done" could land back in libDone() with TPL_MODE.active still true from a routine you
+// merely LOOKED at and backed out of minutes earlier. libDone() then routes to templateExercises()
+// instead of the create-flow the user actually started, and "Save changes" silently overwrites
+// that unrelated routine with whatever was just picked -- while the new workout the user thought
+// they were creating never gets created at all. No error, no confirmation. Traced and confirmed
+// end to end (not just the reviewer's report) before fixing.
+function tplBack(){ closeSheet(); resetTransientModes(); templatesPage(); }
 function tplOpenPicker(){ openAddExercises(); }
 async function finishTemplate(){
   if(!DRAFT.exercises.length){ alert('Add at least one exercise'); return; }
@@ -2712,6 +2748,13 @@ async function tplUse(id){
   DRAFT = DRAFT || { exercises:[], inviteUsernames:[] };
   DRAFT.exercises = t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}));
   EDITING_TPL = null;
+  // v253 (audit finding): this is the exact step that turned a leaked TPL_MODE (from backing out
+  // of an unrelated routine edit — see tplBack's comment) into a corrupted routine. Use loads this
+  // routine's exercises into DRAFT and returns to createFlow()'s "New workout" screen — but without
+  // this line, TPL_MODE was still pointing at whatever OTHER routine was last opened/edited, and
+  // the next "+ Add exercise" -> "Done" (libDone) silently routed to the routine editor instead,
+  // saving over it. This screen really is a new workout, not a routine, so TPL_MODE must be off.
+  if(typeof TPL_MODE === 'object' && TPL_MODE) { TPL_MODE.active = false; TPL_MODE.id = null; TPL_MODE.name = ''; TPL_MODE.copy = false; }
   createFlow();
 }
 function tplQuickSaveSheet(){
@@ -3998,8 +4041,17 @@ function openCropper(dataUrl, type){
   const img = document.getElementById('cropImg');
   const stage = document.getElementById('cropStage');
   _crop = { scale:1, x:0, y:0, img, stage, type };
+  // v253 (audit finding): this was Math.min, which is a CONTAIN fit — it scales the image so the
+  // SMALLER stage/image ratio touches (the image's shorter side fits exactly, its longer side
+  // falls short of the stage). clampCrop's own comment says the image "must always fully cover
+  // the circle" — that's a COVER fit, which needs the LARGER ratio (Math.max) instead, so the
+  // image's shorter side overflows the stage and the longer side is what gets cropped/pannable.
+  // Almost no phone photo is square, so this left a visible gap (background showing through)
+  // along one axis of the circle for the vast majority of real uploads — confirmed by hand: a
+  // 1600x900 photo into a 300x300 stage previously based at 0.1875 (300/1600), leaving the image
+  // only 168.75px tall against a 300px-tall stage, even after the 1.2x start zoom below.
   const fit = ()=>{
-    const s = Math.min(stage.clientWidth/img.naturalWidth, stage.clientHeight/img.naturalHeight);
+    const s = Math.max(stage.clientWidth/img.naturalWidth, stage.clientHeight/img.naturalHeight);
     _crop.base = s;
     _crop.scale = 1.2; // start a touch zoomed-in so both axes are pannable right away
     centerImage();
@@ -4184,15 +4236,40 @@ if(typeof document !== 'undefined' && typeof document.addEventListener === 'func
 }
 
 // ---- Boot ----
-(async ()=>{
+// v253 (audit finding): this used to wipe the token and drop straight to the login screen the
+// instant /api/profile/me failed for ANY reason -- not just a real 401. A genuinely invalid/
+// expired token already clears itself and shows the login screen from INSIDE H._req the moment
+// the server actually says 401 (see its own `_expired` comment) -- tryBoot below never has to
+// duplicate that. What it guards against is everything else: a network blip on a shaky
+// connection, a brief server hiccup, a cold start on Fly -- cases where the token is probably
+// still perfectly good, and logging someone out of a real session because the app couldn't reach
+// the server for one second is worse than just letting them retry without losing their login.
+async function tryBoot(){
   if(TOKEN){
     // v247: localToday lets the server's streak/"trained today" logic agree with how it now
     // stores YOUR OWN history (see localDateStr's own comment) instead of drifting apart for a
     // few hours every evening.
     try{ ME = await H.get('/api/profile/me?localToday='+localDateStr()); }catch(e){ ME=null; }
   }
-  if(TOKEN && ME && ME.id){ $('nav').classList.remove('hidden'); home(); }
-  else { TOKEN=''; localStorage.removeItem('crewfit_token'); authScreen(); }
+  if(TOKEN && ME && ME.id){ $('nav').classList.remove('hidden'); home(); return; }
+  if(TOKEN && !(ME && ME._expired)){
+    // Not a CONFIRMED-invalid session (H._req would already have cleared TOKEN and shown the
+    // login screen itself if it were) -- just an inconclusive failure. Offer a retry instead of
+    // discarding a token that may be completely fine the moment the connection recovers.
+    bootRetryScreen();
+    return;
+  }
+  TOKEN=''; localStorage.removeItem('crewfit_token'); authScreen();
+}
+function bootRetryScreen(){
+  $('app').innerHTML = `<div class="wrap center">
+    <h1>CrewFit</h1>
+    <div class="muted">Couldn't reach the server. Check your connection and try again.</div>
+    <button class="blue" style="margin-top:20px" onclick="tryBoot()">Retry</button>
+  </div>`;
+}
+(async ()=>{
+  await tryBoot();
   if('serviceWorker' in navigator) setupPush();
   document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
 })();
