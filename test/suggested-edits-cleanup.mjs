@@ -104,6 +104,108 @@ console.log('\ncontrol: an APPROVED swap survives either route -- it was settled
   ok(stillApproved, `the already-approved swap is still there after bob removes himself (got ${JSON.stringify(asHost.suggestedEdits)})`);
 }
 
+console.log('\ndecline withdraws a still-pending swap suggested before deciding (v251 audit finding)');
+{
+  // /suggest deliberately lets a still-INVITED (not yet accepted) person propose a swap before
+  // deciding -- "I'll come if we swap Barbell Row" is a thing you say before accepting. Declining
+  // that invite used to leave the suggestion behind: it blocks everyone else from proposing their
+  // own swap on that exercise (app.js's pendingSwap/offerSwap treats a pending swap as exclusive),
+  // and if the creator approves it anyway, notifies the decliner about a workout they said no to.
+  const host = await reg('sec_host4', 'pass1234', 'Host4');
+  const bob = await reg('sec_bob4', 'pass1234', 'Bob4');
+  await post('/api/friends/request', { username: 'sec_bob4' }, host.token);
+  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  const s = await post('/api/sessions', {
+    name: 'Push Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Bench Press' }],
+    inviteUsernames: ['sec_bob4'], visibility: 'private',
+  }, host.token);
+  const suggested = await post('/api/sessions/' + s.id + '/suggest', { exerciseId: s.exercises[0].id, swapTo: 'Incline Press' }, bob.token);
+  ok(!suggested.error, `bob (still just invited, not accepted) suggests a swap (got ${suggested.error})`);
+
+  // /decline responds with sessionView(s, req.userId) for the DECLINING user's own now-stranger
+  // view of a private session -- sessionView returns null for tier==='stranger' (pre-existing,
+  // unrelated to this fix), so a bare `null` body here is the actual success shape, not an error.
+  const declined = await post('/api/sessions/' + s.id + '/decline', {}, bob.token);
+  ok(declined === null, `bob declines the invite (got ${JSON.stringify(declined)})`);
+
+  const asHost = await get('/api/sessions/' + s.id, host.token);
+  const stillPending = (asHost.suggestedEdits || []).some(e => e.proposedBy === bob.user.id && e.status === 'pending');
+  ok(!stillPending, `bob's pending swap suggestion is withdrawn along with his decline (got ${JSON.stringify(asHost.suggestedEdits)})`);
+}
+
+console.log('\ncontrol: an APPROVED swap survives a decline too -- it was settled while bob was still deciding');
+{
+  const host = await reg('sec_host5', 'pass1234', 'Host5');
+  const bob = await reg('sec_bob5', 'pass1234', 'Bob5');
+  await post('/api/friends/request', { username: 'sec_bob5' }, host.token);
+  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  const s = await post('/api/sessions', {
+    name: 'Chest Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Fly' }],
+    inviteUsernames: ['sec_bob5'], visibility: 'private',
+  }, host.token);
+  const suggested = await post('/api/sessions/' + s.id + '/suggest', { exerciseId: s.exercises[0].id, swapTo: 'Cable Fly' }, bob.token);
+  const editId = suggested.suggestedEdits.find(e => e.proposedBy === bob.user.id).id;
+  await post('/api/sessions/' + s.id + '/suggest/' + editId + '/approve', {}, host.token);
+
+  await post('/api/sessions/' + s.id + '/decline', {}, bob.token);
+  const asHost = await get('/api/sessions/' + s.id, host.token);
+  const stillApproved = (asHost.suggestedEdits || []).some(e => e.proposedBy === bob.user.id && e.status === 'approved');
+  ok(stillApproved, `the already-approved swap is still there after bob declines (got ${JSON.stringify(asHost.suggestedEdits)})`);
+}
+
+console.log('\nthe creator editing the invite list and dropping someone withdraws their pending suggestion the same way (v251 audit finding)');
+{
+  const host = await reg('sec_host6', 'pass1234', 'Host6');
+  const bob = await reg('sec_bob6', 'pass1234', 'Bob6');
+  const charlie = await reg('sec_charlie6', 'pass1234', 'Charlie6');
+  await post('/api/friends/request', { username: 'sec_bob6' }, host.token);
+  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  await post('/api/friends/request', { username: 'sec_charlie6' }, host.token);
+  await post('/api/friends/accept', { from: host.user.id }, charlie.token);
+  const s = await post('/api/sessions', {
+    name: 'Back Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Deadlift' }],
+    inviteUsernames: ['sec_bob6', 'sec_charlie6'], visibility: 'private',
+  }, host.token);
+  const suggested = await post('/api/sessions/' + s.id + '/suggest', { exerciseId: s.exercises[0].id, swapTo: 'Rack Pull' }, bob.token);
+  ok(!suggested.error, `bob suggests a swap while still just invited (got ${suggested.error})`);
+
+  // host re-edits the invite list, silently dropping bob (keeping charlie)
+  const put = await fetch(B + '/api/sessions/' + s.id, {
+    method: 'PUT', headers: { ...J, Authorization: 'Bearer ' + host.token },
+    body: JSON.stringify({ inviteUsernames: ['sec_charlie6'] }),
+  }).then(r => r.json());
+  ok(!put.error, `host edits the invite list, dropping bob (got ${put.error})`);
+
+  const asHost = await get('/api/sessions/' + s.id, host.token);
+  const stillPending = (asHost.suggestedEdits || []).some(e => e.proposedBy === bob.user.id && e.status === 'pending');
+  ok(!stillPending, `bob's pending suggestion is withdrawn along with dropping him from the invite list (got ${JSON.stringify(asHost.suggestedEdits)})`);
+}
+
+console.log('\ncontrol: re-editing the invite list WITHOUT dropping someone leaves their pending suggestion alone');
+{
+  const host = await reg('sec_host7', 'pass1234', 'Host7');
+  const bob = await reg('sec_bob7', 'pass1234', 'Bob7');
+  await post('/api/friends/request', { username: 'sec_bob7' }, host.token);
+  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  const s = await post('/api/sessions', {
+    name: 'Shoulder Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Press' }],
+    inviteUsernames: ['sec_bob7'], visibility: 'private',
+  }, host.token);
+  const suggested = await post('/api/sessions/' + s.id + '/suggest', { exerciseId: s.exercises[0].id, swapTo: 'Arnold Press' }, bob.token);
+  ok(!suggested.error, `bob suggests a swap while still just invited (got ${suggested.error})`);
+
+  // host re-saves the session with the SAME invite list -- bob is not dropped
+  const put = await fetch(B + '/api/sessions/' + s.id, {
+    method: 'PUT', headers: { ...J, Authorization: 'Bearer ' + host.token },
+    body: JSON.stringify({ inviteUsernames: ['sec_bob7'] }),
+  }).then(r => r.json());
+  ok(!put.error, `host re-saves the invite list with bob still on it (got ${put.error})`);
+
+  const asHost = await get('/api/sessions/' + s.id, host.token);
+  const stillPending = (asHost.suggestedEdits || []).some(e => e.proposedBy === bob.user.id && e.status === 'pending');
+  ok(stillPending, `bob's pending suggestion is untouched -- he was never actually dropped (got ${JSON.stringify(asHost.suggestedEdits)})`);
+}
+
 try { srv && srv.kill(); } catch {}
 rmSync(DIR, { recursive: true, force: true });
 await testDb.drop();
