@@ -14,6 +14,13 @@
 // bodyweightFor()/POST+DELETE /api/me/bodyweight: one entry per calendar day (same-day re-log
 // upserts rather than piling up), read back converted into whatever unit the user is on now
 // (same "typed unit frozen, read unit live" rule as logged sets), and deletable.
+//
+// volumeFor(userId, weeks)/volumeAvg (Aug 31, round 2): "should weekly volume show monthly?" led
+// to a trailing 4-week average alongside the existing this-week count rather than a separate
+// monthly section. Verifies weeks=1 is byte-identical to the original behavior, the trailing
+// window correctly sums+averages across Monday-anchored weeks (including the current partial
+// week), a week outside the window doesn't leak in, and the avg row keeps the same per-group
+// target as the weekly row.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -50,6 +57,17 @@ function isoDaysAgo(n) {
   return d.toISOString();
 }
 function localToday() { return new Date().toISOString().slice(0, 10); }
+// Monday-anchored, same boundary volumeFor() itself uses -- weeksAgo=0 is THIS week's Monday,
+// weeksAgo=3 is 3 Mondays back. dayOffset nudges a day or two into the week so the timestamp
+// doesn't sit exactly on the boundary.
+function mondayOffsetIso(weeksAgo, dayOffset = 1) {
+  const now = new Date();
+  const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7) - weeksAgo * 7);
+  monday.setUTCDate(monday.getUTCDate() + dayOffset);
+  monday.setUTCHours(15, 0, 0, 0);
+  return monday.toISOString();
+}
 
 console.log('weekly volume: multi-muscle attribution, warm-ups excluded, past week excluded');
 {
@@ -123,6 +141,46 @@ console.log('weekly volume: two different users\' same-named custom exercises do
   ok(byGroupB.chest.sets === 5, `B's own sets credit B's OWN muscle groups (chest), not A's (got ${byGroupB.chest.sets})`);
   ok(byGroupB.shoulders.sets === 5, `...and shoulders too (got ${byGroupB.shoulders.sets})`);
   ok(byGroupB.triceps.sets === 0, `B's sets do NOT bleed into A's triceps just because A's exercise shares the name (got ${byGroupB.triceps.sets})`);
+}
+
+console.log('weekly volume: 4-week average (volumeAvg) -- trailing window, per-week average, weeks=1 untouched');
+{
+  // Jeff, Aug 31: "should weekly volume show monthly?" -- landed on a "4-wk avg" secondary view
+  // rather than a separate monthly section. /api/progress now always returns BOTH volume (this
+  // week, weeks=1, byte-identical to before this existed) and volumeAvg (trailing 4 Monday-
+  // anchored weeks including the current partial week, summed then divided by 4, rounded to 1
+  // decimal) -- same trailing-window-includes-partial-current-week precedent weeksFor() already
+  // sets for the Consistency chart.
+  const u = await reg('vol_avg_u1', 'pass1234', 'Vol Avg One');
+  async function seedWeek(weeksAgo, n) {
+    const s = await post('/api/sessions', {
+      name: `Push -${weeksAgo}w`, scheduledAt: mondayOffsetIso(weeksAgo),
+      exercises: [{ name: 'Flat Barbell Bench Press' }], visibility: 'private',
+    }, u.token);
+    const exId = s.exercises[0].id;
+    for (let i = 0; i < n; i++) await post(`/api/sessions/${s.id}/log`, { exerciseId: exId, weight: 135, reps: 8, setType: 'normal' }, u.token);
+  }
+  // This week: 2 sets. Prior 3 weeks: 5, 4, 5 -- a light current week after solid recent training,
+  // exactly the "looks artificially empty" scenario that prompted the feature.
+  await seedWeek(0, 2);
+  await seedWeek(1, 5);
+  await seedWeek(2, 4);
+  await seedWeek(3, 5);
+  // 5 weeks ago -- outside the trailing-4 window, must NOT be pulled into the average.
+  await seedWeek(5, 9);
+
+  const prog = await get('/api/progress', u.token);
+  ok(!prog.error, `progress loads (got ${prog.error})`);
+  ok(!!prog.volumeAvg, `progress includes volumeAvg (got ${JSON.stringify(prog.volumeAvg)})`);
+  const week = {}; (prog.volume.groups || []).forEach(g => week[g.group] = g);
+  const avg = {}; (prog.volumeAvg.groups || []).forEach(g => avg[g.group] = g);
+  ok(week.chest.sets === 2, `weeks=1 (default) unchanged -- this week's raw count (got ${week.chest.sets})`);
+  ok(avg.chest.sets === 4, `4-wk avg: (2+5+4+5)/4 = 4 (got ${avg.chest.sets})`);
+  ok(avg.chest.target === week.chest.target, `avg row keeps the same target as the weekly row (got ${avg.chest.target} vs ${week.chest.target})`);
+
+  // A single, isolated-week sanity check that weeks=1 truly is untouched: same shape/values as
+  // the pre-existing plain volumeFor(userId) call would have produced.
+  ok(week.quads.sets === 0 && avg.quads.sets === 0, `an untouched muscle group reads 0 in both views (got ${week.quads.sets}/${avg.quads.sets})`);
 }
 
 console.log('body weight: log, upsert same day, unit conversion, delete');

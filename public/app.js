@@ -3358,6 +3358,18 @@ const PROG_RANGES = [ {weeks:4, label:'Month'}, {weeks:13, label:'3 months'}, {w
 const VOL_SHOW_N = 5;
 let VOL_EXPANDED = false;
 function toggleVolExpanded(){ VOL_EXPANDED = !VOL_EXPANDED; progressScreen({silent:true}); }
+// "This week" vs "4-wk avg" -- Jeff, Aug 31: does weekly volume need a monthly view too? A strict
+// Monday-reset snapshot looks artificially empty early in the week or after one lighter week, even
+// when the trailing month is right on target. Full separate monthly section would re-add the very
+// bulk this card was just cut down from (see the collapse/expand note above) for a question that's
+// really "what has this looked like LATELY," not a whole new time dimension to browse. A toggle
+// reusing Consistency's own range-picker pattern below answers that in place: same rows, same
+// targets, same card -- just a different lens on the same numbers. "This week" stays default
+// (actionable -- what to log RIGHT NOW); "4-wk avg" is the secondary/diagnostic view for spotting
+// a muscle group that's been quietly under-trained for a month, not just today. Persists across
+// re-renders same as VOL_EXPANDED/PROG_WEEKS.
+let VOL_MODE = 'week';
+function setVolMode(m){ VOL_MODE = m; progressScreen({silent:true}); }
 const GROUP_LABEL = { legs:'Legs', push:'Push', pull:'Pull', core:'Core', cardio:'Cardio', other:'Other' };
 // Display labels for the weekly-volume meter rows (server sends raw EX_LIB muscle_groups keys).
 const MUSCLE_LABEL = { chest:'Chest', lats:'Back', shoulders:'Shoulders', traps:'Traps',
@@ -3702,11 +3714,31 @@ async function progressScreen(opts){
   // not just the first N alphabetically/anatomically. Expanded, it switches back to the natural
   // anatomical order (server's MUSCLE_ORDER) since a full scan is easier to read grouped, not
   // ranked. VOL_EXPANDED persists across re-renders same as PROG_WEEKS/TREND_PICK above.
-  const volGroups = (d.volume && d.volume.groups) || [];
+  //
+  // Jeff, Aug 31 (round 2): which 5 muscles show when collapsed is ranked by THIS WEEK's ratios
+  // ALWAYS, never by whichever mode is currently displayed. Originally this re-ranked per mode,
+  // so tapping "4-wk avg" could swap out which rows even appeared (a muscle skipped this week
+  // but trained solidly over the last month would drop off the list entirely, replaced by
+  // something else) -- confusing, since the whole point of the toggle is "same rows, different
+  // lens," not a second independent ranking. Pinning to This week keeps a neglected-today muscle
+  // flagged regardless of how its recent average looks; only the displayed numbers change.
+  const weekGroups = (d.volume && d.volume.groups) || [];
+  const avgGroups = (d.volumeAvg && d.volumeAvg.groups) || [];
+  const volSrc = (VOL_MODE==='avg' ? d.volumeAvg : d.volume) || {};
+  const volGroups = volSrc.groups || [];
+  const volByGroup = {}; for (const g of volGroups) volByGroup[g.group] = g;
+  const volUnitSuffix = VOL_MODE==='avg' ? '/wk' : '';
   const volAny = volGroups.some(g=>g.sets>0);
+  // Cold-review catch (Aug 31): the mode toggle must NOT be gated on the CURRENT mode's data --
+  // a fresh page load always starts on "This week," so a week with nothing logged yet (common
+  // early in the week) hid the "4-wk avg" button entirely, even when the trailing month had real
+  // data. That's exactly backwards: the toggle exists FOR that moment. Gate it on either view
+  // having something to show; only the row list itself (volHtml, right below) stays scoped to
+  // whichever mode is actually active.
+  const volAnyEver = volAny || weekGroups.some(g=>g.sets>0) || avgGroups.some(g=>g.sets>0);
   const volHasMore = volGroups.length > VOL_SHOW_N;
-  const volSorted = volGroups.slice().sort((a,b)=>(a.sets/a.target)-(b.sets/b.target));
-  const volShown = VOL_EXPANDED ? volGroups : volSorted.slice(0, VOL_SHOW_N);
+  const worstKeysThisWeek = weekGroups.slice().sort((a,b)=>(a.sets/a.target)-(b.sets/b.target)).map(g=>g.group);
+  const volShown = VOL_EXPANDED ? volGroups : worstKeysThisWeek.slice(0, VOL_SHOW_N).map(k=>volByGroup[k]).filter(Boolean);
   const volHtml = !volAny
     ? `<div class="muted" style="padding:14px 2px 6px;line-height:1.5">Log some working sets this
          week and each muscle group's volume fills in here.</div>`
@@ -3715,13 +3747,17 @@ async function progressScreen(opts){
         const met = g.sets >= g.target;
         return `<div class="mv-row">
           <div class="mv-top"><span class="mv-name">${MUSCLE_LABEL[g.group]||g.group}</span>
-            <span class="mv-n">${g.sets}<span class="mv-of"> / ${g.target} sets</span></span></div>
+            <span class="mv-n">${g.sets}<span class="mv-of"> / ${g.target} sets${volUnitSuffix}</span></span></div>
           <div class="mv-track"><div class="mv-fill${met?' mv-met':''}" style="width:${pct}%"></div></div>
         </div>`;
       }).join('');
   const volToggleBtn = (volAny && volHasMore)
     ? `<button class="txt-btn" style="margin-left:auto" onclick="toggleVolExpanded()">${VOL_EXPANDED?'Show fewer':'Show all '+volGroups.length}</button>`
     : '';
+  const volModeSeg = volAnyEver ? `<div class="seg wk-seg" style="margin:12px 0 2px">
+      <button class="${VOL_MODE==='week'?'on':''}" onclick="setVolMode('week')">This week</button>
+      <button class="${VOL_MODE==='avg'?'on':''}" onclick="setVolMode('avg')">4-wk avg</button>
+    </div>` : '';
 
   $('app').innerHTML = `<div class="wrap">
     <h1>Progress</h1>
@@ -3736,9 +3772,10 @@ async function progressScreen(opts){
     </div>
 
     <div class="sec-head"><h2>Weekly volume</h2>${volToggleBtn}</div>
-    <div class="card">${volHtml}
-      ${volAny?`<div class="rulenote"><b>How it works:</b> working sets logged this week
-        (Monday–Sunday), counted for every muscle group each exercise targets. General guideline,
+    <div class="card">${volHtml}${volModeSeg}
+      ${volAny?`<div class="rulenote"><b>How it works:</b> ${VOL_MODE==='avg'
+        ? 'average working sets per week over the trailing 4 weeks (this week included), counted for every muscle group each exercise targets.'
+        : 'working sets logged this week (Monday–Sunday), counted for every muscle group each exercise targets.'} General guideline,
         not a personal prescription.</div>`:''}
     </div>
 
