@@ -304,6 +304,14 @@ function chipActive(html, key) {
   if (!m) return null;
   return /\bon\b/.test(m[1]);
 }
+// Sep 1, round 2: the second chip (the picker trigger) always calls openVolTrendPicker(), not
+// setTrendVolPick(<key>) -- its active state and label are what changes, not its handler -- so it
+// needs its own extractor rather than reusing chipActive's per-key onclick match.
+function pickChipInfo(html) {
+  const m = html.match(/<span class="chip ([^"]*)"[\s\S]{0,30}?onclick="openVolTrendPicker\(\)">([^<]*)<\/span>/);
+  if (!m) return null;
+  return { active: /\bon\b/.test(m[1]), label: m[2].trim() };
+}
 function makeTrendWeeks(weeksSpec, target = 10) {
   return weeksSpec.map(w => ({
     weekOf: w.weekOf,
@@ -312,7 +320,7 @@ function makeTrendWeeks(weeksSpec, target = 10) {
 }
 function allGroupsSet(n) { const o = {}; MUSCLE_KEYS.forEach(g => o[g] = n); return o; }
 
-console.log('volume trend: no data at all -- "Pick muscle" button still renders (discoverable), true "Not enough history yet." state, no chart');
+console.log('volume trend: no data at all -- the "Pick a muscle" chip still opens the picker (discoverable), true "Not enough history yet." state, no chart');
 {
   PROGRESS_FIXTURE = baseProgress(); // no volumeTrend key at all
   await progressScreen({ silent: true });
@@ -321,31 +329,41 @@ console.log('volume trend: no data at all -- "Pick muscle" button still renders 
   ok(html.includes('Volume trend'), 'section heading renders even before any trend data exists');
   ok(sec.includes('Not enough history yet.'), 'shows the zero-history empty state (got no match)');
   ok(chipActive(sec, '__overall') === true, 'Overall chip is active by default');
-  ok(sec.includes('onclick="openVolTrendPicker()"') && sec.includes('Pick muscle'), 'the "Pick muscle" button still offers a way to reach all 12 muscles even with zero weeks of data (got no match)');
+  const pick = pickChipInfo(sec);
+  ok(!!pick && pick.active === false && pick.label === 'Pick a muscle ▾', `the second chip prompts to pick a muscle and opens the picker even with zero weeks of data (got ${JSON.stringify(pick)})`);
   ok(!sec.includes('<svg'), 'no chart svg with zero weeks of trend history');
+
+  // The picker itself must still be usable here -- with truly no history, every tile falls back to
+  // a plain "No data yet" subtext (window._VOLTREND_GROUPS is null in this state).
+  openVolTrendPicker();
+  const sheetHtml = body._children[body._children.length - 1].innerHTML;
+  ok((sheetHtml.match(/No data yet/g) || []).length === 12, `all 12 tiles show "No data yet" when there is truly no history at all (got ${(sheetHtml.match(/No data yet/g) || []).length})`);
 }
 
-console.log('volume trend: the inline chip row never shows more than Overall + the current pick (Jeff, Sep 1: "the pill boxes for all the exercises look messy") -- the other 11 muscles live in the picker sheet, not as a wall of pills');
+console.log('volume trend: the inline chip row always shows exactly 2 chips -- Overall + a single picker chip (Jeff, Sep 1 round 2: the old header button "seemed out of place") -- the other 11 muscles live in the picker sheet, not as inline pills');
 {
   const weeks = makeTrendWeeks([{ weekOf: '2026-08-17', sets: {} }, { weekOf: '2026-08-24', sets: allGroupsSet(5) }], 10);
   PROGRESS_FIXTURE = baseProgress({ volumeTrend: { weeks } });
   await progressScreen({ silent: true });
   let sec = trendSection(appEl.innerHTML);
-  ok((sec.match(/class="chip /g) || []).length === 1, `Overall view shows exactly 1 inline chip, not all 12 (got ${(sec.match(/class="chip /g) || []).length})`);
-  ok(sec.includes('Pick muscle'), 'the "Pick muscle" button is the way to reach the other 11 muscles');
+  ok((sec.match(/class="chip /g) || []).length === 2, `always exactly 2 inline chips, never a wall of 12 (got ${(sec.match(/class="chip /g) || []).length})`);
+  let pick = pickChipInfo(sec);
+  ok(!!pick && pick.label === 'Pick a muscle ▾' && pick.active === false, `on Overall, the second chip is a neutral prompt, not a filled/active pill (got ${JSON.stringify(pick)})`);
 
   setTrendVolPick('quads');
   await new Promise(r => setTimeout(r, 0));
   sec = trendSection(appEl.innerHTML);
-  ok((sec.match(/class="chip /g) || []).length === 2, `picking a muscle shows exactly 2 inline chips -- Overall + the current pick, never all 12 (got ${(sec.match(/class="chip /g) || []).length})`);
-  ok(chipActive(sec, 'quads') === true, 'the picked muscle shows as the active chip');
-  ok(!sec.includes('>Chest<') && !sec.includes('>Biceps<'), `muscles that are NOT picked no longer clutter the inline row at all (got: ${sec.slice(0, 300)})`);
+  ok((sec.match(/class="chip /g) || []).length === 2, `still exactly 2 inline chips after picking a muscle (got ${(sec.match(/class="chip /g) || []).length})`);
+  pick = pickChipInfo(sec);
+  ok(!!pick && pick.label === 'Quads ▾' && pick.active === true, `the second chip now names the picked muscle and shows active (got ${JSON.stringify(pick)})`);
+  ok(chipActive(sec, '__overall') === false, 'Overall is no longer the active chip');
+  ok(!sec.includes('>Chest<') && !sec.includes('>Biceps<'), `muscles that are NOT picked never clutter the inline row (got: ${sec.slice(0, 300)})`);
 
   setTrendVolPick('__overall'); // reset for later blocks
   await new Promise(r => setTimeout(r, 0));
 }
 
-console.log('volume trend: "Pick muscle" opens a sheet listing all 12 muscles; tapping one switches the chart and the sheet marks it active on reopen');
+console.log('volume trend: tapping the "Pick a muscle" chip opens a sheet of .mg-card tiles (icon + name + this week\'s own sets/target), grouped Upper Body/Lower Body/Other same as the Workouts library\'s muscle browser -- not a bare text list');
 {
   const weeks = makeTrendWeeks([{ weekOf: '2026-08-17', sets: {} }, { weekOf: '2026-08-24', sets: { hamstrings: 6 } }], 10);
   PROGRESS_FIXTURE = baseProgress({ volumeTrend: { weeks } });
@@ -354,21 +372,24 @@ console.log('volume trend: "Pick muscle" opens a sheet listing all 12 muscles; t
   openVolTrendPicker();
   const sheetHtml = body._children[body._children.length - 1].innerHTML;
   ok(sheetHtml.includes('Pick a muscle'), 'sheet title renders');
-  ok(MUSCLE_KEYS.every(g => sheetHtml.includes(`pickVolTrendMuscle('${g}')`) && sheetHtml.includes(MUSCLE_LABEL_MAP[g])),
-    'all 12 muscles are listed as tappable rows in the picker sheet (got no match for one or more)');
+  ok(sheetHtml.includes('Upper Body') && sheetHtml.includes('Lower Body') && sheetHtml.includes('Other'), 'muscles are grouped into the same categories the Workouts library uses (got no match)');
+  ok(MUSCLE_KEYS.every(g => sheetHtml.includes(`pickVolTrendMuscle('${g}')`) && sheetHtml.includes(MUSCLE_LABEL_MAP[g]) && sheetHtml.includes('mg-ico')),
+    'all 12 muscles render as tappable .mg-card tiles with an icon (got no match for one or more)');
+  ok(sheetHtml.includes('6 / 10 sets this week'), `hamstrings' own this-week progress shows as the tile's subtext (got no match in: ${sheetHtml.slice(0, 200)})`);
+  ok(sheetHtml.includes('0 / 10 sets this week'), 'an untrained muscle shows its real 0/target this week, not a blank or a false claim');
   ok(!sheetHtml.includes('✓'), 'nothing is marked active yet while still on Overall (got a checkmark unexpectedly)');
 
   pickVolTrendMuscle('hamstrings');
   await new Promise(r => setTimeout(r, 0));
-  ok(getTrendVolPick() === 'hamstrings', `picking a row from the sheet switches TREND_VOL_PICK (got ${getTrendVolPick()})`);
+  ok(getTrendVolPick() === 'hamstrings', `picking a tile from the sheet switches TREND_VOL_PICK (got ${getTrendVolPick()})`);
   const sec = trendSection(appEl.innerHTML);
   ok(sec.includes('Week of 2026-08-24: 6 sets'), `the chart actually switched to hamstrings' own data (got: ${sec.slice(0, 400)})`);
 
-  openVolTrendPicker(); // reopen -- the just-picked muscle should now show as the checked row
+  openVolTrendPicker(); // reopen -- the just-picked muscle should now show as the checked tile
   const sheetHtml2 = body._children[body._children.length - 1].innerHTML;
   const i = sheetHtml2.indexOf("pickVolTrendMuscle('hamstrings')");
-  const hamRow = sheetHtml2.slice(Math.max(0, i - 40), i + 200);
-  ok(hamRow.includes('✓'), `hamstrings shows as the checked row after picking it (got: ${hamRow})`);
+  const hamTile = sheetHtml2.slice(i, i + 400);
+  ok(hamTile.includes('✓'), `hamstrings shows as the checked tile after picking it (got: ${hamTile})`);
 
   setTrendVolPick('__overall'); // reset for later blocks
   await new Promise(r => setTimeout(r, 0));
@@ -383,7 +404,7 @@ console.log('volume trend: real weeks exist but nothing logged -- "Log a few wee
   ok(sec.includes('Log a few weeks of working sets'), 'shows the not-yet-trained message once real weeks exist but are all zero (got no match)');
   ok(!sec.includes('Not enough history yet.'), 'does NOT show the different zero-history message once weeks actually exist');
   ok(!sec.includes('<svg'), 'still no chart svg when every week is zero');
-  ok(sec.includes('onclick="openVolTrendPicker()"') && sec.includes('Pick muscle'), 'cold-review catch: "Pick muscle" still offers all 12 muscles in this THIRD empty-state branch too, not just the other two (got no match)');
+  ok(sec.includes('onclick="openVolTrendPicker()"') && sec.includes('Pick a muscle'), 'cold-review catch: the picker chip still offers all 12 muscles in this THIRD empty-state branch too, not just the other two (got no match)');
 }
 
 console.log('volume trend: re-picking the muscle that is already active is a harmless no-op');
@@ -435,7 +456,8 @@ console.log('volume trend: picking a muscle chip switches to that muscle\'s own 
   setTrendVolPick('quads');
   await new Promise(r => setTimeout(r, 0));
   sec = trendSection(appEl.innerHTML);
-  ok(chipActive(sec, 'quads') === true, 'Quads chip becomes active after picking it');
+  const quadsPick = pickChipInfo(sec);
+  ok(quadsPick && quadsPick.active === true && quadsPick.label === 'Quads ▾', `picker chip becomes active and shows Quads after picking it (got: ${JSON.stringify(quadsPick)})`);
   ok(chipActive(sec, '__overall') === false, 'Overall chip is no longer active');
   ok(sec.includes('Week of 2026-08-24: 8 sets'), `switches to quads' own raw weekly set count (got: ${sec.slice(0, 500)})`);
   ok(sec.includes('Week of 2026-08-17: 0 sets'), 'the untrained earlier week shows 0 sets for quads specifically');
@@ -482,6 +504,8 @@ console.log('volume trend: a stale/unknown picked muscle falls back to Overall i
   ok(chipActive(sec, '__overall') === true, 'a stale/unknown pick falls back to the Overall chip rather than staying on a phantom selection');
   ok(sec.includes('Week of 2026-08-24: 50% of target'), 'and shows the real Overall data instead of a false "no data" message (got: ' + sec.slice(0, 400) + ')');
   ok(!sec.includes('Log a few weeks of working sets'), 'does NOT fall into the empty-state branch just because the stale pick matched nothing');
+  const fallbackPick = pickChipInfo(sec);
+  ok(fallbackPick && fallbackPick.active === false && fallbackPick.label === 'Pick a muscle ▾', `the picker chip itself also resets to its neutral label/state, not left showing the phantom key (got: ${JSON.stringify(fallbackPick)})`);
 }
 
 console.log('body weight: empty state offers a CTA, no chart');
