@@ -746,6 +746,18 @@
     .hold-ic.almost-ic { background:rgba(6,122,6,.12); color:#067a06; }
     .rulenote { font-size:11.5px; color:var(--muted); line-height:1.55; padding:11px 2px 0; border-top:1px solid var(--line); margin-top:8px; }
     .rulenote b { color:var(--fg); font-weight:700; }
+    /* Weekly volume meter rows (Progress page) — a track (var(--line)) with a fill that turns
+       green only once the week's target is actually met, matching the app-wide rule that green
+       means earned, not just "some progress." */
+    .mv-row { padding:9px 2px; border-bottom:1px solid var(--line); }
+    .mv-row:last-child { border-bottom:none; }
+    .mv-top { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:6px; }
+    .mv-name { font-size:13.5px; font-weight:600; }
+    .mv-n { font-size:12.5px; font-weight:700; color:var(--fg); }
+    .mv-of { font-size:11px; font-weight:600; color:var(--muted); }
+    .mv-track { height:7px; border-radius:999px; background:var(--line); overflow:hidden; }
+    .mv-fill { height:100%; border-radius:999px; background:var(--blue); }
+    .mv-fill.mv-met { background:var(--green); }
     .kpi { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:6px; }
     .hero { font-size:30px; font-weight:700; line-height:1; letter-spacing:-.5px; }
     .hero-u { font-size:14px; color:var(--muted); font-weight:600; }
@@ -965,6 +977,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=263"></script>
+  <script src="app.js?v=264"></script>
 </body>
 </html>

@@ -3333,7 +3333,20 @@ function closePick(){ createFlow(); }
 let PROG_WEEKS = 13;
 // Labelled the way people think about time, not in the raw week counts the API takes.
 const PROG_RANGES = [ {weeks:4, label:'Month'}, {weeks:13, label:'3 months'}, {weeks:26, label:'6 months'} ];
+// Weekly volume meter: collapsed to the N muscle groups furthest from target by default (same
+// "6 chips, tap in for the rest" idea as Strength trend below), full 12-row list on demand.
+const VOL_SHOW_N = 5;
+let VOL_EXPANDED = false;
+function toggleVolExpanded(){ VOL_EXPANDED = !VOL_EXPANDED; progressScreen({silent:true}); }
 const GROUP_LABEL = { legs:'Legs', push:'Push', pull:'Pull', core:'Core', cardio:'Cardio', other:'Other' };
+// Display labels for the weekly-volume meter rows (server sends raw EX_LIB muscle_groups keys).
+const MUSCLE_LABEL = { chest:'Chest', lats:'Back', shoulders:'Shoulders', traps:'Traps',
+  biceps:'Biceps', triceps:'Triceps', forearms:'Forearms', quads:'Quads', hamstrings:'Hamstrings',
+  glutes:'Glutes', calves:'Calves', abdominals:'Abs' };
+// Last-fetched /api/progress payload — stashed so openBodyweightSheet (opened from a button on
+// this page, not passed any data of its own) can read the current unit and today's existing
+// entry without a second round trip.
+let PROG_LAST = null;
 
 // A bodyweight best has no weight — "0 × 10" reads as broken. Show the reps, which is what
 // you actually compare bodyweight sets on.
@@ -3435,6 +3448,77 @@ function trendChart(d, U){
   </div>`;
 }
 
+// Body weight chart — same SVG-line-chart shape as trendChart above (viewBox, xs/ys scale
+// functions, polyline + dots, tap-for-exact-figure titles), just a single always-present series
+// with no lift picker. "Log weight" opens openBodyweightSheet(); see the section header below.
+function bodyweightChart(d, U){
+  const bw = (d.bodyweight && d.bodyweight.entries) || [];
+  const logBtn = `<button class="txt-btn" style="margin-left:auto" onclick="openBodyweightSheet()">+ Log weight</button>`;
+  if(!bw.length) return `<div class="sec-head"><h2>Body weight</h2></div><div class="card"><div class="empty">
+    <div class="empty-t">Not tracked yet</div>
+    <div class="empty-b">Log your weight and it starts charting here.</div>
+    <button class="blue" style="margin-top:10px" onclick="openBodyweightSheet()">+ Log weight</button>
+  </div></div>`;
+  if(bw.length<2){
+    const only = bw[0];
+    return `<div class="sec-head"><h2>Body weight</h2>${logBtn}</div><div class="card">
+      <div class="ch-head"><div><span class="ch-val">${only.weight}</span> <span class="ch-unit">${U}</span></div></div>
+      <div class="muted" style="padding:6px 4px 2px">Logged ${shortDate(only.date)}. One more entry starts the chart.</div>
+    </div>`;
+  }
+  const W=326,H=120,PL=34,PRr=12,PT=18,PB=22;
+  const vals=bw.map(p=>p.weight);
+  let lo=Math.min(...vals), hi=Math.max(...vals);
+  const pad=Math.max(2,(hi-lo)*0.2);
+  lo=Math.floor(lo-pad); hi=Math.ceil(hi+pad);
+  if(hi===lo) hi=lo+2;
+  const bwXs=i=>PL+i*(W-PL-PRr)/(bw.length-1);
+  const bwYs=v=>PT+(hi-v)*(H-PT-PB)/(hi-lo);
+  const step=Math.max(1,Math.round((hi-lo)/4));
+  let grid='',lbl='';
+  for(let g=Math.ceil(lo/step)*step; g<=hi; g+=step){
+    grid+=`<line x1="${PL}" y1="${bwYs(g)}" x2="${W-PRr}" y2="${bwYs(g)}" style="stroke:var(--line)" stroke-width="1"/>`;
+    lbl+=`<text x="${PL-7}" y="${bwYs(g)+3.5}" text-anchor="end" font-size="9.5" style="fill:var(--muted)">${g}</text>`;
+  }
+  const poly=bw.map((p,i)=>`${bwXs(i)},${bwYs(p.weight)}`).join(' ');
+  let dots='',hits='';
+  bw.forEach((p,i)=>{ const last=i===bw.length-1;
+    dots+=`<circle cx="${bwXs(i)}" cy="${bwYs(p.weight)}" r="${last?5.5:4.2}" style="fill:${last?'var(--blue)':'var(--card)'};stroke:var(--blue)" stroke-width="2"/>`;
+    hits+=`<circle cx="${bwXs(i)}" cy="${bwYs(p.weight)}" r="15" fill="transparent"><title>${shortDate(p.date)}: ${p.weight} ${U}</title></circle>`;});
+  let xl='';
+  [[0,'start'],[bw.length-1,'end']].forEach(([i,a])=>{
+    xl+=`<text x="${bwXs(i)}" y="${H-6}" text-anchor="${a}" font-size="9.5" style="fill:var(--muted)">${shortDate(bw[i].date)}</text>`;});
+  const lastV=bw[bw.length-1].weight, firstV=bw[0].weight, delta=Math.round((lastV-firstV)*10)/10;
+  // No color judgment on the delta -- unlike a strength trend, more or less bodyweight isn't
+  // inherently "up" (green is reserved for earned things elsewhere in this app), so this stays
+  // plain muted text regardless of direction.
+  return `<div class="sec-head"><h2>Body weight</h2>${logBtn}</div><div class="card">
+    <div class="ch-head"><div><span class="ch-val">${lastV}</span> <span class="ch-unit">${U}</span></div>
+      ${delta!==0?`<div class="ch-unit">${delta>0?'+':''}${delta} ${U} since ${shortDate(bw[0].date)}</div>`:''}</div>
+    <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible">
+      ${grid}<polyline points="${poly}" fill="none" style="stroke:var(--blue)" stroke-width="2"
+        stroke-linejoin="round" stroke-linecap="round"/>${dots}${lbl}${xl}${hits}</svg>
+  </div>`;
+}
+function openBodyweightSheet(){
+  const bw = PROG_LAST && PROG_LAST.bodyweight;
+  const U = (bw && bw.unit) || 'lb';
+  const today = localDateStr();
+  const existing = bw && bw.entries.find(e=>e.date===today);
+  textEntrySheet({
+    title:'Log body weight', label:`Weight (${U})`,
+    value: existing ? String(existing.weight) : '', placeholder:'185',
+    confirmLabel:'Save',
+    onConfirm: async (v)=>{
+      const w = Number(v);
+      if(!(w>0)){ alert('Enter your weight'); return; }
+      const r = await H.post('/api/me/bodyweight', { weight:w, unit:U, date:today });
+      if(r && r.error){ alert(r.error); return; }
+      progressScreen({silent:true});
+    }
+  });
+}
+
 // Jeff, Aug 19: "only select 5 workouts at a time... let the user pick which workouts they want
 // to select rather than it using most recent exercises... a tab under it that allows us to
 // select." TRENDPICK_SEL tracks selection ORDER (push on check, filter on uncheck) because the
@@ -3486,6 +3570,7 @@ async function progressScreen(opts){
   const silent = !!(opts && opts.silent);
   const d = await H.get('/api/progress?weeks='+PROG_WEEKS);
   if(!d || d.error){ $('app').innerHTML = `<div class="wrap"><h1>Progress</h1><div class="muted">Couldn\'t load progress.</div></div>`; if(!silent) window.scrollTo(0,0); return; }
+  PROG_LAST = d;
   const U = d.unit || 'lb';
   // Bodyweight lifts store weight 0; "at 0 lb" reads as a bug on every one of these rows.
   const WL = w => (Number(w)>0 ? `${w} ${U}` : 'bodyweight');
@@ -3589,6 +3674,35 @@ async function progressScreen(opts){
       }).join('')
     : `<div class="muted" style="padding:8px 2px">Log a workout — your first set of any exercise is a record.</div>`;
 
+  // --- weekly volume per muscle group ---
+  // Jeff, Aug 31: 12 rows made this the single longest section on the page, burying Strength
+  // trend and Personal records below the fold. Same fix as Strength trend's own "6 chips, tap in
+  // for the rest" -- collapsed by default to VOL_SHOW_N, sorted worst-first (lowest % of target)
+  // so the collapsed view actually surfaces what's useful: the muscle groups most worth attention,
+  // not just the first N alphabetically/anatomically. Expanded, it switches back to the natural
+  // anatomical order (server's MUSCLE_ORDER) since a full scan is easier to read grouped, not
+  // ranked. VOL_EXPANDED persists across re-renders same as PROG_WEEKS/TREND_PICK above.
+  const volGroups = (d.volume && d.volume.groups) || [];
+  const volAny = volGroups.some(g=>g.sets>0);
+  const volHasMore = volGroups.length > VOL_SHOW_N;
+  const volSorted = volGroups.slice().sort((a,b)=>(a.sets/a.target)-(b.sets/b.target));
+  const volShown = VOL_EXPANDED ? volGroups : volSorted.slice(0, VOL_SHOW_N);
+  const volHtml = !volAny
+    ? `<div class="muted" style="padding:14px 2px 6px;line-height:1.5">Log some working sets this
+         week and each muscle group's volume fills in here.</div>`
+    : volShown.map(g=>{
+        const pct = Math.min(100, Math.round(100*g.sets/g.target));
+        const met = g.sets >= g.target;
+        return `<div class="mv-row">
+          <div class="mv-top"><span class="mv-name">${MUSCLE_LABEL[g.group]||g.group}</span>
+            <span class="mv-n">${g.sets}<span class="mv-of"> / ${g.target} sets</span></span></div>
+          <div class="mv-track"><div class="mv-fill${met?' mv-met':''}" style="width:${pct}%"></div></div>
+        </div>`;
+      }).join('');
+  const volToggleBtn = (volAny && volHasMore)
+    ? `<button class="txt-btn" style="margin-left:auto" onclick="toggleVolExpanded()">${VOL_EXPANDED?'Show fewer':'Show all '+volGroups.length}</button>`
+    : '';
+
   $('app').innerHTML = `<div class="wrap">
     <h1>Progress</h1>
     <p class="sub">${nothingYet ? 'Log a workout and this fills in' : `${d.thisWeek} day${d.thisWeek===1?'':'s'} trained this week`}</p>
@@ -3599,6 +3713,13 @@ async function progressScreen(opts){
       ${(d.ready.length||(d.soon||[]).length||d.holds.length)?`<div class="rulenote"><b>How it works:</b>
         reach the top of your rep range two sessions in a row <b>at the same weight</b> and the weight
         goes up. Warm-ups and drop sets don\'t count.</div>`:''}
+    </div>
+
+    <div class="sec-head"><h2>Weekly volume</h2>${volToggleBtn}</div>
+    <div class="card">${volHtml}
+      ${volAny?`<div class="rulenote"><b>How it works:</b> working sets logged this week
+        (Monday–Sunday), counted for every muscle group each exercise targets. General guideline,
+        not a personal prescription.</div>`:''}
     </div>
 
     <h2>Consistency</h2>
@@ -3632,6 +3753,8 @@ async function progressScreen(opts){
     </div>
 
     ${trendChart(d,U)}
+
+    ${bodyweightChart(d,U)}
 
     <h2>Personal records</h2>
     <div class="card">${prHtml}</div>
