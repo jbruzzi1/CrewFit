@@ -2653,6 +2653,20 @@ app.get('/api/progress/exercise/:name', auth, async (req, res) => {
   });
 });
 
+// Jeff, Aug 31: "I am completing a set BEFORE I click tap to log a set... which means I am not
+// seeing the notes on the app telling me what weight to do next." The log sheet's own live advice
+// (above) can never fix this by itself — it only opens AFTER the set it would have informed. The
+// one place that's guaranteed to be seen before that first tap is the workout screen's exercise
+// list, so it needs this same ready/hold/soon data for EVERY exercise in one shot, not one
+// GET per exercise. /api/progress (below) already computes this, but bundled with weeksFor/
+// trendFor/recordsFor — real work that screen doesn't need and that opening a workout shouldn't
+// pay for on every render. This is the bare ready/holds/soon lists alone, same recommendationsFor()
+// call already done by both the endpoints around it, nothing extra computed.
+app.get('/api/progress/recommendations', auth, async (req, res) => {
+  const r = recommendationsFor(req.userId);
+  res.json({ unit: r.unit, ready: r.ready, holds: r.holds, soon: r.soon });
+});
+
 app.get('/api/progress', auth, async (req, res) => {
   const weeks = Math.min(52, Math.max(4, Number(req.query.weeks) || 13));
   const rec = recommendationsFor(req.userId);

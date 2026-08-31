@@ -274,6 +274,19 @@
     .ex-card .ex-name { font-size:15px; line-height:1.3; }
     .ex-card .logged { display:block; margin-top:6px; padding-left:2px; font-size:12px; font-weight:600; color:var(--green); }
     .ex-card .log-hint { display:block; margin-top:6px; padding-left:2px; margin-bottom:6px; font-size:12px; font-weight:600; color:var(--blue); }
+    /* Jeff, Aug 31, round 2: the recommendation stays right where "Tap to log sets" always sat
+       (a side-by-side badge "lost that clean look") -- it just isn't flat blue like every other
+       hint on the list anymore. "Repeat X" stays a quiet neutral gray -- routine information, not
+       a new max, so it should not compete for attention the same way.
+       Round 3: the log sheet's own .log-rec.up green (#067a06) was the first pick for "Try X
+       today" -- Jeff flagged it as not working in light mode either (too dark/flat against the
+       white card). Switched to var(--green) instead, matching THIS card's own already-shipped
+       .logged text ("✓ N sets logged") one line below it -- same green the eye already reads as
+       "positive" on this exact component, just brighter/fresher than the log sheet's darker icon
+       tone. Same contrast tradeoff as .logged already carries (~3.3:1, under the 4.5:1 AA floor
+       for 12px text) -- an existing, unflagged precedent on this exact card, not a new one. */
+    .ex-card .log-hint.rec-ready { color:var(--green); }
+    .ex-card .log-hint.rec-hold { color:var(--muted); }
     /* what your training partner has done on this lift while you are both in the gym */
     .ex-card .ex-crew { display:block; margin-top:4px; padding-left:2px; font-size:11.5px; color:var(--muted); }
     /* a swap is on the table for this lift — the state of the exercise, so it reads as a fact
@@ -875,6 +888,19 @@
       :where(html.theme-dark) .rp-tag, :where(html.theme-dark) .rc-next-to, :where(html.theme-dark) .drv-p.up, :where(html.theme-dark) .beat-chip { color:var(--green); }
       :where(html.theme-dark) .beat-chip { background:rgba(62,207,114,.14); }
       :where(html.theme-dark) .log-rec.up, :where(html.theme-dark) .rc-pr { background:rgba(62,207,114,.07); border-color:rgba(62,207,114,.25); }
+      /* .ex-card kept in the selector here (unlike most :where() overrides in this block) so this
+         rule's specificity (0,3,0) matches the light-mode base rule at .ex-card .log-hint.rec-ready
+         above instead of losing to it -- :where() itself always contributes zero, so dropping
+         .ex-card would leave this at (0,2,0) and the light-mode value would keep winning even in
+         dark theme regardless of source order (cold-review catch, v261).
+         Jeff, Aug 31, round 3: "on dark mode that green doesn't fit well" -- the usual bright
+         --green accent (#3ecf72) reads as neon/loud sitting as plain text in a card this dark and
+         muted (other than the accent color itself, this whole screen is grayscale). Toned down to
+         #5fae78 -- same hue so it still reads as the same "positive" signal as the light-mode green
+         and the log sheet's own box, just quieter -- rather than reusing the accent verbatim. Still
+         6.2:1 contrast against the card background (var(--card) dark, #1c1e22), clear of the 4.5:1
+         AA floor with room to spare. Light mode is unchanged -- only dark was flagged. */
+      :where(html.theme-dark) .ex-card .log-hint.rec-ready { color:#5fae78; }
       :where(html.theme-dark) .log-rec.almost { border-color:rgba(62,207,114,.45); }
       :where(html.theme-dark) .pr-beat { border-color:var(--green); background:rgba(62,207,114,.05); }
       :where(html.theme-dark) .act-chip.done { background:rgba(62,207,114,.16); }
@@ -939,6 +965,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=259"></script>
+  <script src="app.js?v=261"></script>
 </body>
 </html>
