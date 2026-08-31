@@ -270,6 +270,7 @@ window.addEventListener('popstate', (e)=>{
 // screen that started it, and each one caused a real bug by doing so.
 function resetTransientModes(){
   SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;   // stuck "Pick replacement" library
+  SUGGEST_ADD_MODE = false; SUGGEST_ADD_SESSION = null;       // stuck "suggest adding" library
   LIB_ADDMODE = false;                                        // stuck "Done (n)" library
   QUICK_ADD_MODE = false;                                     // stuck Quick Workout picker
   EDITING_SESSION = null;                                     // next new workout saved over the edited one
@@ -595,6 +596,11 @@ async function openSession(id, opts){
   // suggested edits, keyed by target exercise id (compact one-line inline row, C style)
   const editByEx = {};
   for(const ed of s.suggestedEdits){
+    // v262b: an "add a new exercise" suggestion (see /suggest in server.js) has no exerciseId --
+    // it isn't a change to any existing card. Grouping it under the shared editByEx[undefined]
+    // bucket would make every OTHER add-suggestion's presence there falsely mark THIS one as
+    // "already shown inline" in the fallback list below, hiding all of them.
+    if(!ed.exerciseId) continue;
     (editByEx[ed.exerciseId] = editByEx[ed.exerciseId] || []).push(ed);
   }
   // pre-resolve proposer display names (await only at top level, not inside .map)
@@ -743,13 +749,36 @@ async function openSession(id, opts){
     }
     return `<div class="${cls}">${head}${sub}</div>`;
   }).join('');
-  // suggested edits (kept for any edits whose exercise no longer exists)
+  // suggested edits: swaps whose target exercise no longer exists, PLUS -- v262b -- every
+  // "add a new exercise" suggestion, which never had a target exercise to begin with (editByEx
+  // skips them entirely, see its own comment above). This used to be built and then never
+  // actually appended to `html` below (a real, silent bug -- the whole section rendered nothing,
+  // ever); fixed as part of wiring "add" suggestions in, since without it there'd be nowhere for
+  // a pending add-suggestion to show up at all.
+  //
+  // v262b also fixed a second bug this uncovered the moment it actually started rendering: the
+  // skip condition below used to be `editByEx[ed.exerciseId]` -- but editByEx groups EVERY swap
+  // edit by its exerciseId regardless of whether that exercise still exists (it doesn't filter
+  // against s.exercises at all, see its own loop above), so a swap targeting an exercise the
+  // creator later removed was ALWAYS present in its own editByEx bucket and this check skipped
+  // it -- exactly backwards from the comment's stated intent ("kept for any edits whose exercise
+  // no longer exists"). liveExIds is the actual thing that determines whether the myEx loop above
+  // would have rendered this edit inline: only when e.id (a REAL, current exercise) matches it.
+  const liveExIds = new Set(s.exercises.map(e => e.id));
   let edits = '';
   for(const ed of s.suggestedEdits){
-    if(editByEx[ed.exerciseId]) continue; // already shown inline above
+    if(ed.exerciseId && liveExIds.has(ed.exerciseId)) continue; // already shown inline above (a swap on a still-existing exercise)
+    // An approved add is now a real exercise with its own card in the list above -- nothing more
+    // to say about it here. An approved swap has no such card of its own (it renamed an existing
+    // one), so it still falls through to the muted "swapped by X" line below.
+    if(ed.type==='add' && ed.status==='approved') continue;
     const byName = nameCache[ed.proposedBy] || ed.proposedBy;
     if(ed.status==='pending'){
-      edits += `<div class="card"><div class="req"><div class="rc">${byName==='You' ? 'You suggested' : esc(byName)+' suggests'} → ${esc(ed.swapTo)}</div>`;
+      if(ed.type==='add'){
+        edits += `<div class="card"><div class="req"><div class="rc">${byName==='You' ? 'You suggested adding' : esc(byName)+' suggests adding'} ${esc(ed.swapTo)}</div>`;
+      } else {
+        edits += `<div class="card"><div class="req"><div class="rc">${byName==='You' ? 'You suggested' : esc(byName)+' suggests'} → ${esc(ed.swapTo)}</div>`;
+      }
       if(isCreator) edits += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
       else edits += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
       edits += `</div></div>`;
@@ -857,6 +886,7 @@ async function openSession(id, opts){
     if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div>`;
     else if(canSuggest) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Not feeling one of these? Tap it to propose a replacement — ${esc(isUnknownName(nameCache[s.creatorId])?'the host':String(nameCache[s.creatorId]).split(' ')[0])} approves it.</div>`;
   }
+  if(edits) html += `<h2 class="pt">Suggested changes</h2>${edits}`;
   if(jr) html += `<h2 class="pt">Join requests</h2>${jr}`;
   if(myPost){
     // Completed/saved workout: Photos (where swap slot was), then Notes — MY OWN recap, since
@@ -875,11 +905,22 @@ async function openSession(id, opts){
   } else if(!isCreator && canEdit){
     // You have joined and can log, so tapping a card logs — which means the cards are taken and
     // suggesting needs its own door. The creator does NOT get this: they have Edit, and a creator
-    // suggesting a swap to themselves and then approving it is a loop, not a feature.
-    html += `<h2 class="sep">Suggest a swap</h2><div class="card">
-      <div class="muted" style="font-size:12.5px;margin:2px 2px 8px">Not feeling one of these? Propose a replacement — ${esc(isUnknownName(nameCache[s.creatorId])?'the host':String(nameCache[s.creatorId]).split(' ')[0])} approves it.</div>
+    // suggesting a change to themselves and then approving it is a loop, not a feature.
+    // v262b (Jeff, Aug 31): "add the ability to add an exercise to a workout, not just suggest a
+    // swap." Renamed from "Suggest a swap" to "Suggest a change" now that it offers two things --
+    // swap copy/behavior below is untouched, just joined by a second option. The swap half only
+    // makes sense when there's something to replace, so it's hidden on an empty workout (a fresh
+    // "Workout Now" a friend joined before you've added anything); adding a brand-new exercise
+    // stays offered either way, since that's exactly the case where it's most useful.
+    const hostFirst = esc(isUnknownName(nameCache[s.creatorId])?'the host':String(nameCache[s.creatorId]).split(' ')[0]);
+    html += `<h2 class="sep">Suggest a change</h2><div class="card">
+      ${s.exercises.length ? `
+      <div class="muted" style="font-size:12.5px;margin:2px 2px 8px">Not feeling one of these? Propose a replacement — ${hostFirst} approves it.</div>
       <select id="swEx" style="margin-bottom:10px">${s.exercises.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
-      <button class="sec sm" style="background:var(--line); margin-bottom:5px" onclick="openSwapPicker('${s.id}')">Pick replacement from Workouts →</button>
+      <button class="sec sm" style="background:var(--line); margin-bottom:10px" onclick="openSwapPicker('${s.id}')">Pick replacement from Workouts →</button>
+      ` : ''}
+      <div class="muted" style="font-size:12.5px;margin:2px 2px 8px">Want to add something new? ${hostFirst} approves that too.</div>
+      <button class="sec sm" style="background:var(--line)" onclick="openSuggestAddPicker('${s.id}')">Suggest adding an exercise →</button>
     </div>`;
   }
   const isPosted = !!myPost;
@@ -1533,8 +1574,36 @@ function openSwapPicker(id, exerciseId){
   SWAP_MODE = true; SWAP_SESSION = id; SWAP_FROM = exerciseId;
   LIB_ADDMODE = false;   // exRowHtml tests SWAP_MODE first, so leaving this set makes "+ Add
                          // exercise" silently file swap suggestions against the old workout
+  SUGGEST_ADD_MODE = false; SUGGEST_ADD_SESSION = null;   // never more than one picker mode at once
   SWAP_ENTRY_HISTORY_LEN = history.length;   // see backToSessionAfterSwapPicker's comment
   showTab('lib', true);
+}
+// v262b: the other half of "add the ability to add an exercise to a workout, not just suggest a
+// swap" (Jeff, Aug 31). Same shape as openSwapPicker just above -- open the Workouts library,
+// picking a row files a suggestion instead of acting immediately -- but there is no FROM exercise
+// here: this proposes a brand-new addition, not a replacement, so SWAP_FROM has nothing to hold.
+// Server-side this is the exact same /suggest + approve/reject pipeline a swap already goes
+// through (see server.js), just a different edit `type`.
+function openSuggestAddPicker(id){
+  SUGGEST_ADD_MODE = true; SUGGEST_ADD_SESSION = id;
+  SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;   // never more than one picker mode at once
+  LIB_ADDMODE = false;
+  SWAP_ENTRY_HISTORY_LEN = history.length;   // backToSessionAfterSwapPicker only ever does history
+                                              // math off this -- it never reads SWAP_SESSION/SWAP_FROM,
+                                              // so it's safe to reuse verbatim for this mode too
+  showTab('lib', true);
+}
+function suggestAddCancel(){
+  SUGGEST_ADD_MODE = false; SUGGEST_ADD_SESSION = null;
+  backToSessionAfterSwapPicker();
+}
+async function suggestAddPick(name){
+  const id = SUGGEST_ADD_SESSION;
+  if(!id) return;
+  SUGGEST_ADD_MODE = false; SUGGEST_ADD_SESSION = null;
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/suggest`,{type:'add', name});
+  if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) backToSessionAfterSwapPicker();
 }
 // ---------- Per-exercise set logger (Hevy/Strong style) ----------
 const SET_TYPES = [
@@ -3596,6 +3665,11 @@ let SWAP_FROM = null;
 // back exactly as many entries as browsing inside the picker actually pushed -- see
 // backToSessionAfterSwapPicker's comment just above openSwapPicker.
 let SWAP_ENTRY_HISTORY_LEN = 0;
+// v262b: Suggest-add mode -- same idea as swap mode above, open the Library so the user picks a
+// real exercise, but this proposes adding it fresh rather than replacing SWAP_FROM (there is no
+// FROM here). Reuses SWAP_ENTRY_HISTORY_LEN itself (see openSuggestAddPicker's comment).
+let SUGGEST_ADD_MODE = false;
+let SUGGEST_ADD_SESSION = null;
 function openAddExercises(){
   // stash details typed so far on the workout form
   if($('loc')) DRAFT.location = $('loc').value;
@@ -3610,6 +3684,7 @@ function openAddExercises(){
   if($('dt')) DRAFT._dt = $('dt').value;
   LIB_ADDMODE = true;
   SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;   // never both at once
+  SUGGEST_ADD_MODE = false; SUGGEST_ADD_SESSION = null;       // never both at once
   showTab('lib', true);   // identical to tapping the bottom Workouts tab
 }
 function libDone(){
@@ -3672,6 +3747,11 @@ async function library(opts){
     ? `<div class="pick-head lib-head">
          <button class="sec sm" onclick="swapCancel()">‹ Cancel</button>
          <h1 style="flex:1;font-size:18px">Pick replacement</h1>
+       </div>`
+    : SUGGEST_ADD_MODE
+    ? `<div class="pick-head lib-head">
+         <button class="sec sm" onclick="suggestAddCancel()">‹ Cancel</button>
+         <h1 style="flex:1;font-size:18px">Add which exercise?</h1>
        </div>`
     : `<div class="pick-head lib-head">
          <h1 style="flex:1">Workouts</h1>
@@ -3758,6 +3838,16 @@ function applyLibSearch(){
 function exRowHtml(e){
   if(SWAP_MODE){
     return `<div class="ex-row" onclick="swapPick('${jsq(e.name)}')">
+        <div class="ex-main">
+          <div class="ex-name">${esc(e.name)}</div>
+          <div class="ex-mg">${esc((e.muscle_groups||[]).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
+        </div>
+        <div class="ex-badges">${exBadges(e)}</div>
+        <div class="mg-chev">›</div>
+      </div>`;
+  }
+  if(SUGGEST_ADD_MODE){
+    return `<div class="ex-row" onclick="suggestAddPick('${jsq(e.name)}')">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
           <div class="ex-mg">${esc((e.muscle_groups||[]).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
