@@ -76,12 +76,21 @@ let scrollToCalls = 0;
 // popstate listeners land here so the test can fire them manually -- vm.runInContext's
 // window === ctx, so window.addEventListener('popstate', ...) at app.js's top level calls this.
 const popstateListeners = [];
+// Tracks every URL fetched, so tests can assert WHICH profile a re-render actually targeted --
+// the DOM stub below can't be read back (its setters are no-ops), so "did setWorkoutView land on
+// the right profile" has to be answered by what it fetched, not what it rendered.
+const fetchLog = [];
 function mockFetch(url) {
+  fetchLog.push(url);
   // Minimal-but-valid fixtures, just enough for each render function below to reach its own
   // $('app').innerHTML=/navigated()/landOn() call without throwing on a missing field.
   if (/^\/api\/friends$/.test(url)) return jsonRes({ friends: [], incoming: [], outgoing: [], followRequests: [] });
   if (/^\/api\/exercises$/.test(url)) return jsonRes([]);
   if (/^\/api\/profile\/[^/]+\/(followers|following)$/.test(url)) return jsonRes([]);
+  // Distinct id per profile so a fixture never accidentally passes for the wrong user.
+  const profileMatch = /^\/api\/profile\/([^/]+)$/.exec(url);
+  if (profileMatch) return jsonRes({ id: profileMatch[1], username: profileMatch[1], displayName: profileMatch[1],
+    workoutsCompleted: 0, following: 0, followers: 0, myWorkouts: [], recentActivity: [], youFollow: 'none' });
   if (/^\/api\/sessions$/.test(url)) return jsonRes([]);
   if (/^\/api\/feed$/.test(url)) return jsonRes([]);
   if (/^\/api\/progress/.test(url)) return jsonRes({ ready: [], soon: [], holds: [], weeks: [], prs: [] });
@@ -122,6 +131,8 @@ const home = vm.runInContext('home', ctx);
 const swapCancel = vm.runInContext('swapCancel', ctx);
 const openSwapPicker = vm.runInContext('openSwapPicker', ctx);
 const libOpenMuscle = vm.runInContext('libOpenMuscle', ctx);
+const profileView = vm.runInContext('profileView', ctx);
+const setWorkoutView = vm.runInContext('setWorkoutView', ctx);
 const reset = () => { historyLog.length = 0; scrollToCalls = 0; };
 
 console.log('navigated()/landOn(): the shared primitive both fixes are built on');
@@ -348,6 +359,41 @@ console.log("\nin-page '← Back' buttons use real history.back(), not a hardcod
     "no in-page Back button is hardcoded to showTab('home') anymore");
   ok(!/onclick="profileView\('\$\{id\}'\)">.{0,30}Back/.test(SRC),
     "no in-page Back button re-pushes a duplicate profileView(id) entry anymore");
+}
+
+console.log("\nprofile's grid/list view toggle re-renders the profile actually on screen, not always ME's");
+{
+  // Jeff, Sep 2: "when I click to change grid or list view on a different person profile - it
+  // brings me to my profile." setWorkoutView used to hardcode profileView(ME.id) no matter whose
+  // profile the buttons were sitting on. Two checks: the rendered button markup must pass the
+  // on-screen profile's own id (not just ME's) into setWorkoutView, and the runtime call must
+  // actually re-fetch THAT profile, not ME's.
+  ok(/onclick="setWorkoutView\('list','\$\{id\}'\)"/.test(SRC),
+    "the List button passes the on-screen profile's id to setWorkoutView");
+  ok(/onclick="setWorkoutView\('grid','\$\{id\}'\)"/.test(SRC),
+    "the Grid button passes the on-screen profile's id to setWorkoutView");
+
+  // tryBoot()'s test above (line ~286) sets ME = null and never restores it -- this block needs
+  // a real ME back for both the main behavior and the ME-fallback check below.
+  vm.runInContext(`ME = { id: 'me1', displayName: 'Test User', username: 'testuser' };`, ctx);
+  vm.runInContext(`window.__origFetch ? (fetch = window.__origFetch) : null;`, ctx); // undo tryBoot's fetch override too
+
+  await profileView('friend1');
+  fetchLog.length = 0;
+  setWorkoutView('grid', 'friend1');
+  await new Promise(r => setTimeout(r, 0)); // let profileView's H.get resolve
+  ok(fetchLog.some(u => u === '/api/profile/friend1'),
+    `setWorkoutView('grid','friend1') re-fetches friend1's own profile (got ${JSON.stringify(fetchLog)})`);
+  ok(!fetchLog.some(u => u === '/api/profile/me1'),
+    "...and does NOT redirect to ME's profile");
+
+  // Defensive fallback preserved: called with no id at all (shouldn't happen from a real button,
+  // but keeps this from throwing if it ever is) still lands somewhere sane -- ME's own profile.
+  fetchLog.length = 0;
+  setWorkoutView('list');
+  await new Promise(r => setTimeout(r, 0));
+  ok(fetchLog.some(u => u === '/api/profile/me1'),
+    `setWorkoutView('list') with no id falls back to ME's own profile (got ${JSON.stringify(fetchLog)})`);
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
