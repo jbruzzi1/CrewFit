@@ -16,6 +16,11 @@
 //    and posts {weight, unit, date} to /api/me/bodyweight on Save.
 //  - PROG_LAST is stashed after every progressScreen() render so the sheet (opened from a button
 //    on the page, not passed data directly) has something to read.
+//  - "This week"/"4-wk avg" toggle (Aug 31, round 2): the pill markup, the mode-dependent numbers
+//    (with a "/wk" suffix and switched rulenote copy in avg mode), and specifically that the
+//    collapsed 5-row selection is PINNED to "This week" ranking regardless of which mode is being
+//    viewed -- a real bug Jeff caught in the first draft, where tapping the toggle could swap out
+//    which muscles even appeared, not just their numbers.
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
@@ -87,13 +92,23 @@ const progressScreen = vm.runInContext('progressScreen', ctx);
 const openBodyweightSheet = vm.runInContext('openBodyweightSheet', ctx);
 const toggleVolExpanded = vm.runInContext('toggleVolExpanded', ctx);
 const getVolExpanded = () => vm.runInContext('VOL_EXPANDED', ctx);
+const setVolMode = vm.runInContext('setVolMode', ctx);
+const getVolMode = () => vm.runInContext('VOL_MODE', ctx);
 
 function baseProgress(overrides) {
   return Object.assign({
     unit: 'lb', ready: [], holds: [], soon: [], weeks: [{ weekOf: '2026-08-24', days: 0 }],
     thisWeek: 0, avgPerWeek: 0, streakWeeks: 0,
     trend: { lifts: [], overall: [], allNames: [], picks: [] }, prs: [],
-    volume: { weekOf: '2026-08-24', groups: [
+    volume: { weekOf: '2026-08-24', weeks: 1, groups: [
+      { group: 'chest', sets: 0, target: 12 }, { group: 'lats', sets: 0, target: 12 },
+      { group: 'shoulders', sets: 0, target: 12 }, { group: 'traps', sets: 0, target: 8 },
+      { group: 'biceps', sets: 0, target: 10 }, { group: 'triceps', sets: 0, target: 10 },
+      { group: 'forearms', sets: 0, target: 6 }, { group: 'quads', sets: 0, target: 12 },
+      { group: 'hamstrings', sets: 0, target: 10 }, { group: 'glutes', sets: 0, target: 10 },
+      { group: 'calves', sets: 0, target: 10 }, { group: 'abdominals', sets: 0, target: 10 },
+    ] },
+    volumeAvg: { weekOf: '2026-08-10', weeks: 4, groups: [
       { group: 'chest', sets: 0, target: 12 }, { group: 'lats', sets: 0, target: 12 },
       { group: 'shoulders', sets: 0, target: 12 }, { group: 'traps', sets: 0, target: 8 },
       { group: 'biceps', sets: 0, target: 10 }, { group: 'triceps', sets: 0, target: 10 },
@@ -113,6 +128,33 @@ console.log('weekly volume: empty state when nothing trained this week');
   ok(html.includes('Weekly volume'), 'section heading renders');
   ok(html.includes("Log some working sets this"), 'shows the empty-state note (got no match)');
   ok(!html.includes('mv-row'), 'no meter rows rendered when nothing trained yet');
+  ok(!html.includes(`onclick="setVolMode`), 'no mode toggle when BOTH this week and the 4-wk avg are truly empty');
+}
+
+console.log('weekly volume: mode toggle still shows when THIS WEEK is empty but the 4-wk avg has data (cold-review catch)');
+{
+  // Real bug caught by cold review: the toggle used to be gated on the CURRENTLY DISPLAYED mode's
+  // data. A fresh page load always starts on "This week," so a week with nothing logged yet --
+  // the exact scenario this whole feature exists for -- hid the "4-wk avg" button entirely, even
+  // though the trailing month had real data to show. The toggle must be offered whenever EITHER
+  // view has something, not just the one currently on screen.
+  const volAvg = baseProgress().volumeAvg;
+  volAvg.groups = volAvg.groups.map(g => g.group === 'chest' ? { group: 'chest', sets: 6, target: 12 } : g);
+  PROGRESS_FIXTURE = baseProgress({ volumeAvg: volAvg }); // volume (this week) stays all-zero
+  ok(getVolMode() === 'week', 'starts on "This week" (sanity check)');
+
+  await progressScreen({ silent: true });
+  const html = appEl.innerHTML;
+  ok(html.includes("Log some working sets this"), 'This week itself still shows its own empty state (got no match)');
+  ok(!html.includes('mv-row'), 'no rows rendered while on the empty "This week" view');
+  ok(html.includes(`onclick="setVolMode('avg')"`), 'the "4-wk avg" button IS offered even though this week is empty (this was the bug)');
+
+  setVolMode('avg');
+  await new Promise(r => setTimeout(r, 0));
+  const html2 = appEl.innerHTML;
+  ok(html2.includes('mv-row') && html2.includes('Chest'), 'switching to avg mode reveals the real data (got no match)');
+  setVolMode('week'); // reset for later blocks
+  await new Promise(r => setTimeout(r, 0));
 }
 
 console.log('weekly volume: rows render with correct fill and "met" state (expanded view)');
@@ -177,6 +219,65 @@ console.log('weekly volume: collapsed by default to the 5 most-neglected groups,
 
   toggleVolExpanded(); // reset for later blocks
   ok(getVolExpanded() === false, 'toggled back to collapsed');
+}
+
+console.log('weekly volume: "This week"/"4-wk avg" toggle -- pinned row selection, mode-dependent numbers');
+{
+  // Jeff, Aug 31 (round 2): tapping the toggle must NOT reshuffle which 5 muscles show in the
+  // collapsed view -- only their numbers. This week: quads/glutes are well-trained (pushed out of
+  // the neglected-first top 5, same setup as the collapse/expand block above), everything else 0.
+  // 4-wk avg: chest is now fully "met" (12/12) -- if the collapsed selection re-ranked per mode
+  // (the bug Jeff caught), chest would drop OUT of the list once its avg looks good, replaced by
+  // some other zero group. Pinning selection to THIS WEEK's ranking means chest stays visible
+  // (still flagged, because it really was skipped this week), just showing its better avg number.
+  const vol = baseProgress().volume;
+  vol.groups = vol.groups.map(g => {
+    if (g.group === 'quads') return { group: 'quads', sets: 12, target: 12 };
+    if (g.group === 'glutes') return { group: 'glutes', sets: 10, target: 10 };
+    return g;
+  });
+  const volAvg = baseProgress().volumeAvg;
+  volAvg.groups = volAvg.groups.map(g => {
+    if (g.group === 'chest') return { group: 'chest', sets: 12, target: 12 };   // looks great by avg
+    if (g.group === 'lats') return { group: 'lats', sets: 6, target: 12 };      // partial by avg
+    if (g.group === 'quads') return { group: 'quads', sets: 8, target: 12 };
+    if (g.group === 'glutes') return { group: 'glutes', sets: 7, target: 10 };
+    return g;
+  });
+  PROGRESS_FIXTURE = baseProgress({ volume: vol, volumeAvg: volAvg });
+  ok(getVolMode() === 'week', 'starts on "This week" (sanity check)');
+
+  await progressScreen({ silent: true });
+  let html = appEl.innerHTML;
+  ok(html.includes(`class="on" onclick="setVolMode('week')"`), '"This week" pill is active by default');
+  ok(!html.includes(`class="on" onclick="setVolMode('avg')"`), '"4-wk avg" pill is not active by default');
+  let rowCount = (html.match(/class="mv-row"/g) || []).length;
+  ok(rowCount === 5, `collapsed to 5 rows in week mode (got ${rowCount})`);
+  ok(html.includes('Chest') && html.includes('Back') && html.includes('Shoulders') && html.includes('Traps') && html.includes('Biceps'),
+    'the 5 zero-ratio-this-week groups are shown (got: ' + html.slice(html.indexOf('Weekly volume'), html.indexOf('Weekly volume') + 400) + ')');
+  ok(!html.includes('Quads') && !html.includes('Glutes'), 'well-trained-this-week groups stay excluded');
+  ok(html.includes('working sets logged this week'), 'rulenote uses the weekly wording');
+
+  setVolMode('avg');
+  await new Promise(r => setTimeout(r, 0));
+  html = appEl.innerHTML;
+  ok(getVolMode() === 'avg', 'setVolMode switched the mode');
+  ok(html.includes(`class="on" onclick="setVolMode('avg')"`), '"4-wk avg" pill is now active');
+  ok(!html.includes(`class="on" onclick="setVolMode('week')"`), '"This week" pill is no longer active');
+  rowCount = (html.match(/class="mv-row"/g) || []).length;
+  ok(rowCount === 5, `still exactly 5 rows after switching mode (got ${rowCount})`);
+  ok(html.includes('Chest') && html.includes('Back') && html.includes('Shoulders') && html.includes('Traps') && html.includes('Biceps'),
+    'SAME 5 rows as week mode -- selection is pinned, not re-ranked per mode (got: ' + html.slice(html.indexOf('Weekly volume'), html.indexOf('Weekly volume') + 400) + ')');
+  ok(!html.includes('Quads') && !html.includes('Glutes'),
+    'quads/glutes still excluded in avg mode even though their avg numbers differ from their week numbers');
+  const chestBlock = html.slice(html.indexOf('Chest'), html.indexOf('Chest') + 260);
+  ok(chestBlock.includes('/ 12 sets/wk'), `chest shows the AVG number with "/wk" suffix, not the week number (got ${chestBlock.slice(0, 200)})`);
+  ok(chestBlock.includes('mv-met'), 'chest is now "met" using its avg value (12/12), proving the NUMBER did update even though the row stayed');
+  ok(html.includes('average working sets per week over the trailing 4 weeks'), 'rulenote switches to the avg wording');
+
+  setVolMode('week'); // reset for later blocks
+  await new Promise(r => setTimeout(r, 0));
+  ok(getVolMode() === 'week', 'reset back to "This week"');
 }
 
 console.log('body weight: empty state offers a CTA, no chart');

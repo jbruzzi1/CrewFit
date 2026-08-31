@@ -2525,11 +2525,18 @@ function findExLibEntry(name, userId) {
 // attributed to every muscle group the exercise targets — full credit to each, same "touch it,
 // it counts" rule creditFinish already uses for history.muscleGroups, just counted in sets
 // instead of "did I touch this at all."
-function volumeFor(userId) {
+//
+// `weeks` widens the window to a trailing N-Monday-anchored span (including the current partial
+// week, same "count the week you're mid-way through" precedent weeksFor already sets) and returns
+// the PER-WEEK AVERAGE instead of a raw count, so it's directly comparable to the same target —
+// e.g. weeks=4 answers "what has this looked like lately" without one light or one heavy week
+// swinging the number. weeks=1 (the default) is untouched — same math as before this existed.
+function volumeFor(userId, weeks = 1) {
   const today = new Date();
   const monday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
   monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
-  const a = monday.toISOString().slice(0, 10);
+  const windowStart = new Date(monday); windowStart.setUTCDate(windowStart.getUTCDate() - 7 * (weeks - 1));
+  const a = windowStart.toISOString().slice(0, 10);
   const nextWeek = new Date(monday); nextWeek.setUTCDate(nextWeek.getUTCDate() + 7);
   const b = nextWeek.toISOString().slice(0, 10);
   const sets = {};
@@ -2545,7 +2552,15 @@ function volumeFor(userId) {
       for (const m of (lib.muscle_groups || [])) if (sets.hasOwnProperty(m)) sets[m]++;
     }
   }
-  return { weekOf: a, groups: MUSCLE_ORDER.map(g => ({ group: g, sets: sets[g], target: MUSCLE_TARGETS[g] })) };
+  const div = Math.max(1, weeks);
+  return {
+    weekOf: a, weeks,
+    groups: MUSCLE_ORDER.map(g => ({
+      group: g,
+      sets: weeks === 1 ? sets[g] : Number((sets[g] / div).toFixed(1)),
+      target: MUSCLE_TARGETS[g]
+    }))
+  };
 }
 
 // ---- Body weight tracking --------------------------------------------------------------------
@@ -2838,7 +2853,8 @@ app.get('/api/progress', auth, async (req, res) => {
     streakWeeks: streak,
     trend: trendFor(req.userId),
     prs: recordsFor(req.userId),
-    volume: volumeFor(req.userId),
+    volume: volumeFor(req.userId, 1),
+    volumeAvg: volumeFor(req.userId, 4),
     bodyweight: bodyweightFor(req.userId)
   });
 });
