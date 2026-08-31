@@ -501,6 +501,22 @@
        rule's own display:flex/padding (never overridden by .type-tag, which sets neither) applied
        unopposed, ballooning it into a full-width row instead of a small badge. */
     .type-tag.type-tag-pr { background:var(--green); color:#fff; }
+    /* v259: Jeff, Aug 31 - "do we think there is a simpler way, a cleaner way?" for the log sheet.
+       The set-type row (.seg below) used to sit permanently expanded, full width, above every
+       single add-row even though almost every set is Normal. .type-pill is its collapsed resting
+       state: a small button showing just the current type, sized to tap easily but far smaller
+       than the 4-chip row it replaces. Deliberately reuses the .t-normal/.t-warm/.t-drop/.t-fail
+       color rules already defined above (same language as the logged-set badges below it) instead
+       of inventing new colors -- .type-tag already proved those four are distinct and legible in
+       both themes, no need to re-derive that here. */
+    .type-picker { margin:6px 0 10px; }
+    .type-pill { display:inline-flex; align-items:center; gap:4px; width:auto; margin:0; border:none; border-radius:999px; padding:6px 12px; font-size:12px; font-weight:700; cursor:pointer; font:inherit; }
+    /* RIR (task #62) is the same story as the type row: relevant to maybe 1 in 10 sets, so it
+       starts collapsed behind this small toggle instead of holding a permanent slot in the
+       add-row. Sized/shaped to match the row's inputs (same height, border, radius) so swapping
+       it for the real #logRir input in the same slot doesn't shift anything else in the row. */
+    .rir-toggle { flex:0 0 auto; height:41px; padding:0 12px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--muted); font-size:12px; font-weight:700; cursor:pointer; }
+    .rir-toggle:active { color:var(--blue); border-color:var(--blue); }
     .seg { display:flex; gap:6px; margin:6px 0 14px; }
     .seg .chip, .seg button { flex:1; text-align:center; background:#eef1f5; color:var(--muted); border:1px solid transparent; border-radius:999px; padding:9px 0; font-size:12px; font-weight:600; cursor:pointer; font:inherit; }
     .seg .chip.on, .seg button.on { background:rgba(37,99,235,.12); color:var(--blue); border:1px solid var(--blue); font-weight:700; }
@@ -923,6 +939,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=258"></script>
+  <script src="app.js?v=259"></script>
 </body>
 </html>

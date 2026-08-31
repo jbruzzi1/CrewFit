@@ -1531,14 +1531,18 @@ async function openLogSheet(sid, exId){
       <div class="ex-sub">${repLabel(e) ? `Target: <b>${e.defaultSets} × ${repLabel(e)}</b> · ` : ''}Last time: <b>${esc(last)}</b></div>
       <div id="logRec"></div>
       <div id="logSetList"></div>
-      <div class="seg" id="logTypeSeg">
-        ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" data-t="${t.key}" onclick="logSetType('${t.key}')">${t.label}</div>`).join('')}
+      <div class="type-picker">
+        <button type="button" class="type-pill t-normal" id="logTypePill" onclick="toggleTypeSeg()" aria-label="Set type: Normal. Tap to change.">${TYPE_LABEL.normal} <svg width="9" height="9" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div class="seg hidden" id="logTypeSeg">
+          ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" data-t="${t.key}" onclick="logSetType('${t.key}')">${t.label}</div>`).join('')}
+        </div>
       </div>
       <div class="add-row">
         <button type="button" class="icon-btn ql-mic-icon" aria-label="Hold to speak a set" onpointerdown="qlMicDown(event)" onpointerup="qlMicUp()" onpointercancel="qlMicUp()"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         <input id="logW" placeholder="${loadType==='pair'? myUnit()+' each' : myUnit()}" type="number" inputmode="decimal" step="any" oninput="updateLoadHint()">
         <input id="logR" placeholder="reps" type="number" inputmode="tel" pattern="[0-9]*">
-        <input id="logRir" placeholder="RIR" type="number" inputmode="tel" pattern="[0-9]*" style="flex:0 0 60px; padding-left:8px; padding-right:6px" title="Reps in reserve (optional)">
+        <button type="button" class="rir-toggle" id="logRirToggle" onclick="toggleRirInput()" aria-label="Add reps in reserve" title="Reps in reserve (optional)">RIR</button>
+        <input id="logRir" class="hidden" placeholder="RIR" type="number" inputmode="tel" pattern="[0-9]*" style="flex:0 0 60px; padding-left:8px; padding-right:6px" title="Reps in reserve (optional)">
         <button class="add-btn" onclick="addLogSet()">+ Add</button>
       </div>
       ${loadType?`<div class="load-note">
@@ -1639,9 +1643,43 @@ function useSuggested(w){
   el.value=w; updateLoadHint();
   const box=document.getElementById('logRec'); if(box) box.classList.add('used');
 }
+// Jeff, Aug 31: "do we think this is the best way for us to log? ... a simpler way, a cleaner
+// way?" -- the 4-chip Normal/Warm up/Drop/Failure row used to sit permanently expanded above the
+// add-row, full width, on every single set even though the overwhelming majority are Normal. It's
+// now a small collapsed pill (below) that shows the current type and expands into the same 4
+// chips only on tap; picking one (here) collapses it straight back. The pill's color is loud on
+// purpose when NOT Normal -- reusing the same t-warm/t-drop/t-fail language already used for
+// logged-set badges in the list below -- so a leftover Warm up/Drop/Failure selection from a
+// previous set stays visibly obvious even collapsed. It must never be possible to silently log a
+// real working set as a warm-up because the picker quietly stayed open (or closed) on an old
+// choice from a few sets ago.
 function logSetType(key){
   const seg=document.getElementById('logTypeSeg'); if(!seg) return;
   seg.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on', c.getAttribute('data-t')===key));
+  const pill=document.getElementById('logTypePill');
+  if(pill){
+    pill.className = `type-pill ${TYPE_CLASS[key]||'t-normal'}`;
+    pill.setAttribute('aria-label', `Set type: ${TYPE_LABEL[key]||'Normal'}. Tap to change.`);
+    pill.innerHTML = `${TYPE_LABEL[key]||'Normal'} <svg width="9" height="9" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+  seg.classList.add('hidden');
+}
+// Tapping the pill reveals the same 4 chips it always had; tapping ANY chip (including the one
+// already selected) re-collapses via logSetType above -- so tapping the current type is a
+// no-op "never mind" close, with no separate cancel button needed.
+function toggleTypeSeg(){
+  const seg=document.getElementById('logTypeSeg'); const pill=document.getElementById('logTypePill');
+  if(!seg||!pill) return;
+  seg.classList.remove('hidden'); pill.classList.add('hidden');
+}
+// RIR (task #62) stays hidden by default, same reasoning as it resetting every set (see
+// addLogSet below): it's an occasional, deliberate read on effort, not something that should
+// occupy a permanent slot in the row for the 1 in 10 sets it actually applies to. Revealed by
+// this button, replacing it in the same slot so the row's width doesn't jump.
+function toggleRirInput(){
+  const btn=document.getElementById('logRirToggle'); const inp=document.getElementById('logRir');
+  if(!btn||!inp) return;
+  btn.classList.add('hidden'); inp.classList.remove('hidden'); inp.focus();
 }
 // ---- Quick log (v243) ----
 // One box on the log sheet that understands a whole set said (via the keyboard's mic) or typed
@@ -1804,7 +1842,9 @@ function qlApplyParse(raw){
   if(p && !(p.unit && p.unit !== myUnit())){
     if(p.weight!==null){ const w=document.getElementById('logW'); if(w){ w.value=p.weight; if(typeof updateLoadHint==='function') updateLoadHint(); } }
     if(p.reps!==null){ const el=document.getElementById('logR'); if(el) el.value=p.reps; }
-    if(p.rir!==null){ const el=document.getElementById('logRir'); if(el) el.value=p.rir; }
+    // RIR now starts hidden behind the "RIR" toggle (v259) -- filling the field without also
+    // revealing it would silently set an RIR value the user can never see or verify on screen.
+    if(p.rir!==null){ const el=document.getElementById('logRir'); if(el){ el.value=p.rir; el.classList.remove('hidden'); const btn=document.getElementById('logRirToggle'); if(btn) btn.classList.add('hidden'); } }
     if(p.setType!==null) logSetType(p.setType);
   }
 }
@@ -1924,7 +1964,11 @@ async function addLogSet(){
     // deliberately NOT carried over: it is a per-set read on how much was left in the tank, and a
     // stale leftover number here would misrecord effort on a set it was never actually true for
     // (e.g. 2 RIR on set 1, all-out on set 3) — silently wrong is worse than asking again.
-    document.getElementById('logW').value=w; document.getElementById('logR').value=r; if(rirEl) rirEl.value='';
+    document.getElementById('logW').value=w; document.getElementById('logR').value=r;
+    // RIR collapses back behind its toggle too, not just blanks -- same "ask again" reasoning as
+    // clearing the value itself: leaving it open and empty after a set that didn't have one typed
+    // still invites a leftover glance/assumption it applies to the next set. Both jobs, one line.
+    if(rirEl){ rirEl.value=''; rirEl.classList.add('hidden'); const rirBtn=document.getElementById('logRirToggle'); if(rirBtn) rirBtn.classList.remove('hidden'); }
     // Live feedback instead of a one-time prediction — see refreshLogRec's own comment. Fire-and-
     // forget: the sets list above has already updated and must not wait on this.
     refreshLogRec();
