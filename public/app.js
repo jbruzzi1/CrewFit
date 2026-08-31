@@ -601,6 +601,36 @@ async function openSession(id, opts){
   // ...and for pending invitees, but only when the server actually handed us the real list (see
   // invitedIds below) — for anyone else it's just our own id or nothing, already covered above.
   if(isCreator || isParticipant){ for(const pid of (s.invited||[])){ await nameOfCached(pid); } }
+  // Jeff, Aug 31: "I am completing a set BEFORE I click tap to log a set... which means I am not
+  // seeing the notes on the app telling me what weight to do next." Nothing INSIDE the log sheet
+  // can ever fix that -- it only opens after the set it would have informed. This screen's
+  // exercise cards are the one place guaranteed to be seen before that first tap (the log sheet
+  // stays open for every set of an exercise once you're in it, so you only pass back through here
+  // between exercises) -- so a compact version of the same advice belongs on the card itself, not
+  // just inside the sheet. Fetched once here rather than once per exercise; skipped entirely when
+  // canEdit is false (a spectator/pending-invite view never shows a log tap target, so it never
+  // needs this either). Deliberately the barebones /api/progress/recommendations, not the full
+  // /api/progress (weeksFor/trendFor/recordsFor) -- this screen only needs the same ready/holds/
+  // soon lists recommendationsFor() already produces, not the rest of that work.
+  // Also skipped on a silent background refresh (see addLogSet/editLogSet/delLogSetConfirmed's
+  // openSession(...,{silent:true}) calls, fired behind a still-open log sheet after every set):
+  // the card list isn't visible then, and logging one exercise's set can't change what another
+  // exercise's recommendation says -- so this would be a full extra round trip, on the single
+  // highest-frequency action in the app, purchasing an update nothing can see yet.
+  const recByName = {};
+  if(canEdit && !silent){
+    const rec = await H.get('/api/progress/recommendations');
+    if(rec && !rec.error){
+      for(const x of (rec.ready||[])) recByName[x.exercise] = { state:'ready', weight:x.suggested, unit:rec.unit, bodyweight:x.bodyweight, step:x.step };
+      // hold and soon both mean "load the same weight again" from where you're standing -- the
+      // difference between them is about how the algorithm got there, not something worth a
+      // second phrase on a screen this compact. Only set when ready hasn't already claimed this
+      // exercise (it never will for the same exercise, but this mirrors recommendationsFor's own
+      // ready/hold/soon being mutually exclusive rather than assuming it silently).
+      for(const x of (rec.holds||[])) if(!recByName[x.exercise]) recByName[x.exercise] = { state:'hold', weight:x.weight, unit:rec.unit, bodyweight:x.bodyweight };
+      for(const x of (rec.soon||[]))  if(!recByName[x.exercise]) recByName[x.exercise] = { state:'hold', weight:x.weight, unit:rec.unit, bodyweight:x.bodyweight };
+    }
+  }
   // my variation view (each exercise = its own card tile; swap suggestion nested inside)
   const myEx = s.exercises.map(e=>{
     const v = s.variations[e.id] && s.variations[e.id][ME.id];
@@ -632,9 +662,24 @@ async function openSession(id, opts){
       ? (() => { const n = nameCache[pendingSwap.proposedBy];
                  return n === 'You' ? 'you' : (isUnknownName(n) ? 'someone' : String(n).split(' ')[0]); })()
       : '';
+    // Recommendation looked up under whatever openLogSheet will ITSELF look it up under once
+    // tapped -- its own recName (openLogSheet, above) only ever checks the CURRENT USER's own
+    // personal variation, never an approved swap edit (approving one only records the swap under
+    // the proposer's variation, per the approve handler in server.js -- it does not rename the
+    // exercise for anyone else). Prioritizing `approved` here the way `name` (the display label
+    // above) correctly does would key this lookup by a name the log sheet never actually tracks
+    // recommendations under for most viewers -- silently hiding the recommendation (or worse,
+    // surfacing a real but unrelated one for whatever exercise happens to share that name).
+    const recExName = (v && v.swapTo) || e.name;
+    const rec = (canEdit && cnt===0) ? recByName[recExName] : null;
+    const recText = !rec ? '' : rec.state==='ready'
+      ? (rec.bodyweight ? `Add ${rec.step} ${rec.unit} today` : `Try ${rec.weight} ${rec.unit} today`)
+      : (rec.bodyweight ? `Repeat bodyweight` : `Repeat ${rec.weight} ${rec.unit}`);
     // A pending swap outranks everything else this line could say. It is the state of the lift.
     const statusTag = pendingSwap ? `<span class="swap-pending">Swap suggested by ${esc(swapBy)}</span>`
-                     : canEdit ? (cnt ? `<span class="logged">✓ ${cnt} set${cnt>1?'s':''} logged</span>` : `<span class="log-hint">Tap to log sets →</span>`)
+                     : canEdit ? (cnt ? `<span class="logged">✓ ${cnt} set${cnt>1?'s':''} logged</span>`
+                                : recText ? `<span class="log-hint">${esc(recText)} →</span>`
+                                : `<span class="log-hint">Tap to log sets →</span>`)
                      : (offerSwap ? `<span class="log-hint">Suggest a swap →</span>` : '');
     // Who ELSE has worked this lift. Without it a shared workout shows you nothing your partner
     // did — you invite someone, they train, and the screen looks the same as if you were alone.
