@@ -57,7 +57,14 @@ const genericEl = () => new Proxy(function () {}, {
 // Controllable stand-ins for the handful of fields these flows actually read .value from, plus the
 // avatar cropper's two DOM handles. Anything else falls through to genericEl() below, same as
 // every other vm-harness test in this suite.
-const logW = { value: '' }, logR = { value: '' }, logRir = { value: '' };
+const logW = { value: '' }, logR = { value: '' };
+// v259: addLogSet() now also toggles #logRir's hidden class on the real element (collapsing RIR
+// back behind its toggle button after every logged set), not just its .value -- so this stand-in
+// needs a working classList too, not just .value. makeEl() already gives us that shape; a plain
+// { value: '' } (still fine for logW/logR above, which only ever get .value writes) started
+// throwing here ("Cannot read properties of undefined (reading 'add')") the moment addLogSet
+// reached `rirEl.classList.add('hidden')` on a mock that had no classList at all.
+const logRir = makeEl('INPUT'); logRir.value = '';
 const byId = {
   app: appEl, nav: navEl, logW, logR, logRir,
   logTypeSeg: null, logSetList: null, logRest: null,   // real DOM absence, not "unknown id"
