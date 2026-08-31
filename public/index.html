@@ -763,11 +763,12 @@
     .mv-track { height:7px; border-radius:999px; background:var(--line); overflow:hidden; }
     .mv-fill { height:100%; border-radius:999px; background:var(--blue); }
     .mv-fill.mv-met { background:var(--green); }
-    /* Sep 1: makes an .mv-row (the Weekly Volume card's own bar-row markup) tappable when reused
-       as a picker row (Volume trend's "Pick a muscle" sheet) -- cursor + a light tap state, plus
-       an .mv-pick-on highlight (same tinted-blue "on" treatment as .seg .chip.on/button.on below)
-       for the currently-picked row, so the checkmark isn't the only signal. Does not touch the
-       read-only .mv-row rows on the Weekly Volume card itself, which never carry these classes. */
+    /* Sep 1: makes an .mv-row (Volume trend's "Overall" tab bar-row markup, née the standalone
+       Weekly Volume card, merged into Volume trend round 4) tappable when reused as a picker row
+       (Volume trend's "Pick a muscle" sheet) -- cursor + a light tap state, plus an .mv-pick-on
+       highlight (same tinted-blue "on" treatment as .seg .chip.on/button.on below) for the
+       currently-picked row, so the checkmark isn't the only signal. Does not touch the read-only
+       .mv-row rows in the Overall tab itself, which never carry these classes. */
     .mv-pick { cursor:pointer; margin:0 -2px; padding-left:2px; padding-right:2px; border-radius:8px; }
     .mv-pick:active { background:#f1f3f6; }
     .mv-pick.mv-pick-on { background:rgba(37,99,235,.12); }
@@ -992,6 +993,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=271"></script>
+  <script src="app.js?v=272"></script>
 </body>
 </html>
