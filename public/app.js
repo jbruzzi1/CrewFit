@@ -3828,6 +3828,23 @@ async function progressScreen(opts){
 
     <h2>Consistency</h2>
     <div class="card">
+      <!-- Sep 2 (Jeff, on the original average-led/blue-badge-streak version): "not the biggest
+           fan" of this report. Researched what comparable apps (Hevy's own "gym consistency"
+           feature) lead with -- streak length, not a raw average -- and a rejected/approved
+           iteration cycle with Jeff landed here:
+           - streak now leads the card (was a small badge off to the side; the average was the
+             hero). Rejected direction along the way: a calendar/heatmap grid replacing the bar
+             chart entirely ("Don't like the grid/squares look") -- the bar chart below is
+             UNTOUCHED.
+           - streak also rejected in green ("do you like that green idk i dont think so on this
+             report") -- green is reserved for earned/celebratory moments elsewhere (PR pills, the
+             recap's streak line) and a permanent hero number in that color diluted it. Plain text
+             color instead.
+           - the hero digit itself rejected bold ("don't bolden the number like that") -- see
+             .streak-hero in the stylesheet for the lighter treatment that replaced it.
+           - "this report just shows bars - will people know what they mean?" -- every other card
+             on this page (Add weight, Volume trend) already has a "How it works" line; this one
+             never did. Added below, matching that exact pattern. -->
       <div class="kpi"><div>
         ${(()=>{
           // v227: the headline average starts at your FIRST ACTIVE WEEK in the window, not the
@@ -3842,10 +3859,14 @@ async function progressScreen(opts){
           const cap = firstIdx===0
             ? `over ${(PROG_RANGES.find(r=>r.weeks===d.weeks.length)||{label:d.weeks.length+' weeks'}).label.toLowerCase()}`
             : `since ${shortDate(active[0].weekOf)}`;
+          // No active streak (0 weeks) falls back to the plain average as the hero, same as
+          // before this change — nothing to lead with otherwise.
+          if(d.streakWeeks>0) return `<div class="streak-hero">${d.streakWeeks}<span class="hero-u"> week streak</span></div>
+             <div class="hero-cap">${avg} days/week average, ${cap}</div>`;
           return `<div class="hero">${avg}<span class="hero-u"> days/week average</span></div>
              <div class="hero-cap">${cap}</div>`;
         })()}
-      </div>${d.streakWeeks>0?`<span class="streak">${d.streakWeeks}-week streak</span>`:''}</div>
+      </div></div>
       ${d.weeks.some(w=>w.days)
         ? `<svg viewBox="0 0 ${BW} ${BH}" width="100%" style="display:block" role="img"
              aria-label="Days trained per week over ${d.weeks.length} weeks. Most recent: ${d.thisWeek} days.">${bars}${xlab}${hits}</svg>`
@@ -3854,6 +3875,9 @@ async function progressScreen(opts){
       <div class="seg wk-seg">
         ${PROG_RANGES.map(r=>`<button class="${PROG_WEEKS===r.weeks?'on':''}" onclick="setProgWeeks(${r.weeks})">${r.label}</button>`).join('')}
       </div>
+      ${d.weeks.some(w=>w.days)?`<div class="rulenote"><b>How it works:</b> each bar is one week —
+        its height (and the number on top) is how many days you trained that week. The current
+        week is outlined.</div>`:''}
     </div>
 
     ${trendChart(d,U)}

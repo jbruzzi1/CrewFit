@@ -767,6 +767,12 @@
     .hero { font-size:30px; font-weight:700; line-height:1; letter-spacing:-.5px; }
     .hero-u { font-size:14px; color:var(--muted); font-weight:600; }
     .hero-cap { font-size:11.5px; color:var(--muted); margin-top:4px; }
+    /* Consistency's streak leads the card the same way .hero does elsewhere on this page (still
+       the biggest thing here), but Jeff, Sep 2: "don't bolden the number like that" -- a light
+       weight and normal letter-spacing instead of .hero's bold/tight treatment reads calmer,
+       closer to the page's own airy language, without touching .hero itself (Strength trend and
+       others still want the bold version). */
+    .streak-hero { font-size:34px; font-weight:400; line-height:1; letter-spacing:normal; }
     .streak { display:inline-flex; align-items:center; gap:4px; background:#eef1f5; color:var(--fg); border-radius:999px; padding:4px 10px; font-size:11.5px; font-weight:600; }
     .pr { display:flex; justify-content:space-between; align-items:center; padding:11px 2px; border-bottom:1px solid var(--line); }
     .pr:last-child { border-bottom:none; }
@@ -982,6 +988,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=274"></script>
+  <script src="app.js?v=275"></script>
 </body>
 </html>

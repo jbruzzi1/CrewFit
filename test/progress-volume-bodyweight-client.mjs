@@ -353,5 +353,62 @@ console.log('openBodyweightSheet: prefills today\'s existing entry and posts on 
   ok(lastBodyweightPost && lastBodyweightPost.unit === 'lb', `posts the user's current unit (got ${lastBodyweightPost && lastBodyweightPost.unit})`);
 }
 
+// Consistency card only, between its own heading and Strength trend's -- same scoping reasoning
+// as trendSection above.
+const consistencySection = html => html.slice(html.indexOf('Consistency'), (() => { const i = html.indexOf('Strength trend'); return i === -1 ? html.length : i; })());
+
+console.log('Consistency: streak leads the card (round Sep 2, replacing the average-led/badge version)');
+{
+  // Jeff's iteration on this card, in order: rejected a calendar/heatmap grid on looks alone
+  // ("Don't like the grid/squares look" -- bar chart stays untouched); rejected the streak in
+  // green ("i dont think so on this report" -- green stays reserved for earned/celebratory
+  // moments elsewhere, not a permanent hero color); rejected the hero digit in bold ("don't
+  // bolden the number like that" -- .streak-hero is a light weight instead of .hero's bold); and
+  // asked whether the bars themselves are self-explanatory ("will people know what they mean?"),
+  // answered with a "How it works" line matching every other card on this page.
+  PROGRESS_FIXTURE = baseProgress({
+    weeks: [
+      { weekOf: '2026-07-27', days: 3 }, { weekOf: '2026-08-03', days: 2 },
+      { weekOf: '2026-08-10', days: 4 }, { weekOf: '2026-08-17', days: 3 },
+      { weekOf: '2026-08-24', days: 2 },
+    ],
+    thisWeek: 2, avgPerWeek: 2.8, streakWeeks: 5,
+  });
+  await progressScreen({ silent: true });
+  const html = appEl.innerHTML;
+  const section = consistencySection(html);
+
+  ok(section.includes('class="streak-hero"'), 'the streak number uses the light-weight .streak-hero class, not the bold .hero class');
+  ok(!/<div class="hero">5<span/.test(section), 'the streak digit itself is NOT rendered inside a bold .hero div (got a hero-wrapped "5")');
+  ok(section.includes('>5<') && section.includes('week streak'), `streak count and label render (got ${section.slice(0, 200)})`);
+  ok(section.includes('2.8 days/week average'), 'the average is demoted to the caption line, not the headline, when a streak exists');
+  ok(!/style="[^"]*color:var\(--green\)/.test(section), 'the streak hero is NOT colored green (rejected -- green stays reserved for earned/celebratory moments)');
+  ok(!section.includes('class="streak"'), 'the old small streak badge is gone, folded into the hero instead');
+  ok(section.includes('<b>How it works:</b>') && section.includes('each bar is one week'),
+    `a "How it works" line explains the bars, matching Add weight/Volume trend's own pattern (got ${section.includes('How it works') ? 'present but wrong text' : 'missing entirely'})`);
+}
+
+console.log('Consistency: no active streak falls back to the plain average as the hero (unchanged from before)');
+{
+  PROGRESS_FIXTURE = baseProgress({
+    weeks: [{ weekOf: '2026-08-17', days: 0 }, { weekOf: '2026-08-24', days: 2 }],
+    thisWeek: 2, avgPerWeek: 2, streakWeeks: 0,
+  });
+  await progressScreen({ silent: true });
+  const section = consistencySection(appEl.innerHTML);
+  ok(section.includes('class="hero">2.0<span'), `with no streak, the average is still the plain bold .hero (got ${section.slice(0, 300)})`);
+  ok(!section.includes('class="streak-hero"'), 'no streak-hero markup renders when streakWeeks is 0');
+  ok(!section.includes('week streak'), 'no "week streak" text renders when streakWeeks is 0');
+}
+
+console.log('Consistency: "How it works" line is absent on the true empty state (nothing trained ever)');
+{
+  PROGRESS_FIXTURE = baseProgress(); // default weeks: all zero, streakWeeks: 0
+  await progressScreen({ silent: true });
+  const section = consistencySection(appEl.innerHTML);
+  ok(!section.includes('<b>How it works:</b>'), `no rulenote when there is no chart to explain yet (got ${section.slice(0, 400)})`);
+  ok(section.includes('No workouts logged yet'), 'shows the true empty state instead (got no match)');
+}
+
 console.log(fails ? `\n${fails} FAILURE(S)\n` : '\nall assertions passed\n');
 process.exit(fails ? 1 : 0);
