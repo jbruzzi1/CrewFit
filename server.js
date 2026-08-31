@@ -2033,13 +2033,36 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
   const approvedJoin = s.joinRequests.find(j => j.userId === req.userId && j.status === 'approved');
   const invited = Array.isArray(s.invited) && s.invited.includes(req.userId);
   if (!isParticipant && !approvedJoin && !invited) return res.status(403).json({ error: 'not a participant' });
-  const exerciseId = capStr((req.body || {}).exerciseId, 64);
-  const swapTo = capStr((req.body || {}).swapTo, 80);
-  const edit = { id: 'se_' + uid(), exerciseId, proposedBy: req.userId, swapTo, status: 'pending' };
+  // Jeff, Aug 31: "add the ability to add an exercise to a workout, not just suggest a swap."
+  // Same approval-gated shape a swap suggestion already has (creator still decides) -- just
+  // proposing a brand-new exercise instead of replacing an existing one, so there's no exerciseId
+  // here the way a swap always has one. type defaults to 'swap' so every pre-existing client call
+  // (which never sent a type at all) and every already-stored suggestedEdits row keep working
+  // exactly as before -- the approve handler below treats a missing/non-'add' type as a swap.
+  const type = (req.body || {}).type === 'add' ? 'add' : 'swap';
+  // Deliberately narrower than the swap check just above: Jeff, same thread, clarifying the scope
+  // -- "anyone that is already accepted and part of the workout ... can suggest to add an
+  // exercise." A swap targets something already on the plan, which is exactly the case someone
+  // still deciding whether to come needs to raise before accepting; proposing a brand-new
+  // exercise isn't that -- it's shaping a workout you're not confirmed into yet, so this stays
+  // restricted to isParticipant/approvedJoin. Still-invited (not yet accepted) is refused here.
+  if (type === 'add' && !isParticipant && !approvedJoin) return res.status(403).json({ error: 'accept the invite first' });
+  let edit;
+  if (type === 'add') {
+    const name = capStr((req.body || {}).name, 80).trim();
+    if (!name) return res.status(400).json({ error: 'needs a name' });
+    edit = { id: 'se_' + uid(), type: 'add', exerciseId: null, proposedBy: req.userId, swapTo: name, status: 'pending' };
+  } else {
+    const exerciseId = capStr((req.body || {}).exerciseId, 64);
+    const swapTo = capStr((req.body || {}).swapTo, 80);
+    edit = { id: 'se_' + uid(), type: 'swap', exerciseId, proposedBy: req.userId, swapTo, status: 'pending' };
+  }
   s.suggestedEdits.push(edit);
   await save(DB);
   // notify creator
-  notify(s.creatorId, { title: 'Swap suggested', body: `${DB.users[req.userId].displayName} suggested swapping to ${swapTo}` });
+  notify(s.creatorId, type === 'add'
+    ? { title: 'Exercise suggested', body: `${DB.users[req.userId].displayName} suggested adding ${edit.swapTo}` }
+    : { title: 'Swap suggested', body: `${DB.users[req.userId].displayName} suggested swapping to ${edit.swapTo}` });
   res.json(sessionView(s, req.userId));
 });
 
@@ -2057,6 +2080,17 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
   // pending, neither route touches it again.
   if (edit.status !== 'pending') return res.status(400).json({ error: 'already decided' });
   edit.status = 'approved';
+  if (edit.type === 'add') {
+    // A brand-new exercise, not a rename of an existing one -- there's no s.variations entry or
+    // anyone's already-logged sets to touch the way a swap approval below does; it's simply
+    // appended to the shared list, same id/order shape POST /api/sessions and PUT /api/sessions/:id
+    // already give a new exercise.
+    const newEx = Object.assign({ id: 'e_' + uid(), order: s.exercises.length }, withDefaults({ name: edit.swapTo }));
+    s.exercises.push(newEx);
+    await save(DB);
+    notify(edit.proposedBy, { title: 'Exercise added', body: `${DB.users[s.creatorId].displayName} added ${edit.swapTo} to the workout` });
+    return res.json(sessionView(s, req.userId));
+  }
   s.variations[edit.exerciseId] = Object.assign({}, s.variations[edit.exerciseId], { [edit.proposedBy]: { swapTo: edit.swapTo, reason: 'swap' } });
   // Sets now carry the exercise name frozen at log time, which is what stops an unrelated edit
   // rewriting history. Approving a swap is not unrelated — it is a deliberate statement of what
