@@ -3506,13 +3506,21 @@ function volTrendChart(d){
   // reporting "no data" for a muscle that was never a real, currently-offered chip.
   if(TREND_VOL_PICK!=='__overall' && !MUSCLE_LABEL.hasOwnProperty(TREND_VOL_PICK)) TREND_VOL_PICK='__overall';
   const isOverall = TREND_VOL_PICK==='__overall';
+  // Sep 1 (Jeff: "the pill boxes for all the exercises look messy") -- wrapping all 12 muscles as
+  // inline chips (see the Aug 31 comment above) crowded into 3 ragged rows of pills once real
+  // usage hit it. Strength trend, right below this chart, already solved "too many things to pick
+  // from" a different way: a "Pick lifts" text-button in the section header opens a sheet, and
+  // only a curated few show as inline chips. Reuse that exact pattern here instead of inventing a
+  // new one -- Overall (always visible, one tap back to the default) plus, if a muscle is picked,
+  // that ONE chip as a "you are here" marker. Every other muscle lives in the picker sheet.
   const chips = `<div class="chips">
     <span class="chip ${isOverall?'on':''}" onclick="setTrendVolPick('__overall')">Overall</span>
-    ${Object.keys(MUSCLE_LABEL).map(g=>`<span class="chip ${(!isOverall&&g===TREND_VOL_PICK)?'on':''}"
-      onclick="setTrendVolPick('${g}')">${MUSCLE_LABEL[g]}</span>`).join('')}
+    ${!isOverall?`<span class="chip on" onclick="setTrendVolPick('${TREND_VOL_PICK}')">${MUSCLE_LABEL[TREND_VOL_PICK]}</span>`:''}
   </div>`;
+  const head = `<div class="sec-head"><h2>Volume trend</h2><button class="txt-btn" style="margin-left:auto"
+    onclick="openVolTrendPicker()" title="Pick which muscle to show">Pick muscle</button></div>`;
 
-  if(!weeksData.length) return `<h2>Volume trend</h2>${chips}<div class="card">
+  if(!weeksData.length) return `${head}${chips}<div class="card">
     <div class="muted" style="padding:20px 4px;text-align:center">Not enough history yet.</div></div>`;
 
   const lastGroups = weeksData[weeksData.length-1].groups;
@@ -3528,7 +3536,7 @@ function volTrendChart(d){
     return g ? g.sets : 0;
   });
 
-  if(!vals.some(v=>v>0)) return `<h2>Volume trend</h2>${chips}<div class="card">
+  if(!vals.some(v=>v>0)) return `${head}${chips}<div class="card">
     <div class="muted" style="padding:14px 2px 6px;line-height:1.5">Log a few weeks of working sets
       and the trend fills in here.</div></div>`;
 
@@ -3551,7 +3559,7 @@ function volTrendChart(d){
   const ty = BH2-BB2-(BH2-BB2-BT2)*Math.min(target,maxv)/maxv;
   const refLine = target>0 ? `<line x1="0" y1="${ty.toFixed(1)}" x2="${BW2}" y2="${ty.toFixed(1)}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3,3" opacity="0.55"/>` : '';
 
-  return `<h2>Volume trend</h2>${chips}<div class="card">
+  return `${head}${chips}<div class="card">
     <svg viewBox="0 0 ${BW2} ${BH2}" width="100%" style="display:block" role="img"
       aria-label="${isOverall?'Overall volume':(MUSCLE_LABEL[TREND_VOL_PICK]||TREND_VOL_PICK)} trend over ${weeksData.length} weeks">${refLine}${bars2}${xlab2}${hits2}</svg>
     <div class="rulenote">${isOverall
@@ -3559,6 +3567,27 @@ function volTrendChart(d){
       : `<b>How it works:</b> working sets per week for ${(MUSCLE_LABEL[TREND_VOL_PICK]||TREND_VOL_PICK).toLowerCase()}. Dashed line marks the ${target}-set weekly target.`}</div>
   </div>`;
 }
+// Single-select picker sheet for Volume trend's "Pick muscle" button. Deliberately lighter than
+// Strength trend's openTrendPicker/renderTrendPicker above: that one is a multi-select (up to 5
+// pinned lifts) that SAVES a preference to the server, because which lifts exist varies per user.
+// The 12 muscle groups are fixed and the same for everyone, and only one is ever being viewed at
+// once -- so this is just a plain tap-a-row list, no checkboxes, no Save button. Tapping a row (or
+// tapping it again) immediately switches the chart and closes the sheet, same one-tap feedback the
+// old inline chips gave.
+function openVolTrendPicker(){ openSheetHtml(renderVolTrendPicker()); }
+function renderVolTrendPicker(){
+  const rows = Object.keys(MUSCLE_LABEL).map(g=>{
+    const active = g===TREND_VOL_PICK;
+    return `<div class="lib-item" style="cursor:pointer" onclick="pickVolTrendMuscle('${g}')">
+      <div style="flex:1;font-weight:${active?'700':'400'}">${MUSCLE_LABEL[g]}</div>
+      ${active?'<span style="color:var(--blue);font-weight:700">✓</span>':''}
+    </div>`;
+  }).join('');
+  return `<div class="sheet"><div class="sheet-head"><h2>Pick a muscle</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="card" style="margin-top:4px">${rows}</div>
+  </div>`;
+}
+function pickVolTrendMuscle(g){ closeSheet(); setTrendVolPick(g); }
 
 // Body weight chart — same SVG-line-chart shape as trendChart above (viewBox, xs/ys scale
 // functions, polyline + dots, tap-for-exact-figure titles), just a single always-present series
