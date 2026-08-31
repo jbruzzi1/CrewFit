@@ -118,12 +118,27 @@ function hasFinishedSession(s, userId){
 // labels "Today") and not yet finished. Deliberately NOT "any unposted session up to now" — an
 // old abandoned draft from last week would then read as live forever, which is worse than not
 // flagging it at all (see CLAUDE.md: discoverable and wrong beats quiet, but only when it's
-// actually true). A session scheduled later today is still live now — you may not have logged
-// anything yet, but it's today's workout, not next week's.
+// actually true).
+// Jeff, Aug 31: "I don't want my workout to show 'live' until 10 minutes before the scheduled
+// time." Showing Live all day for an 8pm workout at 7am read as "happening right now," which
+// wasn't true yet. Once you're inside the window (or the scheduled time has already passed
+// today), it flips to Live and stays Live for the rest of the day, same as before -- only the
+// START of the window moved. isSessionUpcoming (below) covers the rest of today, before that.
+const LIVE_WINDOW_MIN = 10;
 function isSessionLiveNow(s){
   if(!s || hasFinishedSession(s, ME.id)) return false;
   const d = new Date(s.scheduledAt); if(isNaN(d)) return false;
-  return startOfDay(d).getTime() === startOfDay(new Date()).getTime();
+  if(startOfDay(d).getTime() !== startOfDay(new Date()).getTime()) return false;
+  return Date.now() >= d.getTime() - LIVE_WINDOW_MIN*60000;
+}
+// Today's session, not yet finished, but still more than LIVE_WINDOW_MIN minutes out -- "Upcoming"
+// rather than "Live now" (see isSessionLiveNow just above for why the split exists). Mutually
+// exclusive with isSessionLiveNow by construction (same guards, opposite side of the same instant).
+function isSessionUpcoming(s){
+  if(!s || hasFinishedSession(s, ME.id)) return false;
+  const d = new Date(s.scheduledAt); if(isNaN(d)) return false;
+  if(startOfDay(d).getTime() !== startOfDay(new Date()).getTime()) return false;
+  return Date.now() < d.getTime() - LIVE_WINDOW_MIN*60000;
 }
 // A scheduled workout whose day has passed with nothing logged for YOU looks identical to
 // tomorrow's plan on Home — flagged "Missed" here, never hidden, deleted, or blocked from late
@@ -422,19 +437,24 @@ async function home(opts){
   // finishes independently), it's done for you: it belongs in "My Workouts" on your profile, not
   // in this active list — even if a training partner on the same session hasn't finished yet, and
   // even if you never went on to also save notes/a photo on the screen after Log & Finish.
-  // Today's not-yet-finished session (if any) is pulled to the top with a "Live now" badge —
-  // .sort() is stable (every browser this app targets), so this only reorders the live ones
-  // forward and otherwise leaves everything exactly where the API's date order put it.
+  // Today's not-yet-finished session (if any) is pulled to the top with a "Live now"/"Upcoming"
+  // badge — .sort() is stable (every browser this app targets), so this only reorders today's
+  // sessions forward and otherwise leaves everything exactly where the API's date order put it.
+  // Both Live and Upcoming count as "today" here (unchanged from before the 10-minute-window
+  // split above) — only the badge text/timing changed, not which sessions get pulled to the top.
   const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && !hasFinishedSession(s, ME.id))
-    .sort((a,b) => (isSessionLiveNow(b)?1:0) - (isSessionLiveNow(a)?1:0));
+    .sort((a,b) => ((isSessionLiveNow(b)||isSessionUpcoming(b))?1:0) - ((isSessionLiveNow(a)||isSessionUpcoming(a))?1:0));
   html += `<h2>Your Sessions</h2>`;
   if(yours.length){
     html += `<div class="card">`;
     for(const s of yours){
       const label = s.name;
       const live = isSessionLiveNow(s);
-      const missed = !live && isSessionMissed(s, ME.id);
-      const badge = live ? '<div class="live-badge">● Live now</div>' : (missed ? '<div class="missed-badge">Missed</div>' : '');
+      const upcoming = !live && isSessionUpcoming(s);
+      const missed = !live && !upcoming && isSessionMissed(s, ME.id);
+      const badge = live ? '<div class="live-badge">● Live now</div>'
+        : upcoming ? '<div class="upcoming-badge">Upcoming</div>'
+        : missed ? '<div class="missed-badge">Missed</div>' : '';
       html += `<div class="lib-item${live?' session-live':''}" onclick="openSession('${s.id}')">
         <div>${badge}<b>${esc(label)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}</div></div></div>`;
     }
@@ -4512,7 +4532,10 @@ async function profileView(id, opts){
       <div style="font-weight:700;margin-top:8px">This profile is private</div>
       <div class="muted" style="margin-top:4px;font-size:13px">Follow ${esc(p.displayName||p.username)} to see ${workouts.length?'the rest of their':'their'} workouts, PRs and activity.</div>
     </div>`;
-  const wview = (window.__wview||'grid');
+  // Jeff, Aug 31: default to List, and swap the two buttons' on-screen positions to match --
+  // List first (left, where Grid used to sit), Grid second. Same ids/handlers either way, just
+  // reordered in the markup below and the fallback flipped.
+  const wview = (window.__wview||'list');
   $('app').innerHTML = `<div class="wrap">
     <div class="profile-head">
       ${avatarBlock}
@@ -4527,7 +4550,7 @@ async function profileView(id, opts){
     ${actHtml}
     ${bioBlock}
     ${activityBlock}
-    <div class="sec-head"><h2>My Workouts</h2><div class="view-toggle"><button class="${wview==='grid'?'on':''}" id="vtGrid" onclick="setWorkoutView('grid')">▦ Grid</button><button class="${wview==='list'?'on':''}" id="vtList" onclick="setWorkoutView('list')">☰ List</button></div></div>
+    <div class="sec-head"><h2>My Workouts</h2><div class="view-toggle"><button class="${wview==='list'?'on':''}" id="vtList" onclick="setWorkoutView('list')">☰ List</button><button class="${wview==='grid'?'on':''}" id="vtGrid" onclick="setWorkoutView('grid')">▦ Grid</button></div></div>
     <div style="margin:8px 0 14px" id="workoutView">${wview==='grid'?gridHtml:listHtml}</div>
     ${isPrivate ? privateBlock : ''}
     ${isMe?`<button class="sec" style="margin-top:18px" onclick="logout()">Log out</button>`:''}
