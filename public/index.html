@@ -495,6 +495,11 @@
        the text instead and saw a phantom 9px indent. Same fix "Live now" never needed, because
        amber was always visible. Do not lighten this gray again. */
     .missed-badge { display:block; width:fit-content; font-size:11px; font-weight:700; letter-spacing:.02em; color:#565d68; background:#e4e7ec; border-radius:999px; padding:3px 9px; margin-bottom:6px; }
+    /* "Upcoming" (Aug 31): today's session, more than 10 minutes before its scheduled time --
+       amber/"Live" would overclaim ("happening right now"), so this is the exact same neutral,
+       informational treatment as .missed-badge just above, not a new color. The two are visually
+       identical on purpose (both "not urgent, no action needed yet") and read apart by their text. */
+    .upcoming-badge { display:block; width:fit-content; font-size:11px; font-weight:700; letter-spacing:.02em; color:#565d68; background:#e4e7ec; border-radius:999px; padding:3px 9px; margin-bottom:6px; }
     .log-cnt { color:var(--blue); font-weight:600; }
     .ex-sub { font-size:13px; color:var(--muted); margin:-2px 0 12px; }
     .ex-sub b { color:var(--fg); font-weight:700; }
@@ -856,7 +861,7 @@
       }
       /* -- surfaces & fills (light grays -> raised charcoal) -- */
       :where(html.theme-dark) .pp-dots:active, :where(html.theme-dark) .pp-menu button:active, :where(html.theme-dark) .lib-item:active, :where(html.theme-dark) .ex-card.log-row:active, :where(html.theme-dark) .lib-item.log-row:active, :where(html.theme-dark) .profile-set:active, :where(html.theme-dark) .mg-card:active, :where(html.theme-dark) .ex-row:active, :where(html.theme-dark) .set-row:active, :where(html.theme-dark) .rc-chip, :where(html.theme-dark) .rest, :where(html.theme-dark) .load-chip, :where(html.theme-dark) .hold-ic, :where(html.theme-dark) .self-tag, :where(html.theme-dark) .empty-ic, :where(html.theme-dark) .streak, :where(html.theme-dark) .pill, :where(html.theme-dark) .chip, :where(html.theme-dark) .fav, :where(html.theme-dark) .ex-add, :where(html.theme-dark) .ex-idx, :where(html.theme-dark) .t-normal, :where(html.theme-dark) .pp-set-n, :where(html.theme-dark) .seg .chip, :where(html.theme-dark) .seg button, :where(html.theme-dark) #vis.seg, :where(html.theme-dark) .seg.wk-seg, :where(html.theme-dark) .log-rec.soon .lr-ic, :where(html.theme-dark) .log-rec.hold .lr-ic { background:#262930; }
-      :where(html.theme-dark) .missed-badge { background:#2f3238; color:#a2a7b0; }
+      :where(html.theme-dark) .missed-badge, :where(html.theme-dark) .upcoming-badge { background:#2f3238; color:#a2a7b0; }
       :where(html.theme-dark) .log-rec.hold { background:#1f2126; }
       /* Muscle diagrams are drawn on/for white - on a dark tile the gray figure dissolves
          and only the red pops (Jeff, Aug 28). The tile stays white in dark mode, like app-store
@@ -977,6 +982,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=264"></script>
+  <script src="app.js?v=265"></script>
 </body>
 </html>
