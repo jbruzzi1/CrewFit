@@ -4,14 +4,13 @@
 // test/suggest-add-exercise-client.mjs / test/audit-v253-client.mjs.
 //
 // Covers:
-//  - Volume trend, "Overall" tab: one row per non-cardio muscle group, "N / target sets" text,
-//    correct fill width, and the fill only gets the "met" (green) class once the target is
-//    actually hit -- not merely progressed towards, matching the app's "green means earned" color
-//    rule. (Sep 1, round 4: this used to be its own separate "Weekly volume" section above Volume
-//    trend; Jeff asked for it folded into Volume trend's "Overall" tab instead of a confusing
-//    separate week-by-week %-of-target chart there -- see the big comment above volTrendChart in
-//    app.js. All the "weekly volume" coverage below now exercises that SAME markup, just reached
-//    through TREND_VOL_PICK's default '__overall' state rather than a standalone section.)
+//  - Volume trend: one row per non-cardio muscle group, "N / target sets" text, correct fill
+//    width, and the fill only gets the "met" (green) class once the target is actually hit -- not
+//    merely progressed towards, matching the app's "green means earned" color rule. (This section
+//    has gone through several redesigns since Aug 31 -- see the big comment above volTrendChart in
+//    app.js for the full history. As of round 6 it is just ONE bar-row list plus a This week/Month/
+//    3 months range picker: no "Overall"/"Pick a muscle" chips, no picker sheet, no per-muscle SVG
+//    chart -- every muscle always shows as its own row, all the time.)
 //  - Empty state when nothing has been trained yet this week.
 //  - Body weight: empty-state CTA, single-entry state (no chart yet), multi-entry state renders an
 //    SVG chart with no crash -- this is the exact bug class the wiring test (xs/ys collision) would
@@ -21,20 +20,22 @@
 //    and posts {weight, unit, date} to /api/me/bodyweight on Save.
 //  - PROG_LAST is stashed after every progressScreen() render so the sheet (opened from a button
 //    on the page, not passed data directly) has something to read.
-//  - "This week"/"4-wk avg" toggle (Aug 31, round 2): the pill markup, the mode-dependent numbers
-//    (with a "/wk" suffix and switched rulenote copy in avg mode), and specifically that the
-//    collapsed 5-row selection is PINNED to "This week" ranking regardless of which mode is being
-//    viewed -- a real bug Jeff caught in the first draft, where tapping the toggle could swap out
-//    which muscles even appeared, not just their numbers.
+//  - This week/Month/3 months range picker (round 6, replacing the earlier This-week/4-wk-avg
+//    2-way toggle): the pill markup, the range-dependent numbers (with a "/wk" suffix and switched
+//    rulenote copy on the two longer ranges), and specifically that the collapsed 5-row selection
+//    is PINNED to "This week" ranking regardless of which range is being viewed -- a real bug Jeff
+//    caught in the first draft, where tapping the toggle could swap out which muscles even
+//    appeared, not just their numbers.
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 let fails = 0;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fails++; };
-// The "Volume trend" section renders chip labels for every muscle group unconditionally -- so a
-// bare html.includes('Quads') against the WHOLE page is not a reliable proxy for "is Quads shown
-// as a bar row." Scope those checks to just this section's own markup, between its heading and
-// the next one (Consistency).
+// The "Volume trend" section is the only place mv-rows / muscle names show up on this page -- so a
+// bare html.includes('Quads') against the WHOLE page is a reliable proxy for "is Quads shown as a
+// bar row" EXCEPT where it could collide with Strength trend's own "Overall" chip label further
+// down the page. Scope checks to just this section's own markup, between its heading and the next
+// one (Consistency), to stay safe either way.
 const trendSection = html => html.slice(html.indexOf('Volume trend'), (() => { const i = html.indexOf('Consistency'); return i === -1 ? html.length : i; })());
 
 const SRC = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
@@ -104,36 +105,33 @@ const toggleVolExpanded = vm.runInContext('toggleVolExpanded', ctx);
 const getVolExpanded = () => vm.runInContext('VOL_EXPANDED', ctx);
 const setVolMode = vm.runInContext('setVolMode', ctx);
 const getVolMode = () => vm.runInContext('VOL_MODE', ctx);
-const openVolTrendPicker = vm.runInContext('openVolTrendPicker', ctx);
-const pickVolTrendMuscle = vm.runInContext('pickVolTrendMuscle', ctx);
-const getTrendVolPick = () => vm.runInContext('TREND_VOL_PICK', ctx);
+
+function emptyGroups(overrides) {
+  const base = [
+    { group: 'chest', sets: 0, target: 12 }, { group: 'lats', sets: 0, target: 12 },
+    { group: 'shoulders', sets: 0, target: 12 }, { group: 'traps', sets: 0, target: 8 },
+    { group: 'biceps', sets: 0, target: 10 }, { group: 'triceps', sets: 0, target: 10 },
+    { group: 'forearms', sets: 0, target: 6 }, { group: 'quads', sets: 0, target: 12 },
+    { group: 'hamstrings', sets: 0, target: 10 }, { group: 'glutes', sets: 0, target: 10 },
+    { group: 'calves', sets: 0, target: 10 }, { group: 'abdominals', sets: 0, target: 10 },
+  ];
+  if (!overrides) return base;
+  return base.map(g => overrides[g.group] !== undefined ? { group: g.group, sets: overrides[g.group], target: g.target } : g);
+}
 
 function baseProgress(overrides) {
   return Object.assign({
     unit: 'lb', ready: [], holds: [], soon: [], weeks: [{ weekOf: '2026-08-24', days: 0 }],
     thisWeek: 0, avgPerWeek: 0, streakWeeks: 0,
     trend: { lifts: [], overall: [], allNames: [], picks: [] }, prs: [],
-    volume: { weekOf: '2026-08-24', weeks: 1, groups: [
-      { group: 'chest', sets: 0, target: 12 }, { group: 'lats', sets: 0, target: 12 },
-      { group: 'shoulders', sets: 0, target: 12 }, { group: 'traps', sets: 0, target: 8 },
-      { group: 'biceps', sets: 0, target: 10 }, { group: 'triceps', sets: 0, target: 10 },
-      { group: 'forearms', sets: 0, target: 6 }, { group: 'quads', sets: 0, target: 12 },
-      { group: 'hamstrings', sets: 0, target: 10 }, { group: 'glutes', sets: 0, target: 10 },
-      { group: 'calves', sets: 0, target: 10 }, { group: 'abdominals', sets: 0, target: 10 },
-    ] },
-    volumeAvg: { weekOf: '2026-08-10', weeks: 4, groups: [
-      { group: 'chest', sets: 0, target: 12 }, { group: 'lats', sets: 0, target: 12 },
-      { group: 'shoulders', sets: 0, target: 12 }, { group: 'traps', sets: 0, target: 8 },
-      { group: 'biceps', sets: 0, target: 10 }, { group: 'triceps', sets: 0, target: 10 },
-      { group: 'forearms', sets: 0, target: 6 }, { group: 'quads', sets: 0, target: 12 },
-      { group: 'hamstrings', sets: 0, target: 10 }, { group: 'glutes', sets: 0, target: 10 },
-      { group: 'calves', sets: 0, target: 10 }, { group: 'abdominals', sets: 0, target: 10 },
-    ] },
+    volume: { weekOf: '2026-08-24', weeks: 1, groups: emptyGroups() },
+    volumeAvg: { weekOf: '2026-08-10', weeks: 4, groups: emptyGroups() },
+    volume3mo: { weekOf: '2026-06-02', weeks: 13, groups: emptyGroups() },
     bodyweight: { unit: 'lb', entries: [] },
   }, overrides);
 }
 
-console.log('weekly volume: empty state when nothing trained this week');
+console.log('volume trend: empty state when nothing trained in any range');
 {
   PROGRESS_FIXTURE = baseProgress();
   await progressScreen({ silent: true });
@@ -141,44 +139,36 @@ console.log('weekly volume: empty state when nothing trained this week');
   ok(html.includes('Volume trend'), 'section heading renders');
   ok(html.includes("Log some working sets this"), 'shows the empty-state note (got no match)');
   ok(!html.includes('mv-row'), 'no meter rows rendered when nothing trained yet');
-  ok(!html.includes(`onclick="setVolMode`), 'no mode toggle when BOTH this week and the 4-wk avg are truly empty');
+  ok(!html.includes(`onclick="setVolMode`), 'no range picker when This week, Month AND 3 months are all truly empty');
 }
 
-console.log('weekly volume: mode toggle still shows when THIS WEEK is empty but the 4-wk avg has data (cold-review catch)');
+console.log('volume trend: range picker still shows when THIS WEEK is empty but Month has data (cold-review catch, carried forward)');
 {
-  // Real bug caught by cold review: the toggle used to be gated on the CURRENTLY DISPLAYED mode's
-  // data. A fresh page load always starts on "This week," so a week with nothing logged yet --
-  // the exact scenario this whole feature exists for -- hid the "4-wk avg" button entirely, even
-  // though the trailing month had real data to show. The toggle must be offered whenever EITHER
-  // view has something, not just the one currently on screen.
-  const volAvg = baseProgress().volumeAvg;
-  volAvg.groups = volAvg.groups.map(g => g.group === 'chest' ? { group: 'chest', sets: 6, target: 12 } : g);
-  PROGRESS_FIXTURE = baseProgress({ volumeAvg: volAvg }); // volume (this week) stays all-zero
+  // Real bug caught by cold review: the toggle used to be gated on the CURRENTLY DISPLAYED range's
+  // data. A fresh page load always starts on "This week," so a week with nothing logged yet -- the
+  // exact scenario this whole feature exists for -- hid the other ranges entirely, even though a
+  // longer window had real data to show. The toggle must be offered whenever ANY range has
+  // something, not just the one currently on screen.
+  PROGRESS_FIXTURE = baseProgress({ volumeAvg: { weekOf: '2026-08-10', weeks: 4, groups: emptyGroups({ chest: 6 }) } }); // volume (this week) and volume3mo stay all-zero
   ok(getVolMode() === 'week', 'starts on "This week" (sanity check)');
 
   await progressScreen({ silent: true });
   const html = appEl.innerHTML;
   ok(html.includes("Log some working sets this"), 'This week itself still shows its own empty state (got no match)');
   ok(!html.includes('mv-row'), 'no rows rendered while on the empty "This week" view');
-  ok(html.includes(`onclick="setVolMode('avg')"`), 'the "4-wk avg" button IS offered even though this week is empty (this was the bug)');
+  ok(html.includes(`onclick="setVolMode('month')"`), 'the "Month" button IS offered even though this week is empty (this was the bug)');
 
-  setVolMode('avg');
+  setVolMode('month');
   await new Promise(r => setTimeout(r, 0));
   const html2 = appEl.innerHTML;
-  ok(html2.includes('mv-row') && html2.includes('Chest'), 'switching to avg mode reveals the real data (got no match)');
+  ok(html2.includes('mv-row') && html2.includes('Chest'), 'switching to Month reveals the real data (got no match)');
   setVolMode('week'); // reset for later blocks
   await new Promise(r => setTimeout(r, 0));
 }
 
-console.log('weekly volume: rows render with correct fill and "met" state (expanded view)');
+console.log('volume trend: rows render with correct fill and "met" state (expanded view)');
 {
-  const vol = baseProgress().volume;
-  vol.groups = vol.groups.map(g => {
-    if (g.group === 'quads') return { group: 'quads', sets: 6, target: 12 };   // 50%, under target
-    if (g.group === 'glutes') return { group: 'glutes', sets: 12, target: 10 }; // over target -> met
-    return g;
-  });
-  PROGRESS_FIXTURE = baseProgress({ volume: vol });
+  PROGRESS_FIXTURE = baseProgress({ volume: { weekOf: '2026-08-24', weeks: 1, groups: emptyGroups({ quads: 6, glutes: 12 }) } });
   // Quads and Glutes both have SOME volume, so a "worst-first" collapsed top-5 (see the dedicated
   // collapse/expand block below) would push them out in favor of the fully-untrained groups --
   // expand first so this block can test row rendering (fill/labels/met-class) in isolation.
@@ -197,18 +187,12 @@ console.log('weekly volume: rows render with correct fill and "met" state (expan
   if (getVolExpanded()) toggleVolExpanded(); // reset for later blocks
 }
 
-console.log('weekly volume: collapsed by default to the 5 most-neglected groups, "Show all" expands');
+console.log('volume trend: collapsed by default to the 5 most-neglected groups, "Show all" expands');
 {
-  const vol = baseProgress().volume;
-  // Give every group SOME distinguishing value so sort order is unambiguous: quads and glutes
-  // are well-trained (should be pushed OUT of the default view), everything else is untouched
-  // (0 sets -- equally "most neglected," so the collapsed 5 should be 5 of those, never quads/glutes).
-  vol.groups = vol.groups.map(g => {
-    if (g.group === 'quads') return { group: 'quads', sets: 12, target: 12 };
-    if (g.group === 'glutes') return { group: 'glutes', sets: 10, target: 10 };
-    return g;
-  });
-  PROGRESS_FIXTURE = baseProgress({ volume: vol });
+  // Give every group SOME distinguishing value so sort order is unambiguous: quads and glutes are
+  // well-trained (should be pushed OUT of the default view), everything else is untouched (0 sets
+  // -- equally "most neglected," so the collapsed 5 should be 5 of those, never quads/glutes).
+  PROGRESS_FIXTURE = baseProgress({ volume: { weekOf: '2026-08-24', weeks: 1, groups: emptyGroups({ quads: 12, glutes: 10 }) } });
   ok(getVolExpanded() === false, 'starts collapsed (sanity check on the reset above)');
 
   await progressScreen({ silent: true });
@@ -234,36 +218,27 @@ console.log('weekly volume: collapsed by default to the 5 most-neglected groups,
   ok(getVolExpanded() === false, 'toggled back to collapsed');
 }
 
-console.log('weekly volume: "This week"/"4-wk avg" toggle -- pinned row selection, mode-dependent numbers');
+console.log('volume trend: This week/Month/3 months range picker -- pinned row selection, range-dependent numbers, per-range suffix and rulenote');
 {
-  // Jeff, Aug 31 (round 2): tapping the toggle must NOT reshuffle which 5 muscles show in the
-  // collapsed view -- only their numbers. This week: quads/glutes are well-trained (pushed out of
-  // the neglected-first top 5, same setup as the collapse/expand block above), everything else 0.
-  // 4-wk avg: chest is now fully "met" (12/12) -- if the collapsed selection re-ranked per mode
-  // (the bug Jeff caught), chest would drop OUT of the list once its avg looks good, replaced by
-  // some other zero group. Pinning selection to THIS WEEK's ranking means chest stays visible
-  // (still flagged, because it really was skipped this week), just showing its better avg number.
-  const vol = baseProgress().volume;
-  vol.groups = vol.groups.map(g => {
-    if (g.group === 'quads') return { group: 'quads', sets: 12, target: 12 };
-    if (g.group === 'glutes') return { group: 'glutes', sets: 10, target: 10 };
-    return g;
+  // Jeff, Aug 31 (round 2, still true for the round-6 3-way picker): tapping the toggle must NOT
+  // reshuffle which 5 muscles show in the collapsed view -- only their numbers. This week:
+  // quads/glutes are well-trained (pushed out of the neglected-first top 5, same setup as the
+  // collapse/expand block above), everything else 0. Month: chest is now fully "met" (12/12) -- if
+  // the collapsed selection re-ranked per range (the bug Jeff caught), chest would drop OUT of the
+  // list once its Month number looks good, replaced by some other zero group. Pinning selection to
+  // THIS WEEK's ranking means chest stays visible (still flagged, because it really was skipped
+  // this week), just showing its better Month/3-month number.
+  PROGRESS_FIXTURE = baseProgress({
+    volume: { weekOf: '2026-08-24', weeks: 1, groups: emptyGroups({ quads: 12, glutes: 10 }) },
+    volumeAvg: { weekOf: '2026-08-10', weeks: 4, groups: emptyGroups({ chest: 12, lats: 6, quads: 8, glutes: 7 }) },
+    volume3mo: { weekOf: '2026-06-02', weeks: 13, groups: emptyGroups({ chest: 3, lats: 2, quads: 5, glutes: 4 }) },
   });
-  const volAvg = baseProgress().volumeAvg;
-  volAvg.groups = volAvg.groups.map(g => {
-    if (g.group === 'chest') return { group: 'chest', sets: 12, target: 12 };   // looks great by avg
-    if (g.group === 'lats') return { group: 'lats', sets: 6, target: 12 };      // partial by avg
-    if (g.group === 'quads') return { group: 'quads', sets: 8, target: 12 };
-    if (g.group === 'glutes') return { group: 'glutes', sets: 7, target: 10 };
-    return g;
-  });
-  PROGRESS_FIXTURE = baseProgress({ volume: vol, volumeAvg: volAvg });
   ok(getVolMode() === 'week', 'starts on "This week" (sanity check)');
 
   await progressScreen({ silent: true });
   let html = appEl.innerHTML;
   ok(html.includes(`class="on" onclick="setVolMode('week')"`), '"This week" pill is active by default');
-  ok(!html.includes(`class="on" onclick="setVolMode('avg')"`), '"4-wk avg" pill is not active by default');
+  ok(!html.includes(`class="on" onclick="setVolMode('month')"`), '"Month" pill is not active by default');
   let rowCount = (html.match(/class="mv-row"/g) || []).length;
   ok(rowCount === 5, `collapsed to 5 rows in week mode (got ${rowCount})`);
   ok(html.includes('Chest') && html.includes('Back') && html.includes('Shoulders') && html.includes('Traps') && html.includes('Biceps'),
@@ -271,253 +246,56 @@ console.log('weekly volume: "This week"/"4-wk avg" toggle -- pinned row selectio
   ok(!trendSection(html).includes('Quads') && !trendSection(html).includes('Glutes'), 'well-trained-this-week groups stay excluded');
   ok(html.includes('working sets logged this week'), 'rulenote uses the weekly wording');
 
-  setVolMode('avg');
+  setVolMode('month');
   await new Promise(r => setTimeout(r, 0));
   html = appEl.innerHTML;
-  ok(getVolMode() === 'avg', 'setVolMode switched the mode');
-  ok(html.includes(`class="on" onclick="setVolMode('avg')"`), '"4-wk avg" pill is now active');
+  ok(getVolMode() === 'month', 'setVolMode switched to Month');
+  ok(html.includes(`class="on" onclick="setVolMode('month')"`), '"Month" pill is now active');
   ok(!html.includes(`class="on" onclick="setVolMode('week')"`), '"This week" pill is no longer active');
   rowCount = (html.match(/class="mv-row"/g) || []).length;
-  ok(rowCount === 5, `still exactly 5 rows after switching mode (got ${rowCount})`);
+  ok(rowCount === 5, `still exactly 5 rows after switching to Month (got ${rowCount})`);
   ok(html.includes('Chest') && html.includes('Back') && html.includes('Shoulders') && html.includes('Traps') && html.includes('Biceps'),
-    'SAME 5 rows as week mode -- selection is pinned, not re-ranked per mode (got: ' + html.slice(html.indexOf('Volume trend'), html.indexOf('Volume trend') + 400) + ')');
+    'SAME 5 rows as week mode -- selection is pinned, not re-ranked per range (got: ' + html.slice(html.indexOf('Volume trend'), html.indexOf('Volume trend') + 400) + ')');
   ok(!trendSection(html).includes('Quads') && !trendSection(html).includes('Glutes'),
-    'quads/glutes still excluded in avg mode even though their avg numbers differ from their week numbers');
-  const chestBlock = html.slice(html.indexOf('Chest'), html.indexOf('Chest') + 260);
-  ok(chestBlock.includes('/ 12 sets/wk'), `chest shows the AVG number with "/wk" suffix, not the week number (got ${chestBlock.slice(0, 200)})`);
-  ok(chestBlock.includes('mv-met'), 'chest is now "met" using its avg value (12/12), proving the NUMBER did update even though the row stayed');
-  ok(html.includes('average working sets per week over the trailing 4 weeks'), 'rulenote switches to the avg wording');
+    'quads/glutes still excluded in Month view even though their Month numbers differ from their week numbers');
+  let chestBlock = html.slice(html.indexOf('Chest'), html.indexOf('Chest') + 260);
+  ok(chestBlock.includes('/ 12 sets/wk'), `chest shows the Month number with "/wk" suffix, not the week number (got ${chestBlock.slice(0, 200)})`);
+  ok(chestBlock.includes('mv-met'), 'chest is now "met" using its Month value (12/12), proving the NUMBER did update even though the row stayed');
+  ok(html.includes('average working sets per week over the trailing month'), 'rulenote switches to the Month wording');
+
+  setVolMode('3mo');
+  await new Promise(r => setTimeout(r, 0));
+  html = appEl.innerHTML;
+  ok(getVolMode() === '3mo', 'setVolMode switched to 3 months');
+  ok(html.includes(`class="on" onclick="setVolMode('3mo')"`), '"3 months" pill is now active');
+  rowCount = (html.match(/class="mv-row"/g) || []).length;
+  ok(rowCount === 5, `still exactly 5 rows after switching to 3 months (got ${rowCount})`);
+  ok(!trendSection(html).includes('Quads') && !trendSection(html).includes('Glutes'), 'quads/glutes still excluded in the 3-month view too -- ranking never re-sorts');
+  chestBlock = html.slice(html.indexOf('Chest'), html.indexOf('Chest') + 260);
+  ok(chestBlock.includes('3<span class="mv-of"> / 12 sets/wk'), `chest shows the 3-month number with "/wk" suffix (got ${chestBlock.slice(0, 200)})`);
+  ok(!chestBlock.includes('mv-met'), 'chest is NOT "met" at its lower 3-month average (3/12) -- proves this is really a different number from Month, not a stale re-render');
+  ok(html.includes('average working sets per week over the trailing 3 months'), 'rulenote switches to the 3-month wording');
 
   setVolMode('week'); // reset for later blocks
   await new Promise(r => setTimeout(r, 0));
   ok(getVolMode() === 'week', 'reset back to "This week"');
 }
 
-// Aug 31/Sep 1: the "Volume trend" chart (volTrendChart in app.js). Its "Overall" tab (tested
-// above, via trendSection near the top of this file) IS the merged former "Weekly volume" content;
-// picking a specific muscle chip switches to that muscle's own multi-week trend chart, tested below.
-const MUSCLE_KEYS = vm.runInContext('Object.keys(MUSCLE_LABEL)', ctx);
-const MUSCLE_LABEL_MAP = vm.runInContext('MUSCLE_LABEL', ctx);
-const setTrendVolPick = vm.runInContext('setTrendVolPick', ctx);
-// A chip's class attribute and its onclick handler sit on the SAME <span>, but the looped muscle
-// chips wrap that span onto a second line (a literal newline+indent in between) while the single
-// hand-written "Overall" chip does not -- so tie the class capture directly to this span's own
-// onclick via a bounded, non-greedy gap rather than assuming a fixed literal string.
-function chipActive(html, key) {
-  const re = new RegExp(`<span class="chip ([^"]*)"[\\s\\S]{0,30}?onclick="setTrendVolPick\\('${key}'\\)"`);
-  const m = html.match(re);
-  if (!m) return null;
-  return /\bon\b/.test(m[1]);
-}
-// Sep 1, round 2: the second chip (the picker trigger) always calls openVolTrendPicker(), not
-// setTrendVolPick(<key>) -- its active state and label are what changes, not its handler -- so it
-// needs its own extractor rather than reusing chipActive's per-key onclick match.
-function pickChipInfo(html) {
-  const m = html.match(/<span class="chip ([^"]*)"[\s\S]{0,30}?onclick="openVolTrendPicker\(\)">([^<]*)<\/span>/);
-  if (!m) return null;
-  return { active: /\bon\b/.test(m[1]), label: m[2].trim() };
-}
-function makeTrendWeeks(weeksSpec, target = 10) {
-  return weeksSpec.map(w => ({
-    weekOf: w.weekOf,
-    groups: MUSCLE_KEYS.map(g => ({ group: g, sets: (w.sets && w.sets[g]) || 0, target })),
-  }));
-}
-function allGroupsSet(n) { const o = {}; MUSCLE_KEYS.forEach(g => o[g] = n); return o; }
-
-console.log('volume trend: no weeksData at all -- Overall itself never needs it (round 4: it reads d.volume/d.volumeAvg directly), but picking a muscle still hits the true "Not enough history yet." state, no chart');
+console.log('volume trend: round 6 -- no "Overall"/"Pick a muscle" chips and no picker sheet anymore; just the bar list and the range picker');
 {
-  PROGRESS_FIXTURE = baseProgress(); // no volumeTrend key at all, but d.volume/d.volumeAvg are always present
-  await progressScreen({ silent: true });
-  let sec = trendSection(appEl.innerHTML);
-  ok(appEl.innerHTML.includes('Volume trend'), 'section heading renders even before any trend data exists');
-  ok(chipActive(sec, '__overall') === true, 'Overall chip is active by default');
-  ok(!sec.includes('Not enough history yet.'), 'Overall is never the "not enough history" empty state -- that only applies once a specific muscle is picked with zero weeksData');
-  ok(sec.includes('Log some working sets this'), 'Overall shows its own (untrained) empty state instead, driven by d.volume, not weeksData');
-  const pick = pickChipInfo(sec);
-  ok(!!pick && pick.active === false && pick.label === 'Pick a muscle ▾', `the second chip prompts to pick a muscle and opens the picker even with zero weeks of trend data (got ${JSON.stringify(pick)})`);
-
-  setTrendVolPick('quads');
-  await new Promise(r => setTimeout(r, 0));
-  sec = trendSection(appEl.innerHTML);
-  ok(sec.includes('Not enough history yet.'), 'picking a muscle with zero weeksData at all shows the true zero-history empty state (got no match)');
-  ok(!sec.includes('<svg'), 'no chart svg with zero weeks of trend history');
-
-  // The picker itself must still be usable here -- with truly no history, every row falls back to
-  // a plain "No data yet" subtext (window._VOLTREND_GROUPS is null in this state).
-  openVolTrendPicker();
-  const sheetHtml = body._children[body._children.length - 1].innerHTML;
-  ok((sheetHtml.match(/No data yet/g) || []).length === 12, `all 12 rows show "No data yet" when there is truly no history at all (got ${(sheetHtml.match(/No data yet/g) || []).length})`);
-
-  setTrendVolPick('__overall'); // reset for later blocks
-  await new Promise(r => setTimeout(r, 0));
-}
-
-console.log('volume trend: the inline chip row always shows exactly 2 chips -- Overall + a single picker chip (Jeff, Sep 1 round 2: the old header button "seemed out of place") -- the other 11 muscles live in the picker sheet, not as inline pills');
-{
-  const weeks = makeTrendWeeks([{ weekOf: '2026-08-17', sets: {} }, { weekOf: '2026-08-24', sets: allGroupsSet(5) }], 10);
-  PROGRESS_FIXTURE = baseProgress({ volumeTrend: { weeks } });
-  await progressScreen({ silent: true });
-  let sec = trendSection(appEl.innerHTML);
-  ok((sec.match(/class="chip /g) || []).length === 2, `always exactly 2 inline chips, never a wall of 12 (got ${(sec.match(/class="chip /g) || []).length})`);
-  let pick = pickChipInfo(sec);
-  ok(!!pick && pick.label === 'Pick a muscle ▾' && pick.active === false, `on Overall, the second chip is a neutral prompt, not a filled/active pill (got ${JSON.stringify(pick)})`);
-
-  setTrendVolPick('quads');
-  await new Promise(r => setTimeout(r, 0));
-  sec = trendSection(appEl.innerHTML);
-  ok((sec.match(/class="chip /g) || []).length === 2, `still exactly 2 inline chips after picking a muscle (got ${(sec.match(/class="chip /g) || []).length})`);
-  pick = pickChipInfo(sec);
-  ok(!!pick && pick.label === 'Quads ▾' && pick.active === true, `the second chip now names the picked muscle and shows active (got ${JSON.stringify(pick)})`);
-  ok(chipActive(sec, '__overall') === false, 'Overall is no longer the active chip');
-  ok(!sec.includes('>Chest<') && !sec.includes('>Biceps<'), `muscles that are NOT picked never clutter the inline row (got: ${sec.slice(0, 300)})`);
-
-  setTrendVolPick('__overall'); // reset for later blocks
-  await new Promise(r => setTimeout(r, 0));
-}
-
-console.log('volume trend: tapping the "Pick a muscle" chip opens a sheet of tappable .mv-row bar rows (name + this week\'s own sets/target + progress bar) -- the SAME row markup as the Weekly Volume card above it (Jeff, round 3: "how you had it originally with the bars... that design was cleaner"), not icon tiles and not a bare text list');
-{
-  const weeks = makeTrendWeeks([{ weekOf: '2026-08-17', sets: {} }, { weekOf: '2026-08-24', sets: { hamstrings: 6 } }], 10);
-  PROGRESS_FIXTURE = baseProgress({ volumeTrend: { weeks } });
-  await progressScreen({ silent: true });
-
-  openVolTrendPicker();
-  const sheetHtml = body._children[body._children.length - 1].innerHTML;
-  ok(sheetHtml.includes('Pick a muscle'), 'sheet title renders');
-  ok(!sheetHtml.includes('mg-card') && !sheetHtml.includes('mg-ico') && !sheetHtml.includes('Upper Body') && !sheetHtml.includes('Lower Body') && !sheetHtml.includes('lib-cat'),
-    'not the icon-tile / category-grouped library-browse design (round 2/3\'s walked-back attempts) (got a match)');
-  ok(MUSCLE_KEYS.every(g => sheetHtml.includes(`pickVolTrendMuscle('${g}')`) && sheetHtml.includes(MUSCLE_LABEL_MAP[g]) && sheetHtml.includes('mv-track') && sheetHtml.includes('mv-fill')),
-    'all 12 muscles render as tappable .mv-row bar rows, reusing the Weekly Volume card\'s own progress-bar markup (got no match for one or more)');
-  ok(sheetHtml.includes('6<span class="mv-of"> / 10 sets this week</span>'), `hamstrings' own this-week progress shows in the row (got no match in: ${sheetHtml.slice(0, 200)})`);
-  ok(sheetHtml.includes('0<span class="mv-of"> / 10 sets this week</span>'), 'an untrained muscle shows its real 0/target this week, not a blank or a false claim');
-  ok(!sheetHtml.includes('✓'), 'nothing is marked active yet while still on Overall (got a checkmark unexpectedly)');
-
-  pickVolTrendMuscle('hamstrings');
-  await new Promise(r => setTimeout(r, 0));
-  ok(getTrendVolPick() === 'hamstrings', `picking a row from the sheet switches TREND_VOL_PICK (got ${getTrendVolPick()})`);
-  const sec = trendSection(appEl.innerHTML);
-  ok(sec.includes('Week of 2026-08-24: 6 sets'), `the chart actually switched to hamstrings' own data (got: ${sec.slice(0, 400)})`);
-
-  openVolTrendPicker(); // reopen -- the just-picked muscle should now show as the checked, highlighted row
-  const sheetHtml2 = body._children[body._children.length - 1].innerHTML;
-  const i = sheetHtml2.indexOf("pickVolTrendMuscle('hamstrings')");
-  const hamRow = sheetHtml2.slice(Math.max(0, i - 100), i + 400); // mv-pick-on is a class on the div's OPENING tag, before onclick in source order
-  ok(hamRow.includes('✓') && hamRow.includes('mv-pick-on'), `hamstrings shows as the checked, highlighted row after picking it (got: ${hamRow})`);
-
-  setTrendVolPick('__overall'); // reset for later blocks
-  await new Promise(r => setTimeout(r, 0));
-}
-
-console.log('volume trend: a picked muscle with real weeks but nothing logged -- "Log a few weeks..." message, distinct from the zero-history state (Overall itself is driven by d.volume, not weeksData, so this only shows up once a muscle is picked)');
-{
-  const weeks = makeTrendWeeks([{ weekOf: '2026-08-17', sets: {} }, { weekOf: '2026-08-24', sets: {} }], 10);
-  PROGRESS_FIXTURE = baseProgress({ volumeTrend: { weeks } });
-  setTrendVolPick('quads');
+  // Jeff: "I dont feel like we need the separate SVG report, overall pill box, and muscle picker if
+  // we show the volume trend in the main bar graph." Confirms the whole chip/picker mechanism from
+  // rounds 2-5 is genuinely gone, not just unused -- both the markup AND the functions themselves.
+  PROGRESS_FIXTURE = baseProgress({ volume: { weekOf: '2026-08-24', weeks: 1, groups: emptyGroups({ quads: 6 }) } });
   await progressScreen({ silent: true });
   const sec = trendSection(appEl.innerHTML);
-  ok(sec.includes('Log a few weeks of working sets'), 'shows the not-yet-trained message once real weeks exist but are all zero (got no match)');
-  ok(!sec.includes('Not enough history yet.'), 'does NOT show the different zero-history message once weeks actually exist');
-  ok(!sec.includes('<svg'), 'still no chart svg when every week is zero');
-  ok(sec.includes('onclick="openVolTrendPicker()"'), 'cold-review catch: the picker chip still opens the muscle-picker sheet in this THIRD empty-state branch too, not just the other two (got no match)');
-
-  setTrendVolPick('__overall'); // reset for later blocks
-  await new Promise(r => setTimeout(r, 0));
-}
-
-console.log('volume trend: re-picking the muscle that is already active is a harmless no-op');
-{
-  const weeks = makeTrendWeeks([{ weekOf: '2026-08-17', sets: {} }, { weekOf: '2026-08-24', sets: { hamstrings: 6 } }], 10);
-  PROGRESS_FIXTURE = baseProgress({ volumeTrend: { weeks } });
-  await progressScreen({ silent: true });
-  pickVolTrendMuscle('hamstrings');
-  await new Promise(r => setTimeout(r, 0));
-  pickVolTrendMuscle('hamstrings'); // already active -- re-picking the same one must not error or change anything
-  await new Promise(r => setTimeout(r, 0));
-  ok(getTrendVolPick() === 'hamstrings', `re-picking the already-active muscle is a no-op, still hamstrings (got ${getTrendVolPick()})`);
-  const sec = trendSection(appEl.innerHTML);
-  ok(sec.includes('Week of 2026-08-24: 6 sets'), `chart still shows the correct data after the redundant re-pick (got: ${sec.slice(0, 400)})`);
-  setTrendVolPick('__overall'); // reset for later blocks
-  await new Promise(r => setTimeout(r, 0));
-}
-
-console.log('volume trend: picking a muscle chip switches from the Overall bar-list to that muscle\'s own raw weekly set count trend chart');
-{
-  const weeks = makeTrendWeeks([
-    { weekOf: '2026-08-17', sets: {} },
-    { weekOf: '2026-08-24', sets: { quads: 8 } },
-  ], 10);
-  PROGRESS_FIXTURE = baseProgress({ volumeTrend: { weeks } });
-  await progressScreen({ silent: true });
-  let sec = trendSection(appEl.innerHTML);
-  ok(chipActive(sec, '__overall') === true, 'starts on Overall (sanity check)');
-  ok(!sec.includes('<svg'), 'Overall itself never renders the multi-week svg chart -- that only exists once a muscle is picked');
-
-  setTrendVolPick('quads');
-  await new Promise(r => setTimeout(r, 0));
-  sec = trendSection(appEl.innerHTML);
-  const quadsPick = pickChipInfo(sec);
-  ok(quadsPick && quadsPick.active === true && quadsPick.label === 'Quads ▾', `picker chip becomes active and shows Quads after picking it (got: ${JSON.stringify(quadsPick)})`);
-  ok(chipActive(sec, '__overall') === false, 'Overall chip is no longer active');
-  ok(sec.includes('<svg'), 'picking a muscle reveals the multi-week trend chart');
-  ok(sec.includes('Week of 2026-08-24: 8 sets'), `shows quads' own raw weekly set count (got: ${sec.slice(0, 500)})`);
-  ok(sec.includes('Week of 2026-08-17: 0 sets'), 'the untrained earlier week shows 0 sets for quads specifically');
-  ok(sec.includes('working sets per week for quads'), 'rulenote switches to the per-muscle wording (got no match)');
-  ok(sec.includes('Dashed line marks the 10-set weekly target'), "rulenote names quads' own 10-set target");
-
-  setTrendVolPick('__overall'); // reset for later blocks
-  await new Promise(r => setTimeout(r, 0));
-  ok(chipActive(trendSection(appEl.innerHTML), '__overall') === true, 'reset back to Overall');
-}
-
-console.log('volume trend: a picked muscle with more than 13 weeks (the "6 months" range) still renders -- per-bar value labels are suppressed above the label-crowding threshold, but tooltips and axis labels still work');
-{
-  // Cold-review gap: every other fixture in this file uses 2 weeks. weeksData.length<=13 gates
-  // whether a value is drawn as floating <text> on top of each bar -- real usage reaches well past
-  // 13 (PROG_RANGES offers "6 months" = 26), so this needs its own dedicated coverage. Only the
-  // per-muscle trend chart uses weeksData at all now, so a muscle must be picked first.
-  const spec = [];
-  for (let i = 0; i < 14; i++) {
-    const d = new Date('2026-06-01T00:00:00Z'); d.setUTCDate(d.getUTCDate() + i * 7);
-    spec.push({ weekOf: d.toISOString().slice(0, 10), sets: i === 13 ? { quads: 6 } : {} }); // only the last week has any volume
+  ok(!sec.includes('class="chip'), 'no chip markup anywhere in the Volume trend section (got a match)');
+  ok(!sec.includes('Pick a muscle'), '"Pick a muscle" no longer appears at all (got a match)');
+  ok(!sec.includes('<svg'), 'no per-muscle SVG chart either -- the bar list is the only visual');
+  for (const fn of ['setTrendVolPick', 'openVolTrendPicker', 'pickVolTrendMuscle', 'renderVolTrendPicker']) {
+    ok(vm.runInContext(`typeof ${fn}`, ctx) === 'undefined', `${fn} no longer exists in app.js (got ${vm.runInContext(`typeof ${fn}`, ctx)})`);
   }
-  const weeks = makeTrendWeeks(spec, 10);
-  PROGRESS_FIXTURE = baseProgress({ volumeTrend: { weeks } });
-  setTrendVolPick('quads');
-  await progressScreen({ silent: true });
-  const sec = trendSection(appEl.innerHTML);
-  ok(sec.includes('<svg'), '14-week chart still renders without crashing');
-  ok(!sec.includes('font-weight="700"'), 'per-bar floating value labels are suppressed once there are more than 13 weeks (got some anyway)');
-  ok(/Week of \d{4}-\d{2}-\d{2}: \d+ sets/.test(sec), 'the tooltip text is still present per-bar even without the visible floating label (got no match)');
-  ok(sec.includes('this week'), 'the "this week" axis label still renders on the last bar');
-
-  setTrendVolPick('__overall'); // reset for later blocks
-  await new Promise(r => setTimeout(r, 0));
-}
-
-console.log('volume trend: a stale/unknown picked muscle falls back to Overall instead of falsely reporting "no data" (cold-review catch)');
-{
-  // Same defensive pattern trendChart already uses for TREND_PICK (fall back to a valid selection
-  // rather than a value that no longer corresponds to any real chip/group). Simulate a stale pick
-  // by setting one that isn't Overall and isn't any of the 12 known muscle keys.
-  setTrendVolPick('__overall');
-  await new Promise(r => setTimeout(r, 0));
-  vm.runInContext(`TREND_VOL_PICK = 'not_a_real_muscle_key'`, ctx);
-  const vol = baseProgress().volume;
-  vol.groups = vol.groups.map(g => g.group === 'quads' ? { group: 'quads', sets: 6, target: 12 } : g);
-  PROGRESS_FIXTURE = baseProgress({ volume: vol });
-  // Default collapsed view is worst-first: quads (50% of target) ranks BETTER than the 11 untouched
-  // (0%) groups, so it's pushed out of the top-5 unless expanded -- expand so this block can assert
-  // on quads specifically, same reasoning as the dedicated collapse/expand block above.
-  if (!getVolExpanded()) toggleVolExpanded();
-  await progressScreen({ silent: true });
-  const sec = trendSection(appEl.innerHTML);
-  ok(chipActive(sec, '__overall') === true, 'a stale/unknown pick falls back to the Overall chip rather than staying on a phantom selection');
-  ok(sec.includes('mv-row') && sec.includes('Quads'), 'and shows the real Overall bar-list data instead of a false "no data" message (got: ' + sec.slice(0, 400) + ')');
-  ok(!sec.includes('Not enough history yet.') && !sec.includes('Log a few weeks of working sets'), 'does NOT fall into either per-muscle empty-state branch just because the stale pick matched nothing');
-  const fallbackPick = pickChipInfo(sec);
-  ok(fallbackPick && fallbackPick.active === false && fallbackPick.label === 'Pick a muscle ▾', `the picker chip itself also resets to its neutral label/state, not left showing the phantom key (got: ${JSON.stringify(fallbackPick)})`);
-  if (getVolExpanded()) toggleVolExpanded(); // reset for later blocks
+  ok(vm.runInContext(`typeof TREND_VOL_PICK`, ctx) === 'undefined', 'TREND_VOL_PICK no longer exists in app.js');
 }
 
 console.log('body weight: empty state offers a CTA, no chart');

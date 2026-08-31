@@ -2895,11 +2895,24 @@ app.get('/api/progress', auth, async (req, res) => {
     streakWeeks: streak,
     trend: trendFor(req.userId),
     prs: recordsFor(req.userId),
+    // Sep 1, round 5/6: widened from just This week (1) + 4-wk avg to a 3-range picker (This
+    // week/Month/3 months) so Volume trend's card can offer a matching range control instead of a
+    // separate per-week SVG chart (Jeff: "the whole report is blank and shows one bar when
+    // selected" — see the comment above volTrendChart in app.js). Round 6 dropped a "6 months"
+    // fourth range Consistency's own Month/3 months/6 months picker has — weekly SET VOLUME is a
+    // "what's this looked like lately" question, and a 6-month average of it barely moves once
+    // you're in a steady routine (see the comment above VOL_RANGES in app.js for the full
+    // rationale). Each range is a true per-week average over its trailing window via the same
+    // volumeFor(userId, weeks), not a sum — a consistently-trained muscle reads the same whether
+    // you're looking at a week or 3 months.
     volume: volumeFor(req.userId, 1),
     volumeAvg: volumeFor(req.userId, 4),
-    // Same `weeks` window as the Consistency chart above (its Month/3 months/6 months picker) —
-    // one shared "how far back am I looking" range for the whole page's history views, rather
-    // than a second, independent range picker just for this chart.
+    volume3mo: volumeFor(req.userId, 13),
+    // No longer consumed by the client's Volume trend view as of round 5 (it used to drive a
+    // per-week SVG trend chart, now retired in favor of the range-picker bar rows above) — left
+    // computed/returned since Consistency's own weeksFor still needs this same `weeks` param, and
+    // nothing else currently depends on removing this field. Candidate for cleanup later if truly
+    // nothing else ever needs real per-week history again.
     volumeTrend: volumeTrendFor(req.userId, weeks),
     bodyweight: bodyweightFor(req.userId)
   });
