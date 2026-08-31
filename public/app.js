@@ -1002,6 +1002,15 @@ async function openSession(id, opts){
   // you're mid-workout on. Same !silent gate as everything else in this function.
   if(!silent && !quiet){ const st={t:'session', id}; fromHistory ? landOn(st) : navigated(st); }
   if(isPosted) loadPostComments(s.id, ME.id); else loadChat(s);
+  // v262 (cold-review fix): every existing caller of openSession ignores its return value, so this
+  // is safe to add -- but the two new deep-link entry points below (tryBoot's ?openLog= branch and
+  // the serviceWorker message listener) both used to call openLogSheet() UNCONDITIONALLY right
+  // after, even when this function hit the error branch above and returned undefined. That meant a
+  // dead/expired link fired openSession's alert, then openLogSheet's own SEPARATE fetch-and-alert
+  // right on top of it (openLogSheet has no _expired guard at all, so it would alert even over a
+  // freshly-rendered login screen). Returning true only from this, the successful-render path, lets
+  // both call sites gate on it and skip openLogSheet entirely when the session didn't open.
+  return true;
 }
 // ===== Dedicated POSTED-WORKOUT view (read-only, like an Instagram/Hevy post) =====
 // Opened when tapping a saved workout on a profile. Each participant posts their own recap
@@ -4676,7 +4685,23 @@ async function tryBoot(){
     // landed nowhere recognizable. replaceState (not pushState) since this isn't a navigation,
     // just labeling the entry that's already here.
     CURRENT_NAV_STATE = {t:'tab', tab:'home'};
-    history.replaceState(CURRENT_NAV_STATE, '', location.href);
+    // Jeff, Aug 31: a "starting a workout" push notification (server.js's
+    // firstExerciseStartNotification) deep-links here via ?openLog=sid:exId when there was no
+    // already-open tab for sw.js's notificationclick to postMessage into instead (see that file's
+    // comment). Stripped from the URL immediately either way, success or failure -- a stale query
+    // string sitting in the address bar must not re-open the same log sheet on every later reload.
+    // Parsed by hand rather than via URLSearchParams -- several of this app's own test harnesses
+    // run app.js in a minimal mock global (same reasoning as the serviceWorker check above), and
+    // URLSearchParams isn't one of the globals any of them provide.
+    const openLogMatch = /(?:^|[?&])openLog=([^&]*)/.exec(location.search || '');
+    const openLog = openLogMatch ? decodeURIComponent(openLogMatch[1]) : null;
+    history.replaceState(CURRENT_NAV_STATE, '', location.pathname);
+    if(openLog && openLog.includes(':')){
+      const [sid, exId] = openLog.split(':');
+      // v262 (cold-review fix): gate openLogSheet on openSession actually succeeding -- see the
+      // comment at openSession's `return true;` for why calling both unconditionally double-alerted.
+      if(sid && exId){ const opened = await openSession(sid); if(opened) await openLogSheet(sid, exId); return; }
+    }
     home();
     return;
   }
@@ -4697,7 +4722,37 @@ function bootRetryScreen(){
   </div>`;
   window.scrollTo(0,0);
 }
-(async ()=>{
+// Jeff, Aug 31: the other half of the "starting a workout" notification's deep link -- when the
+// app is ALREADY open (in this tab or another), sw.js's notificationclick handler focuses it and
+// hands the exercise off here instead of forcing a reload (see that file's comment for why). The
+// ?openLog=sid:exId query-string path in tryBoot() above covers the no-open-tab case; this covers
+// the open-tab case. Registered unconditionally -- it only ever receives anything once setupPush()
+// below has actually registered/activated a service worker, but there's no harm listening early.
+// The addEventListener check (not just 'serviceWorker' in navigator) matters beyond real browsers
+// too: several of this app's own test harnesses stub navigator.serviceWorker as just
+// { register: () => Promise.resolve() } to load app.js outside a real browser -- without this
+// check, app.js itself would fail to load in every one of them.
+// v262 (cold-review fix): this listener is registered synchronously, at script-parse time -- before
+// BOOT_DONE below has resolved ME. TOKEN itself is read synchronously from localStorage, so it can
+// already be valid while ME is still null; a postMessage arriving in that window (plausible on iOS,
+// where backgrounding/foregrounding the PWA can re-run this script while a queued push's tap is
+// still landing) used to call openSession(d.sid) immediately, which passes server auth on TOKEN
+// alone and then dereferences ME.id deep inside its own render path -- an unhandled rejection, and
+// the log sheet silently never opens. Awaiting BOOT_DONE first, then checking ME is actually
+// populated, closes that race.
+if('serviceWorker' in navigator && typeof navigator.serviceWorker.addEventListener==='function'){
+  navigator.serviceWorker.addEventListener('message', async (event)=>{
+    const d = event.data;
+    if(d && d.type==='openLog' && d.sid && d.exId){
+      await BOOT_DONE;
+      if(!ME || !ME.id) return;
+      // same success-gating as tryBoot's ?openLog= branch above -- see openSession's `return true;` comment.
+      const opened = await openSession(d.sid);
+      if(opened) await openLogSheet(d.sid, d.exId);
+    }
+  });
+}
+const BOOT_DONE = (async ()=>{
   await tryBoot();
   if('serviceWorker' in navigator) setupPush();
   document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));

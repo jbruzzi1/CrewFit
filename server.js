@@ -39,6 +39,7 @@ webpush.setVapidDetails('mailto:jeff@example.com', vapid.publicKey, vapid.privat
 // commits or fully rolls back, and a SELECT can't return "corrupted," only real rows or a loud
 // connection/query error.
 const db = require('./db');
+const { firstExerciseStartNotification } = require('./notify-helpers');
 async function load() { return db.load(); }
 async function save(d) { return db.save(d); }
 
@@ -1362,6 +1363,12 @@ app.post('/api/sessions', auth, async (req, res) => {
   await save(DB);
   // notify invited friends
   for (const fid of invites) notify(fid, { title: 'Workout invite', body: `${DB.users[req.userId].displayName} invited you to a workout` });
+  // Jeff, Aug 31: lock-screen nudge naming the exercise you're about to walk up to -- see
+  // notify-helpers.js for the full reasoning and why this is scoped to "starting now," not every
+  // session creation. Self-notifying the creator (not an invited friend) is a new pattern here;
+  // notify() itself doesn't care whose id it's called with.
+  const startNotif = firstExerciseStartNotification(session);
+  if (startNotif) notify(req.userId, startNotif);
   res.json(session);
 });
 
