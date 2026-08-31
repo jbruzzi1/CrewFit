@@ -3488,14 +3488,21 @@ function trendChart(d, U){
 // line/dot chart -- weekly SETS is a discrete count like days trained, not a continuous max-effort
 // curve), plus a dashed target reference line and the meter's own blue/green "met" color rule
 // (green ONLY once a week's bar actually reaches its target, matching CLAUDE.md's "green means
-// earned" language everywhere else on this page).
+// earned" language everywhere else on this page). Picking a specific muscle switches to that
+// muscle's own raw weekly set count against its own target. Chips share the SAME time window as
+// Consistency's Month/3 months/6 months picker (d.volumeTrend is computed server-side over the
+// identical `weeks` range) rather than a second, independent range control just for this chart.
 //
-// "Overall" (default) is the average % of target hit across all 12 muscle groups that week --
-// directly comparable to a flat 100% reference line regardless of each muscle's own different
-// target. Picking a specific muscle switches to that muscle's own raw weekly set count against
-// its own target. Chips share the SAME time window as Consistency's Month/3 months/6 months
-// picker (d.volumeTrend is computed server-side over the identical `weeks` range) rather than a
-// second, independent range control just for this chart.
+// Sep 1, round 4 (Jeff, on the "Overall" tab: "all of these blocks don't tell you anything but a
+// percentage. You don't know what it is for... I was thinking of having the bars like you did as
+// the report [the Weekly Volume card, which used to be its OWN section directly above this one]
+// ... I liked the original design and then you can expand it"). "Overall" used to be a week-by-
+// week average-%-of-target line, unitless and hard to parse next to the per-muscle view's plain
+// set counts. Rather than patch the wording, folded the ENTIRE Weekly Volume card into this
+// "Overall" tab instead: same worst-first collapsed bar-row list, This-week/4-wk-avg toggle, and
+// "Show all 12" expand, now living here rather than as a second, separate section immediately
+// above showing overlapping information. Picking a muscle still "expands" into that muscle's own
+// multi-week trend chart below -- unchanged, since Jeff never flagged that view as confusing.
 let TREND_VOL_PICK = '__overall';
 function setTrendVolPick(k){ TREND_VOL_PICK=k; progressScreen({silent:true}); }
 function volTrendChart(d){
@@ -3506,17 +3513,6 @@ function volTrendChart(d){
   // reporting "no data" for a muscle that was never a real, currently-offered chip.
   if(TREND_VOL_PICK!=='__overall' && !MUSCLE_LABEL.hasOwnProperty(TREND_VOL_PICK)) TREND_VOL_PICK='__overall';
   const isOverall = TREND_VOL_PICK==='__overall';
-  // Sep 1, round 2 (Jeff: "the pick muscle button doesn't line up with the volume trend header --
-  // seems out of place, and the menu to select one of them just seems poor"). Round 1 moved the 12
-  // muscles into a picker sheet opened from a header text-button (the same "Pick lifts" pattern
-  // Strength trend uses below) -- correct call on the crowding, but wrong on the EXECUTION: the h2
-  // section labels on this page are small 12px gray caps, and the 14px bold blue button sitting next
-  // to "Volume trend" visually outweighs its own label -- it reads as a foreign element bolted onto
-  // the header, not part of it (Strength trend has the exact same geometry, just less noticeable
-  // there since it's an older, already-familiar row). Fix: no more header button at all -- the
-  // picker opens from a SECOND chip, same family/weight as Overall, so it never looks bolted-on.
-  // (What the picker SHEET itself looks like has changed again since -- see the comment above
-  // renderVolTrendPicker below for the current, round-3 design.)
   window._VOLTREND_GROUPS = weeksData.length ? weeksData[weeksData.length-1].groups : null;
   const pickChipLabel = isOverall ? 'Pick a muscle' : MUSCLE_LABEL[TREND_VOL_PICK];
   const chips = `<div class="chips">
@@ -3524,18 +3520,77 @@ function volTrendChart(d){
     <span class="chip ${!isOverall?'on':''}" onclick="openVolTrendPicker()">${pickChipLabel} ▾</span>
   </div>`;
 
+  if(isOverall){
+    // Moved verbatim from the old standalone "Weekly volume" section (comments preserved below
+    // since the ranking/toggle-gating rationale still applies unchanged in its new home).
+    //
+    // Jeff, Aug 31: 12 rows made this the single longest section on the page, burying Strength
+    // trend and Personal records below the fold. Same fix as Strength trend's own "6 chips, tap in
+    // for the rest" -- collapsed by default to VOL_SHOW_N, sorted worst-first (lowest % of target)
+    // so the collapsed view actually surfaces what's useful: the muscle groups most worth attention,
+    // not just the first N alphabetically/anatomically. Expanded, it switches back to the natural
+    // anatomical order (server's MUSCLE_ORDER) since a full scan is easier to read grouped, not
+    // ranked. VOL_EXPANDED persists across re-renders same as PROG_WEEKS/TREND_PICK above.
+    //
+    // Jeff, Aug 31 (round 2): which 5 muscles show when collapsed is ranked by THIS WEEK's ratios
+    // ALWAYS, never by whichever mode is currently displayed. Originally this re-ranked per mode,
+    // so tapping "4-wk avg" could swap out which rows even appeared (a muscle skipped this week
+    // but trained solidly over the last month would drop off the list entirely, replaced by
+    // something else) -- confusing, since the whole point of the toggle is "same rows, different
+    // lens," not a second independent ranking. Pinning to This week keeps a neglected-today muscle
+    // flagged regardless of how its recent average looks; only the displayed numbers change.
+    const weekGroups = (d.volume && d.volume.groups) || [];
+    const avgGroups = (d.volumeAvg && d.volumeAvg.groups) || [];
+    const volSrc = (VOL_MODE==='avg' ? d.volumeAvg : d.volume) || {};
+    const volGroups = volSrc.groups || [];
+    const volByGroup = {}; for (const g of volGroups) volByGroup[g.group] = g;
+    const volUnitSuffix = VOL_MODE==='avg' ? '/wk' : '';
+    const volAny = volGroups.some(g=>g.sets>0);
+    // Cold-review catch (Aug 31): the mode toggle must NOT be gated on the CURRENT mode's data --
+    // a fresh page load always starts on "This week," so a week with nothing logged yet (common
+    // early in the week) hid the "4-wk avg" button entirely, even when the trailing month had real
+    // data. That's exactly backwards: the toggle exists FOR that moment. Gate it on either view
+    // having something to show; only the row list itself (volHtml, right below) stays scoped to
+    // whichever mode is actually active.
+    const volAnyEver = volAny || weekGroups.some(g=>g.sets>0) || avgGroups.some(g=>g.sets>0);
+    const volHasMore = volGroups.length > VOL_SHOW_N;
+    const worstKeysThisWeek = weekGroups.slice().sort((a,b)=>(a.sets/a.target)-(b.sets/b.target)).map(g=>g.group);
+    const volShown = VOL_EXPANDED ? volGroups : worstKeysThisWeek.slice(0, VOL_SHOW_N).map(k=>volByGroup[k]).filter(Boolean);
+    const volHtml = !volAny
+      ? `<div class="muted" style="padding:14px 2px 6px;line-height:1.5">Log some working sets this
+           week and each muscle group's volume fills in here.</div>`
+      : volShown.map(g=>{
+          const pct = Math.min(100, Math.round(100*g.sets/g.target));
+          const met = g.sets >= g.target;
+          return `<div class="mv-row">
+            <div class="mv-top"><span class="mv-name">${MUSCLE_LABEL[g.group]||g.group}</span>
+              <span class="mv-n">${g.sets}<span class="mv-of"> / ${g.target} sets${volUnitSuffix}</span></span></div>
+            <div class="mv-track"><div class="mv-fill${met?' mv-met':''}" style="width:${pct}%"></div></div>
+          </div>`;
+        }).join('');
+    // Round 4: no header-button next to the h2 (same reasoning as round 2's "Pick a muscle" fix
+    // above) -- "Show all" lives inside the card body, below the rows, instead.
+    const volShowAllLink = (volAny && volHasMore)
+      ? `<div style="text-align:right;margin-top:8px"><button class="txt-btn" onclick="toggleVolExpanded()">${VOL_EXPANDED?'Show fewer':'Show all '+volGroups.length}</button></div>`
+      : '';
+    const volModeSeg = volAnyEver ? `<div class="seg wk-seg" style="margin:12px 0 2px">
+        <button class="${VOL_MODE==='week'?'on':''}" onclick="setVolMode('week')">This week</button>
+        <button class="${VOL_MODE==='avg'?'on':''}" onclick="setVolMode('avg')">4-wk avg</button>
+      </div>` : '';
+    return `<h2>Volume trend</h2>${chips}<div class="card">${volHtml}${volShowAllLink}${volModeSeg}
+      ${volAny?`<div class="rulenote"><b>How it works:</b> ${VOL_MODE==='avg'
+        ? 'average working sets per week over the trailing 4 weeks (this week included), counted for every muscle group each exercise targets.'
+        : 'working sets logged this week (Monday–Sunday), counted for every muscle group each exercise targets.'} General guideline,
+        not a personal prescription.</div>`:''}
+    </div>`;
+  }
+
   if(!weeksData.length) return `<h2>Volume trend</h2>${chips}<div class="card">
     <div class="muted" style="padding:20px 4px;text-align:center">Not enough history yet.</div></div>`;
 
   const lastGroups = weeksData[weeksData.length-1].groups;
-  const target = isOverall ? 100 : ((lastGroups.find(g=>g.group===TREND_VOL_PICK)||{}).target || 0);
+  const target = (lastGroups.find(g=>g.group===TREND_VOL_PICK)||{}).target || 0;
   const vals = weeksData.map(w=>{
-    if(isOverall){
-      const withTarget = w.groups.filter(g=>g.target>0);
-      if(!withTarget.length) return 0;
-      const pct = withTarget.reduce((a,g)=>a+g.sets/g.target,0)/withTarget.length*100;
-      return Math.round(pct);
-    }
     const g = w.groups.find(x=>x.group===TREND_VOL_PICK);
     return g ? g.sets : 0;
   });
@@ -3556,8 +3611,8 @@ function volTrendChart(d){
     const shade = v===0 ? 'var(--line)' : (met?'var(--green)':'var(--blue)');
     bars2+=`<rect x="${x}" y="${y}" width="${cw2}" height="${h}" rx="4" fill="${shade}" ${cur?'style="stroke:var(--blue)" stroke-width="2"':''}/>`;
     if(weeksData.length<=13 && v>0)
-      bars2+=`<text x="${x+cw2/2}" y="${y-3.5}" text-anchor="middle" font-size="9.5" font-weight="700" style="fill:${cur?'var(--fg)':'var(--muted)'}">${v}${isOverall?'%':''}</text>`;
-    hits2+=`<rect x="${x-gap2/2}" y="0" width="${cw2+gap2}" height="${BH2-BB2}" fill="transparent"><title>Week of ${w.weekOf}: ${v}${isOverall?'% of target':' sets'}</title></rect>`;
+      bars2+=`<text x="${x+cw2/2}" y="${y-3.5}" text-anchor="middle" font-size="9.5" font-weight="700" style="fill:${cur?'var(--fg)':'var(--muted)'}">${v}</text>`;
+    hits2+=`<rect x="${x-gap2/2}" y="0" width="${cw2+gap2}" height="${BH2-BB2}" fill="transparent"><title>Week of ${w.weekOf}: ${v} sets</title></rect>`;
     if(i===0||cur) xlab2+=`<text x="${cur?BW2:0}" y="${BH2-6}" text-anchor="${cur?'end':'start'}" font-size="9.5" style="fill:var(--muted)">${cur?'this week':shortDate(w.weekOf)}</text>`;
   });
   const ty = BH2-BB2-(BH2-BB2-BT2)*Math.min(target,maxv)/maxv;
@@ -3565,10 +3620,8 @@ function volTrendChart(d){
 
   return `<h2>Volume trend</h2>${chips}<div class="card">
     <svg viewBox="0 0 ${BW2} ${BH2}" width="100%" style="display:block" role="img"
-      aria-label="${isOverall?'Overall volume':(MUSCLE_LABEL[TREND_VOL_PICK]||TREND_VOL_PICK)} trend over ${weeksData.length} weeks">${refLine}${bars2}${xlab2}${hits2}</svg>
-    <div class="rulenote">${isOverall
-      ? '<b>How it works:</b> average % of target reached across all muscle groups, per week. Dashed line marks 100%.'
-      : `<b>How it works:</b> working sets per week for ${(MUSCLE_LABEL[TREND_VOL_PICK]||TREND_VOL_PICK).toLowerCase()}. Dashed line marks the ${target}-set weekly target.`}</div>
+      aria-label="${(MUSCLE_LABEL[TREND_VOL_PICK]||TREND_VOL_PICK)} trend over ${weeksData.length} weeks">${refLine}${bars2}${xlab2}${hits2}</svg>
+    <div class="rulenote"><b>How it works:</b> working sets per week for ${(MUSCLE_LABEL[TREND_VOL_PICK]||TREND_VOL_PICK).toLowerCase()}. Dashed line marks the ${target}-set weekly target.</div>
   </div>`;
 }
 // Single-select picker sheet for Volume trend's "Pick a muscle" chip. Deliberately lighter than
@@ -3840,59 +3893,6 @@ async function progressScreen(opts){
       }).join('')
     : `<div class="muted" style="padding:8px 2px">Log a workout — your first set of any exercise is a record.</div>`;
 
-  // --- weekly volume per muscle group ---
-  // Jeff, Aug 31: 12 rows made this the single longest section on the page, burying Strength
-  // trend and Personal records below the fold. Same fix as Strength trend's own "6 chips, tap in
-  // for the rest" -- collapsed by default to VOL_SHOW_N, sorted worst-first (lowest % of target)
-  // so the collapsed view actually surfaces what's useful: the muscle groups most worth attention,
-  // not just the first N alphabetically/anatomically. Expanded, it switches back to the natural
-  // anatomical order (server's MUSCLE_ORDER) since a full scan is easier to read grouped, not
-  // ranked. VOL_EXPANDED persists across re-renders same as PROG_WEEKS/TREND_PICK above.
-  //
-  // Jeff, Aug 31 (round 2): which 5 muscles show when collapsed is ranked by THIS WEEK's ratios
-  // ALWAYS, never by whichever mode is currently displayed. Originally this re-ranked per mode,
-  // so tapping "4-wk avg" could swap out which rows even appeared (a muscle skipped this week
-  // but trained solidly over the last month would drop off the list entirely, replaced by
-  // something else) -- confusing, since the whole point of the toggle is "same rows, different
-  // lens," not a second independent ranking. Pinning to This week keeps a neglected-today muscle
-  // flagged regardless of how its recent average looks; only the displayed numbers change.
-  const weekGroups = (d.volume && d.volume.groups) || [];
-  const avgGroups = (d.volumeAvg && d.volumeAvg.groups) || [];
-  const volSrc = (VOL_MODE==='avg' ? d.volumeAvg : d.volume) || {};
-  const volGroups = volSrc.groups || [];
-  const volByGroup = {}; for (const g of volGroups) volByGroup[g.group] = g;
-  const volUnitSuffix = VOL_MODE==='avg' ? '/wk' : '';
-  const volAny = volGroups.some(g=>g.sets>0);
-  // Cold-review catch (Aug 31): the mode toggle must NOT be gated on the CURRENT mode's data --
-  // a fresh page load always starts on "This week," so a week with nothing logged yet (common
-  // early in the week) hid the "4-wk avg" button entirely, even when the trailing month had real
-  // data. That's exactly backwards: the toggle exists FOR that moment. Gate it on either view
-  // having something to show; only the row list itself (volHtml, right below) stays scoped to
-  // whichever mode is actually active.
-  const volAnyEver = volAny || weekGroups.some(g=>g.sets>0) || avgGroups.some(g=>g.sets>0);
-  const volHasMore = volGroups.length > VOL_SHOW_N;
-  const worstKeysThisWeek = weekGroups.slice().sort((a,b)=>(a.sets/a.target)-(b.sets/b.target)).map(g=>g.group);
-  const volShown = VOL_EXPANDED ? volGroups : worstKeysThisWeek.slice(0, VOL_SHOW_N).map(k=>volByGroup[k]).filter(Boolean);
-  const volHtml = !volAny
-    ? `<div class="muted" style="padding:14px 2px 6px;line-height:1.5">Log some working sets this
-         week and each muscle group's volume fills in here.</div>`
-    : volShown.map(g=>{
-        const pct = Math.min(100, Math.round(100*g.sets/g.target));
-        const met = g.sets >= g.target;
-        return `<div class="mv-row">
-          <div class="mv-top"><span class="mv-name">${MUSCLE_LABEL[g.group]||g.group}</span>
-            <span class="mv-n">${g.sets}<span class="mv-of"> / ${g.target} sets${volUnitSuffix}</span></span></div>
-          <div class="mv-track"><div class="mv-fill${met?' mv-met':''}" style="width:${pct}%"></div></div>
-        </div>`;
-      }).join('');
-  const volToggleBtn = (volAny && volHasMore)
-    ? `<button class="txt-btn" style="margin-left:auto" onclick="toggleVolExpanded()">${VOL_EXPANDED?'Show fewer':'Show all '+volGroups.length}</button>`
-    : '';
-  const volModeSeg = volAnyEver ? `<div class="seg wk-seg" style="margin:12px 0 2px">
-      <button class="${VOL_MODE==='week'?'on':''}" onclick="setVolMode('week')">This week</button>
-      <button class="${VOL_MODE==='avg'?'on':''}" onclick="setVolMode('avg')">4-wk avg</button>
-    </div>` : '';
-
   $('app').innerHTML = `<div class="wrap">
     <h1>Progress</h1>
     <p class="sub">${nothingYet ? 'Log a workout and this fills in' : `${d.thisWeek} day${d.thisWeek===1?'':'s'} trained this week`}</p>
@@ -3903,14 +3903,6 @@ async function progressScreen(opts){
       ${(d.ready.length||(d.soon||[]).length||d.holds.length)?`<div class="rulenote"><b>How it works:</b>
         reach the top of your rep range two sessions in a row <b>at the same weight</b> and the weight
         goes up. Warm-ups and drop sets don\'t count.</div>`:''}
-    </div>
-
-    <div class="sec-head"><h2>Weekly volume</h2>${volToggleBtn}</div>
-    <div class="card">${volHtml}${volModeSeg}
-      ${volAny?`<div class="rulenote"><b>How it works:</b> ${VOL_MODE==='avg'
-        ? 'average working sets per week over the trailing 4 weeks (this week included), counted for every muscle group each exercise targets.'
-        : 'working sets logged this week (Monday–Sunday), counted for every muscle group each exercise targets.'} General guideline,
-        not a personal prescription.</div>`:''}
     </div>
 
     ${volTrendChart(d)}
