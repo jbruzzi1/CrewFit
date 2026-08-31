@@ -3480,6 +3480,86 @@ function trendChart(d, U){
   </div>`;
 }
 
+// Volume trend (Aug 31) — the OTHER half of "should Weekly volume also show monthly": that
+// question first became the This-week/4-wk-avg toggle on the meter (a smoothed snapshot), but a
+// snapshot -- even an averaged one -- still can't show whether a muscle group has been trending
+// up or down over the last few months. This is real week-by-week history instead, same bar-chart
+// visual language as Consistency right below it (reused deliberately, not Strength trend's
+// line/dot chart -- weekly SETS is a discrete count like days trained, not a continuous max-effort
+// curve), plus a dashed target reference line and the meter's own blue/green "met" color rule
+// (green ONLY once a week's bar actually reaches its target, matching CLAUDE.md's "green means
+// earned" language everywhere else on this page).
+//
+// "Overall" (default) is the average % of target hit across all 12 muscle groups that week --
+// directly comparable to a flat 100% reference line regardless of each muscle's own different
+// target. Picking a specific muscle switches to that muscle's own raw weekly set count against
+// its own target. Chips share the SAME time window as Consistency's Month/3 months/6 months
+// picker (d.volumeTrend is computed server-side over the identical `weeks` range) rather than a
+// second, independent range control just for this chart.
+let TREND_VOL_PICK = '__overall';
+function setTrendVolPick(k){ TREND_VOL_PICK=k; progressScreen({silent:true}); }
+function volTrendChart(d){
+  const trend = d.volumeTrend;
+  const weeksData = (trend && trend.weeks) || [];
+  // Guard against a stale pick (same defensive fallback trendChart uses above): if TREND_VOL_PICK
+  // isn't Overall and isn't one of the 12 known muscle keys, fall back to Overall rather than
+  // reporting "no data" for a muscle that was never a real, currently-offered chip.
+  if(TREND_VOL_PICK!=='__overall' && !MUSCLE_LABEL.hasOwnProperty(TREND_VOL_PICK)) TREND_VOL_PICK='__overall';
+  const isOverall = TREND_VOL_PICK==='__overall';
+  const chips = `<div class="chips">
+    <span class="chip ${isOverall?'on':''}" onclick="setTrendVolPick('__overall')">Overall</span>
+    ${Object.keys(MUSCLE_LABEL).map(g=>`<span class="chip ${(!isOverall&&g===TREND_VOL_PICK)?'on':''}"
+      onclick="setTrendVolPick('${g}')">${MUSCLE_LABEL[g]}</span>`).join('')}
+  </div>`;
+
+  if(!weeksData.length) return `<h2>Volume trend</h2>${chips}<div class="card">
+    <div class="muted" style="padding:20px 4px;text-align:center">Not enough history yet.</div></div>`;
+
+  const lastGroups = weeksData[weeksData.length-1].groups;
+  const target = isOverall ? 100 : ((lastGroups.find(g=>g.group===TREND_VOL_PICK)||{}).target || 0);
+  const vals = weeksData.map(w=>{
+    if(isOverall){
+      const withTarget = w.groups.filter(g=>g.target>0);
+      if(!withTarget.length) return 0;
+      const pct = withTarget.reduce((a,g)=>a+g.sets/g.target,0)/withTarget.length*100;
+      return Math.round(pct);
+    }
+    const g = w.groups.find(x=>x.group===TREND_VOL_PICK);
+    return g ? g.sets : 0;
+  });
+
+  if(!vals.some(v=>v>0)) return `<h2>Volume trend</h2>${chips}<div class="card">
+    <div class="muted" style="padding:14px 2px 6px;line-height:1.5">Log a few weeks of working sets
+      and the trend fills in here.</div></div>`;
+
+  const BW2=326, BH2=96, BB2=20, BT2=6, gap2=5;
+  const cw2 = Math.min(30,(BW2-gap2*(weeksData.length-1))/weeksData.length);
+  const maxv = Math.max(target*1.2, ...vals, 1);
+  let bars2='', xlab2='', hits2='';
+  weeksData.forEach((w,i)=>{
+    const v = vals[i];
+    const x=i*(cw2+gap2), h=Math.max(v>0?3:1.5,(BH2-BB2-BT2)*v/maxv), y=BH2-BB2-h;
+    const cur = i===weeksData.length-1;
+    const met = target>0 && v>=target;
+    const shade = v===0 ? 'var(--line)' : (met?'var(--green)':'var(--blue)');
+    bars2+=`<rect x="${x}" y="${y}" width="${cw2}" height="${h}" rx="4" fill="${shade}" ${cur?'style="stroke:var(--blue)" stroke-width="2"':''}/>`;
+    if(weeksData.length<=13 && v>0)
+      bars2+=`<text x="${x+cw2/2}" y="${y-3.5}" text-anchor="middle" font-size="9.5" font-weight="700" style="fill:${cur?'var(--fg)':'var(--muted)'}">${v}${isOverall?'%':''}</text>`;
+    hits2+=`<rect x="${x-gap2/2}" y="0" width="${cw2+gap2}" height="${BH2-BB2}" fill="transparent"><title>Week of ${w.weekOf}: ${v}${isOverall?'% of target':' sets'}</title></rect>`;
+    if(i===0||cur) xlab2+=`<text x="${cur?BW2:0}" y="${BH2-6}" text-anchor="${cur?'end':'start'}" font-size="9.5" style="fill:var(--muted)">${cur?'this week':shortDate(w.weekOf)}</text>`;
+  });
+  const ty = BH2-BB2-(BH2-BB2-BT2)*Math.min(target,maxv)/maxv;
+  const refLine = target>0 ? `<line x1="0" y1="${ty.toFixed(1)}" x2="${BW2}" y2="${ty.toFixed(1)}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3,3" opacity="0.55"/>` : '';
+
+  return `<h2>Volume trend</h2>${chips}<div class="card">
+    <svg viewBox="0 0 ${BW2} ${BH2}" width="100%" style="display:block" role="img"
+      aria-label="${isOverall?'Overall volume':(MUSCLE_LABEL[TREND_VOL_PICK]||TREND_VOL_PICK)} trend over ${weeksData.length} weeks">${refLine}${bars2}${xlab2}${hits2}</svg>
+    <div class="rulenote">${isOverall
+      ? '<b>How it works:</b> average % of target reached across all muscle groups, per week. Dashed line marks 100%.'
+      : `<b>How it works:</b> working sets per week for ${(MUSCLE_LABEL[TREND_VOL_PICK]||TREND_VOL_PICK).toLowerCase()}. Dashed line marks the ${target}-set weekly target.`}</div>
+  </div>`;
+}
+
 // Body weight chart — same SVG-line-chart shape as trendChart above (viewBox, xs/ys scale
 // functions, polyline + dots, tap-for-exact-figure titles), just a single always-present series
 // with no lift picker. "Log weight" opens openBodyweightSheet(); see the section header below.
@@ -3778,6 +3858,8 @@ async function progressScreen(opts){
         : 'working sets logged this week (Monday–Sunday), counted for every muscle group each exercise targets.'} General guideline,
         not a personal prescription.</div>`:''}
     </div>
+
+    ${volTrendChart(d)}
 
     <h2>Consistency</h2>
     <div class="card">

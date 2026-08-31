@@ -183,6 +183,119 @@ console.log('weekly volume: 4-week average (volumeAvg) -- trailing window, per-w
   ok(week.quads.sets === 0 && avg.quads.sets === 0, `an untouched muscle group reads 0 in both views (got ${week.quads.sets}/${avg.quads.sets})`);
 }
 
+console.log('volume trend: per-week history (volumeTrendFor) -- correct bucket count, week-of-Monday, no leakage, multi-muscle credit');
+{
+  // Aug 31, round 3: volumeTrendFor is a DIFFERENT aggregation shape from volumeFor/volumeAvg above
+  // -- those blend a window into one number, this returns one real entry PER week (same
+  // non-overlapping Monday-anchored buckets as weeksFor's Consistency chart). The core thing worth
+  // proving here is that it behaves like real history, not another average.
+  const u = await reg('voltrend_u1', 'pass1234', 'Vol Trend One');
+
+  // 3 weeks ago: 5 working sets of squat (quads+glutes)
+  const sOld = await post('/api/sessions', {
+    name: 'Legs -3w', scheduledAt: mondayOffsetIso(3),
+    exercises: [{ name: 'Barbell Back Squat' }], visibility: 'private',
+  }, u.token);
+  for (let i = 0; i < 5; i++) await post(`/api/sessions/${sOld.id}/log`, { exerciseId: sOld.exercises[0].id, weight: 185, reps: 6, setType: 'normal' }, u.token);
+
+  // this week: 2 working sets of squat + 1 warm-up (must not count) + 4 sets of a curl (biceps only)
+  const sNow = await post('/api/sessions', {
+    name: 'Legs this week', scheduledAt: mondayOffsetIso(0),
+    exercises: [{ name: 'Barbell Back Squat' }, { name: 'Barbell Curl' }], visibility: 'private',
+  }, u.token);
+  const exSquat = sNow.exercises.find(e => e.name === 'Barbell Back Squat').id;
+  const exCurl = sNow.exercises.find(e => e.name === 'Barbell Curl').id;
+  for (let i = 0; i < 2; i++) await post(`/api/sessions/${sNow.id}/log`, { exerciseId: exSquat, weight: 185, reps: 6, setType: 'normal' }, u.token);
+  await post(`/api/sessions/${sNow.id}/log`, { exerciseId: exSquat, weight: 135, reps: 8, setType: 'warmup' }, u.token);
+  for (let i = 0; i < 4; i++) await post(`/api/sessions/${sNow.id}/log`, { exerciseId: exCurl, weight: 60, reps: 10, setType: 'normal' }, u.token);
+
+  // 6 weeks ago -- outside a weeks=4 request window entirely; must not leak into any visible bucket.
+  const sAncient = await post('/api/sessions', {
+    name: 'Legs -6w', scheduledAt: mondayOffsetIso(6),
+    exercises: [{ name: 'Barbell Back Squat' }], visibility: 'private',
+  }, u.token);
+  for (let i = 0; i < 9; i++) await post(`/api/sessions/${sAncient.id}/log`, { exerciseId: sAncient.exercises[0].id, weight: 185, reps: 6, setType: 'normal' }, u.token);
+
+  const prog = await get('/api/progress?weeks=4', u.token);
+  ok(!prog.error, `progress loads (got ${prog.error})`);
+  ok(!!prog.volumeTrend && Array.isArray(prog.volumeTrend.weeks), `progress includes volumeTrend.weeks (got ${JSON.stringify(prog.volumeTrend)})`);
+  ok(prog.volumeTrend.weeks.length === 4, `bucket count matches the requested weeks=4 (got ${prog.volumeTrend.weeks.length})`);
+
+  const todayMonday = mondayOffsetIso(0, 0).slice(0, 10);
+  const lastBucket = prog.volumeTrend.weeks[prog.volumeTrend.weeks.length - 1];
+  ok(lastBucket.weekOf === todayMonday, `last bucket's weekOf is THIS week's Monday (got ${lastBucket.weekOf} vs ${todayMonday})`);
+
+  const byGroupThisWeek = {}; lastBucket.groups.forEach(g => byGroupThisWeek[g.group] = g);
+  ok(byGroupThisWeek.quads.sets === 2, `this week: quads gets exactly the 2 working sets, warm-up excluded (got ${byGroupThisWeek.quads.sets})`);
+  ok(byGroupThisWeek.glutes.sets === 2, `same squat credits glutes too (got ${byGroupThisWeek.glutes.sets})`);
+  ok(byGroupThisWeek.biceps.sets === 4, `curl sets credit biceps this week (got ${byGroupThisWeek.biceps.sets})`);
+
+  const threeWeeksAgoBucket = prog.volumeTrend.weeks[0];
+  const byGroup3wAgo = {}; threeWeeksAgoBucket.groups.forEach(g => byGroup3wAgo[g.group] = g);
+  ok(byGroup3wAgo.quads.sets === 5, `the oldest bucket in a 4-week window (3 weeks ago) keeps its own 5 sets, not blended with this week's 2 (got ${byGroup3wAgo.quads.sets})`);
+  ok(byGroupThisWeek.quads.sets !== byGroup3wAgo.quads.sets,
+    'this week (2) and 3 weeks ago (5) are genuinely DIFFERENT numbers in the trend -- proving this is real per-week history, not one blended average like volumeFor/volumeAvg');
+
+  const anyBucketHasNine = prog.volumeTrend.weeks.some(w => (w.groups.find(g => g.group === 'quads') || {}).sets === 9);
+  ok(!anyBucketHasNine, 'the 6-weeks-ago session (outside the weeks=4 window) does not leak into any visible bucket');
+
+  ok(lastBucket.groups.length === 12, `every bucket lists all 12 muscle groups, even ones with 0 sets (got ${lastBucket.groups.length})`);
+  ok(lastBucket.groups.every(g => typeof g.target === 'number' && g.target > 0), 'every group in a bucket carries its target');
+}
+
+console.log('volume trend: bucket boundaries -- Sunday (last day) of one week and Monday (first day) of the next land in DIFFERENT buckets');
+{
+  const u = await reg('voltrend_boundary', 'pass1234', 'Vol Trend Boundary');
+  const sSunday = await post('/api/sessions', {
+    name: 'Boundary Sunday', scheduledAt: mondayOffsetIso(1, 6),   // Sunday, last day of "1 week ago"
+    exercises: [{ name: 'Barbell Back Squat' }], visibility: 'private',
+  }, u.token);
+  for (let i = 0; i < 3; i++) await post(`/api/sessions/${sSunday.id}/log`, { exerciseId: sSunday.exercises[0].id, weight: 185, reps: 6, setType: 'normal' }, u.token);
+
+  const sMonday = await post('/api/sessions', {
+    name: 'Boundary Monday', scheduledAt: mondayOffsetIso(0, 0),   // Monday, first day of THIS week
+    exercises: [{ name: 'Barbell Back Squat' }], visibility: 'private',
+  }, u.token);
+  for (let i = 0; i < 2; i++) await post(`/api/sessions/${sMonday.id}/log`, { exerciseId: sMonday.exercises[0].id, weight: 185, reps: 6, setType: 'normal' }, u.token);
+
+  const prog = await get('/api/progress?weeks=4', u.token);
+  const weeks = prog.volumeTrend.weeks;
+  const lastWeekBucket = weeks[weeks.length - 2];
+  const thisWeekBucket = weeks[weeks.length - 1];
+  const q = (bucket) => (bucket.groups.find(g => g.group === 'quads') || {}).sets;
+  ok(q(lastWeekBucket) === 3, `Sunday (last day of "1 week ago") lands in that week's own bucket, not this week's (got ${q(lastWeekBucket)})`);
+  ok(q(thisWeekBucket) === 2, `Monday (first day of this week) lands in this week's bucket, not leaking backward into last week's (got ${q(thisWeekBucket)})`);
+}
+
+console.log('volume trend: a scheduledAt stored as epoch SECONDS still lands in the right bucket, not silently dropped (cold-review catch)');
+{
+  // scheduledAt is not consistently typed across sessions -- it can be an ISO string OR epoch
+  // seconds (see the workout-reminder tie-break bug earlier this engagement, and perfDate()'s own
+  // doc comment). volumeTrendFor uses perfDate() to normalize before bucketing, same as volumeFor,
+  // but nothing had actually proven the TREND function survives the epoch-seconds shape -- a raw,
+  // unnormalized comparison would put an epoch-seconds date on the wrong side of every bucket
+  // boundary (numeric-string dates sort below ISO strings regardless of real chronological order).
+  const u = await reg('voltrend_epoch', 'pass1234', 'Vol Trend Epoch');
+  const mondayThisWeek = new Date(mondayOffsetIso(0, 0));
+  mondayThisWeek.setUTCHours(15, 0, 0, 0);
+  const epochSeconds = String(Math.floor(mondayThisWeek.getTime() / 1000));
+
+  const s = await post('/api/sessions', {
+    name: 'Epoch-format session', scheduledAt: epochSeconds,
+    exercises: [{ name: 'Barbell Back Squat' }], visibility: 'private',
+  }, u.token);
+  ok(!s.error, `session created with an epoch-seconds scheduledAt (got ${s.error})`);
+  for (let i = 0; i < 6; i++) await post(`/api/sessions/${s.id}/log`, { exerciseId: s.exercises[0].id, weight: 185, reps: 6, setType: 'normal' }, u.token);
+
+  const prog = await get('/api/progress?weeks=4', u.token);
+  const weeks = prog.volumeTrend.weeks;
+  const thisWeekBucket = weeks[weeks.length - 1];
+  const quadsThisWeek = (thisWeekBucket.groups.find(g => g.group === 'quads') || {}).sets;
+  const totalAcrossAllBuckets = weeks.reduce((sum, w) => sum + ((w.groups.find(g => g.group === 'quads') || {}).sets || 0), 0);
+  ok(quadsThisWeek === 6, `epoch-seconds scheduledAt lands in THIS week's bucket, same as an ISO string would (got ${quadsThisWeek})`);
+  ok(totalAcrossAllBuckets === 6, `the 6 sets show up exactly once across all buckets, not dropped or duplicated (got ${totalAcrossAllBuckets})`);
+}
+
 console.log('body weight: log, upsert same day, unit conversion, delete');
 {
   const u = await reg('bw_u1', 'pass1234', 'BW One');

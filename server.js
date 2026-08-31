@@ -2563,6 +2563,48 @@ function volumeFor(userId, weeks = 1) {
   };
 }
 
+// Aug 31: volume trend over time. volumeFor (above) is a snapshot — this week, or a rolling
+// average — but Jeff asked whether Weekly volume should also show change over a longer window,
+// the same question that produced the This-week/4-wk-avg toggle. This is the OTHER half of that
+// answer: not a smoothed snapshot, but an actual per-week history, same shape as weeksFor's
+// Consistency chart (non-overlapping Monday-anchored buckets, oldest first) instead of volumeFor's
+// trailing-average window — a trend chart needs real week-by-week bars, not one blended number.
+// Every muscle group gets a bucketed set count for every week in range, same "full credit to
+// every muscle group the exercise targets" rule volumeFor already uses.
+function volumeTrendFor(userId, weeks) {
+  const today = new Date();
+  const monday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+  const buckets = [];
+  for (let i = weeks - 1; i >= 0; i--) {
+    const start = new Date(monday); start.setUTCDate(start.getUTCDate() - i * 7);
+    const end = new Date(start); end.setUTCDate(end.getUTCDate() + 7);
+    const sets = {}; for (const g of MUSCLE_ORDER) sets[g] = 0;
+    buckets.push({ weekOf: start.toISOString().slice(0, 10), a: start.toISOString().slice(0, 10), b: end.toISOString().slice(0, 10), sets });
+  }
+  const a0 = buckets[0].a, bN = buckets[buckets.length - 1].b;
+  for (const s of Object.values(DB.sessions)) {
+    const mine = s.logs && s.logs[userId];
+    if (!mine || !mine.length) continue;
+    const at = perfDate(s.scheduledAt).slice(0, 10);
+    if (at < a0 || at >= bN) continue;         // outside the whole range — skip the bucket scan
+    const bucket = buckets.find(w => at >= w.a && at < w.b);
+    if (!bucket) continue;
+    for (const l of mine) {
+      if (!isWorkingSet(l)) continue;
+      const lib = findExLibEntry(logExerciseName(s, l, userId), userId);
+      if (!lib) continue;
+      for (const m of (lib.muscle_groups || [])) if (bucket.sets.hasOwnProperty(m)) bucket.sets[m]++;
+    }
+  }
+  return {
+    weeks: buckets.map(w => ({
+      weekOf: w.weekOf,
+      groups: MUSCLE_ORDER.map(g => ({ group: g, sets: w.sets[g], target: MUSCLE_TARGETS[g] }))
+    }))
+  };
+}
+
 // ---- Body weight tracking --------------------------------------------------------------------
 // One entry per calendar day (see POST /api/me/bodyweight below — same day re-logs upsert rather
 // than pile up), stored in whatever unit it was typed in exactly like a logged set, converted to
@@ -2855,6 +2897,10 @@ app.get('/api/progress', auth, async (req, res) => {
     prs: recordsFor(req.userId),
     volume: volumeFor(req.userId, 1),
     volumeAvg: volumeFor(req.userId, 4),
+    // Same `weeks` window as the Consistency chart above (its Month/3 months/6 months picker) —
+    // one shared "how far back am I looking" range for the whole page's history views, rather
+    // than a second, independent range picker just for this chart.
+    volumeTrend: volumeTrendFor(req.userId, weeks),
     bodyweight: bodyweightFor(req.userId)
   });
 });
