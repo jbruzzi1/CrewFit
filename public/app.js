@@ -4634,7 +4634,7 @@ async function profileView(id, opts){
     ${actHtml}
     ${bioBlock}
     ${activityBlock}
-    <div class="sec-head"><h2>My Workouts</h2><div class="view-toggle"><button class="${wview==='list'?'on':''}" id="vtList" onclick="setWorkoutView('list')">☰ List</button><button class="${wview==='grid'?'on':''}" id="vtGrid" onclick="setWorkoutView('grid')">▦ Grid</button></div></div>
+    <div class="sec-head"><h2>My Workouts</h2><div class="view-toggle"><button class="${wview==='list'?'on':''}" id="vtList" onclick="setWorkoutView('list','${id}')">☰ List</button><button class="${wview==='grid'?'on':''}" id="vtGrid" onclick="setWorkoutView('grid','${id}')">▦ Grid</button></div></div>
     <div style="margin:8px 0 14px" id="workoutView">${wview==='grid'?gridHtml:listHtml}</div>
     ${isPrivate ? privateBlock : ''}
     ${isMe?`<button class="sec" style="margin-top:18px" onclick="logout()">Log out</button>`:''}
@@ -4683,11 +4683,18 @@ async function followList(id, kind, opts){
   </div>`;
   const st={t:'followList', id, kind}; fromHistory ? landOn(st) : navigated(st);
 }
-function setWorkoutView(v){
+// Jeff, Sep 2: "when I click to change grid or list view on a different person profile - it
+// brings me to my profile." This always re-rendered ME.id no matter whose profile was on screen
+// -- the view-toggle buttons never told it. profileView(id) already has the on-screen profile's
+// id right there in its own closure (the same id every other button in that render uses, e.g.
+// viewPost/followList above), so the fix is just threading it through the onclick the same way.
+// Falls back to ME.id only for safety if this is ever called without one.
+function setWorkoutView(v, id){
   window.__wview = v;
   const g=document.getElementById('vtGrid'), l=document.getElementById('vtList');
   if(g){ g.className = v==='grid'?'on':''; l.className = v==='list'?'on':''; }
-  if(ME&&ME.id) profileView(ME.id, {silent:true});
+  const pid = id || (ME&&ME.id);
+  if(pid) profileView(pid, {silent:true});
 }
 async function toggleFollow(id, state){
   // v251 (audit finding): this await can take a while on a slow connection, and until now the
