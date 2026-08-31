@@ -502,6 +502,13 @@ async function home(opts){
 // overwrite what a newer one already applied (e.g. two quick taps on "+ Add" firing two
 // out-of-order background refreshes).
 let SESSION_SILENT_SEQ = 0;
+// The exercise-card recommendation text (below) is deliberately not re-fetched on a silent
+// refresh -- but $('app').innerHTML is still fully rewritten on that same silent pass (every
+// openSession render replaces the whole card list, silent or not), so without saving what the
+// last REAL fetch found, that rewrite would blank out the recommendation on every exercise
+// EXCEPT the one just logged -- not just skip re-fetching for it. Keyed by session id so a
+// stale cache from a previous session can never leak into a different one's cards.
+let REC_BY_NAME_CACHE = { sid: null, data: {} };
 // A silent refresh is "for" this exact sheet — the one open when it was kicked off — not just
 // "any sheet at all": editLogSet stacks a second .sheet-back on top of the log sheet without
 // closing it, so while both are open a generic .sheet-back.show selector here would match
@@ -615,8 +622,12 @@ async function openSession(id, opts){
   // Also skipped on a silent background refresh (see addLogSet/editLogSet/delLogSetConfirmed's
   // openSession(...,{silent:true}) calls, fired behind a still-open log sheet after every set):
   // the card list isn't visible then, and logging one exercise's set can't change what another
-  // exercise's recommendation says -- so this would be a full extra round trip, on the single
-  // highest-frequency action in the app, purchasing an update nothing can see yet.
+  // exercise's recommendation says -- so re-fetching would be a full extra round trip, on the
+  // single highest-frequency action in the app, purchasing an update nothing can see yet.
+  // NOT skipped, though, is USING what the last real fetch already found: this whole render
+  // still rewrites $('app').innerHTML on a silent pass same as any other (see REC_BY_NAME_CACHE's
+  // own comment above) -- an empty recByName here would silently erase the recommendation off
+  // every OTHER exercise's card the moment any one set gets logged, not just skip refreshing it.
   const recByName = {};
   if(canEdit && !silent){
     const rec = await H.get('/api/progress/recommendations');
@@ -630,6 +641,9 @@ async function openSession(id, opts){
       for(const x of (rec.holds||[])) if(!recByName[x.exercise]) recByName[x.exercise] = { state:'hold', weight:x.weight, unit:rec.unit, bodyweight:x.bodyweight };
       for(const x of (rec.soon||[]))  if(!recByName[x.exercise]) recByName[x.exercise] = { state:'hold', weight:x.weight, unit:rec.unit, bodyweight:x.bodyweight };
     }
+    REC_BY_NAME_CACHE = { sid: id, data: recByName };
+  } else if(canEdit && silent && REC_BY_NAME_CACHE.sid === id){
+    Object.assign(recByName, REC_BY_NAME_CACHE.data);
   }
   // my variation view (each exercise = its own card tile; swap suggestion nested inside)
   const myEx = s.exercises.map(e=>{
@@ -670,16 +684,31 @@ async function openSession(id, opts){
     // above) correctly does would key this lookup by a name the log sheet never actually tracks
     // recommendations under for most viewers -- silently hiding the recommendation (or worse,
     // surfacing a real but unrelated one for whatever exercise happens to share that name).
+    // A pending swap means this exercise's identity is still up in the air -- showing a weight
+    // recommendation for it now would be advice for whichever lift it turns out NOT to be half
+    // the time, so it waits for that to resolve like everything else on this line does.
     const recExName = (v && v.swapTo) || e.name;
-    const rec = (canEdit && cnt===0) ? recByName[recExName] : null;
+    const rec = (canEdit && cnt===0 && !pendingSwap) ? recByName[recExName] : null;
+    // Trailing arrow kept on both (Jeff, Aug 31, round 3) -- "Tap to log sets" and "Suggest a
+    // swap" both end in one, and this line opens the exact same sheet the same way, so dropping
+    // the arrow just because the text changed to a recommendation would make it the odd one out
+    // rather than signal anything real. Only "✓ N logged" goes without one, since that line
+    // reports something already done rather than prompting the tap.
     const recText = !rec ? '' : rec.state==='ready'
-      ? (rec.bodyweight ? `Add ${rec.step} ${rec.unit} today` : `Try ${rec.weight} ${rec.unit} today`)
-      : (rec.bodyweight ? `Repeat bodyweight` : `Repeat ${rec.weight} ${rec.unit}`);
+      ? (rec.bodyweight ? `Add ${rec.step} ${rec.unit} today →` : `Try ${rec.weight} ${rec.unit} today →`)
+      : (rec.bodyweight ? `Repeat bodyweight →` : `Repeat ${rec.weight} ${rec.unit} →`);
+    // Jeff, Aug 31, round 2: the side-by-side badge "loses that clean look" -- back to one line in
+    // the exact spot "Tap to log sets" already occupies (same as the original v260 shipped design),
+    // but no longer flat blue for both states. "Try X today" (time to add weight) gets the same
+    // green the log sheet's own box already uses for that exact state (.log-rec.up), so the two
+    // surfaces agree instead of inventing a third shade; "Repeat X" (nothing new) stays a quiet
+    // neutral gray -- routine information, not something that needs to compete for attention the
+    // way a new max does. rec-${rec.state} carries the color; log-hint keeps the base sizing/spacing
+    // so this reads as the same kind of line as every other hint on the list, just recolored.
     // A pending swap outranks everything else this line could say. It is the state of the lift.
     const statusTag = pendingSwap ? `<span class="swap-pending">Swap suggested by ${esc(swapBy)}</span>`
                      : canEdit ? (cnt ? `<span class="logged">✓ ${cnt} set${cnt>1?'s':''} logged</span>`
-                                : recText ? `<span class="log-hint">${esc(recText)} →</span>`
-                                : `<span class="log-hint">Tap to log sets →</span>`)
+                                : (recText ? `<span class="log-hint rec-${rec.state}">${esc(recText)}</span>` : `<span class="log-hint">Tap to log sets →</span>`))
                      : (offerSwap ? `<span class="log-hint">Suggest a swap →</span>` : '');
     // Who ELSE has worked this lift. Without it a shared workout shows you nothing your partner
     // did — you invite someone, they train, and the screen looks the same as if you were alone.
