@@ -2480,6 +2480,86 @@ function weeksFor(userId, count) {
   return out;
 }
 
+// ---- Weekly volume per muscle group --------------------------------------------------------
+// Jeff, Aug 31: the Progress page tracks WHEN you trained and single-lift trend, but never WHAT
+// muscle groups you've actually been training — imbalance is invisible. Meter/progress-bar rows
+// against a target, one per muscle group, using the same "sensible default, adjustable later"
+// call as everywhere else that has to pick a number nobody's told us yet. These are a general
+// hypertrophy guideline (working sets/week land roughly 10-20 across the literature; these sit
+// in that range, weighted a little higher for the muscles most programs bias toward) — not a
+// personal prescription, and the Progress page says so. Cardio is excluded: it isn't a
+// sets-against-a-target thing the way resistance work is.
+const MUSCLE_TARGETS = {
+  chest: 12, lats: 12, shoulders: 12, traps: 8, biceps: 10, triceps: 10, forearms: 6,
+  quads: 12, hamstrings: 10, glutes: 10, calves: 10, abdominals: 10
+};
+const MUSCLE_ORDER = Object.keys(MUSCLE_TARGETS);
+
+// Custom exercises (POST /api/exercises/custom) live in DB.customExercises, never merged into
+// EX_LIB itself — GET /api/exercises already concats the two for display (see the `custom` const
+// above). Volume needs the same reach: a set logged against someone's own custom exercise still
+// targets real muscle groups and should count, not silently vanish from the meter just because
+// it isn't a library stock lift.
+// Cold-review catch (Aug 31): name is NOT unique, not even per-user — POST /api/exercises/custom
+// enforces no uniqueness at all, and every custom exercise is visible/loggable by every OTHER user
+// too (see that route's own comment). An earlier version of this scanned every user's custom list
+// and returned the first name match, so two users independently naming a custom exercise the same
+// common thing ("Cable Row") with different muscle_groups silently misattributed one user's
+// volume to the other's target muscles. Checking the ACTING user's own list first is authoritative
+// whenever they logged something they themselves created; the global fallback below only still
+// matters for a custom exercise someone ELSE created that ended up on a shared session (there is
+// no owner link carried onto a session's exercise list to fully disambiguate that rarer case).
+function findExLibEntry(name, userId) {
+  const hit = EX_LIB.find(x => x.name === name);
+  if (hit) return hit;
+  const mine = ((DB.customExercises || {})[userId] || []).find(x => x.name === name);
+  if (mine) return mine;
+  for (const arr of Object.values(DB.customExercises || {})) {
+    const c = (arr || []).find(x => x.name === name);
+    if (c) return c;
+  }
+  return null;
+}
+
+// Working sets logged THIS calendar week (Monday–Sunday UTC, same boundary weeksFor uses above),
+// attributed to every muscle group the exercise targets — full credit to each, same "touch it,
+// it counts" rule creditFinish already uses for history.muscleGroups, just counted in sets
+// instead of "did I touch this at all."
+function volumeFor(userId) {
+  const today = new Date();
+  const monday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+  const a = monday.toISOString().slice(0, 10);
+  const nextWeek = new Date(monday); nextWeek.setUTCDate(nextWeek.getUTCDate() + 7);
+  const b = nextWeek.toISOString().slice(0, 10);
+  const sets = {};
+  for (const g of MUSCLE_ORDER) sets[g] = 0;
+  for (const s of Object.values(DB.sessions)) {
+    const mine = s.logs && s.logs[userId];
+    if (!mine || !mine.length) continue;
+    if (perfDate(s.scheduledAt).slice(0, 10) < a || perfDate(s.scheduledAt).slice(0, 10) >= b) continue;
+    for (const l of mine) {
+      if (!isWorkingSet(l)) continue;
+      const lib = findExLibEntry(logExerciseName(s, l, userId), userId);
+      if (!lib) continue;
+      for (const m of (lib.muscle_groups || [])) if (sets.hasOwnProperty(m)) sets[m]++;
+    }
+  }
+  return { weekOf: a, groups: MUSCLE_ORDER.map(g => ({ group: g, sets: sets[g], target: MUSCLE_TARGETS[g] })) };
+}
+
+// ---- Body weight tracking --------------------------------------------------------------------
+// One entry per calendar day (see POST /api/me/bodyweight below — same day re-logs upsert rather
+// than pile up), stored in whatever unit it was typed in exactly like a logged set, converted to
+// the user's current preference on the way OUT so switching units never rewrites history.
+function bodyweightFor(userId) {
+  const u = DB.users[userId];
+  const unit = (u && u.units) || 'lb';
+  const raw = (u && Array.isArray(u.bodyweight)) ? u.bodyweight : [];
+  const entries = raw.slice().sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : 0))
+    .map(e => ({ date: e.date, weight: inUnit(e.weight, e.unit, unit) }));
+  return { unit, entries };
+}
 
 // ---- Strength trend -----------------------------------------------------------------------
 // Estimated max (Epley: w * (1 + reps/30)) converts every set to one comparable number, so a
@@ -2648,6 +2728,38 @@ app.post('/api/me/trend-picks', auth, async (req, res) => {
   res.json({ picks: clean });
 });
 
+// Body weight tracking (Progress page, Aug 31 addition). One entry per calendar day — a same-day
+// re-log UPSERTS in place rather than piling up duplicates, same "correcting a mistake, not
+// logging a second real event" call as the once-per-day rule on creditFinish. `date` is trusted
+// the same way /leave and /lock already trust the client's local day (see isValidLocalDateStr's
+// own comment above) since a weigh-in has no meaningful server-side day of its own to fall back to.
+app.post('/api/me/bodyweight', auth, async (req, res) => {
+  const { weight, unit, date } = req.body || {};
+  const w = numIn(weight, 2000);
+  if (!(w > 0)) return res.status(400).json({ error: 'Enter your weight' });
+  const u = (DB.users[req.userId] && DB.users[req.userId].units) || 'lb';
+  const wu = (unit === 'kg' || unit === 'lb') ? unit : u;
+  const d = isValidLocalDateStr(date) ? date : new Date().toISOString().slice(0, 10);
+  const user = DB.users[req.userId];
+  user.bodyweight = user.bodyweight || [];
+  const existing = user.bodyweight.find(e => e.date === d);
+  if (existing) { existing.weight = w; existing.unit = wu; existing.at = new Date().toISOString(); }
+  else {
+    // Defensive cap, same spirit as the 500-row cap on custom exercises — one entry a day means
+    // this takes ~10 years to matter, but an unbounded per-user array is still worth bounding.
+    if (user.bodyweight.length >= 3660) user.bodyweight.shift();
+    user.bodyweight.push({ date: d, weight: w, unit: wu, at: new Date().toISOString() });
+  }
+  await save(DB);
+  res.json(bodyweightFor(req.userId));
+});
+app.delete('/api/me/bodyweight/:date', auth, async (req, res) => {
+  const user = DB.users[req.userId];
+  user.bodyweight = (user.bodyweight || []).filter(e => e.date !== req.params.date);
+  await save(DB);
+  res.json(bodyweightFor(req.userId));
+});
+
 // The record list the UI renders: earned records, plus seeded entries for lifts with none yet.
 // An earned record that has passed its seed is flagged so the UI can celebrate it once.
 function recordsFor(userId) {
@@ -2725,7 +2837,9 @@ app.get('/api/progress', auth, async (req, res) => {
     avgPerWeek: w.length ? Number((trained / w.length).toFixed(1)) : 0,
     streakWeeks: streak,
     trend: trendFor(req.userId),
-    prs: recordsFor(req.userId)
+    prs: recordsFor(req.userId),
+    volume: volumeFor(req.userId),
+    bodyweight: bodyweightFor(req.userId)
   });
 });
 
