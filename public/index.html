@@ -763,6 +763,15 @@
     .mv-track { height:7px; border-radius:999px; background:var(--line); overflow:hidden; }
     .mv-fill { height:100%; border-radius:999px; background:var(--blue); }
     .mv-fill.mv-met { background:var(--green); }
+    /* Sep 1: makes an .mv-row (the Weekly Volume card's own bar-row markup) tappable when reused
+       as a picker row (Volume trend's "Pick a muscle" sheet) -- cursor + a light tap state, plus
+       an .mv-pick-on highlight (same tinted-blue "on" treatment as .seg .chip.on/button.on below)
+       for the currently-picked row, so the checkmark isn't the only signal. Does not touch the
+       read-only .mv-row rows on the Weekly Volume card itself, which never carry these classes. */
+    .mv-pick { cursor:pointer; margin:0 -2px; padding-left:2px; padding-right:2px; border-radius:8px; }
+    .mv-pick:active { background:#f1f3f6; }
+    .mv-pick.mv-pick-on { background:rgba(37,99,235,.12); }
+    .mv-pick.mv-pick-on .mv-name { color:var(--blue); }
     .kpi { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:6px; }
     .hero { font-size:30px; font-weight:700; line-height:1; letter-spacing:-.5px; }
     .hero-u { font-size:14px; color:var(--muted); font-weight:600; }
@@ -860,7 +869,7 @@
         --s1:#2b3a5c; --s2:#3a5488; --s3:#4a71b8; --s4:#5a8bff;
       }
       /* -- surfaces & fills (light grays -> raised charcoal) -- */
-      :where(html.theme-dark) .pp-dots:active, :where(html.theme-dark) .pp-menu button:active, :where(html.theme-dark) .lib-item:active, :where(html.theme-dark) .ex-card.log-row:active, :where(html.theme-dark) .lib-item.log-row:active, :where(html.theme-dark) .profile-set:active, :where(html.theme-dark) .mg-card:active, :where(html.theme-dark) .ex-row:active, :where(html.theme-dark) .set-row:active, :where(html.theme-dark) .rc-chip, :where(html.theme-dark) .rest, :where(html.theme-dark) .load-chip, :where(html.theme-dark) .hold-ic, :where(html.theme-dark) .self-tag, :where(html.theme-dark) .empty-ic, :where(html.theme-dark) .streak, :where(html.theme-dark) .pill, :where(html.theme-dark) .chip, :where(html.theme-dark) .fav, :where(html.theme-dark) .ex-add, :where(html.theme-dark) .ex-idx, :where(html.theme-dark) .t-normal, :where(html.theme-dark) .pp-set-n, :where(html.theme-dark) .seg .chip, :where(html.theme-dark) .seg button, :where(html.theme-dark) #vis.seg, :where(html.theme-dark) .seg.wk-seg, :where(html.theme-dark) .log-rec.soon .lr-ic, :where(html.theme-dark) .log-rec.hold .lr-ic { background:#262930; }
+      :where(html.theme-dark) .pp-dots:active, :where(html.theme-dark) .pp-menu button:active, :where(html.theme-dark) .lib-item:active, :where(html.theme-dark) .ex-card.log-row:active, :where(html.theme-dark) .lib-item.log-row:active, :where(html.theme-dark) .profile-set:active, :where(html.theme-dark) .mg-card:active, :where(html.theme-dark) .mv-pick:active, :where(html.theme-dark) .ex-row:active, :where(html.theme-dark) .set-row:active, :where(html.theme-dark) .rc-chip, :where(html.theme-dark) .rest, :where(html.theme-dark) .load-chip, :where(html.theme-dark) .hold-ic, :where(html.theme-dark) .self-tag, :where(html.theme-dark) .empty-ic, :where(html.theme-dark) .streak, :where(html.theme-dark) .pill, :where(html.theme-dark) .chip, :where(html.theme-dark) .fav, :where(html.theme-dark) .ex-add, :where(html.theme-dark) .ex-idx, :where(html.theme-dark) .t-normal, :where(html.theme-dark) .pp-set-n, :where(html.theme-dark) .seg .chip, :where(html.theme-dark) .seg button, :where(html.theme-dark) #vis.seg, :where(html.theme-dark) .seg.wk-seg, :where(html.theme-dark) .log-rec.soon .lr-ic, :where(html.theme-dark) .log-rec.hold .lr-ic { background:#262930; }
       :where(html.theme-dark) .missed-badge, :where(html.theme-dark) .upcoming-badge { background:#2f3238; color:#a2a7b0; }
       :where(html.theme-dark) .log-rec.hold { background:#1f2126; }
       /* Muscle diagrams are drawn on/for white - on a dark tile the gray figure dissolves
@@ -886,6 +895,7 @@
       /* segmented controls: the "on" chip was solid white */
       :where(html.theme-dark) #vis.seg button.on, :where(html.theme-dark) .seg.wk-seg button.on { background:#3a3e46; color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.4); }
       :where(html.theme-dark) .seg .chip.on, :where(html.theme-dark) .seg button.on { background:rgba(90,139,255,.16); }
+      :where(html.theme-dark) .mv-pick.mv-pick-on { background:rgba(90,139,255,.16); }
       /* -- blue tints -- */
       :where(html.theme-dark) .inv-banner { background:#1b2540; border-color:#2c3c63; }
       :where(html.theme-dark) .inv-card:active { background:#222c4a; }
@@ -982,6 +992,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=270"></script>
+  <script src="app.js?v=271"></script>
 </body>
 </html>

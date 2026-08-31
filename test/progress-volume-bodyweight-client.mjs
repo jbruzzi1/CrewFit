@@ -333,11 +333,11 @@ console.log('volume trend: no data at all -- the "Pick a muscle" chip still open
   ok(!!pick && pick.active === false && pick.label === 'Pick a muscle ▾', `the second chip prompts to pick a muscle and opens the picker even with zero weeks of data (got ${JSON.stringify(pick)})`);
   ok(!sec.includes('<svg'), 'no chart svg with zero weeks of trend history');
 
-  // The picker itself must still be usable here -- with truly no history, every tile falls back to
+  // The picker itself must still be usable here -- with truly no history, every row falls back to
   // a plain "No data yet" subtext (window._VOLTREND_GROUPS is null in this state).
   openVolTrendPicker();
   const sheetHtml = body._children[body._children.length - 1].innerHTML;
-  ok((sheetHtml.match(/No data yet/g) || []).length === 12, `all 12 tiles show "No data yet" when there is truly no history at all (got ${(sheetHtml.match(/No data yet/g) || []).length})`);
+  ok((sheetHtml.match(/No data yet/g) || []).length === 12, `all 12 rows show "No data yet" when there is truly no history at all (got ${(sheetHtml.match(/No data yet/g) || []).length})`);
 }
 
 console.log('volume trend: the inline chip row always shows exactly 2 chips -- Overall + a single picker chip (Jeff, Sep 1 round 2: the old header button "seemed out of place") -- the other 11 muscles live in the picker sheet, not as inline pills');
@@ -363,7 +363,7 @@ console.log('volume trend: the inline chip row always shows exactly 2 chips -- O
   await new Promise(r => setTimeout(r, 0));
 }
 
-console.log('volume trend: tapping the "Pick a muscle" chip opens a sheet of .mg-card tiles (icon + name + this week\'s own sets/target), grouped Upper Body/Lower Body/Other same as the Workouts library\'s muscle browser -- not a bare text list');
+console.log('volume trend: tapping the "Pick a muscle" chip opens a sheet of tappable .mv-row bar rows (name + this week\'s own sets/target + progress bar) -- the SAME row markup as the Weekly Volume card above it (Jeff, round 3: "how you had it originally with the bars... that design was cleaner"), not icon tiles and not a bare text list');
 {
   const weeks = makeTrendWeeks([{ weekOf: '2026-08-17', sets: {} }, { weekOf: '2026-08-24', sets: { hamstrings: 6 } }], 10);
   PROGRESS_FIXTURE = baseProgress({ volumeTrend: { weeks } });
@@ -372,24 +372,25 @@ console.log('volume trend: tapping the "Pick a muscle" chip opens a sheet of .mg
   openVolTrendPicker();
   const sheetHtml = body._children[body._children.length - 1].innerHTML;
   ok(sheetHtml.includes('Pick a muscle'), 'sheet title renders');
-  ok(sheetHtml.includes('Upper Body') && sheetHtml.includes('Lower Body') && sheetHtml.includes('Other'), 'muscles are grouped into the same categories the Workouts library uses (got no match)');
-  ok(MUSCLE_KEYS.every(g => sheetHtml.includes(`pickVolTrendMuscle('${g}')`) && sheetHtml.includes(MUSCLE_LABEL_MAP[g]) && sheetHtml.includes('mg-ico')),
-    'all 12 muscles render as tappable .mg-card tiles with an icon (got no match for one or more)');
-  ok(sheetHtml.includes('6 / 10 sets this week'), `hamstrings' own this-week progress shows as the tile's subtext (got no match in: ${sheetHtml.slice(0, 200)})`);
-  ok(sheetHtml.includes('0 / 10 sets this week'), 'an untrained muscle shows its real 0/target this week, not a blank or a false claim');
+  ok(!sheetHtml.includes('mg-card') && !sheetHtml.includes('mg-ico') && !sheetHtml.includes('Upper Body') && !sheetHtml.includes('Lower Body') && !sheetHtml.includes('lib-cat'),
+    'not the icon-tile / category-grouped library-browse design (round 2/3\'s walked-back attempts) (got a match)');
+  ok(MUSCLE_KEYS.every(g => sheetHtml.includes(`pickVolTrendMuscle('${g}')`) && sheetHtml.includes(MUSCLE_LABEL_MAP[g]) && sheetHtml.includes('mv-track') && sheetHtml.includes('mv-fill')),
+    'all 12 muscles render as tappable .mv-row bar rows, reusing the Weekly Volume card\'s own progress-bar markup (got no match for one or more)');
+  ok(sheetHtml.includes('6<span class="mv-of"> / 10 sets this week</span>'), `hamstrings' own this-week progress shows in the row (got no match in: ${sheetHtml.slice(0, 200)})`);
+  ok(sheetHtml.includes('0<span class="mv-of"> / 10 sets this week</span>'), 'an untrained muscle shows its real 0/target this week, not a blank or a false claim');
   ok(!sheetHtml.includes('✓'), 'nothing is marked active yet while still on Overall (got a checkmark unexpectedly)');
 
   pickVolTrendMuscle('hamstrings');
   await new Promise(r => setTimeout(r, 0));
-  ok(getTrendVolPick() === 'hamstrings', `picking a tile from the sheet switches TREND_VOL_PICK (got ${getTrendVolPick()})`);
+  ok(getTrendVolPick() === 'hamstrings', `picking a row from the sheet switches TREND_VOL_PICK (got ${getTrendVolPick()})`);
   const sec = trendSection(appEl.innerHTML);
   ok(sec.includes('Week of 2026-08-24: 6 sets'), `the chart actually switched to hamstrings' own data (got: ${sec.slice(0, 400)})`);
 
-  openVolTrendPicker(); // reopen -- the just-picked muscle should now show as the checked tile
+  openVolTrendPicker(); // reopen -- the just-picked muscle should now show as the checked, highlighted row
   const sheetHtml2 = body._children[body._children.length - 1].innerHTML;
   const i = sheetHtml2.indexOf("pickVolTrendMuscle('hamstrings')");
-  const hamTile = sheetHtml2.slice(i, i + 400);
-  ok(hamTile.includes('✓'), `hamstrings shows as the checked tile after picking it (got: ${hamTile})`);
+  const hamRow = sheetHtml2.slice(Math.max(0, i - 100), i + 400); // mv-pick-on is a class on the div's OPENING tag, before onclick in source order
+  ok(hamRow.includes('✓') && hamRow.includes('mv-pick-on'), `hamstrings shows as the checked, highlighted row after picking it (got: ${hamRow})`);
 
   setTrendVolPick('__overall'); // reset for later blocks
   await new Promise(r => setTimeout(r, 0));

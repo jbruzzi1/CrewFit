@@ -3509,16 +3509,14 @@ function volTrendChart(d){
   // Sep 1, round 2 (Jeff: "the pick muscle button doesn't line up with the volume trend header --
   // seems out of place, and the menu to select one of them just seems poor"). Round 1 moved the 12
   // muscles into a picker sheet opened from a header text-button (the same "Pick lifts" pattern
-  // Strength trend uses below) -- correct call on the crowding, but two things were actually wrong
-  // with the EXECUTION: (1) the h2 section labels on this page are small 12px gray caps, and the
-  // 14px bold blue button sitting next to "Volume trend" visually outweighs its own label -- it
-  // reads as a foreign element bolted onto the header, not part of it (Strength trend has the exact
-  // same geometry, just less noticeable there since it's an older, already-familiar row). (2) the
-  // picker itself was a bare list of plain text rows -- everywhere else in the app a "pick a muscle"
-  // UI is the Workouts library's .mg-card tiles (icon + name), so the plain list read as a step down
-  // in polish. Fixed both: no more header button at all -- the picker opens from a SECOND chip,
-  // same family/weight as Overall (so it never looks bolted-on), and the sheet reuses .mg-card
-  // grouped by Upper Body/Lower Body/Other, same as the library's own muscle browser.
+  // Strength trend uses below) -- correct call on the crowding, but wrong on the EXECUTION: the h2
+  // section labels on this page are small 12px gray caps, and the 14px bold blue button sitting next
+  // to "Volume trend" visually outweighs its own label -- it reads as a foreign element bolted onto
+  // the header, not part of it (Strength trend has the exact same geometry, just less noticeable
+  // there since it's an older, already-familiar row). Fix: no more header button at all -- the
+  // picker opens from a SECOND chip, same family/weight as Overall, so it never looks bolted-on.
+  // (What the picker SHEET itself looks like has changed again since -- see the comment above
+  // renderVolTrendPicker below for the current, round-3 design.)
   window._VOLTREND_GROUPS = weeksData.length ? weeksData[weeksData.length-1].groups : null;
   const pickChipLabel = isOverall ? 'Pick a muscle' : MUSCLE_LABEL[TREND_VOL_PICK];
   const chips = `<div class="chips">
@@ -3578,30 +3576,41 @@ function volTrendChart(d){
 // pinned lifts) that SAVES a preference to the server, because which lifts exist varies per user.
 // The 12 muscle groups are fixed and the same for everyone, and only one is ever being viewed at
 // once -- so this is just a tap-a-row list, no checkboxes, no Save button. Tapping a row immediately
-// switches the chart and closes the sheet.
-//
-// Sep 1, round 2: rows are .mg-card tiles (icon + name + this week's own sets/target, grouped
-// Upper Body/Lower Body/Other) -- the same tile the Workouts library already uses to browse
-// exercises by muscle group, not a bare text list. LIB_CATS (declared above, used by that library
-// screen) is reused verbatim for the grouping/ordering rather than inventing a second taxonomy;
-// it includes 'cardio' under Other, which the filter below drops since cardio isn't one of the 12
-// groups this chart tracks (see MUSCLE_TARGETS' own comment in server.js on why cardio is excluded).
+// switches the chart and closes the sheet. (Row visual design has gone through a couple of
+// iterations since -- see the comment inside renderVolTrendPicker below for the current one.)
 function openVolTrendPicker(){ openSheetHtml(renderVolTrendPicker()); }
 function renderVolTrendPicker(){
+  // Sep 1, round 3 (Jeff: "when I click pick a muscle... the muscle index library page appears,
+  // may be a bit overkill for this small picker" -- then, on seeing a compact icon-tile version,
+  // "I feel like how you had it originally with the bars that go left to right... that design was
+  // cleaner"). "Originally" = the Weekly Volume card just above this chart, which already tracks
+  // the exact same per-muscle sets-vs-target data as a plain progress-bar row (.mv-row/.mv-track/
+  // .mv-fill). Reusing that existing, Jeff-approved pattern for the picker instead of inventing a
+  // tile/icon language for it: no icons, no category headers, just the same bar row people already
+  // read on this page, made tappable, with a checkmark next to the numbers marking the current pick.
   const groupsThisWeek = window._VOLTREND_GROUPS || [];
-  const cats = LIB_CATS.map(c=>({ name:c.name, muscles:c.muscles.filter(m=>MUSCLE_LABEL.hasOwnProperty(m)) })).filter(c=>c.muscles.length);
-  const tile = g=>{
+  // LIB_CATS (declared above, used by the Workouts library's own muscle-browse screen) supplies a
+  // sensible anatomical ordering without inventing a second taxonomy just for this list; its category
+  // headers themselves aren't used here (flattened away), and its 'cardio' entry is dropped since
+  // cardio isn't one of the 12 groups this chart tracks (see MUSCLE_TARGETS' comment in server.js).
+  const order = LIB_CATS.flatMap(c=>c.muscles).filter(m=>MUSCLE_LABEL.hasOwnProperty(m));
+  const volPickRow = g=>{
     const active = g===TREND_VOL_PICK;
     const stat = groupsThisWeek.find(x=>x.group===g);
-    const sub = stat ? `${stat.sets} / ${stat.target} sets this week` : 'No data yet';
-    return `<div class="mg-card" onclick="pickVolTrendMuscle('${g}')">
-      <div class="mg-ico">${mgIcon(g)}</div>
-      <div class="mg-card-body"><div class="mg-card-name">${MUSCLE_LABEL[g]}</div><div class="mg-card-count">${sub}</div></div>
-      ${active?'<span style="color:var(--blue);font-weight:700;font-size:18px">✓</span>':'<div class="mg-chev">›</div>'}
+    const pct = stat ? Math.min(100, Math.round(100*stat.sets/stat.target)) : 0;
+    const met = stat ? stat.sets >= stat.target : false;
+    const numbers = stat
+      ? `<span class="mv-n">${stat.sets}<span class="mv-of"> / ${stat.target} sets this week</span></span>`
+      : `<span class="mv-of">No data yet</span>`;
+    const check = active ? '<span style="color:var(--blue);font-weight:700;font-size:15px">✓</span>' : '';
+    return `<div class="mv-row mv-pick${active?' mv-pick-on':''}" onclick="pickVolTrendMuscle('${g}')">
+      <div class="mv-top"><span class="mv-name">${MUSCLE_LABEL[g]}</span>
+        <span style="display:flex;align-items:center;gap:6px">${numbers}${check}</span></div>
+      <div class="mv-track"><div class="mv-fill${met?' mv-met':''}" style="width:${pct}%"></div></div>
     </div>`;
   };
-  const blocks = cats.map(c=>`<div class="lib-cat">${c.name}</div><div class="card">${c.muscles.map(tile).join('')}</div>`).join('');
-  return `<div class="sheet"><div class="sheet-head"><h2>Pick a muscle</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>${blocks}</div>`;
+  return `<div class="sheet"><div class="sheet-head"><h2>Pick a muscle</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="card">${order.map(volPickRow).join('')}</div></div>`;
 }
 function pickVolTrendMuscle(g){ closeSheet(); setTrendVolPick(g); }
 
