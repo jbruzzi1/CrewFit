@@ -74,6 +74,24 @@ async function nameOf(id){
   // to render straight into the page as "with @friend, @friend", so callers must check for it.
   return hit ? hit.displayName : UNKNOWN_NAME;
 }
+// Jeff, Sep 1: "I want to be able to use the users real avatar/picture thumbnail in the comment
+// section rather than just the letter avatar." Real photo avatars already exist elsewhere in the
+// app (Home's top-corner avatar, the Profile page's own avatar, friends-list rows) via the shared
+// avatarHtml(x, cls) helper below, which expects an object with {displayName, username, avatar}
+// and falls back to a letter circle when `avatar` is empty -- comments and the "Liked by" row
+// never wired that field through, they only ever resolved a bare display name via nameOf() above.
+// personOf() is the same fetch nameOf() already makes (same /api/friends lookup, same "You"
+// special case), just returning the full shape avatarHtml() wants instead of only the name --
+// kept as a SEPARATE function rather than changing nameOf()'s return type, since nameOf() has
+// many existing callers that only want a string.
+async function personOf(id){
+  if(id===ME.id) return { id, displayName: 'You', username: ME.username, avatar: ME.avatar || '' };
+  const f = (await H.get('/api/friends'));
+  const arr = (f && f.friends) ? f.friends : (Array.isArray(f)?f:[]);
+  const hit = arr.find(x=>x.id===id);
+  return hit ? { id, displayName: hit.displayName, username: hit.username, avatar: hit.avatar || '' }
+              : { id, displayName: UNKNOWN_NAME, username: '', avatar: '' };
+}
 function fmtDate(s){ const d=new Date(s); return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
 // Shared by fmtWhen and isSessionLiveNow, which both need "what calendar day is this, locally".
 function startOfDay(x){ const y = new Date(x); y.setHours(0,0,0,0); return y; }
@@ -1226,6 +1244,45 @@ async function viewPost(id, authorId, opts){
   // idempotent fetch-post-mutate-repost pattern as addPostPhoto/deletePhoto above, so this can
   // never be reached for anyone else's recap.
   const notesHeader = isAuthor ? `<h2 style="display:flex;align-items:center;justify-content:space-between">Notes<button class="sec sm" onclick="editPostNotes('${id}','${authorId}')">Edit</button></h2>` : `<h2>Notes</h2>`;
+  // Task #157: a lightweight reaction on the recap -- one tap, toggled on/off, no picker. The
+  // post object already carries `reactions` (an array of userIds) straight from GET /api/sessions/
+  // :id, so this needs no extra fetch the way comments does. See toggleReaction below for the tap
+  // handler and FAV_BUSY-style double-tap guard.
+  // Jeff, Sep 1: three rounds of feedback landed here. First, the filled-circle thumbs-up read as
+  // "a random icon stuck under Notes" -- wanted the Instagram treatment instead (plain icon, no
+  // button chrome). Then, after seeing it live: "I want the like button right above the comments
+  // people are making... not in its own section above" -- sent a screenshot of Instagram's own
+  // layout, where the tap target and the avatar-stack "Liked by X and others" line sit together as
+  // ONE row directly above the comment thread, not a separate section under Notes. So this is no
+  // longer its own row between Notes and Comments -- it's the first thing inside the Comments card,
+  // right above chatbox. Third: "I don't like the green color of the heart - it doesn't fit and
+  // seems chunky." Two separate fixes, not one: (1) color -- green in this app means an EARNED
+  // thing (PR pills, streak dot, celebration), and a reaction to someone else's post isn't that; per
+  // this app's own color language blue is the one for actions/CTAs, which a tap-to-react actually
+  // is, so the "on" state moved to --blue (see the CSS for .pp-react-btn.on / .cmt-react-btn.on).
+  // (2) chunky -- the filled state was drawing BOTH a solid fill AND a 1.8px stroke on top of it,
+  // which doubles up right at the heart's edge and reads heavier than a clean filled icon should.
+  // The stroke now only appears on the OUTLINE (unreacted) state; once filled, stroke-width drops
+  // to 0 so the shape is a smooth solid heart, matching how a real filled icon actually renders.
+  const reactions = Array.isArray(post.reactions) ? post.reactions : [];
+  const reactedByMe = reactions.includes(ME.id);
+  // ME is always sorted first when present -- that's what makes toggleReaction's later
+  // client-side patch possible without a re-fetch: tapping the button only ever adds or removes
+  // YOU from this list, never anyone else, so the "other reactors" half of this data never changes
+  // on a tap and can be cached once, here, in data-liked, and reused. See likedByHtml() below.
+  const otherReactorIds = reactions.filter(uid => uid !== ME.id);
+  const otherPreview = [];
+  for(const uid of otherReactorIds.slice(0, 3)){
+    const p = await personOf(uid);
+    otherPreview.push({ id: uid, name: p.displayName, avatar: p.avatar || '' });
+  }
+  const likedByInner = likedByHtml(reactedByMe, otherPreview, otherReactorIds.length);
+  const likedRow = `<div class="pp-liked-row" data-liked="${esc(JSON.stringify({others: otherPreview, otherCount: otherReactorIds.length}))}">
+    <button class="pp-react-btn${reactedByMe?' on':''}" id="ppReact-${id}-${authorId}" onclick="toggleReaction('${id}','${authorId}')" aria-label="${reactedByMe?'Remove reaction':'React to this workout'}">
+      <svg viewBox="0 0 24 24" fill="${reactedByMe?'currentColor':'none'}" stroke="currentColor" stroke-width="${reactedByMe?'0':'1.8'}" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+    </button>
+    <div class="pp-liked-info" id="ppLikedInfo-${id}-${authorId}">${likedByInner}</div>
+  </div>`;
   // Jeff, Aug 28: "I made my most recent posted workout on my profile public and it still says
   // 'friends only'." The badge just below was showing s.visibility -- whether the SESSION itself is
   // joinable by friends or invite-only, set back on the create form -- which is a different setting
@@ -1256,7 +1313,7 @@ async function viewPost(id, authorId, opts){
   // wherever you actually tapped in from. history.back() replays the same real browser-history
   // pop the hardware/gesture Back button already uses, landing on whatever screen pushed the
   // entry below this one (see viewPost's own navigated()/landOn() call just below this template).
-  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    ${notesHeader}<div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
+  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    ${notesHeader}<div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card">${likedRow}<div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
   $('app').innerHTML = html;
   if(!silent){ const st={t:'post', id, authorId}; fromHistory ? landOn(st) : navigated(st); }
   if(media.length>1){
@@ -1316,24 +1373,144 @@ async function sendPostComment(id, authorId){
   const inp=$('chatInput'); if(inp) inp.value='';
   viewPost(id, authorId, {silent:true});
 }
+// Builds the avatar-stack + "Liked by X and N others" line that sits at the top of a posted
+// recap's Comments card, right above the comment thread (Jeff, Sep 1, after seeing the screenshot:
+// "the like button right above the comments... not in its own section above"). `otherPreview` is
+// up to 3 {id,name,avatar} triples for reactors OTHER than you -- used for both the avatar stack
+// and the first name(s) in the text. `otherCount` is the REAL total of other reactors, not capped
+// to 3, so "and N others" stays accurate even past the avatar preview cap. Pure function of its
+// inputs, so toggleReaction below can re-run it locally off the row's cached data-liked JSON
+// without a re-fetch -- tapping the button only ever adds/removes YOU, so the "others" half never
+// changes. Returns '' (nothing rendered) when no one has reacted -- same "don't show a hollow 0
+// state" instinct as the rest of the app. Avatars use a real photo when the reactor has one (same
+// avatarHtml() pattern as comments -- Jeff, Sep 1: "real avatar/picture thumbnail... rather than
+// just the letter avatar"), a letter circle otherwise.
+function likedByHtml(reactedByMe, otherPreview, otherCount){
+  const list = reactedByMe ? [{ id: ME.id, name: 'You', avatar: ME.avatar||'' }, ...otherPreview] : otherPreview;
+  const total = otherCount + (reactedByMe ? 1 : 0);
+  if(!total) return '';
+  const avs = list.slice(0,3).map(p => p.avatar
+    ? `<img class="pp-liked-av" src="${esc(p.avatar)}" alt="">`
+    : `<span class="pp-liked-av">${esc((p.name||'?')[0]||'?')}</span>`
+  ).join('');
+  let text;
+  if(total===1) text = `Liked by <b>${esc(list[0].name)}</b>`;
+  else if(total===2) text = `Liked by <b>${esc(list[0].name)}</b> and <b>${esc(list[1].name)}</b>`;
+  else text = `Liked by <b>${esc(list[0].name)}</b> and <b>${total-1} other${total-1===1?'':'s'}</b>`;
+  return `<div class="pp-liked-avs">${avs}</div><div class="pp-liked-text">${text}</div>`;
+}
+// Task #157: one-tap reaction, toggled on/off. Same FAV_BUSY-keyed-Set double-tap guard as
+// toggleFavorite above (a fast double-tap here would fire two overlapping toggles and, since
+// each response would otherwise overwrite the button's state with ITS OWN result, whichever
+// response happened to ARRIVE last -- not whichever request was sent last -- would decide the
+// final visible state). The endpoint returns {reacted, count} directly, so this flips the button
+// and the "Liked by" line in place rather than re-fetching and re-rendering the whole recap the
+// way sendPostComment does above.
+let REACT_BUSY = new Set();
+async function toggleReaction(id, authorId){
+  const key = id+'|'+authorId;
+  if(REACT_BUSY.has(key)) return;
+  REACT_BUSY.add(key);
+  try {
+    const r = await H.post(`/api/sessions/${id}/posts/${authorId}/react`, {});
+    if(!r || r.error){ if(r && r.error) alert(r.error); return; }
+    // Scoped by BOTH id and authorId, matching REACT_BUSY's key above -- a session can hold
+    // several participants' recaps (s.posts[authorId] per author), and the feed links straight
+    // into different authors' recaps of the SAME session. Cold-review catch: this used to look up
+    // 'ppReact-'+id alone, so a slow response for Alice's recap could land on a same-session-id
+    // button that by then belonged to Bob's recap (viewPost fully replaces the DOM on navigation),
+    // flipping the wrong person's on-screen reaction state.
+    const btn = $('ppReact-'+id+'-'+authorId);
+    if(btn){
+      btn.classList.toggle('on', !!r.reacted);
+      btn.setAttribute('aria-label', r.reacted?'Remove reaction':'React to this workout');
+      // stroke-width drops to 0 once filled -- see the comment above likedRow in viewPost for why
+      // (a stroke drawn on top of a fill was what made this read "chunky"). 1.8 on the outline
+      // state matches the width this icon has always rendered at unreacted -- only the FILLED
+      // state's stroke is new/changed here.
+      const svg = btn.querySelector('svg');
+      if(svg){ svg.setAttribute('fill', r.reacted?'currentColor':'none'); svg.setAttribute('stroke-width', r.reacted?'0':'1.8'); }
+    }
+    // The "Liked by" avatars/names re-derive from data cached on the row at render time (see
+    // likedRow in viewPost) -- best-effort, since resolving fresh names would mean a re-fetch on
+    // every tap. But the COUNT they're built around comes from r.count, the live number this very
+    // response just returned -- NOT the cached snapshot's count. Cold-review catch: this page can
+    // sit open while other people react/un-react in the background (nothing here pushes live
+    // updates), so the cached count can go stale while you're just looking at the screen; if your
+    // own tap then rebuilt the total from that stale cache instead of the fresh count this request
+    // just got back, a tap could visibly UNDER-count real reactions that happened while you were
+    // idle. r.count is always correct the instant this response arrives, so the total is derived
+    // from it (minus your own membership, since likedByHtml adds "You" back in when reacted).
+    const row = btn && btn.closest('.pp-liked-row');
+    const info = $('ppLikedInfo-'+id+'-'+authorId);
+    if(row && info){
+      let cached = {};
+      try { cached = JSON.parse(row.dataset.liked || '{}'); } catch(e) {}
+      const otherPreview = Array.isArray(cached.others) ? cached.others : [];
+      const otherCount = Math.max(0, (r.count||0) - (r.reacted?1:0));
+      info.innerHTML = likedByHtml(r.reacted, otherPreview, otherCount);
+    }
+  } finally {
+    REACT_BUSY.delete(key);
+  }
+}
 async function loadPostComments(id, authorId){
   const box=$('chatbox'); if(!box) return;
   const cs=await H.get(`/api/sessions/${id}/posts/${authorId}/comments`);
   if(!Array.isArray(cs)){ box.innerHTML='<div class="muted">Comments aren\'t visible here.</div>'; return; }
   if(!cs.length){ box.innerHTML='<div class="muted">No comments yet. Be the first to comment.</div>'; return; }
-  const nm={};
-  for(const c of cs){ if(!(c.userId in nm)) nm[c.userId]= await nameOf(c.userId); }
+  // Jeff, Sep 1: real photo avatars, not just letter circles -- avatarHtml() (defined below) is
+  // the app's existing real-photo-or-initials helper, already used on Home/Profile/friends rows.
+  // people[] caches the {displayName, username, avatar} shape it wants, one lookup per unique
+  // commenter (same /api/friends round-trip nameOf() always made here, just carrying avatar too).
+  const people={};
+  for(const c of cs){ if(!(c.userId in people)) people[c.userId] = await personOf(c.userId); }
   box.innerHTML = cs.map(c=>{
-    const name = c.userId===ME.id?'You':(nm[c.userId]||'User');
-    const ini = c.userId===ME.id?'Y':((nm[c.userId]||'?')[0]||'?');
+    const p = people[c.userId] || { displayName:'User', username:'', avatar:'' };
+    const name = c.userId===ME.id?'You':(p.displayName||'User');
     // "You" used to get an off-palette orange found nowhere else in the app, while everyone else
     // got the old rainbow hash -- two more one-off treatments on top of Home's own green avatar.
-    // avatarColor() is now one consistent accent for everyone (see its definition), including you;
-    // the bold "You"/name label right next to it is what actually says whose comment this is.
-    const col = avatarColor(nm[c.userId]||c.userId);
+    // avatarColor() is now one consistent accent for everyone (see its definition) for anyone who
+    // HASN'T set a photo; avatarHtml() below reaches for the real one first.
+    const avHtml = avatarHtml(c.userId===ME.id ? { ...p, displayName:'You' } : p, 'fav-av');
     const t = new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-    return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div></div>';
+    // Per-comment reaction (Task #157 follow-up, Jeff Sep 1: "that instagram feel in that section").
+    // Deliberately smaller/quieter than the post-level reaction row above the Comments header --
+    // Instagram itself gives the post-like the visual weight and the comment-like is a tiny plain
+    // heart tucked to the right of each row, bare number underneath, no "reactions" word. Same
+    // toggle mechanics as toggleReaction, one level deeper: DOM ids and the busy-guard key are
+    // scoped by id+authorId+commentId from the start (the post-level reaction's first version
+    // shipped scoped by id alone and a cold-review pass had to catch and fix that gap).
+    const reactions = Array.isArray(c.reactions) ? c.reactions : [];
+    const reactedByMe = reactions.includes(ME.id);
+    const ck = id+'-'+authorId+'-'+c.id;
+    return '<div class="cmt">'+avHtml+'<div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div><div class="cmt-react-col"><button class="cmt-react-btn'+(reactedByMe?' on':'')+'" id="cmtReact-'+ck+'" onclick="toggleCommentReaction(\''+id+'\',\''+authorId+'\',\''+c.id+'\')" aria-label="'+(reactedByMe?'Remove reaction':'React to this comment')+'"><svg viewBox="0 0 24 24" fill="'+(reactedByMe?'currentColor':'none')+'" stroke="currentColor" stroke-width="'+(reactedByMe?'0':'2')+'" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button><span class="cmt-react-count" id="cmtReactCount-'+ck+'">'+(reactions.length||'')+'</span></div></div>';
   }).join('');
+}
+let CMT_REACT_BUSY = new Set();
+async function toggleCommentReaction(id, authorId, commentId){
+  const key = id+'|'+authorId+'|'+commentId;
+  if(CMT_REACT_BUSY.has(key)) return;
+  CMT_REACT_BUSY.add(key);
+  try {
+    const r = await H.post(`/api/sessions/${id}/posts/${authorId}/comments/${commentId}/react`, {});
+    if(!r || r.error){ if(r && r.error) alert(r.error); return; }
+    const ck = id+'-'+authorId+'-'+commentId;
+    const btn = $('cmtReact-'+ck);
+    if(btn){
+      btn.classList.toggle('on', !!r.reacted);
+      btn.setAttribute('aria-label', r.reacted?'Remove reaction':'React to this comment');
+      // 2 on the outline state matches this smaller (14px-displayed) icon's original stroke width
+      // -- it's intentionally thicker than the post-level heart's 1.8 to stay visible at that
+      // size; only the FILLED state's stroke (now 0, was double-drawn on top of the fill) changed.
+      const svg = btn.querySelector('svg');
+      if(svg){ svg.setAttribute('fill', r.reacted?'currentColor':'none'); svg.setAttribute('stroke-width', r.reacted?'0':'2'); }
+    }
+    const cnt = $('cmtReactCount-'+ck);
+    if(cnt) cnt.textContent = r.count || '';
+  } finally {
+    CMT_REACT_BUSY.delete(key);
+  }
 }
 async function deletePhoto(id, authorId, idx){
   confirmSheet('Delete photo?', 'The photo comes off your recap — the workout and your sets stay.', 'Delete photo', () => deletePhotoConfirmed(id, authorId, idx));
@@ -4921,12 +5098,22 @@ async function profileView(id, opts){
     const exList = exs.length ? `<div class="wex-h">Exercises</div><ol class="wexb">${exs.map(e=>`<li>${esc(e)}</li>`).join('')}</ol>${more>0?`<div class="wexb-more">+${more} more</div>`:''}` : '<div class="wexnone">No exercises</div>';
     const collab = (w.collaborators&&w.collaborators.length) ? `with @${esc(w.collaborators[0].username)}${w.collaborators.length>1?` +${w.collaborators.length-1}`:''}` : '';
     const when = w.at ? fmtDate(w.at) : (w.date||'');
+    // Jeff, Sep 1: "how do we show comments on a workout BEFORE clicking in - I can see how many
+    // likes and comments it has [on the thumbnail], then click in to see the actual comments."
+    // Counts only (no names/text) -- this card is a preview, the full thread is one tap away in
+    // viewPost(). Same outline heart glyph as the reaction button itself (post/comment level) so
+    // this reads as "the same like," not a new icon language; a small speech-bubble for comments,
+    // both muted (this is metadata, not a CTA -- tapping the whole card already opens the post).
+    const rc = (w.post && w.post.reactionCount) || 0;
+    const cc = (w.post && w.post.commentCount) || 0;
+    const social = (rc||cc) ? `<div class="wsocial">${rc?`<span class="wsocial-item"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>${rc}</span>`:''}${cc?`<span class="wsocial-item"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>${cc}</span>`:''}</div>` : '';
     return `<div class="wtile" onclick="viewPost('${w.id}','${id}')">
       <div class="wdate">${esc(when)}</div>
       <div class="wtitle">${esc(title)}</div>
       ${img}
       <div class="wex">${exList}</div>
       ${collab?`<div class="wcollab">${collab}</div>`:''}
+      ${social}
     </div>`;
   }
   // isPrivate FIRST: a private profile returns myWorkouts:[] even when the person has plenty,
