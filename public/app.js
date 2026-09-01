@@ -2080,7 +2080,20 @@ function qlMicUp(){
   qlRecUi(false);
 }
 function renderLogSets(s, justLoggedId){
-  const list=document.getElementById('logSetList'); if(!list) return;
+  // Jeff, Sep 1: "when I edit a set...it goes back to just the log page without showing the
+  // other sets." Root cause: saveLogSet/delLogSetConfirmed call closeAllSheets() then immediately
+  // openLogSheet() -- but closeAllSheets() only strips the .show class synchronously; the actual
+  // DOM removal of the old sheet(s) is deferred 200ms (for the close transition, see its own
+  // comment). openLogSheet's freshly-appended sheet has its OWN #logSetList, so for that 200ms
+  // window TWO elements share id="logSetList" -- the dying old one (still first in document
+  // order, still holding the pre-edit rows) and the new visible one (empty). A plain
+  // document.getElementById('logSetList') always resolves to the OLD one, so this function wrote
+  // the freshly-fetched sets into an element that was about to be deleted -- the sheet on screen
+  // never got populated. Scoping the lookup to LOGVIEW.sheetEl (the exact sheet this call is
+  // meant to fill, always stamped right before every renderLogSets call site) sidesteps the id
+  // collision instead of touching closeAllSheets' close-transition timing.
+  const list=(LOGVIEW&&LOGVIEW.sheetEl)?LOGVIEW.sheetEl.querySelector('#logSetList'):document.getElementById('logSetList');
+  if(!list) return;
   const mine=(s.logs&&s.logs[ME.id])||[];
   const exLogs=mine.filter(l=>l.exerciseId===LOGVIEW.exId).sort((a,b)=>(a.set||0)-(b.set||0));
   if(!exLogs.length){ list.innerHTML='<div class="muted" style="padding:10px 2px">No sets logged yet.</div>'; return; }
