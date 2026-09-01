@@ -3594,6 +3594,30 @@ app.post('/api/sessions/:id/posts/:authorId/react', auth, async (req, res) => {
     notify(req.params.authorId, { title: 'New reaction', body: `${DB.users[req.userId].displayName} reacted to your workout` });
   res.json({ reacted, count: p.reactions.length });
 });
+// ---- Reactions on an individual COMMENT under a posted recap ----
+// Jeff, Sep 1: wants the same Instagram feel inside the comments thread itself, not just under the
+// workout. Same exact pattern as the post-level /react above, one level deeper: gated by the same
+// canSeePostAuthor (if you can see/comment on the recap, you can react to a comment on it), same
+// {reacted, count} toggle shape, same bare-userId-array storage. Lives on the comment object itself
+// (c.reactions) so it rides along for free with the existing carry-over in POST /post above — that
+// handler re-attaches the OLD comment objects by reference, reactions and all, no separate code
+// needed. Notifies the COMMENT's author, not necessarily the recap's author.
+app.post('/api/sessions/:id/posts/:authorId/comments/:commentId/react', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  const p = s.posts && s.posts[req.params.authorId];
+  if (!canSeePostAuthor(p, req.params.authorId, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  const c = objArray(p.comments).find(x => x.id === req.params.commentId);
+  if (!c) return res.status(404).json({ error: 'not found' });
+  c.reactions = Array.isArray(c.reactions) ? c.reactions.filter(x => typeof x === 'string') : [];
+  const i = c.reactions.indexOf(req.userId);
+  const reacted = i === -1;
+  if (reacted) c.reactions.push(req.userId); else c.reactions.splice(i, 1);
+  await save(DB);
+  if (reacted && c.userId !== req.userId)
+    notify(c.userId, { title: 'New reaction', body: `${DB.users[req.userId].displayName} reacted to your comment` });
+  res.json({ reacted, count: c.reactions.length });
+});
 
 // Catches whatever the async-route wrapper above forwards via next(err) — a thrown error or a
 // rejected promise from any handler, including a Postgres error from save()/load(). Without

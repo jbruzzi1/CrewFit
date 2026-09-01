@@ -13,6 +13,13 @@
 // already-posted recap does NOT wipe out reactions people already left (the same carry-over bug
 // class comments were already protected against); and the reaction is visible on the plain
 // GET /api/sessions/:id response (no separate fetch needed, unlike comments).
+//
+// [comments follow-up] Also covers the same reaction extended one level deeper, onto individual
+// comments under a posted recap (POST .../comments/:commentId/react) -- toggle on/off; the count
+// is independent per comment and separate from the post-level reaction; the same access gate
+// applies (a non-friend is refused); an unknown comment id is a clean 404; and a comment's
+// reactions survive the recap being re-posted, since comment objects (and now their reactions)
+// carry over by reference in POST /post.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -45,6 +52,9 @@ const get = (p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer '
 const reg = (username, pin, displayName) => postJ('/api/register', { username, pin, displayName });
 const react = (id, authorId, tok) => post(`/api/sessions/${id}/posts/${authorId}/react`, {}, tok);
 const reactJ = (id, authorId, tok) => react(id, authorId, tok).then(r => r.json());
+const addComment = (id, authorId, text, tok) => postJ(`/api/sessions/${id}/posts/${authorId}/comments`, { text }, tok);
+const commentReact = (id, authorId, commentId, tok) => post(`/api/sessions/${id}/posts/${authorId}/comments/${commentId}/react`, {}, tok);
+const commentReactJ = (id, authorId, commentId, tok) => commentReact(id, authorId, commentId, tok).then(r => r.json());
 
 async function makeFriends(a, b) {
   await postJ('/api/friends/request', { username: b.user.username }, a.token);
@@ -169,6 +179,118 @@ console.log('\nGET /api/sessions/:id already carries reactions on the post -- no
   const p = asNoah.posts && asNoah.posts[noah.user.id];
   ok(!!p && Array.isArray(p.reactions) && p.reactions.includes(olive.user.id),
      `the plain session GET already includes the reaction (got ${JSON.stringify(p && p.reactions)})`);
+}
+
+console.log('\n[comments follow-up] a tap toggles a comment reaction on, a second tap toggles it off');
+{
+  const rex = await reg('rx_rex', 'pass1234', 'Rex');
+  const sam = await reg('rx_sam', 'pass1234', 'Sam');
+  await makeFriends(rex, sam);
+  const s = await soloPostedWorkout(rex, 'friends');
+  const withComment = await addComment(s.id, rex.user.id, 'nice work', sam.token);
+  const c = withComment.posts[rex.user.id].comments.find(x => x.text === 'nice work');
+  ok(!!c, 'comment was created');
+
+  const on = await commentReactJ(s.id, rex.user.id, c.id, rex.token);
+  ok(on.reacted === true && on.count === 1, `first tap on the comment: reacted true, count 1 (got ${JSON.stringify(on)})`);
+  const off = await commentReactJ(s.id, rex.user.id, c.id, rex.token);
+  ok(off.reacted === false && off.count === 0, `second tap: reacted false, count back to 0 (got ${JSON.stringify(off)})`);
+}
+
+console.log('\n[comments follow-up] a comment reaction count is independent -- not conflated with the post reaction or another comment');
+{
+  const tia = await reg('rx_tia', 'pass1234', 'Tia');
+  const uri = await reg('rx_uri', 'pass1234', 'Uri');
+  const vin = await reg('rx_vin', 'pass1234', 'Vin');
+  await makeFriends(tia, uri);
+  await makeFriends(tia, vin);
+  const s = await soloPostedWorkout(tia, 'friends');
+  const afterC1 = await addComment(s.id, tia.user.id, 'first comment', uri.token);
+  const c1 = afterC1.posts[tia.user.id].comments.find(x => x.text === 'first comment');
+  const afterC2 = await addComment(s.id, tia.user.id, 'second comment', vin.token);
+  const c2 = afterC2.posts[tia.user.id].comments.find(x => x.text === 'second comment');
+
+  await reactJ(s.id, tia.user.id, vin.token);              // reacts to the POST itself
+  await commentReactJ(s.id, tia.user.id, c1.id, uri.token); // reacts to comment 1 only
+
+  const view = await get('/api/sessions/' + s.id, tia.token);
+  const p = view.posts[tia.user.id];
+  ok(Array.isArray(p.reactions) && p.reactions.length === 1, `post-level reaction count untouched by the comment reaction (got ${JSON.stringify(p.reactions)})`);
+  const gc1 = p.comments.find(x => x.id === c1.id), gc2 = p.comments.find(x => x.id === c2.id);
+  ok(Array.isArray(gc1.reactions) && gc1.reactions.length === 1, `comment 1 has its own reaction (got ${JSON.stringify(gc1.reactions)})`);
+  ok(!gc2.reactions || gc2.reactions.length === 0, `comment 2 was never reacted to and stays empty (got ${JSON.stringify(gc2.reactions)})`);
+}
+
+console.log('\n[comments follow-up] access control on a comment reaction matches the post-level gate -- a non-friend is refused');
+{
+  const walt = await reg('rx_walt', 'pass1234', 'Walt');
+  const xena = await reg('rx_xena', 'pass1234', 'Xena');
+  await makeFriends(walt, xena);
+  const yara = await reg('rx_yara', 'pass1234', 'Yara');   // NOT a friend of walt
+  const s = await soloPostedWorkout(walt, 'friends');
+  const withComment = await addComment(s.id, walt.user.id, 'hi', xena.token);
+  const c = withComment.posts[walt.user.id].comments.find(x => x.text === 'hi');
+
+  const r = await commentReact(s.id, walt.user.id, c.id, yara.token);
+  ok(r.status === 403, `a non-friend cannot react to a comment on a friends-visibility recap (got ${r.status})`);
+}
+
+console.log('\n[comments follow-up] a non-owner is refused on an ONLY-ME recap\'s comment too (post-level covers this; comment-level should match)');
+{
+  const ozzy = await reg('rx_ozzy', 'pass1234', 'Ozzy');
+  const pia = await reg('rx_pia', 'pass1234', 'Pia');
+  await makeFriends(ozzy, pia);   // friendship alone should not be enough against only_me
+  const s = await soloPostedWorkout(ozzy, 'only_me');
+  // ozzy can't comment on his own only_me-visibility post via a friend either -- simulate a
+  // comment existing by having ozzy himself comment, then a friend tries to react to it.
+  const withComment = await addComment(s.id, ozzy.user.id, 'solo note', ozzy.token);
+  const c = withComment.posts[ozzy.user.id].comments.find(x => x.text === 'solo note');
+  const r = await commentReact(s.id, ozzy.user.id, c.id, pia.token);
+  ok(r.status === 403, `a friend still can't react to a comment on an only-me recap (got ${r.status})`);
+}
+
+console.log('\n[comments follow-up] reacting to a comment where the target author has no post at all is refused, not a crash');
+{
+  const quin = await reg('rx_quin', 'pass1234', 'Quin');
+  const remy = await reg('rx_remy', 'pass1234', 'Remy');
+  await makeFriends(quin, remy);
+  const s = await postJ('/api/sessions', {
+    name: 'Never Posted', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Deadlift' }], visibility: 'friends',
+  }, quin.token);
+  // quin never calls /post -- s.posts[quin.id] does not exist, so there's no comment to react to
+  const r = await commentReact(s.id, quin.user.id, 'c_whatever', remy.token);
+  ok(r.status === 403, `no post yet -> refused, not a 500 (got ${r.status})`);
+}
+
+console.log('\n[comments follow-up] reacting to a comment on an unknown session id is refused, not a crash');
+{
+  const sara = await reg('rx_sara', 'pass1234', 'Sara');
+  const r = await commentReact('nope-not-a-real-session-id', sara.user.id, 'c_whatever', sara.token);
+  ok(r.status === 404, `an unknown session id -> 404 (got ${r.status})`);
+}
+
+console.log('\n[comments follow-up] reacting to an unknown comment id is refused, not a crash');
+{
+  const zeke = await reg('rx_zeke', 'pass1234', 'Zeke');
+  const s = await soloPostedWorkout(zeke, 'public');
+  const r = await commentReact(s.id, zeke.user.id, 'c_not_real', zeke.token);
+  ok(r.status === 404, `an unknown comment id -> 404, not a 500 (got ${r.status})`);
+}
+
+console.log('\n[comments follow-up] a comment reaction survives the recap being re-posted (notes edit carry-over)');
+{
+  const abby = await reg('rx_abby', 'pass1234', 'Abby');
+  const bret = await reg('rx_bret', 'pass1234', 'Bret');
+  await makeFriends(abby, bret);
+  const s = await soloPostedWorkout(abby, 'friends');
+  const withComment = await addComment(s.id, abby.user.id, 'great lift', bret.token);
+  const c = withComment.posts[abby.user.id].comments.find(x => x.text === 'great lift');
+  await commentReactJ(s.id, abby.user.id, c.id, abby.token);
+
+  const edited = await postJ(`/api/sessions/${s.id}/post`, { notes: 'edited notes', visibility: 'friends' }, abby.token);
+  const gc = edited.posts[abby.user.id].comments.find(x => x.id === c.id);
+  ok(!!gc && Array.isArray(gc.reactions) && gc.reactions.includes(abby.user.id),
+     `the comment reaction survives abby editing her notes (got ${JSON.stringify(gc && gc.reactions)})`);
 }
 
 srv.kill();

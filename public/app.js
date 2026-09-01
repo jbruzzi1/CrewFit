@@ -1386,8 +1386,39 @@ async function loadPostComments(id, authorId){
     // the bold "You"/name label right next to it is what actually says whose comment this is.
     const col = avatarColor(nm[c.userId]||c.userId);
     const t = new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-    return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div></div>';
+    // Per-comment reaction (Task #157 follow-up, Jeff Sep 1: "that instagram feel in that section").
+    // Deliberately smaller/quieter than the post-level reaction row above the Comments header --
+    // Instagram itself gives the post-like the visual weight and the comment-like is a tiny plain
+    // heart tucked to the right of each row, bare number underneath, no "reactions" word. Same
+    // toggle mechanics as toggleReaction, one level deeper: DOM ids and the busy-guard key are
+    // scoped by id+authorId+commentId from the start (the post-level reaction's first version
+    // shipped scoped by id alone and a cold-review pass had to catch and fix that gap).
+    const reactions = Array.isArray(c.reactions) ? c.reactions : [];
+    const reactedByMe = reactions.includes(ME.id);
+    const ck = id+'-'+authorId+'-'+c.id;
+    return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div><div class="cmt-react-col"><button class="cmt-react-btn'+(reactedByMe?' on':'')+'" id="cmtReact-'+ck+'" onclick="toggleCommentReaction(\''+id+'\',\''+authorId+'\',\''+c.id+'\')" aria-label="'+(reactedByMe?'Remove reaction':'React to this comment')+'"><svg viewBox="0 0 24 24" fill="'+(reactedByMe?'currentColor':'none')+'" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button><span class="cmt-react-count" id="cmtReactCount-'+ck+'">'+(reactions.length||'')+'</span></div></div>';
   }).join('');
+}
+let CMT_REACT_BUSY = new Set();
+async function toggleCommentReaction(id, authorId, commentId){
+  const key = id+'|'+authorId+'|'+commentId;
+  if(CMT_REACT_BUSY.has(key)) return;
+  CMT_REACT_BUSY.add(key);
+  try {
+    const r = await H.post(`/api/sessions/${id}/posts/${authorId}/comments/${commentId}/react`, {});
+    if(!r || r.error){ if(r && r.error) alert(r.error); return; }
+    const ck = id+'-'+authorId+'-'+commentId;
+    const btn = $('cmtReact-'+ck);
+    if(btn){
+      btn.classList.toggle('on', !!r.reacted);
+      btn.setAttribute('aria-label', r.reacted?'Remove reaction':'React to this comment');
+      const svg = btn.querySelector('svg'); if(svg) svg.setAttribute('fill', r.reacted?'currentColor':'none');
+    }
+    const cnt = $('cmtReactCount-'+ck);
+    if(cnt) cnt.textContent = r.count || '';
+  } finally {
+    CMT_REACT_BUSY.delete(key);
+  }
 }
 async function deletePhoto(id, authorId, idx){
   confirmSheet('Delete photo?', 'The photo comes off your recap — the workout and your sets stay.', 'Delete photo', () => deletePhotoConfirmed(id, authorId, idx));
