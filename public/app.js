@@ -1230,22 +1230,29 @@ async function viewPost(id, authorId, opts){
   // post object already carries `reactions` (an array of userIds) straight from GET /api/sessions/
   // :id, so this needs no extra fetch the way comments does. See toggleReaction below for the tap
   // handler and FAV_BUSY-style double-tap guard.
-  // Jeff, Sep 1: the first pass (a filled circle button with a thumbs-up) read as "a random icon
-  // stuck under Notes" -- wanted the Instagram treatment instead. That's really two things: a
-  // PLAIN icon with no button chrome around it (no circle/pill background -- just the glyph
-  // itself, the way a like/comment/share row has no buttons, only icons), and a bold count called
-  // out on its own the way Instagram bolds "24 likes" rather than a small muted number. Kept the
-  // app's own green (the same fill PR badges use) rather than switching to Instagram's red -- red
-  // is this app's reserved danger/delete color everywhere else, and a red "you liked this" would
-  // read as an error state here, not a celebration.
+  // Jeff, Sep 1: two rounds of feedback landed here. First, the filled-circle thumbs-up read as "a
+  // random icon stuck under Notes" -- wanted the Instagram treatment instead (plain icon, no button
+  // chrome, app-green not Instagram-red since red is this app's reserved danger color). Then, after
+  // seeing it live: "I want the like button right above the comments people are making... not in
+  // its own section above" -- sent a screenshot of Instagram's own layout, where the tap target and
+  // the avatar-stack "Liked by X and others" line sit together as ONE row directly above the
+  // comment thread, not a separate section under Notes. So this is no longer its own row between
+  // Notes and Comments -- it's the first thing inside the Comments card, right above chatbox.
   const reactions = Array.isArray(post.reactions) ? post.reactions : [];
   const reactedByMe = reactions.includes(ME.id);
-  const reactCountText = reactions.length ? `${reactions.length} reaction${reactions.length===1?'':'s'}` : '';
-  const reactRow = `<div class="pp-react-row">
+  // ME is always sorted first when present -- that's what makes toggleReaction's later
+  // client-side patch possible without a re-fetch: tapping the button only ever adds or removes
+  // YOU from this list, never anyone else, so the "other reactors" half of this data never changes
+  // on a tap and can be cached once, here, in data-liked, and reused. See likedByHtml() below.
+  const otherReactorIds = reactions.filter(uid => uid !== ME.id);
+  const otherPreview = [];
+  for(const uid of otherReactorIds.slice(0, 3)){ otherPreview.push({ id: uid, name: await nameOf(uid) }); }
+  const likedByInner = likedByHtml(reactedByMe, otherPreview, otherReactorIds.length);
+  const likedRow = `<div class="pp-liked-row" data-liked="${esc(JSON.stringify({others: otherPreview, otherCount: otherReactorIds.length}))}">
     <button class="pp-react-btn${reactedByMe?' on':''}" id="ppReact-${id}-${authorId}" onclick="toggleReaction('${id}','${authorId}')" aria-label="${reactedByMe?'Remove reaction':'React to this workout'}">
       <svg viewBox="0 0 24 24" fill="${reactedByMe?'currentColor':'none'}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
     </button>
-    <span class="pp-react-count" id="ppReactCount-${id}-${authorId}">${esc(reactCountText)}</span>
+    <div class="pp-liked-info" id="ppLikedInfo-${id}-${authorId}">${likedByInner}</div>
   </div>`;
   // Jeff, Aug 28: "I made my most recent posted workout on my profile public and it still says
   // 'friends only'." The badge just below was showing s.visibility -- whether the SESSION itself is
@@ -1277,7 +1284,7 @@ async function viewPost(id, authorId, opts){
   // wherever you actually tapped in from. history.back() replays the same real browser-history
   // pop the hardware/gesture Back button already uses, landing on whatever screen pushed the
   // entry below this one (see viewPost's own navigated()/landOn() call just below this template).
-  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    ${notesHeader}<div class="notes-box">${notes}</div>\n    ${reactRow}\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
+  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    ${notesHeader}<div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card">${likedRow}<div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
   $('app').innerHTML = html;
   if(!silent){ const st={t:'post', id, authorId}; fromHistory ? landOn(st) : navigated(st); }
   if(media.length>1){
@@ -1337,13 +1344,34 @@ async function sendPostComment(id, authorId){
   const inp=$('chatInput'); if(inp) inp.value='';
   viewPost(id, authorId, {silent:true});
 }
+// Builds the avatar-stack + "Liked by X and N others" line that sits at the top of a posted
+// recap's Comments card, right above the comment thread (Jeff, Sep 1, after seeing the screenshot:
+// "the like button right above the comments... not in its own section above"). `otherPreview` is
+// up to 3 {id,name} pairs for reactors OTHER than you -- used for both the avatar stack and the
+// first name(s) in the text. `otherCount` is the REAL total of other reactors, not capped to 3, so
+// "and N others" stays accurate even past the avatar preview cap. Pure function of its inputs, so
+// toggleReaction below can re-run it locally off the row's cached data-liked JSON without a
+// re-fetch -- tapping the button only ever adds/removes YOU, so the "others" half never changes.
+// Returns '' (nothing rendered) when no one has reacted -- same "don't show a hollow 0 state"
+// instinct as the rest of the app.
+function likedByHtml(reactedByMe, otherPreview, otherCount){
+  const list = reactedByMe ? [{ id: ME.id, name: 'You' }, ...otherPreview] : otherPreview;
+  const total = otherCount + (reactedByMe ? 1 : 0);
+  if(!total) return '';
+  const avs = list.slice(0,3).map(p => `<span class="pp-liked-av">${esc((p.name||'?')[0]||'?')}</span>`).join('');
+  let text;
+  if(total===1) text = `Liked by <b>${esc(list[0].name)}</b>`;
+  else if(total===2) text = `Liked by <b>${esc(list[0].name)}</b> and <b>${esc(list[1].name)}</b>`;
+  else text = `Liked by <b>${esc(list[0].name)}</b> and <b>${total-1} other${total-1===1?'':'s'}</b>`;
+  return `<div class="pp-liked-avs">${avs}</div><div class="pp-liked-text">${text}</div>`;
+}
 // Task #157: one-tap reaction, toggled on/off. Same FAV_BUSY-keyed-Set double-tap guard as
 // toggleFavorite above (a fast double-tap here would fire two overlapping toggles and, since
 // each response would otherwise overwrite the button's state with ITS OWN result, whichever
 // response happened to ARRIVE last -- not whichever request was sent last -- would decide the
 // final visible state). The endpoint returns {reacted, count} directly, so this flips the button
-// and count in place rather than re-fetching and re-rendering the whole recap the way
-// sendPostComment does above.
+// and the "Liked by" line in place rather than re-fetching and re-rendering the whole recap the
+// way sendPostComment does above.
 let REACT_BUSY = new Set();
 async function toggleReaction(id, authorId){
   const key = id+'|'+authorId;
@@ -1364,8 +1392,25 @@ async function toggleReaction(id, authorId){
       btn.setAttribute('aria-label', r.reacted?'Remove reaction':'React to this workout');
       const svg = btn.querySelector('svg'); if(svg) svg.setAttribute('fill', r.reacted?'currentColor':'none');
     }
-    const cnt = $('ppReactCount-'+id+'-'+authorId);
-    if(cnt) cnt.textContent = r.count ? `${r.count} reaction${r.count===1?'':'s'}` : '';
+    // The "Liked by" avatars/names re-derive from data cached on the row at render time (see
+    // likedRow in viewPost) -- best-effort, since resolving fresh names would mean a re-fetch on
+    // every tap. But the COUNT they're built around comes from r.count, the live number this very
+    // response just returned -- NOT the cached snapshot's count. Cold-review catch: this page can
+    // sit open while other people react/un-react in the background (nothing here pushes live
+    // updates), so the cached count can go stale while you're just looking at the screen; if your
+    // own tap then rebuilt the total from that stale cache instead of the fresh count this request
+    // just got back, a tap could visibly UNDER-count real reactions that happened while you were
+    // idle. r.count is always correct the instant this response arrives, so the total is derived
+    // from it (minus your own membership, since likedByHtml adds "You" back in when reacted).
+    const row = btn && btn.closest('.pp-liked-row');
+    const info = $('ppLikedInfo-'+id+'-'+authorId);
+    if(row && info){
+      let cached = {};
+      try { cached = JSON.parse(row.dataset.liked || '{}'); } catch(e) {}
+      const otherPreview = Array.isArray(cached.others) ? cached.others : [];
+      const otherCount = Math.max(0, (r.count||0) - (r.reacted?1:0));
+      info.innerHTML = likedByHtml(r.reacted, otherPreview, otherCount);
+    }
   } finally {
     REACT_BUSY.delete(key);
   }

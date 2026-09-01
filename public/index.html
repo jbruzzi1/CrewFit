@@ -217,11 +217,19 @@
        background fill, this needs no separate dark-theme override (see the dark-mode design rule
        in CLAUDE.md: the bright dark accent greens are for text/borders, never backgrounds -- which
        is exactly what this is now). */
-    .pp-react-row { display:flex; align-items:center; gap:9px; margin:14px 0 2px; }
-    .pp-react-btn { width:40px; height:40px; background:transparent; border:none; color:var(--fg); display:flex; align-items:center; justify-content:center; cursor:pointer; flex:0 0 auto; padding:0; margin-left:-8px; }
-    .pp-react-btn svg { width:23px; height:23px; }
+    /* Reaction "Liked by" row -- Jeff, Sep 1: the tap target and the who-reacted summary live
+       together as ONE row at the top of the Comments card, right above the comment thread, not in
+       their own separate section (his own screenshot of Instagram's layout is the reference). */
+    .pp-liked-row { display:flex; align-items:center; gap:8px; padding:6px 4px 12px 0; border-bottom:1px solid var(--line); }
+    .pp-react-btn { width:36px; height:36px; background:transparent; border:none; color:var(--fg); display:flex; align-items:center; justify-content:center; cursor:pointer; flex:0 0 auto; padding:0; margin-left:-7px; }
+    .pp-react-btn svg { width:22px; height:22px; }
     .pp-react-btn.on { color:var(--green); }
-    .pp-react-count { font-size:13px; color:var(--fg); font-weight:700; min-width:10px; }
+    .pp-liked-info { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-height:20px; }
+    .pp-liked-avs { display:flex; flex:0 0 auto; }
+    .pp-liked-av { width:20px; height:20px; border-radius:50%; background:var(--avatar); color:#fff; display:inline-flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; border:2px solid var(--card); margin-left:-7px; }
+    .pp-liked-av:first-child { margin-left:0; }
+    .pp-liked-text { font-size:12.5px; color:var(--fg); }
+    .pp-liked-text b { font-weight:700; }
     .row { display:flex; gap:8px; align-items:center; }
     .row > * { flex:1; }
     .chat-row { align-items:center; }
@@ -1023,6 +1031,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=285"></script>
+  <script src="app.js?v=286"></script>
 </body>
 </html>
