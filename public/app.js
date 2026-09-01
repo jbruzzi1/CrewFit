@@ -266,6 +266,7 @@ function renderNavState(st){
   else if(st.t==='followList') followList(st.id, st.kind, {fromHistory:true});
   else if(st.t==='muscle') libOpenMuscle(st.m, {fromHistory:true});
   else if(st.t==='library') library({fromHistory:true});
+  else if(st.t==='seeds') seedSetupScreen({fromHistory:true});
   else renderTabState('home');   // an old/unrecognized entry (e.g. a stray 'sheet' marker) -- never strand the user on nothing
 }
 // A tab-state landing needs its own landOn() call (nothing inside home()/library()/etc. does it,
@@ -286,6 +287,7 @@ window.addEventListener('popstate', (e)=>{
 function resetTransientModes(){
   SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;   // stuck "Pick replacement" library
   SUGGEST_ADD_MODE = false; SUGGEST_ADD_SESSION = null;       // stuck "suggest adding" library
+  SEED_MODE = false;                                          // stuck "Add a lift" library (seed setup)
   LIB_ADDMODE = false;                                        // stuck "Done (n)" library
   QUICK_ADD_MODE = false;                                     // stuck Quick Workout picker
   EDITING_SESSION = null;                                     // next new workout saved over the edited one
@@ -1624,6 +1626,133 @@ async function suggestAddPick(name){
   const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/suggest`,{type:'add', name});
   if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) backToSessionAfterSwapPicker();
+}
+// Opens the Library restricted to base-library exercises only (renderLibGroups/renderLibExercises
+// filter out e.custom when SEED_MODE -- see their comments) since PUT /api/me/seeds 400s on
+// anything not in EX_LIB (server.js). Same shape as openSwapPicker/openSuggestAddPicker above.
+function openSeedPicker(){
+  SEED_MODE = true;
+  SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;         // never more than one picker mode at once
+  SUGGEST_ADD_MODE = false; SUGGEST_ADD_SESSION = null;
+  LIB_ADDMODE = false;
+  SWAP_ENTRY_HISTORY_LEN = history.length;   // reused verbatim -- see SUGGEST_ADD_MODE's own comment above
+  showTab('lib', true);
+}
+function seedPickerCancel(){
+  SEED_MODE = false;
+  backToSessionAfterSwapPicker();
+}
+function seedPickerPick(name){
+  SEED_MODE = false;
+  if(!SEED_DRAFT.some(r=>r.exercise===name)) SEED_DRAFT.push({ exercise:name, weight:'', reps:'', goal:'' });
+  backToSessionAfterSwapPicker();
+}
+// ---- Seed your lifts: Settings screen for PUT/GET/DELETE /api/me/seeds -------------------------
+// Jeff, Sep 1 ("what is this app missing" -> "lets build the worth doing next", built first): the
+// server side of this has existed since before this feature with zero client UI (see the "Lifts
+// you already do" block in server.js). A user arriving with years of training has bests and working
+// weights the app can't know -- this lets them tell it, so Progress is useful sooner instead of
+// showing every logged set as a "PR" for the first few weeks.
+//
+// v1 of this also auto-prompted every new registration with this screen before Home. Jeff, seeing
+// it rendered: "do people actually need or want to set this up... now that I'm thinking about it
+// and seeing it more, I'm not sure" -- right call. The underlying problem is real but minor
+// (cosmetic, self-correcting within a week of real logging), and the fix asked for six lifts' worth
+// of data entry before a brand-new user had done anything else with the app -- a bad trade for
+// value only a narrow slice of users (an experienced lifter migrating their history) would ever
+// want. Settings-only now: reachable via a permanent "Starting weights" row (openSettings) for
+// whoever actually wants it, nobody else is ever interrupted by it.
+//
+// SEED_DEFAULTS is a curated 6-lift set spanning squat / hinge / horizontal-push / overhead-push /
+// vertical-pull / horizontal-pull -- exact names verified 1:1 against exercise-library.json so they
+// pass PUT /api/me/seeds's EX_LIB.some(...) check. Shown as blank rows even when nothing is seeded
+// yet, so it's obvious what to fill in rather than an empty page; anything already seeded that
+// ISN'T one of these six (e.g. added via "+ Add another lift" on a prior visit) is appended after.
+const SEED_DEFAULTS = ['Barbell Back Squat','Conventional Deadlift','Flat Barbell Bench Press','Overhead Barbell Press','Pull-Up','Barbell Row'];
+// In-memory working copy of what's on screen -- stashed/restored the same way DRAFT is for the
+// create-flow (see openAddExercises's comment above), so a value typed but not yet saved, and a
+// lift just picked from openSeedPicker, both survive the round trip through the library picker.
+let SEED_DRAFT = [];
+async function seedSetupScreen(opts){
+  const fromHistory = !!(opts && opts.fromHistory);
+  if(!fromHistory){
+    // A fresh entry (tapped from Settings) rebuilds SEED_DRAFT from the server's real seeds -- a
+    // fromHistory landing (Back from the picker, or a genuine browser Back onto this screen) reuses
+    // SEED_DRAFT exactly as it stands instead, so nothing just picked or typed is lost or silently
+    // refetched away.
+    const r = await H.get('/api/me/seeds');
+    const seeds = (r && r.seeds) || {};
+    const rowFor = name => ({ exercise:name, weight: seeds[name]!=null?String(seeds[name].weight ?? ''):'', reps: seeds[name]!=null?String(seeds[name].reps ?? ''):'', goal: seeds[name]!=null?String(seeds[name].goal ?? ''):'' });
+    SEED_DRAFT = SEED_DEFAULTS.map(rowFor);
+    Object.keys(seeds).forEach(name=>{ if(!SEED_DRAFT.some(r=>r.exercise===name)) SEED_DRAFT.push(rowFor(name)); });
+  }
+  renderSeedSetup();
+  const st = { t:'seeds' };
+  fromHistory ? landOn(st) : navigated(st);
+}
+// Reads whatever's currently typed on screen back into SEED_DRAFT before navigating away (to the
+// picker, or Save) -- same stash-before-leaving pattern as openAddExercises/templatesPage above.
+function seedStashInputs(){
+  SEED_DRAFT.forEach((r,i)=>{
+    const w=$('seedW'+i), rp=$('seedR'+i), g=$('seedG'+i);
+    if(w) r.weight = w.value;
+    if(rp) r.reps = rp.value;
+    if(g) r.goal = g.value;
+  });
+}
+function seedOpenGoal(i){ seedStashInputs(); SEED_DRAFT[i]._goalOpen = true; renderSeedSetup(); setTimeout(()=>{ const g=$('seedG'+i); if(g) g.focus(); }, 30); }
+function seedRemoveRow(i){
+  seedStashInputs();
+  const removed = SEED_DRAFT[i];
+  SEED_DRAFT.splice(i,1);
+  // Fire-and-forget: idempotent no-op if this row was never actually saved server-side (a blank
+  // default row someone doesn't lift, say), a real delete if it was -- either way there's nothing
+  // useful to do with the response, and nothing here should block the row from disappearing.
+  if(removed) H.delete('/api/me/seeds/'+encodeURIComponent(removed.exercise)).catch(()=>{});
+  renderSeedSetup();
+}
+function seedAddAnother(){ seedStashInputs(); openSeedPicker(); }
+async function seedSaveAll(){
+  seedStashInputs();
+  const btn = $('seedSaveBtn');
+  if(btn && btn.disabled) return;
+  if(btn) btn.disabled = true;
+  try{
+    const results = await Promise.all(SEED_DRAFT.map(r =>
+      H.put('/api/me/seeds', { exercise:r.exercise, weight:r.weight, reps:r.reps, goal:r.goal })
+    ));
+    const err = results.find(r => r && r.error);
+    if(err){ alert(err.error); return; }
+  } finally { if(btn) btn.disabled = false; }
+  // seedSetupScreen pushed a real navigated() entry to get here (always via Settings now), so Back
+  // returns to wherever that actually was -- normally the profile page Settings was opened from.
+  history.back();
+}
+function renderSeedSetup(){
+  const unit = myUnit();
+  const rows = SEED_DRAFT.map((r,i)=>`
+    <div class="card seed-row">
+      <div class="seed-row-head">
+        <div class="ex-name">${esc(r.exercise)}</div>
+        <button class="icon-btn" title="Remove" aria-label="Remove ${esc(r.exercise)}" onclick="seedRemoveRow(${i})">✕</button>
+      </div>
+      <div class="seed-row-fields">
+        <div><label class="muted">Weight (${esc(unit)})</label><input id="seedW${i}" type="number" inputmode="decimal" step="any" placeholder="e.g. 185" value="${esc(r.weight)}"></div>
+        <div><label class="muted">Reps</label><input id="seedR${i}" type="number" inputmode="tel" pattern="[0-9]*" placeholder="1" value="${esc(r.reps)}"></div>
+      </div>
+      ${r._goalOpen || r.goal ? `<div class="seed-goal"><label class="muted">Goal (${esc(unit)})</label><input id="seedG${i}" type="number" inputmode="decimal" step="any" placeholder="optional" value="${esc(r.goal)}"></div>`
+        : `<button class="txt-btn" style="padding:6px 0" onclick="seedOpenGoal(${i})">+ Set a goal</button>`}
+    </div>`).join('');
+  $('app').innerHTML = `<div class="wrap">
+    <div class="pick-head lib-head">
+      <h1 style="flex:1">Starting weights</h1>
+    </div>
+    <div class="muted" style="font-size:13px;margin:2px 2px 14px">Already lifting these? Enter what you're working with now so Progress starts from where you actually are, not from zero.</div>
+    ${rows}
+    <button class="sec" style="width:100%;margin:2px 0 18px" onclick="seedAddAnother()">+ Add another lift</button>
+    <button class="blue" id="seedSaveBtn" style="width:100%" onclick="seedSaveAll()">Save</button>
+  </div>`;
+  window.scrollTo(0,0);
 }
 // ---------- Per-exercise set logger (Hevy/Strong style) ----------
 const SET_TYPES = [
@@ -4005,6 +4134,11 @@ let SWAP_ENTRY_HISTORY_LEN = 0;
 // FROM here). Reuses SWAP_ENTRY_HISTORY_LEN itself (see openSuggestAddPicker's comment).
 let SUGGEST_ADD_MODE = false;
 let SUGGEST_ADD_SESSION = null;
+// Seed-your-lifts mode (Jeff, Sep 1, "worth doing next" #1) -- same idea again, open the Library
+// so the user picks a real exercise for the "+ Add another lift" row on the seed-setup screen (see
+// seedSetupScreen below). Unlike Swap/Suggest-add there's no session id to route the pick through --
+// picking just pushes a blank row onto SEED_DRAFT and returns -- so no companion *_SESSION variable.
+let SEED_MODE = false;
 function openAddExercises(){
   // stash details typed so far on the workout form
   if($('loc')) DRAFT.location = $('loc').value;
@@ -4093,6 +4227,11 @@ async function library(opts){
          <button class="sec sm" onclick="suggestAddCancel()">‹ Cancel</button>
          <h1 style="flex:1;font-size:18px">Add which exercise?</h1>
        </div>`
+    : SEED_MODE
+    ? `<div class="pick-head lib-head">
+         <button class="sec sm" onclick="seedPickerCancel()">‹ Cancel</button>
+         <h1 style="flex:1;font-size:18px">Add a lift</h1>
+       </div>`
     : `<div class="pick-head lib-head">
          <h1 style="flex:1">Workouts</h1>
          <button class="txt-btn" onclick="templatesPage()" title="Routines">Routines</button>
@@ -4113,16 +4252,20 @@ function renderLibGroups(){
   const q = LIB_STATE.q;
   if(q){
     const matches = lib.filter(e =>
-      exName(e).toLowerCase().includes(q) ||
+      (!SEED_MODE || !e.custom) &&
+      (exName(e).toLowerCase().includes(q) ||
       (e.muscle_groups||[]).join(' ').toLowerCase().includes(q) ||
-      eqList(e).join(' ').toLowerCase().includes(q)
+      eqList(e).join(' ').toLowerCase().includes(q))
     ).sort((a,b)=>exName(a).localeCompare(exName(b)));
     $('lib2').innerHTML = matches.length ? `<div class="card">${matches.map(exRowHtml).join('')}</div>`
       : '<div class="muted" style="padding:20px;text-align:center">No exercises found.</div>';
     return;
   }
+  // SEED_MODE (seed-setup's "+ Add another lift" picker) only ever offers base-library exercises --
+  // PUT /api/me/seeds rejects anything else (server.js) -- so custom rows are excluded from both the
+  // per-muscle counts here and the filtered list in renderLibExercises below.
   const counts = {}; LIB_CATS.forEach(c=>c.muscles.forEach(m=>counts[m]=0));
-  lib.forEach(e=>{ (e.muscle_groups||[]).forEach(m=>{ if(m in counts) counts[m]++; }); });
+  lib.forEach(e=>{ if(SEED_MODE && e.custom) return; (e.muscle_groups||[]).forEach(m=>{ if(m in counts) counts[m]++; }); });
   const blocks = LIB_CATS.map(cat=>{
     const rows = cat.muscles.map(m=>`
       <div class="mg-card" onclick="libOpenMuscle('${m}')">
@@ -4147,6 +4290,18 @@ function libOpenMuscle(m, opts){
          <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
          <button class="icon-btn" onclick="openCreateEx('${m}')" title="Create exercise">＋</button>
          <button class="blue sm" onclick="libDone()">Done (<span id="libDoneCount">${DRAFT.exercises.length}</span>)</button>
+       </div>`
+    // Cold-review catch: SWAP_MODE/SUGGEST_ADD_MODE fall through to the plain default header just
+    // below (an existing, unrelated quirk -- out of scope here), but SEED_MODE can't: it's the one
+    // picker mode that's actually RESTRICTED to base-library exercises (PUT /api/me/seeds 400s on
+    // anything else), so leaving "Routines" (silently abandons SEED_MODE/SEED_DRAFT -- templatesPage
+    // doesn't call resetTransientModes) and "Create exercise" (creates something the filter above
+    // immediately hides, a confusing dead end) reachable here would contradict the screen's own
+    // restriction the moment someone drills into a muscle group instead of using the top-level search.
+    : SEED_MODE
+    ? `<div class="pick-head lib-head">
+         <button class="sec sm" onclick="library()">‹ All muscles</button>
+         <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
        </div>`
     : `<div class="pick-head lib-head">
          <button class="sec sm" onclick="library()">‹ All muscles</button>
@@ -4208,6 +4363,18 @@ function exRowHtml(e){
         <div class="mg-chev">›</div>
       </div>`;
   }
+  if(SEED_MODE){
+    // No "· your exercise" suffix here -- custom rows never reach this branch (renderLibGroups/
+    // renderLibExercises already filter them out, see their comments), so it would never fire.
+    return `<div class="ex-row" onclick="seedPickerPick('${jsq(e.name)}')">
+        <div class="ex-main">
+          <div class="ex-name">${esc(e.name)}</div>
+          <div class="ex-mg">${esc((e.muscle_groups||[]).slice(0,2).join(' · '))}</div>
+        </div>
+        <div class="ex-badges">${exBadges(e)}</div>
+        <div class="mg-chev">›</div>
+      </div>`;
+  }
   const added = DRAFT.exercises.find(x=>x.name===e.name);
   if(LIB_ADDMODE){
     // Jeff, Sep 1: "allowing you to favorite when building a workout" -- the star lives here too,
@@ -4240,6 +4407,7 @@ function renderLibExercises(){
   const {muscle,eq,q,fav}=LIB_STATE;
   const list = window._LIB2.filter(e=>
     (e.muscle_groups||[]).includes(muscle) &&
+    (!SEED_MODE || !e.custom) &&
     (!eq || eqFamilies(e).includes(eq)) &&
     (!fav || FAVORITES.has(e.name)) &&
     (!q || exName(e).toLowerCase().includes(q) || (e.muscle_groups||[]).join(' ').includes(q))
@@ -4249,6 +4417,7 @@ function renderLibExercises(){
     // group has nothing at all, which would be actively wrong (and confusing) when the real
     // reason is just that nothing here is starred yet.
     : fav ? '<div class="muted" style="padding:20px;text-align:center">No favorites here yet — tap the star on an exercise to add one.</div>'
+    : SEED_MODE ? '<div class="muted" style="padding:20px;text-align:center">No library exercises here -- starting weights can only be set on built-in exercises.</div>'
     : '<div class="muted" style="padding:20px;text-align:center">No exercises here.</div>';
 }
 function openCreateEx(presetMuscle){
@@ -4593,6 +4762,7 @@ function openSettings(){
       <button class="sheet-row" onclick="closeSheet(); editBio()">Edit bio</button>
       <button class="sheet-row" onclick="closeSheet(); editDefaultGym()">Default gym <span class="row-val">${esc(ME.defaultGym || 'Not set')}</span></button>
       <button class="sheet-row" onclick="closeSheet(); pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
+      <button class="sheet-row" onclick="closeSheet(); seedSetupScreen()">Starting weights</button>
       <button class="sheet-row" onclick="toggleStreakReminders()">Streak reminders <span class="row-val" id="streakRemVal">${ME.notifyStreakReminders!==false?'On':'Off'}</span></button>
       <button class="sheet-row red" onclick="closeSheet(); confirmResetWorkouts()">Reset workouts</button>
     </div>

@@ -166,7 +166,11 @@ console.log('\n--- client markup (source regex, same style as test/sharing.mjs) 
   // CSS actually exists — not an invisible/unstyled button
   ok(/\.ex-fav-btn\s*\{/.test(css), '.ex-fav-btn is styled');
 
-  ok(/\?v=278/.test(css), 'cache-bust bumped to v=278');
+  // v=278 was current when this test was written (this feature's own ship); a later, unrelated
+  // feature bumping the cache-bust further is correct, not a regression, so this checks "at least
+  // that far" rather than hard-coding a version that would go stale on every future ship.
+  const vMatch = css.match(/\?v=(\d+)/);
+  ok(!!vMatch && Number(vMatch[1]) >= 278, 'cache-bust bumped to v=278 or later (got ' + (vMatch && vMatch[1]) + ')');
 }
 
 console.log('\n--- toggleFavorite: a fast double-tap on the same star must not race (cold-review catch) ---\n');
