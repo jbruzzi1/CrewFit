@@ -4788,6 +4788,7 @@ function openSettings(){
       <button class="sheet-row" onclick="closeSheet(); pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
       <button class="sheet-row" onclick="closeSheet(); seedSetupScreen()">Starting weights</button>
       <button class="sheet-row" onclick="toggleStreakReminders()">Streak reminders <span class="row-val" id="streakRemVal">${ME.notifyStreakReminders!==false?'On':'Off'}</span></button>
+      <button class="sheet-row" onclick="toggleWorkoutReminders()">Workout reminders <span class="row-val" id="workoutRemVal">${ME.notifyWorkoutReminders!==false?'On':'Off'}</span></button>
       <button class="sheet-row red" onclick="closeSheet(); confirmResetWorkouts()">Reset workouts</button>
     </div>
     <!-- v249, Jeff Aug 29 (video): "the log out button is the same size and very close to the
@@ -5093,6 +5094,18 @@ async function toggleStreakReminders(){
     ME.notifyStreakReminders=r.streakReminders;
     const v = document.getElementById('streakRemVal');
     if(v) v.textContent = ME.notifyStreakReminders!==false ? 'On' : 'Off';
+  }
+}
+// Aug 31: "you have a workout scheduled today" push reminder, opt-out toggle -- same shape as
+// toggleStreakReminders() above (same server route, its own field), same in-place row update
+// instead of closing/reopening the sheet.
+async function toggleWorkoutReminders(){
+  const next = !(ME.notifyWorkoutReminders!==false);
+  const r = await H.post('/api/me/notify-prefs',{workoutReminders:next});
+  if(r.workoutReminders!==undefined){
+    ME.notifyWorkoutReminders=r.workoutReminders;
+    const v = document.getElementById('workoutRemVal');
+    if(v) v.textContent = ME.notifyWorkoutReminders!==false ? 'On' : 'Off';
   }
 }
 async function uploadAvatar(input){

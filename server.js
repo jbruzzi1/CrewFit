@@ -715,6 +715,7 @@ function profileOf(id, viewerId, localToday) {
     // Self only, same reasoning as defaultGym above. Unset reads as true — see the notify-prefs
     // route comment for why "on by default" is safe here.
     notifyStreakReminders: id === viewerId ? (u.notifyStreakReminders !== false) : undefined,
+    notifyWorkoutReminders: id === viewerId ? (u.notifyWorkoutReminders !== false) : undefined,
     workoutsCompleted: completed.size,
     // the follow button's state, and whether they follow you back
     youFollow: id === viewerId ? 'self'
@@ -1068,6 +1069,49 @@ app.get('/api/me/streak-status', auth, async (req, res) => {
 // to spam every user's push notifications on demand. Called only by the background timer below.
 function usersAtRiskOfLosingStreak() {
   return Object.keys(DB.users).filter(uid => streakStatusFor(uid).atRisk);
+}
+// Aug 31: "workout scheduled today" push reminder — Jeff floated this alongside the Live/Upcoming
+// work ("maybe scheduled notifications letting you know you have a workout upcoming today"),
+// deliberately deferred at the time, now built. Same two-layer shape as streakStatusFor/
+// usersAtRiskOfLosingStreak above: a per-user question exposed via HTTP (so it's directly
+// testable) plus a batch version the background timer alone calls.
+//
+// hasSessionToday: this user is a participant in a session scheduled for TODAY (server's own UTC
+// calendar day — see the STREAK_REMINDER_HOUR_UTC comment on the boot timer below for why there's
+// no per-user timezone to do better than that) that they have NOT yet finished (s.history, same
+// "did THIS person actually finish it" check creditFinish/currentStreak use — a co-participant who
+// already logged their half shouldn't still get nagged). sessionName is the earliest such
+// session's name, so the reminder can name it; null for an unnamed ("Workout Now"-style) session.
+function workoutReminderStatusFor(userId) {
+  const today = new Date().toISOString().slice(0, 10);
+  let session = null, sessionAt = null;
+  for (const s of Object.values(DB.sessions)) {
+    // scheduledAt is not consistently typed across sessions (ISO string, or epoch seconds/ms —
+    // see perfDate's own comment below), so the "earliest" tie-break has to compare perfDate's
+    // normalized ISO output, not the raw stored value — cold-review catch (Aug 31): comparing raw
+    // String(s.scheduledAt) values worked for the common ISO-string case but silently picked the
+    // wrong "earliest" session for a user with two sessions today stored in different formats.
+    const at = perfDate(s.scheduledAt);
+    if (at.slice(0, 10) !== today) continue;
+    if (!(s.participants || []).includes(userId)) continue;
+    if (s.history.some(h => h.userId === userId)) continue;
+    if (!session || at < sessionAt) { session = s; sessionAt = at; }
+  }
+  const name = session && (session.name || '').trim();
+  return { hasSessionToday: !!session, sessionName: name || null };
+}
+app.get('/api/me/workout-reminder-status', auth, async (req, res) => {
+  res.json(workoutReminderStatusFor(req.userId));
+});
+// Not exposed via HTTP in batch form on purpose — same spam-risk reasoning as
+// usersAtRiskOfLosingStreak above. Called only by the background timer below.
+function usersWithWorkoutToday() {
+  const result = new Map();   // userId -> sessionName|null
+  for (const uid of Object.keys(DB.users)) {
+    const st = workoutReminderStatusFor(uid);
+    if (st.hasSessionToday) result.set(uid, st.sessionName);
+  }
+  return result;
 }
 // v238: the deployed version, read from index.html's cache-bust (?v=NNN) - the one number
 // that already changes on every frontend ship. Lazily read + cached on first request, NOT at
@@ -2264,12 +2308,22 @@ app.post('/api/me/units', auth, async (req, res) => {
 // just execute" made for defaulting this feature on: it is inert with no cost unless the user has
 // already separately granted push permission (setupPush() in app.js), so defaulting on only ever
 // matters for someone who would actually receive it.
+//
+// Aug 31: generalized to also carry `workoutReminders` (the "you have a workout scheduled today"
+// push, see usersWithWorkoutToday()/the boot-time interval below) — same on-by-default reasoning,
+// same shape. Each field is independently optional so an old client sending only `streakReminders`
+// keeps working exactly as before; at least one of the two must be present.
 app.post('/api/me/notify-prefs', auth, async (req, res) => {
-  const v = (req.body || {}).streakReminders;
-  if (typeof v !== 'boolean') return res.status(400).json({ error: 'streakReminders must be true or false' });
-  DB.users[req.userId].notifyStreakReminders = v;
+  const body = req.body || {};
+  const hasStreak = 'streakReminders' in body, hasWorkout = 'workoutReminders' in body;
+  if (!hasStreak && !hasWorkout) return res.status(400).json({ error: 'streakReminders or workoutReminders required' });
+  if (hasStreak && typeof body.streakReminders !== 'boolean') return res.status(400).json({ error: 'streakReminders must be true or false' });
+  if (hasWorkout && typeof body.workoutReminders !== 'boolean') return res.status(400).json({ error: 'workoutReminders must be true or false' });
+  const out = {};
+  if (hasStreak) { DB.users[req.userId].notifyStreakReminders = body.streakReminders; out.streakReminders = body.streakReminders; }
+  if (hasWorkout) { DB.users[req.userId].notifyWorkoutReminders = body.workoutReminders; out.workoutReminders = body.workoutReminders; }
   await save(DB);
-  res.json({ streakReminders: v });
+  res.json(out);
 });
 
 // Task #64, Jeff Aug 21: "Can you delete all of my workouts and history to let me start over?"
@@ -3594,6 +3648,30 @@ app.use((err, req, res, next) => {
       }
       if (sent) await save(DB);
     } catch (e) { console.error('streak reminder check failed:', e && e.message); }
+  }, 30 * 60 * 1000);
+
+  // Aug 31: "you have a workout scheduled today" push reminders — same polling shape as the
+  // streak-loss timer above (30-min period, at-most-once-per-user-per-day via a stamped date),
+  // deliberately a DIFFERENT fixed hour: this is a same-day heads-up, not an evening last-chance
+  // nudge, so it fires in the morning instead. 14:00 UTC is ~10am Eastern / 7am Pacific — same
+  // "no per-user timezone yet" caveat as STREAK_REMINDER_HOUR_UTC above.
+  const WORKOUT_REMINDER_HOUR_UTC = 14;
+  setInterval(async () => {
+    try {
+      if (new Date().getUTCHours() !== WORKOUT_REMINDER_HOUR_UTC) return;
+      const today = new Date().toISOString().slice(0, 10);
+      const pending = usersWithWorkoutToday();
+      let sent = 0;
+      for (const [uid, sessionName] of pending) {
+        const u = DB.users[uid];
+        if (!u || u.notifyWorkoutReminders === false) continue;   // respects the in-app toggle
+        if (u.lastWorkoutReminderAt === today) continue;          // already sent today
+        u.lastWorkoutReminderAt = today;
+        notify(uid, { title: 'Workout today', body: sessionName ? `"${sessionName}" is on your schedule for today.` : 'You have a workout scheduled for today.' });
+        sent++;
+      }
+      if (sent) await save(DB);
+    } catch (e) { console.error('workout reminder check failed:', e && e.message); }
   }, 30 * 60 * 1000);
 })().catch(e => {
   console.error('FATAL during boot:', e && e.stack || e);

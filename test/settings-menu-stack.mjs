@@ -111,10 +111,11 @@ const ctx = {
 ctx.window = ctx; ctx.globalThis = ctx; ctx.self = ctx;
 vm.createContext(ctx);
 vm.runInContext(SRC, ctx, { filename: 'public/app.js' });
-vm.runInContext(`ME = { id:'u1', defaultGym:'', units:'lb', notifyStreakReminders:true };`, ctx);
+vm.runInContext(`ME = { id:'u1', defaultGym:'', units:'lb', notifyStreakReminders:true, notifyWorkoutReminders:true };`, ctx);
 const openSettings = vm.runInContext('openSettings', ctx);
 const editDefaultGym = vm.runInContext('editDefaultGym', ctx);
 const toggleStreakReminders = vm.runInContext('toggleStreakReminders', ctx);
+const toggleWorkoutReminders = vm.runInContext('toggleWorkoutReminders', ctx);
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
@@ -183,6 +184,23 @@ console.log('\ncold-review catch: Streak reminders had the exact same reopen-on-
   ok(body._children[0] === settingsSheet, 'the original Settings sheet is still the one and only sheet -- updated, not replaced');
   ok(settingsSheet.classList.contains('show'), 'and it was never closed/re-faded in the process');
   ok(idEls.get('streakRemVal').textContent === 'Off', `the row's own text flips to Off in place, same pattern toggleTheme() already uses for Appearance (got "${idEls.get('streakRemVal').textContent}")`);
+}
+
+console.log('\nWorkout reminders (Task #155) is the exact same row/toggle pattern as Streak reminders, one sibling further down -- same update-in-place behavior');
+{
+  body._children.length = 0;
+  vm.runInContext(`ME.notifyWorkoutReminders = true;`, ctx);
+  openSettings();
+  ok(body._children.length === 1, 'Settings open, alone');
+  const settingsSheet = body._children[0];
+  await wait(10);
+  ok(/id="workoutRemVal">On</.test(settingsSheet.innerHTML), 'starts On, per ME.notifyWorkoutReminders');
+
+  await toggleWorkoutReminders(); // exactly what tapping the row runs
+  ok(body._children.length === 1, `toggling does not stack a second Settings sheet (got ${body._children.length})`);
+  ok(body._children[0] === settingsSheet, 'the original Settings sheet is still the one and only sheet -- updated, not replaced');
+  ok(settingsSheet.classList.contains('show'), 'and it was never closed/re-faded in the process');
+  ok(idEls.get('workoutRemVal').textContent === 'Off', `the row's own text flips to Off in place (got "${idEls.get('workoutRemVal').textContent}")`);
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
