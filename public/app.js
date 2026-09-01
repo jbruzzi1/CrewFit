@@ -1230,14 +1230,22 @@ async function viewPost(id, authorId, opts){
   // post object already carries `reactions` (an array of userIds) straight from GET /api/sessions/
   // :id, so this needs no extra fetch the way comments does. See toggleReaction below for the tap
   // handler and FAV_BUSY-style double-tap guard.
-  // Jeff, Sep 1: two rounds of feedback landed here. First, the filled-circle thumbs-up read as "a
-  // random icon stuck under Notes" -- wanted the Instagram treatment instead (plain icon, no button
-  // chrome, app-green not Instagram-red since red is this app's reserved danger color). Then, after
-  // seeing it live: "I want the like button right above the comments people are making... not in
-  // its own section above" -- sent a screenshot of Instagram's own layout, where the tap target and
-  // the avatar-stack "Liked by X and others" line sit together as ONE row directly above the
-  // comment thread, not a separate section under Notes. So this is no longer its own row between
-  // Notes and Comments -- it's the first thing inside the Comments card, right above chatbox.
+  // Jeff, Sep 1: three rounds of feedback landed here. First, the filled-circle thumbs-up read as
+  // "a random icon stuck under Notes" -- wanted the Instagram treatment instead (plain icon, no
+  // button chrome). Then, after seeing it live: "I want the like button right above the comments
+  // people are making... not in its own section above" -- sent a screenshot of Instagram's own
+  // layout, where the tap target and the avatar-stack "Liked by X and others" line sit together as
+  // ONE row directly above the comment thread, not a separate section under Notes. So this is no
+  // longer its own row between Notes and Comments -- it's the first thing inside the Comments card,
+  // right above chatbox. Third: "I don't like the green color of the heart - it doesn't fit and
+  // seems chunky." Two separate fixes, not one: (1) color -- green in this app means an EARNED
+  // thing (PR pills, streak dot, celebration), and a reaction to someone else's post isn't that; per
+  // this app's own color language blue is the one for actions/CTAs, which a tap-to-react actually
+  // is, so the "on" state moved to --blue (see the CSS for .pp-react-btn.on / .cmt-react-btn.on).
+  // (2) chunky -- the filled state was drawing BOTH a solid fill AND a 1.8px stroke on top of it,
+  // which doubles up right at the heart's edge and reads heavier than a clean filled icon should.
+  // The stroke now only appears on the OUTLINE (unreacted) state; once filled, stroke-width drops
+  // to 0 so the shape is a smooth solid heart, matching how a real filled icon actually renders.
   const reactions = Array.isArray(post.reactions) ? post.reactions : [];
   const reactedByMe = reactions.includes(ME.id);
   // ME is always sorted first when present -- that's what makes toggleReaction's later
@@ -1250,7 +1258,7 @@ async function viewPost(id, authorId, opts){
   const likedByInner = likedByHtml(reactedByMe, otherPreview, otherReactorIds.length);
   const likedRow = `<div class="pp-liked-row" data-liked="${esc(JSON.stringify({others: otherPreview, otherCount: otherReactorIds.length}))}">
     <button class="pp-react-btn${reactedByMe?' on':''}" id="ppReact-${id}-${authorId}" onclick="toggleReaction('${id}','${authorId}')" aria-label="${reactedByMe?'Remove reaction':'React to this workout'}">
-      <svg viewBox="0 0 24 24" fill="${reactedByMe?'currentColor':'none'}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+      <svg viewBox="0 0 24 24" fill="${reactedByMe?'currentColor':'none'}" stroke="currentColor" stroke-width="${reactedByMe?'0':'1.8'}" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
     </button>
     <div class="pp-liked-info" id="ppLikedInfo-${id}-${authorId}">${likedByInner}</div>
   </div>`;
@@ -1390,7 +1398,12 @@ async function toggleReaction(id, authorId){
     if(btn){
       btn.classList.toggle('on', !!r.reacted);
       btn.setAttribute('aria-label', r.reacted?'Remove reaction':'React to this workout');
-      const svg = btn.querySelector('svg'); if(svg) svg.setAttribute('fill', r.reacted?'currentColor':'none');
+      // stroke-width drops to 0 once filled -- see the comment above likedRow in viewPost for why
+      // (a stroke drawn on top of a fill was what made this read "chunky"). 1.8 on the outline
+      // state matches the width this icon has always rendered at unreacted -- only the FILLED
+      // state's stroke is new/changed here.
+      const svg = btn.querySelector('svg');
+      if(svg){ svg.setAttribute('fill', r.reacted?'currentColor':'none'); svg.setAttribute('stroke-width', r.reacted?'0':'1.8'); }
     }
     // The "Liked by" avatars/names re-derive from data cached on the row at render time (see
     // likedRow in viewPost) -- best-effort, since resolving fresh names would mean a re-fetch on
@@ -1441,7 +1454,7 @@ async function loadPostComments(id, authorId){
     const reactions = Array.isArray(c.reactions) ? c.reactions : [];
     const reactedByMe = reactions.includes(ME.id);
     const ck = id+'-'+authorId+'-'+c.id;
-    return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div><div class="cmt-react-col"><button class="cmt-react-btn'+(reactedByMe?' on':'')+'" id="cmtReact-'+ck+'" onclick="toggleCommentReaction(\''+id+'\',\''+authorId+'\',\''+c.id+'\')" aria-label="'+(reactedByMe?'Remove reaction':'React to this comment')+'"><svg viewBox="0 0 24 24" fill="'+(reactedByMe?'currentColor':'none')+'" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button><span class="cmt-react-count" id="cmtReactCount-'+ck+'">'+(reactions.length||'')+'</span></div></div>';
+    return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div><div class="cmt-react-col"><button class="cmt-react-btn'+(reactedByMe?' on':'')+'" id="cmtReact-'+ck+'" onclick="toggleCommentReaction(\''+id+'\',\''+authorId+'\',\''+c.id+'\')" aria-label="'+(reactedByMe?'Remove reaction':'React to this comment')+'"><svg viewBox="0 0 24 24" fill="'+(reactedByMe?'currentColor':'none')+'" stroke="currentColor" stroke-width="'+(reactedByMe?'0':'2')+'" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button><span class="cmt-react-count" id="cmtReactCount-'+ck+'">'+(reactions.length||'')+'</span></div></div>';
   }).join('');
 }
 let CMT_REACT_BUSY = new Set();
@@ -1457,7 +1470,11 @@ async function toggleCommentReaction(id, authorId, commentId){
     if(btn){
       btn.classList.toggle('on', !!r.reacted);
       btn.setAttribute('aria-label', r.reacted?'Remove reaction':'React to this comment');
-      const svg = btn.querySelector('svg'); if(svg) svg.setAttribute('fill', r.reacted?'currentColor':'none');
+      // 2 on the outline state matches this smaller (14px-displayed) icon's original stroke width
+      // -- it's intentionally thicker than the post-level heart's 1.8 to stay visible at that
+      // size; only the FILLED state's stroke (now 0, was double-drawn on top of the fill) changed.
+      const svg = btn.querySelector('svg');
+      if(svg){ svg.setAttribute('fill', r.reacted?'currentColor':'none'); svg.setAttribute('stroke-width', r.reacted?'0':'2'); }
     }
     const cnt = $('cmtReactCount-'+ck);
     if(cnt) cnt.textContent = r.count || '';
