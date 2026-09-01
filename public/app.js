@@ -3327,6 +3327,56 @@ function exBadges(e){
   b.push(`<span class="ex-badge ex-type">${e.is_compound?'Compound':'Isolation'}</span>`);
   return b.join('');
 }
+// Solid blue when favorited, outline/muted when not -- reuses --blue (the app's existing
+// "selected/active" color, e.g. .cat-pill.on) rather than a gold/amber star. CLAUDE.md reserves
+// gold for "Live now" specifically ("no amber/orange anywhere else") and green for earned/PR
+// moments, so a star icon staying inside the blue lane keeps this to the app's existing 3-color
+// vocabulary instead of adding a 4th.
+function favIcon(active){
+  const star = 'M12 3.4l2.62 5.63 6.02.72-4.48 4.28 1.2 6.02L12 16.98l-5.36 3.07 1.2-6.02L3.36 9.75l6.02-.72z';
+  return active
+    ? `<svg width="17" height="17" viewBox="0 0 24 24" fill="var(--blue)" stroke="var(--blue)" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="${star}"/></svg>`
+    : `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="${star}"/></svg>`;
+}
+// event.stopPropagation() -- same guard every other tappable control nested inside a row's own
+// onclick already uses in this file (e.g. the invite row's Accept/Decline) -- without it, tapping
+// the star would ALSO fire the row's own action underneath it (open the exercise detail sheet, or
+// toggle it into/out of the workout being built).
+function favBtnHtml(e){
+  const on = FAVORITES.has(e.name);
+  return `<button type="button" class="ex-fav-btn" aria-label="${on?'Remove from favorites':'Add to favorites'}" onclick="event.stopPropagation(); toggleFavorite('${jsq(e.name)}', this)">${favIcon(on)}</button>`;
+}
+// Jeff, Sep 1: "add a filter in the exercise library for favorites... allowing you to favorite
+// when building a workout or in the library also." One toggle endpoint on the server (POST
+// /api/favorites/toggle) mirrors this one function client-side -- flip it, tell the star its new
+// state, and keep FAVORITES in sync locally instead of re-fetching the whole list for one flip.
+// FAV_BUSY (cold-review catch): same shape as addLogSet's ADDLOG_BUSY guard -- a fast double-tap
+// on the same star fired two overlapping POSTs, and since each one's response unconditionally
+// overwrote FAVORITES/the button icon with ITS OWN r.favorited, whichever response happened to
+// ARRIVE last (not whichever request was sent last) decided the final visible state -- easy to
+// land on a star showing the opposite of what actually got stored. Keyed by name rather than one
+// global flag, so favoriting exercise A never blocks a tap on exercise B's own star right after.
+let FAV_BUSY = new Set();
+async function toggleFavorite(name, btnEl){
+  if(FAV_BUSY.has(name)) return;
+  FAV_BUSY.add(name);
+  try {
+    const r = await H.post('/api/favorites/toggle', { name });
+    if(!r || r.error){ if(r && r.error) alert(r.error); return; }
+    if(r.favorited) FAVORITES.add(name); else FAVORITES.delete(name);
+    if(btnEl){ btnEl.setAttribute('aria-label', r.favorited?'Remove from favorites':'Add to favorites'); btnEl.innerHTML = favIcon(r.favorited); }
+    // Re-render whatever list is actually on screen -- the same dispatch libSearch() uses, reused
+    // here rather than duplicated, since "re-render the current lib view" is exactly what's needed
+    // whether the star was tapped from a search result, a muscle-group list, or (see exDetail) the
+    // detail sheet sitting on top of one. Applying it unconditionally is harmless even from exDetail
+    // (SWAP_MODE/SUGGEST_ADD_MODE rows have no star to begin with, so LIB_ADDMODE's own list is the
+    // only one that can actually change shape here — the ★ Favorites filter, if active, may need to
+    // drop or regain this exact row).
+    applyLibSearch();
+  } finally {
+    FAV_BUSY.delete(name);
+  }
+}
 // ---- Muscle-group icons (mannequin crops w/ red highlight) ----
 // Map muscle-group key -> png in public/muscle-icons/.
 const MG_IMG = {
@@ -3923,7 +3973,16 @@ const LIB_CATS = [
   { name:'Lower Body', muscles:['quads','hamstrings','glutes','calves'] },
   { name:'Other', muscles:['abdominals','cardio'] },
 ];
-let LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
+// fav: whether the "★ Favorites" pill is active within the current muscle group's exercise list
+// (libOpenMuscle) -- see FAVORITES/toggleFavorite below. Mutually exclusive with eq, same
+// single-select behavior the existing equipment pills already have (picking one clears the other).
+let LIB_STATE = { view:'groups', muscle:'', eq:'', q:'', fav:false };
+// The current user's favorited exercise names (Jeff, Sep 1: "add a filter in the exercise library
+// for favorites"). Exercises key off name everywhere in this file (DRAFT.exercises.find(x=>x.name
+// ===e.name), libToggle, swapPick, ...) — there is no id to favorite by, so this is a Set of names,
+// loaded once per library() visit (same lifetime as window._LIB2, which it's always checked
+// alongside) and kept in sync locally by toggleFavorite() rather than re-fetched on every toggle.
+let FAVORITES = new Set();
 // ---- Add-exercise mode: open the Library so the user picks from there ----
 let LIB_ADDMODE = false;
 // ---- Quick Workout mode: LIB_ADDMODE picks exercises for a session that does not exist on the
@@ -4010,9 +4069,14 @@ async function library(opts){
   // same-screen refresh after adding a custom exercise also passes opts.silent.
   const silent = !!(opts && opts.silent);
   const fromHistory = !!(opts && opts.fromHistory);
-  LIB_STATE = { view:'groups', muscle:'', eq:'', q:'' };
-  const lib = await H.get('/api/exercises');
+  LIB_STATE = { view:'groups', muscle:'', eq:'', q:'', fav:false };
+  // Fetched together — favorites are read alongside the library every time library() runs (same
+  // "computed per request" spirit as /api/exercises itself, see its own comment), not cached
+  // across visits, so a favorite toggled from one screen (or a different device) is never stale
+  // the next time the library opens.
+  const [lib, favs] = await Promise.all([H.get('/api/exercises'), H.get('/api/favorites')]);
   window._LIB2 = lib;
+  FAVORITES = new Set((favs && favs.exercises) || []);
   const head = LIB_ADDMODE
     ? `<div class="pick-head lib-head">
          <h1 style="flex:1">${QUICK_ADD_MODE?'Quick Workout':'Workouts'}</h1>
@@ -4075,7 +4139,7 @@ function libOpenMuscle(m, opts){
   // silent caller is submitCreateEx's same-screen refresh; the only fromHistory caller is popstate.
   const silent = !!(opts && opts.silent);
   const fromHistory = !!(opts && opts.fromHistory);
-  LIB_STATE.view='muscle'; LIB_STATE.muscle=m; LIB_STATE.eq=''; LIB_STATE.q='';
+  LIB_STATE.view='muscle'; LIB_STATE.muscle=m; LIB_STATE.eq=''; LIB_STATE.q=''; LIB_STATE.fav=false;
   const eqs = [...new Set(window._LIB2.filter(e=>(e.muscle_groups||[]).includes(m)).flatMap(eqFamilies))];
   const head = LIB_ADDMODE
     ? `<div class="pick-head lib-head">
@@ -4094,6 +4158,13 @@ function libOpenMuscle(m, opts){
     <div class="pick-search"><input id="ls" placeholder="Search ${esc(m)}" oninput="libSearch(this.value)"></div>
     <div class="cat-pills eq-pills" id="eqPills2">
       <span class="cat-pill on" data-eq="" onclick="pickEq2(this)">Any</span>
+      <!-- Jeff, Sep 1: "when adding exercises to a workout you can click the favorite tab for
+           each individual muscle group to make things more convenient when creating workouts."
+           One pill per muscle group's own filter row, same single-select behavior as the
+           equipment pills beside it (picking this clears eq, picking an eq pill clears this --
+           see pickFav2/pickEq2) rather than a combinable second filter, so there's exactly one
+           interaction model to learn here, not two. -->
+      <span class="cat-pill fav-pill" data-fav="1" onclick="pickFav2(this)">★ Favorites</span>
       ${eqs.map(k=>`<span class="cat-pill" data-eq="${k}" onclick="pickEq2(this)">${eqLabel(k)}</span>`).join('')}
     </div>
     <div class="pick-list" id="lib2"></div>
@@ -4102,7 +4173,12 @@ function libOpenMuscle(m, opts){
   if(!silent){ const st={t:'muscle', m}; fromHistory ? landOn(st) : navigated(st); }
 }
 function pickEq2(el){
-  LIB_STATE.eq = el.dataset.eq;
+  LIB_STATE.eq = el.dataset.eq; LIB_STATE.fav = false;
+  document.querySelectorAll('#eqPills2 .cat-pill').forEach(p=>p.classList.toggle('on', p===el));
+  renderLibExercises();
+}
+function pickFav2(el){
+  LIB_STATE.eq = ''; LIB_STATE.fav = true;
   document.querySelectorAll('#eqPills2 .cat-pill').forEach(p=>p.classList.toggle('on', p===el));
   renderLibExercises();
 }
@@ -4134,12 +4210,15 @@ function exRowHtml(e){
   }
   const added = DRAFT.exercises.find(x=>x.name===e.name);
   if(LIB_ADDMODE){
+    // Jeff, Sep 1: "allowing you to favorite when building a workout" -- the star lives here too,
+    // not just the plain-browsing row below, so favoriting doesn't require leaving the picker.
     return `<div class="ex-row ${added?'ex-on':''}" onclick="libToggle('${jsq(e.name)}', this)">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
           <div class="ex-mg">${esc((e.muscle_groups||[]).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
         </div>
         <div class="ex-badges">${exBadges(e)}</div>
+        ${favBtnHtml(e)}
         <div class="ex-add">${added?'✓':'+'}</div>
       </div>`;
   }
@@ -4149,6 +4228,7 @@ function exRowHtml(e){
         <div class="ex-mg">${esc((e.muscle_groups||[]).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
       </div>
       <div class="ex-badges">${exBadges(e)}</div>
+      ${favBtnHtml(e)}
       <div class="mg-chev">›</div>
     </div>`;
 }
@@ -4157,13 +4237,18 @@ function libToggle(name, el){
   const n=$('libDoneCount'); if(n) n.textContent=DRAFT.exercises.length;
 }
 function renderLibExercises(){
-  const {muscle,eq,q}=LIB_STATE;
+  const {muscle,eq,q,fav}=LIB_STATE;
   const list = window._LIB2.filter(e=>
     (e.muscle_groups||[]).includes(muscle) &&
     (!eq || eqFamilies(e).includes(eq)) &&
+    (!fav || FAVORITES.has(e.name)) &&
     (!q || exName(e).toLowerCase().includes(q) || (e.muscle_groups||[]).join(' ').includes(q))
   ).sort((a,b)=>exName(a).localeCompare(exName(b)));
   $('lib2').innerHTML = list.length ? `<div class="card">${list.map(exRowHtml).join('')}</div>`
+    // Distinct copy for the empty-Favorites case -- "No exercises here" reads like this muscle
+    // group has nothing at all, which would be actively wrong (and confusing) when the real
+    // reason is just that nothing here is starred yet.
+    : fav ? '<div class="muted" style="padding:20px;text-align:center">No favorites here yet — tap the star on an exercise to add one.</div>'
     : '<div class="muted" style="padding:20px;text-align:center">No exercises here.</div>';
 }
 function openCreateEx(presetMuscle){
@@ -4199,7 +4284,7 @@ function exDetail(name){
   history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
-      <div class="sheet-head"><h2>${esc(e.name)}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <div class="sheet-head"><h2>${esc(e.name)}</h2>${favBtnHtml(e)}<button class="sec sm" onclick="closeSheet()">✕</button></div>
       <div class="sheet-thumb">${exThumb(e)}<span class="sheet-thumb-cap">${esc((e.muscle_groups||[])[0]||'abdominals')}</span></div>
       <div class="sheet-mg">${esc((e.muscle_groups||[]).join(' · '))}</div>
       <div class="ex-badges" style="margin:8px 0">${exBadges(e)}</div>

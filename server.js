@@ -603,6 +603,36 @@ app.post('/api/exercises/custom', auth, async (req, res) => {
   res.json(ex);
 });
 
+// ---- Favorite exercises (per-user) ----
+// Jeff, Sep 1: "add a filter in the exercise library for favorites... allowing you to favorite
+// when building a workout or in the library also." Exercises have no id (see sanitizeExercise
+// above -- everything, custom exercises included, keys off name), so favorites are a list of
+// exercise NAMES, the same identity the client already uses everywhere (DRAFT.exercises.find
+// (x=>x.name===e.name), libToggle, swapPick, ...).
+// No cap here, unlike POST /api/exercises/custom just above: that route creates new rows shared
+// with every other user, so an unbounded push there is a slow wedge on everyone. Favoriting only
+// ever references an exercise that already exists and is private to the one user who set it, so
+// the list is naturally bounded by the total exercise count (203 built-in + that user's own
+// custom rows, themselves already capped at 500) -- there's nothing here worth defending against.
+app.get('/api/favorites', auth, async (req, res) => {
+  const u = DB.users[req.userId];
+  res.json({ exercises: (u && u.favoriteExercises) || [] });
+});
+// One toggle endpoint, not separate add/remove routes -- the one caller (toggleFavorite() in
+// app.js) always wants "flip it and tell me the new state," same shape as the star it's driving.
+app.post('/api/favorites/toggle', auth, async (req, res) => {
+  const name = capStr((req.body || {}).name, 80);
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const u = DB.users[req.userId];
+  u.favoriteExercises = u.favoriteExercises || [];
+  const i = u.favoriteExercises.indexOf(name);
+  const favorited = i === -1;
+  if (favorited) u.favoriteExercises.push(name);
+  else u.favoriteExercises.splice(i, 1);
+  await save(DB);
+  res.json({ favorited });
+});
+
 // ---- Profile (per-user, viewable by anyone logged in) ----
 // localToday: the CALLER's own local day (see the comment above currentStreak) — only honored
 // below when id === viewerId, i.e. this is genuinely a self-view. Whoever is viewing someone
