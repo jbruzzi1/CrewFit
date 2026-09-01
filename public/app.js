@@ -1226,6 +1226,18 @@ async function viewPost(id, authorId, opts){
   // idempotent fetch-post-mutate-repost pattern as addPostPhoto/deletePhoto above, so this can
   // never be reached for anyone else's recap.
   const notesHeader = isAuthor ? `<h2 style="display:flex;align-items:center;justify-content:space-between">Notes<button class="sec sm" onclick="editPostNotes('${id}','${authorId}')">Edit</button></h2>` : `<h2>Notes</h2>`;
+  // Task #157: a lightweight reaction on the recap -- one tap, toggled on/off, no picker. The
+  // post object already carries `reactions` (an array of userIds) straight from GET /api/sessions/
+  // :id, so this needs no extra fetch the way comments does. See toggleReaction below for the tap
+  // handler and FAV_BUSY-style double-tap guard.
+  const reactions = Array.isArray(post.reactions) ? post.reactions : [];
+  const reactedByMe = reactions.includes(ME.id);
+  const reactRow = `<div class="pp-react-row">
+    <button class="pp-react-btn${reactedByMe?' on':''}" id="ppReact-${id}-${authorId}" onclick="toggleReaction('${id}','${authorId}')" aria-label="${reactedByMe?'Remove reaction':'React to this workout'}">
+      <svg viewBox="0 0 24 24" fill="${reactedByMe?'currentColor':'none'}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v11H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3zm0 0 5.5-7a2 2 0 0 1 3.6 1.7L15 9h5a2 2 0 0 1 2 1.8l-1.1 8A2 2 0 0 1 18.9 21H9a2 2 0 0 1-2-2V10z"/></svg>
+    </button>
+    <span class="pp-react-count" id="ppReactCount-${id}-${authorId}">${reactions.length ? reactions.length : ''}</span>
+  </div>`;
   // Jeff, Aug 28: "I made my most recent posted workout on my profile public and it still says
   // 'friends only'." The badge just below was showing s.visibility -- whether the SESSION itself is
   // joinable by friends or invite-only, set back on the create form -- which is a different setting
@@ -1256,7 +1268,7 @@ async function viewPost(id, authorId, opts){
   // wherever you actually tapped in from. history.back() replays the same real browser-history
   // pop the hardware/gesture Back button already uses, landing on whatever screen pushed the
   // entry below this one (see viewPost's own navigated()/landOn() call just below this template).
-  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    ${notesHeader}<div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
+  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    ${notesHeader}<div class="notes-box">${notes}</div>\n    ${reactRow}\n    <h2>Comments</h2><div class="card"><div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
   $('app').innerHTML = html;
   if(!silent){ const st={t:'post', id, authorId}; fromHistory ? landOn(st) : navigated(st); }
   if(media.length>1){
@@ -1315,6 +1327,38 @@ async function sendPostComment(id, authorId){
   if(!nothingNavigatedSince(epoch)) return;
   const inp=$('chatInput'); if(inp) inp.value='';
   viewPost(id, authorId, {silent:true});
+}
+// Task #157: one-tap reaction, toggled on/off. Same FAV_BUSY-keyed-Set double-tap guard as
+// toggleFavorite above (a fast double-tap here would fire two overlapping toggles and, since
+// each response would otherwise overwrite the button's state with ITS OWN result, whichever
+// response happened to ARRIVE last -- not whichever request was sent last -- would decide the
+// final visible state). The endpoint returns {reacted, count} directly, so this flips the button
+// and count in place rather than re-fetching and re-rendering the whole recap the way
+// sendPostComment does above.
+let REACT_BUSY = new Set();
+async function toggleReaction(id, authorId){
+  const key = id+'|'+authorId;
+  if(REACT_BUSY.has(key)) return;
+  REACT_BUSY.add(key);
+  try {
+    const r = await H.post(`/api/sessions/${id}/posts/${authorId}/react`, {});
+    if(!r || r.error){ if(r && r.error) alert(r.error); return; }
+    // Scoped by BOTH id and authorId, matching REACT_BUSY's key above -- a session can hold
+    // several participants' recaps (s.posts[authorId] per author), and the feed links straight
+    // into different authors' recaps of the SAME session. Cold-review catch: this used to look up
+    // 'ppReact-'+id alone, so a slow response for Alice's recap could land on a same-session-id
+    // button that by then belonged to Bob's recap (viewPost fully replaces the DOM on navigation),
+    // flipping the wrong person's on-screen reaction state.
+    const btn = $('ppReact-'+id+'-'+authorId);
+    if(btn){
+      btn.classList.toggle('on', !!r.reacted);
+      btn.setAttribute('aria-label', r.reacted?'Remove reaction':'React to this workout');
+      const svg = btn.querySelector('svg'); if(svg) svg.setAttribute('fill', r.reacted?'currentColor':'none');
+    }
+    const cnt = $('ppReactCount-'+id+'-'+authorId); if(cnt) cnt.textContent = r.count ? String(r.count) : '';
+  } finally {
+    REACT_BUSY.delete(key);
+  }
 }
 async function loadPostComments(id, authorId){
   const box=$('chatbox'); if(!box) return;

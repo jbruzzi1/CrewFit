@@ -3554,15 +3554,45 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   // endpoint again — carry over any comments people already left rather than wiping the thread.
   const existingComments = (s.posts[req.userId] && Array.isArray(s.posts[req.userId].comments))
     ? s.posts[req.userId].comments : [];
+  // Same carry-over as comments just above — re-saving notes/photos on an already-posted recap
+  // must not wipe out reactions people already left on it (Task #157).
+  const existingReactions = (s.posts[req.userId] && Array.isArray(s.posts[req.userId].reactions))
+    ? s.posts[req.userId].reactions : [];
   s.posts[req.userId] = {
     at: new Date().toISOString(),
     notes: String(notes || '').slice(0, 2000),
     media: cleanMedia,
     visibility: vis,
-    comments: existingComments
+    comments: existingComments,
+    reactions: existingReactions
   };
   await save(DB);
   res.json(sessionView(s, req.userId));
+});
+// ---- Reactions on a POSTED recap (Task #157) ----
+// Jeff, Sep 1: wanted something lightweight on a friend's posted workout -- not another comment to
+// type, just a quick "nice work." Deliberately ONE reaction, not a picker (same "avoid adding a
+// ton of fields" instinct behind Plateau watch). Toggle shape mirrors /api/favorites/toggle above:
+// returns {reacted, count} directly rather than the whole session, so the client can flip the
+// button locally without a full re-render, and so a fast double-tap can't race two overlapping
+// POSTs into landing on the wrong final state (see FAV_BUSY's own comment in app.js for that exact
+// bug class). Same read/write gate as commenting on the post — if you can see the recap, you can
+// react to it (canSeePostAuthor).
+app.post('/api/sessions/:id/posts/:authorId/react', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  const p = s.posts && s.posts[req.params.authorId];
+  if (!canSeePostAuthor(p, req.params.authorId, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  // Plain array of userIds, same defensive coerce-at-point-of-use as p.comments above (objArray
+  // doesn't fit here — it keeps only object entries, and these are bare id strings).
+  p.reactions = Array.isArray(p.reactions) ? p.reactions.filter(x => typeof x === 'string') : [];
+  const i = p.reactions.indexOf(req.userId);
+  const reacted = i === -1;
+  if (reacted) p.reactions.push(req.userId); else p.reactions.splice(i, 1);
+  await save(DB);
+  if (reacted && req.params.authorId !== req.userId)
+    notify(req.params.authorId, { title: 'New reaction', body: `${DB.users[req.userId].displayName} reacted to your workout` });
+  res.json({ reacted, count: p.reactions.length });
 });
 
 // Catches whatever the async-route wrapper above forwards via next(err) — a thrown error or a

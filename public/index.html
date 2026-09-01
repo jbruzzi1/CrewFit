@@ -209,6 +209,15 @@
     .pp-set-val { color:var(--fg); }
     .pp-pr { font-size:10px; font-weight:700; color:#fff; background:var(--green); border-radius:6px; padding:1px 6px; }
     .pp-collab { font-size:12px; color:var(--blue); margin:2px 0 10px; }
+    /* Task #157: one-tap reaction on a posted recap -- deliberately one reaction, not a picker.
+       Off state matches the app's other neutral chip buttons (.pp-set-n etc: #eef1f5); "on"
+       reuses the same solid-green-fill language as .pp-pr (an earned/appreciated thing, same as
+       a PR badge), never a new color. */
+    .pp-react-row { display:flex; align-items:center; gap:8px; margin:14px 0 2px; }
+    .pp-react-btn { width:38px; height:38px; border-radius:50%; background:#eef1f5; border:none; color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; flex:0 0 auto; padding:0; }
+    .pp-react-btn svg { width:18px; height:18px; }
+    .pp-react-btn.on { background:var(--green); color:#fff; }
+    .pp-react-count { font-size:13px; color:var(--muted); font-weight:600; min-width:10px; }
     .row { display:flex; gap:8px; align-items:center; }
     .row > * { flex:1; }
     .chat-row { align-items:center; }
@@ -880,7 +889,7 @@
         --s1:#2b3a5c; --s2:#3a5488; --s3:#4a71b8; --s4:#5a8bff;
       }
       /* -- surfaces & fills (light grays -> raised charcoal) -- */
-      :where(html.theme-dark) .pp-dots:active, :where(html.theme-dark) .pp-menu button:active, :where(html.theme-dark) .lib-item:active, :where(html.theme-dark) .ex-card.log-row:active, :where(html.theme-dark) .lib-item.log-row:active, :where(html.theme-dark) .profile-set:active, :where(html.theme-dark) .mg-card:active, :where(html.theme-dark) .ex-row:active, :where(html.theme-dark) .ex-fav-btn:active, :where(html.theme-dark) .set-row:active, :where(html.theme-dark) .rc-chip, :where(html.theme-dark) .rest, :where(html.theme-dark) .load-chip, :where(html.theme-dark) .hold-ic, :where(html.theme-dark) .self-tag, :where(html.theme-dark) .empty-ic, :where(html.theme-dark) .streak, :where(html.theme-dark) .pill, :where(html.theme-dark) .chip, :where(html.theme-dark) .fav, :where(html.theme-dark) .ex-add, :where(html.theme-dark) .ex-idx, :where(html.theme-dark) .t-normal, :where(html.theme-dark) .pp-set-n, :where(html.theme-dark) .seg .chip, :where(html.theme-dark) .seg button, :where(html.theme-dark) #vis.seg, :where(html.theme-dark) .seg.wk-seg, :where(html.theme-dark) .log-rec.soon .lr-ic, :where(html.theme-dark) .log-rec.hold .lr-ic { background:#262930; }
+      :where(html.theme-dark) .pp-dots:active, :where(html.theme-dark) .pp-menu button:active, :where(html.theme-dark) .lib-item:active, :where(html.theme-dark) .ex-card.log-row:active, :where(html.theme-dark) .lib-item.log-row:active, :where(html.theme-dark) .profile-set:active, :where(html.theme-dark) .mg-card:active, :where(html.theme-dark) .ex-row:active, :where(html.theme-dark) .ex-fav-btn:active, :where(html.theme-dark) .set-row:active, :where(html.theme-dark) .rc-chip, :where(html.theme-dark) .rest, :where(html.theme-dark) .load-chip, :where(html.theme-dark) .hold-ic, :where(html.theme-dark) .self-tag, :where(html.theme-dark) .empty-ic, :where(html.theme-dark) .streak, :where(html.theme-dark) .pill, :where(html.theme-dark) .chip, :where(html.theme-dark) .fav, :where(html.theme-dark) .ex-add, :where(html.theme-dark) .ex-idx, :where(html.theme-dark) .t-normal, :where(html.theme-dark) .pp-set-n, :where(html.theme-dark) .pp-react-btn, :where(html.theme-dark) .seg .chip, :where(html.theme-dark) .seg button, :where(html.theme-dark) #vis.seg, :where(html.theme-dark) .seg.wk-seg, :where(html.theme-dark) .log-rec.soon .lr-ic, :where(html.theme-dark) .log-rec.hold .lr-ic { background:#262930; }
       :where(html.theme-dark) .missed-badge, :where(html.theme-dark) .upcoming-badge { background:#2f3238; color:#a2a7b0; }
       :where(html.theme-dark) .log-rec.hold { background:#1f2126; }
       /* Muscle diagrams are drawn on/for white - on a dark tile the gray figure dissolves
@@ -948,6 +957,7 @@
       :where(html.theme-dark) .ql-mic-icon.ql-rec { color:#d7a04a; border-color:#d7a04a; }
       :where(html.theme-dark) .act-chip.act-pr, :where(html.theme-dark) .type-tag.type-tag-pr { background:#1f8a4c; color:#fff; }
       :where(html.theme-dark) .pp-pr { background:#1f8a4c; color:#fff; }
+      :where(html.theme-dark) .pp-react-btn.on { background:#1f8a4c; color:#fff; }
       :where(html.theme-dark) .rc-chip.prfill { background:#1f8a4c; color:#fff; }
       :where(html.theme-dark) .pp-set-n.warm { background:rgba(215,160,74,.15); color:#d7a04a; }
       :where(html.theme-dark) .streak-pill { background:rgba(215,160,74,.13); color:#d7a04a; }
@@ -1002,6 +1012,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=282"></script>
+  <script src="app.js?v=283"></script>
 </body>
 </html>
