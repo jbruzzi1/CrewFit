@@ -3,10 +3,13 @@
 // /api/me/seeds, storing a user's self-reported starting weights SEPARATE from earned PRs so a
 // typo or an unbeaten self-report can never poison the real record list -- has existed since
 // before this feature with zero client UI. This ships the client half: a "Starting weights" screen
-// (seedSetupScreen in app.js), reached once automatically right after registering (doReg, NEW
-// accounts only) and permanently from Settings ("Starting weights" row), with a curated 6-lift
-// default set and a "+ Add another lift" picker (SEED_MODE, restricted to base-library exercises
-// only -- PUT /api/me/seeds 400s on anything else).
+// (seedSetupScreen in app.js), with a curated 6-lift default set and a "+ Add another lift" picker
+// (SEED_MODE, restricted to base-library exercises only -- PUT /api/me/seeds 400s on anything else).
+//
+// v1 also auto-prompted every new registration with this screen. Jeff, seeing it actually
+// rendered: "do people actually need or want to set this up... I'm not sure now that I'm thinking
+// about it and seeing it more" -- and asked for Settings-only instead (a permanent "Starting
+// weights" row, nobody interrupted at signup). doReg() goes back to plain home() on success.
 //
 // Server-side integration tests here exercise the EXACT request shapes the new client code sends
 // (string weight/reps/goal from form inputs, PUT-with-blanks-deletes) -- the endpoints themselves
@@ -191,24 +194,20 @@ console.log('\n--- client markup (source regex, same style as test/favorite-exer
   const exercisesFn = (src.match(/function renderLibExercises\(\)\{[\s\S]*?\n\}/) || [''])[0];
   ok(/\(!SEED_MODE \|\| !e\.custom\)/.test(exercisesFn), 'renderLibExercises filters out custom exercises in seed mode (per-muscle browsing)');
 
-  // Entry points: doReg (new registrations only) and the Settings row (everyone, any time).
+  // Entry point: Settings-only. v1 also auto-prompted every new registration -- Jeff, having seen
+  // it rendered, judged the value/friction trade wasn't there for a small friends-app audience ("do
+  // people actually need or want to set this up... I'm not sure") and asked for Settings-only
+  // instead. doReg() must go back to plain home() on success, exactly like before this feature
+  // existed, and seedSetupScreen must never be reachable except through Settings.
   const doRegFn = (src.match(/async function doReg\(\)\{[\s\S]*?\n\}/) || [''])[0];
-  ok(/seedSetupScreen\(\{firstRun:true\}\)/.test(doRegFn), 'doReg() routes a successful new registration into the seed-setup screen');
-  ok(!/doRegFn.*home\(\)/.test(doRegFn.replace(/\n/g, '')) , 'sanity: doReg no longer calls home() directly on success');
-  ok(/<button class="sheet-row" onclick="closeSheet\(\); seedSetupScreen\(\{firstRun:false\}\)">Starting weights<\/button>/.test(src),
-     'Settings has a permanent "Starting weights" row wired to seedSetupScreen({firstRun:false}) -- explicit,' +
-     ' not relying on SEED_FIRST_RUN\'s default (see the cold-review fix below)');
+  ok(/H\.post\('\/api\/register'.*setToken\(r\.token,r\.user\); home\(\);/.test(doRegFn.replace(/\n/g, '')),
+     'doReg() routes a successful registration straight to home() again -- no seed-setup interruption');
+  ok(!/seedSetupScreen/.test(doRegFn), 'and never mentions seedSetupScreen at all');
+  ok(/<button class="sheet-row" onclick="closeSheet\(\); seedSetupScreen\(\)">Starting weights<\/button>/.test(src),
+     'Settings has a permanent "Starting weights" row wired to seedSetupScreen() -- the only entry point now');
+  ok(!/SEED_FIRST_RUN/.test(src), 'the first-run plumbing (SEED_FIRST_RUN, Skip, "Save & continue") was removed entirely, not just disconnected');
 
-  // Cold-review catch: SEED_FIRST_RUN is a module-level global (same shape as EDITING_ID/TPL_MODE
-  // elsewhere in this file), only ever cleared by seedSkip/seedSaveAll -- walking away from a
-  // first-run seed screen via the bottom nav (any tab, not Skip/Save) used to leave it stuck true,
-  // so the NEXT time "Starting weights" opened from Settings it wrongly still acted like a
-  // first-run prompt (wrong Skip button, wrong Save routing to Home instead of back). Fixed two
-  // ways: resetTransientModes (the bottom-nav escape hatch, see its own comment) now clears it too,
-  // and the Settings row above no longer relies on the default at all.
-  ok(/SEED_FIRST_RUN = false;/.test(resetFn), 'resetTransientModes (the bottom-nav escape hatch) clears SEED_FIRST_RUN too');
-
-  // Cold-review catch: the picker's per-muscle drill-down (libOpenMuscle) only branched on
+  // Cold-review catch (still relevant even Settings-only): the picker's per-muscle drill-down only branched on
   // LIB_ADDMODE, so in SEED_MODE it fell into the plain default header -- "Routines" (silently
   // abandons SEED_MODE/SEED_DRAFT, templatesPage() doesn't call resetTransientModes) and "Create
   // exercise" (makes something the custom-exercise filter immediately hides again) reachable inside
@@ -218,21 +217,23 @@ console.log('\n--- client markup (source regex, same style as test/favorite-exer
      'libOpenMuscle gives SEED_MODE its own header too -- no Routines/Create exercise button drilled into a muscle group');
 
   // Nav-state plumbing so Back / the picker's own return trip land back on this screen correctly.
-  ok(/else if\(st\.t==='seeds'\) seedSetupScreen\(\{fromHistory:true, firstRun:!!st\.firstRun\}\);/.test(flat),
-     'renderNavState knows how to re-render a {t:"seeds"} history entry, firstRun preserved');
+  ok(/else if\(st\.t==='seeds'\) seedSetupScreen\(\{fromHistory:true\}\);/.test(flat),
+     'renderNavState knows how to re-render a {t:"seeds"} history entry');
+
+  // No "Skip" button and no "Save & continue" label anywhere -- both were first-run-only.
+  ok(!/Skip<\/button>/.test(src.match(/function renderSeedSetup\(\)\{[\s\S]*?\n\}/)[0]), 'renderSeedSetup never renders a Skip button');
+  ok(/>Save</.test(src.match(/function renderSeedSetup\(\)\{[\s\S]*?\n\}/)[0]) && !/Save & continue/.test(src),
+     'the Save button always just reads "Save" -- no first-run variant left');
 
   // seedSaveAll: double-tap guarded via the button's own disabled state (doReg's regBtn pattern),
-  // saves every row, then routes home for first-run or stays for a Settings-triggered save.
+  // saves every row, then always returns to wherever the user came from (Settings is the only way
+  // in now, so there's no "first-run lands on Home" case to branch on anymore).
   const saveFn = (src.match(/async function seedSaveAll\(\)\{[\s\S]*?\n\}/) || [''])[0];
   ok(/if\(btn && btn\.disabled\) return;/.test(saveFn), 'seedSaveAll guards against a double-tap via the Save button\'s own disabled state');
   ok(/H\.put\('\/api\/me\/seeds', \{ exercise:r\.exercise, weight:r\.weight, reps:r\.reps, goal:r\.goal \}\)/.test(saveFn),
      'seedSaveAll PUTs every row in SEED_DRAFT with the raw (string) form values');
-  // First-run (no prior screen to return to) lands on Home; reached from Settings instead, Save
-  // must return to wherever the user actually came from (history.back()), not force an existing
-  // user over to the Home tab just for editing a preference -- a real bug caught in Playwright
-  // verification (Settings -> Starting weights -> Save landed on Home instead of back on Profile).
-  ok(/if\(wasFirstRun\) showTab\('home'\); else history\.back\(\);/.test(saveFn),
-     'seedSaveAll returns to Home only for first-run; otherwise goes back to where it was opened from');
+  ok(/history\.back\(\);\s*\n\}/.test(saveFn), 'seedSaveAll always returns via history.back() now -- no more wasFirstRun branch');
+  ok(!/wasFirstRun/.test(saveFn), 'and the wasFirstRun/showTab(\'home\') branch is gone entirely');
 
   // seedRemoveRow fires the DELETE unconditionally (idempotent no-op if never actually saved --
   // verified server-side above) rather than trying to track which rows were "really" seeded.
@@ -244,7 +245,7 @@ console.log('\n--- client markup (source regex, same style as test/favorite-exer
   ok(/\.seed-row-head\s*\{/.test(css), '.seed-row-head is styled');
 
   const vMatch = css.match(/\?v=(\d+)/);
-  ok(!!vMatch && Number(vMatch[1]) >= 279, 'cache-bust bumped to v=279 or later (got ' + (vMatch && vMatch[1]) + ')');
+  ok(!!vMatch && Number(vMatch[1]) >= 280, 'cache-bust bumped to v=280 or later (got ' + (vMatch && vMatch[1]) + ')');
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');

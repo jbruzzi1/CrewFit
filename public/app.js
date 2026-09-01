@@ -206,13 +206,7 @@ async function doReg(){ try {
   const u=($('rx').value||'').trim().toLowerCase();
   if(u){ try { const c=await H.get('/api/register/check?username='+encodeURIComponent(u)); if(c && c.available===false){ alert('username taken'); return; } } catch(e){} }
   if(($('rp').value||'').length < 6){ alert('Password must be at least 6 characters.'); return; }
-  const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value}); if(r.token){ setToken(r.token,r.user);
-    // Jeff, Sep 1: brand-new account, straight into the one-time "starting weights" prompt instead
-    // of Home -- see seedSetupScreen's comment. Existing users logging in never go through doReg,
-    // so nobody who's already using the app gets retroactively interrupted by this; Skip here goes
-    // to Home exactly like registering used to, so declining costs nothing.
-    seedSetupScreen({firstRun:true});
-  } else alert(r.error||'register failed'); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
+  const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value}); if(r.token){ setToken(r.token,r.user); home(); } else alert(r.error||'register failed'); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
 
 // ---- Nav / browser Back ----
 // v254 (Jeff): "when I press back I want the page I was just on, not Home" -- nothing in this app
@@ -272,7 +266,7 @@ function renderNavState(st){
   else if(st.t==='followList') followList(st.id, st.kind, {fromHistory:true});
   else if(st.t==='muscle') libOpenMuscle(st.m, {fromHistory:true});
   else if(st.t==='library') library({fromHistory:true});
-  else if(st.t==='seeds') seedSetupScreen({fromHistory:true, firstRun:!!st.firstRun});
+  else if(st.t==='seeds') seedSetupScreen({fromHistory:true});
   else renderTabState('home');   // an old/unrecognized entry (e.g. a stray 'sheet' marker) -- never strand the user on nothing
 }
 // A tab-state landing needs its own landOn() call (nothing inside home()/library()/etc. does it,
@@ -294,13 +288,6 @@ function resetTransientModes(){
   SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;   // stuck "Pick replacement" library
   SUGGEST_ADD_MODE = false; SUGGEST_ADD_SESSION = null;       // stuck "suggest adding" library
   SEED_MODE = false;                                          // stuck "Add a lift" library (seed setup)
-  SEED_FIRST_RUN = false;                                     // stuck Skip button / wrong Save routing --
-                                                                // see seedSetupScreen's comment: walking away
-                                                                // from a first-run seed screen via the bottom
-                                                                // nav (not Skip/Save) used to leave this true
-                                                                // forever, so the NEXT time Settings opened
-                                                                // "Starting weights" it wrongly still acted
-                                                                // like a first-run prompt
   LIB_ADDMODE = false;                                        // stuck "Done (n)" library
   QUICK_ADD_MODE = false;                                     // stuck Quick Workout picker
   EDITING_SESSION = null;                                     // next new workout saved over the edited one
@@ -1660,40 +1647,39 @@ function seedPickerPick(name){
   if(!SEED_DRAFT.some(r=>r.exercise===name)) SEED_DRAFT.push({ exercise:name, weight:'', reps:'', goal:'' });
   backToSessionAfterSwapPicker();
 }
-// ---- Seed your lifts: first-run + Settings screen for PUT/GET/DELETE /api/me/seeds -------------
+// ---- Seed your lifts: Settings screen for PUT/GET/DELETE /api/me/seeds -------------------------
 // Jeff, Sep 1 ("what is this app missing" -> "lets build the worth doing next", built first): the
 // server side of this has existed since before this feature with zero client UI (see the "Lifts
 // you already do" block in server.js). A user arriving with years of training has bests and working
-// weights the app can't know -- this lets them tell it once, so Progress is useful from workout one
-// instead of week three, rather than showing every logged set as a "PR" for the first few weeks.
+// weights the app can't know -- this lets them tell it, so Progress is useful sooner instead of
+// showing every logged set as a "PR" for the first few weeks.
 //
-// Reached two ways: a one-time prompt right after registering (doReg's success path, NEW accounts
-// only -- see the comment there) and a permanent "Starting weights" row in Settings (openSettings)
-// for anyone to add to or edit later. Both funnel through this same screen; only the header/exit
-// button (Skip vs a real Back) and what happens on save (home() vs staying put) differ, gated by
-// SEED_FIRST_RUN.
+// v1 of this also auto-prompted every new registration with this screen before Home. Jeff, seeing
+// it rendered: "do people actually need or want to set this up... now that I'm thinking about it
+// and seeing it more, I'm not sure" -- right call. The underlying problem is real but minor
+// (cosmetic, self-correcting within a week of real logging), and the fix asked for six lifts' worth
+// of data entry before a brand-new user had done anything else with the app -- a bad trade for
+// value only a narrow slice of users (an experienced lifter migrating their history) would ever
+// want. Settings-only now: reachable via a permanent "Starting weights" row (openSettings) for
+// whoever actually wants it, nobody else is ever interrupted by it.
 //
 // SEED_DEFAULTS is a curated 6-lift set spanning squat / hinge / horizontal-push / overhead-push /
 // vertical-pull / horizontal-pull -- exact names verified 1:1 against exercise-library.json so they
 // pass PUT /api/me/seeds's EX_LIB.some(...) check. Shown as blank rows even when nothing is seeded
-// yet, so a brand-new user sees exactly what to fill in rather than an empty page; anything already
-// seeded that ISN'T one of these six (e.g. added via "+ Add another lift" on a prior visit) is
-// appended after them.
+// yet, so it's obvious what to fill in rather than an empty page; anything already seeded that
+// ISN'T one of these six (e.g. added via "+ Add another lift" on a prior visit) is appended after.
 const SEED_DEFAULTS = ['Barbell Back Squat','Conventional Deadlift','Flat Barbell Bench Press','Overhead Barbell Press','Pull-Up','Barbell Row'];
 // In-memory working copy of what's on screen -- stashed/restored the same way DRAFT is for the
 // create-flow (see openAddExercises's comment above), so a value typed but not yet saved, and a
 // lift just picked from openSeedPicker, both survive the round trip through the library picker.
 let SEED_DRAFT = [];
-let SEED_FIRST_RUN = false;
 async function seedSetupScreen(opts){
   const fromHistory = !!(opts && opts.fromHistory);
-  const firstRun = opts && 'firstRun' in opts ? !!opts.firstRun : SEED_FIRST_RUN;
-  SEED_FIRST_RUN = firstRun;
   if(!fromHistory){
-    // A fresh entry (tapped from Settings, or the post-registration prompt) rebuilds SEED_DRAFT from
-    // the server's real seeds -- a fromHistory landing (Back from the picker, or a genuine browser
-    // Back onto this screen) reuses SEED_DRAFT exactly as it stands instead, so nothing just picked
-    // or typed is lost or silently refetched away.
+    // A fresh entry (tapped from Settings) rebuilds SEED_DRAFT from the server's real seeds -- a
+    // fromHistory landing (Back from the picker, or a genuine browser Back onto this screen) reuses
+    // SEED_DRAFT exactly as it stands instead, so nothing just picked or typed is lost or silently
+    // refetched away.
     const r = await H.get('/api/me/seeds');
     const seeds = (r && r.seeds) || {};
     const rowFor = name => ({ exercise:name, weight: seeds[name]!=null?String(seeds[name].weight ?? ''):'', reps: seeds[name]!=null?String(seeds[name].reps ?? ''):'', goal: seeds[name]!=null?String(seeds[name].goal ?? ''):'' });
@@ -1701,11 +1687,11 @@ async function seedSetupScreen(opts){
     Object.keys(seeds).forEach(name=>{ if(!SEED_DRAFT.some(r=>r.exercise===name)) SEED_DRAFT.push(rowFor(name)); });
   }
   renderSeedSetup();
-  const st = { t:'seeds', firstRun };
+  const st = { t:'seeds' };
   fromHistory ? landOn(st) : navigated(st);
 }
 // Reads whatever's currently typed on screen back into SEED_DRAFT before navigating away (to the
-// picker, or Skip/Save) -- same stash-before-leaving pattern as openAddExercises/templatesPage above.
+// picker, or Save) -- same stash-before-leaving pattern as openAddExercises/templatesPage above.
 function seedStashInputs(){
   SEED_DRAFT.forEach((r,i)=>{
     const w=$('seedW'+i), rp=$('seedR'+i), g=$('seedG'+i);
@@ -1726,7 +1712,6 @@ function seedRemoveRow(i){
   renderSeedSetup();
 }
 function seedAddAnother(){ seedStashInputs(); openSeedPicker(); }
-function seedSkip(){ SEED_FIRST_RUN=false; showTab('home'); }
 async function seedSaveAll(){
   seedStashInputs();
   const btn = $('seedSaveBtn');
@@ -1739,14 +1724,9 @@ async function seedSaveAll(){
     const err = results.find(r => r && r.error);
     if(err){ alert(err.error); return; }
   } finally { if(btn) btn.disabled = false; }
-  const wasFirstRun = SEED_FIRST_RUN;
-  SEED_FIRST_RUN = false;
-  // First-run: this screen is all that's ever been shown since registering, so Home is the only
-  // sensible landing spot. Reached from Settings instead: seedSetupScreen pushed a real navigated()
-  // entry to get here, so Back returns to wherever that actually was -- normally the profile page
-  // Settings was opened from -- rather than yanking an existing user over to the Home tab just for
-  // editing a preference.
-  if(wasFirstRun) showTab('home'); else history.back();
+  // seedSetupScreen pushed a real navigated() entry to get here (always via Settings now), so Back
+  // returns to wherever that actually was -- normally the profile page Settings was opened from.
+  history.back();
 }
 function renderSeedSetup(){
   const unit = myUnit();
@@ -1766,12 +1746,11 @@ function renderSeedSetup(){
   $('app').innerHTML = `<div class="wrap">
     <div class="pick-head lib-head">
       <h1 style="flex:1">Starting weights</h1>
-      ${SEED_FIRST_RUN?`<button class="txt-btn" onclick="seedSkip()">Skip</button>`:''}
     </div>
     <div class="muted" style="font-size:13px;margin:2px 2px 14px">Already lifting these? Enter what you're working with now so Progress starts from where you actually are, not from zero.</div>
     ${rows}
     <button class="sec" style="width:100%;margin:2px 0 18px" onclick="seedAddAnother()">+ Add another lift</button>
-    <button class="blue" id="seedSaveBtn" style="width:100%" onclick="seedSaveAll()">${SEED_FIRST_RUN?'Save & continue':'Save'}</button>
+    <button class="blue" id="seedSaveBtn" style="width:100%" onclick="seedSaveAll()">Save</button>
   </div>`;
   window.scrollTo(0,0);
 }
@@ -4783,7 +4762,7 @@ function openSettings(){
       <button class="sheet-row" onclick="closeSheet(); editBio()">Edit bio</button>
       <button class="sheet-row" onclick="closeSheet(); editDefaultGym()">Default gym <span class="row-val">${esc(ME.defaultGym || 'Not set')}</span></button>
       <button class="sheet-row" onclick="closeSheet(); pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
-      <button class="sheet-row" onclick="closeSheet(); seedSetupScreen({firstRun:false})">Starting weights</button>
+      <button class="sheet-row" onclick="closeSheet(); seedSetupScreen()">Starting weights</button>
       <button class="sheet-row" onclick="toggleStreakReminders()">Streak reminders <span class="row-val" id="streakRemVal">${ME.notifyStreakReminders!==false?'On':'Off'}</span></button>
       <button class="sheet-row red" onclick="closeSheet(); confirmResetWorkouts()">Reset workouts</button>
     </div>
