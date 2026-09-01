@@ -3597,6 +3597,8 @@ const VOL_RANGES = [
 let VOL_MODE = 'week';
 function setVolMode(m){ VOL_MODE = m; progressScreen({silent:true}); }
 const GROUP_LABEL = { legs:'Legs', push:'Push', pull:'Pull', core:'Core', cardio:'Cardio', other:'Other' };
+// Mirrors server.js's PLATEAU_MIN_SESSIONS -- copy text only, the server is the actual gate.
+const PLATEAU_MIN_SESSIONS = 3;
 // Display labels for the weekly-volume meter rows (server sends raw EX_LIB muscle_groups keys).
 const MUSCLE_LABEL = { chest:'Chest', lats:'Back', shoulders:'Shoulders', traps:'Traps',
   biceps:'Biceps', triceps:'Triceps', forearms:'Forearms', quads:'Quads', hamstrings:'Hamstrings',
@@ -3971,6 +3973,26 @@ async function progressScreen(opts){
       </div>`).join('')}</div>`;
   }
 
+  // --- plateau watch --- lifts trained regularly with no real strength gain in the trailing
+  // window (server-side plateausFor). Never rendered when empty -- CLAUDE.md: a card renders
+  // only when it has content, and there's no congratulatory "no plateaus!" empty state to match
+  // Ready/Hold/Almost, which also simply don't render when empty.
+  let plateauHtml = '';
+  if((d.plateaus||[]).length){
+    const pw = d.plateaus[0].weeks;
+    plateauHtml = `<h2>Plateau watch</h2>
+    <div class="card"><div class="hold-sec"><div class="hold-head">No change in estimated strength</div>
+      ${d.plateaus.map(p=>`<div class="hold">
+        <div class="hold-ic" aria-hidden="true">=</div>
+        <div class="rp-main"><div class="rp-name">${esc(p.exercise)}</div>
+          <div class="rp-why">${p.sessions} sessions over ${pw} weeks, most recently ${p.reps} reps at ${WL(p.weight)} — no increase in estimated strength</div></div>
+      </div>`).join('')}</div>
+      <div class="rulenote"><b>How it works:</b> trained ${PLATEAU_MIN_SESSIONS}+ times in the last
+        ${pw} weeks with no real gain in weight, reps, or estimated one-rep max — worth trying a rep-range
+        change, a deload, or a different exercise for the same muscles.</div>
+    </div>`;
+  }
+
   // --- consistency ---
   const maxd = Math.max(6, ...d.weeks.map(w=>w.days));
   const BW=326, BH=96, BB=20, BT=6, gap=5;
@@ -4027,6 +4049,8 @@ async function progressScreen(opts){
         reach the top of your rep range two sessions in a row <b>at the same weight</b> and the weight
         goes up. Warm-ups and drop sets don\'t count.</div>`:''}
     </div>
+
+    ${plateauHtml}
 
     ${volTrendChart(d)}
 

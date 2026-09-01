@@ -2744,6 +2744,70 @@ function trendFor(userId) {
   return { lifts: shown.map(toChip), overall, allNames, picks };
 }
 
+// A lift counts as "plateaued" only when trained enough times WITHIN the trailing window
+// (an abandoned lift is never flagged -- CLAUDE.md: never state something about the user you
+// can't stand behind) AND its best estimated max during that window never beats its best
+// estimated max from before the window by more than the threshold. Comparing bests (not
+// first-vs-last point) means one rough or one lucky session near either edge doesn't flip the
+// flag. Uses estMax's own Epley scoring so a plateau is judged the same way the Strength trend
+// chart already judges progress -- an increase in reps at the same weight is real progress.
+const PLATEAU_WEEKS = 6;
+const PLATEAU_MIN_SESSIONS = 3;
+const PLATEAU_THRESHOLD = 0.02; // must beat the prior best by >2% to count as real progress
+
+function plateausFor(userId) {
+  const unit = (DB.users[userId] && DB.users[userId].units) || 'lb';
+  const byName = {};
+  for (const s of Object.values(DB.sessions)) {
+    const mine = s.logs && s.logs[userId];
+    if (!mine) continue;
+    const perEx = {};
+    for (const l of mine) {
+      if (!isWorkingSet(l)) continue;
+      const e = estMax(l);
+      if (!e) continue;                                  // bodyweight / incomplete -- see estMax
+      const name = logExerciseName(s, l, userId);
+      if (!perEx[name] || e > perEx[name].e) perEx[name] = { e, l };
+    }
+    for (const name of Object.keys(perEx)) {
+      const at = perfDate(s.scheduledAt).slice(0, 10);
+      const l = perEx[name].l;
+      (byName[name] = byName[name] || []).push({
+        at, est: perEx[name].e,
+        weight: Number(l.weight) || 0, unit: l.unit || 'lb', reps: Number(l.reps) || 0
+      });
+    }
+  }
+
+  const windowStart = new Date(); windowStart.setUTCDate(windowStart.getUTCDate() - PLATEAU_WEEKS * 7);
+  const windowStartStr = windowStart.toISOString().slice(0, 10);
+
+  const out = [];
+  for (const name of Object.keys(byName)) {
+    const points = byName[name].sort((a, b) => a.at.localeCompare(b.at));
+    const windowPoints = points.filter(p => p.at >= windowStartStr);
+    if (windowPoints.length < PLATEAU_MIN_SESSIONS) continue;    // not trained enough lately
+    const priorPoints = points.filter(p => p.at < windowStartStr);
+    if (!priorPoints.length) continue;                           // no baseline before the window
+    const bestBefore = Math.max(...priorPoints.map(p => p.est));
+    const bestDuring = Math.max(...windowPoints.map(p => p.est));
+    if (bestDuring > bestBefore * (1 + PLATEAU_THRESHOLD)) continue;   // real progress -- not stuck
+
+    const latest = windowPoints[windowPoints.length - 1];
+    const lib = EX_LIB.find(x => x.name === name);
+    const group = lib && ['push', 'pull', 'legs', 'core', 'cardio'].includes(lib.pattern) ? lib.pattern : 'other';
+    out.push({
+      exercise: name, group,
+      weight: inUnit(latest.weight, latest.unit, unit), unit,
+      bodyweight: !(Number(latest.weight) > 0),
+      reps: latest.reps,
+      weeks: PLATEAU_WEEKS, sessions: windowPoints.length
+    });
+  }
+  const order = { legs: 0, push: 1, pull: 2, core: 3, cardio: 4, other: 5 };
+  return out.sort((a, b) => (order[a.group] - order[b.group]) || b.sessions - a.sessions || a.exercise.localeCompare(b.exercise));
+}
+
 
 // ---- Lifts you already do (first-run seeding) ----------------------------------------------
 // A user arriving with years of training has bests and goals the app cannot know. Seeding them
@@ -2924,6 +2988,7 @@ app.get('/api/progress', auth, async (req, res) => {
     avgPerWeek: w.length ? Number((trained / w.length).toFixed(1)) : 0,
     streakWeeks: streak,
     trend: trendFor(req.userId),
+    plateaus: plateausFor(req.userId),
     prs: recordsFor(req.userId),
     // Sep 1, round 5/6: widened from just This week (1) + 4-wk avg to a 3-range picker (This
     // week/Month/3 months) so Volume trend's card can offer a matching range control instead of a
