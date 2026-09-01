@@ -1230,13 +1230,22 @@ async function viewPost(id, authorId, opts){
   // post object already carries `reactions` (an array of userIds) straight from GET /api/sessions/
   // :id, so this needs no extra fetch the way comments does. See toggleReaction below for the tap
   // handler and FAV_BUSY-style double-tap guard.
+  // Jeff, Sep 1: the first pass (a filled circle button with a thumbs-up) read as "a random icon
+  // stuck under Notes" -- wanted the Instagram treatment instead. That's really two things: a
+  // PLAIN icon with no button chrome around it (no circle/pill background -- just the glyph
+  // itself, the way a like/comment/share row has no buttons, only icons), and a bold count called
+  // out on its own the way Instagram bolds "24 likes" rather than a small muted number. Kept the
+  // app's own green (the same fill PR badges use) rather than switching to Instagram's red -- red
+  // is this app's reserved danger/delete color everywhere else, and a red "you liked this" would
+  // read as an error state here, not a celebration.
   const reactions = Array.isArray(post.reactions) ? post.reactions : [];
   const reactedByMe = reactions.includes(ME.id);
+  const reactCountText = reactions.length ? `${reactions.length} reaction${reactions.length===1?'':'s'}` : '';
   const reactRow = `<div class="pp-react-row">
     <button class="pp-react-btn${reactedByMe?' on':''}" id="ppReact-${id}-${authorId}" onclick="toggleReaction('${id}','${authorId}')" aria-label="${reactedByMe?'Remove reaction':'React to this workout'}">
-      <svg viewBox="0 0 24 24" fill="${reactedByMe?'currentColor':'none'}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v11H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3zm0 0 5.5-7a2 2 0 0 1 3.6 1.7L15 9h5a2 2 0 0 1 2 1.8l-1.1 8A2 2 0 0 1 18.9 21H9a2 2 0 0 1-2-2V10z"/></svg>
+      <svg viewBox="0 0 24 24" fill="${reactedByMe?'currentColor':'none'}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
     </button>
-    <span class="pp-react-count" id="ppReactCount-${id}-${authorId}">${reactions.length ? reactions.length : ''}</span>
+    <span class="pp-react-count" id="ppReactCount-${id}-${authorId}">${esc(reactCountText)}</span>
   </div>`;
   // Jeff, Aug 28: "I made my most recent posted workout on my profile public and it still says
   // 'friends only'." The badge just below was showing s.visibility -- whether the SESSION itself is
@@ -1355,7 +1364,8 @@ async function toggleReaction(id, authorId){
       btn.setAttribute('aria-label', r.reacted?'Remove reaction':'React to this workout');
       const svg = btn.querySelector('svg'); if(svg) svg.setAttribute('fill', r.reacted?'currentColor':'none');
     }
-    const cnt = $('ppReactCount-'+id+'-'+authorId); if(cnt) cnt.textContent = r.count ? String(r.count) : '';
+    const cnt = $('ppReactCount-'+id+'-'+authorId);
+    if(cnt) cnt.textContent = r.count ? `${r.count} reaction${r.count===1?'':'s'}` : '';
   } finally {
     REACT_BUSY.delete(key);
   }
