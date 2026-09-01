@@ -74,6 +74,24 @@ async function nameOf(id){
   // to render straight into the page as "with @friend, @friend", so callers must check for it.
   return hit ? hit.displayName : UNKNOWN_NAME;
 }
+// Jeff, Sep 1: "I want to be able to use the users real avatar/picture thumbnail in the comment
+// section rather than just the letter avatar." Real photo avatars already exist elsewhere in the
+// app (Home's top-corner avatar, the Profile page's own avatar, friends-list rows) via the shared
+// avatarHtml(x, cls) helper below, which expects an object with {displayName, username, avatar}
+// and falls back to a letter circle when `avatar` is empty -- comments and the "Liked by" row
+// never wired that field through, they only ever resolved a bare display name via nameOf() above.
+// personOf() is the same fetch nameOf() already makes (same /api/friends lookup, same "You"
+// special case), just returning the full shape avatarHtml() wants instead of only the name --
+// kept as a SEPARATE function rather than changing nameOf()'s return type, since nameOf() has
+// many existing callers that only want a string.
+async function personOf(id){
+  if(id===ME.id) return { id, displayName: 'You', username: ME.username, avatar: ME.avatar || '' };
+  const f = (await H.get('/api/friends'));
+  const arr = (f && f.friends) ? f.friends : (Array.isArray(f)?f:[]);
+  const hit = arr.find(x=>x.id===id);
+  return hit ? { id, displayName: hit.displayName, username: hit.username, avatar: hit.avatar || '' }
+              : { id, displayName: UNKNOWN_NAME, username: '', avatar: '' };
+}
 function fmtDate(s){ const d=new Date(s); return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}); }
 // Shared by fmtWhen and isSessionLiveNow, which both need "what calendar day is this, locally".
 function startOfDay(x){ const y = new Date(x); y.setHours(0,0,0,0); return y; }
@@ -1254,7 +1272,10 @@ async function viewPost(id, authorId, opts){
   // on a tap and can be cached once, here, in data-liked, and reused. See likedByHtml() below.
   const otherReactorIds = reactions.filter(uid => uid !== ME.id);
   const otherPreview = [];
-  for(const uid of otherReactorIds.slice(0, 3)){ otherPreview.push({ id: uid, name: await nameOf(uid) }); }
+  for(const uid of otherReactorIds.slice(0, 3)){
+    const p = await personOf(uid);
+    otherPreview.push({ id: uid, name: p.displayName, avatar: p.avatar || '' });
+  }
   const likedByInner = likedByHtml(reactedByMe, otherPreview, otherReactorIds.length);
   const likedRow = `<div class="pp-liked-row" data-liked="${esc(JSON.stringify({others: otherPreview, otherCount: otherReactorIds.length}))}">
     <button class="pp-react-btn${reactedByMe?' on':''}" id="ppReact-${id}-${authorId}" onclick="toggleReaction('${id}','${authorId}')" aria-label="${reactedByMe?'Remove reaction':'React to this workout'}">
@@ -1355,18 +1376,23 @@ async function sendPostComment(id, authorId){
 // Builds the avatar-stack + "Liked by X and N others" line that sits at the top of a posted
 // recap's Comments card, right above the comment thread (Jeff, Sep 1, after seeing the screenshot:
 // "the like button right above the comments... not in its own section above"). `otherPreview` is
-// up to 3 {id,name} pairs for reactors OTHER than you -- used for both the avatar stack and the
-// first name(s) in the text. `otherCount` is the REAL total of other reactors, not capped to 3, so
-// "and N others" stays accurate even past the avatar preview cap. Pure function of its inputs, so
-// toggleReaction below can re-run it locally off the row's cached data-liked JSON without a
-// re-fetch -- tapping the button only ever adds/removes YOU, so the "others" half never changes.
-// Returns '' (nothing rendered) when no one has reacted -- same "don't show a hollow 0 state"
-// instinct as the rest of the app.
+// up to 3 {id,name,avatar} triples for reactors OTHER than you -- used for both the avatar stack
+// and the first name(s) in the text. `otherCount` is the REAL total of other reactors, not capped
+// to 3, so "and N others" stays accurate even past the avatar preview cap. Pure function of its
+// inputs, so toggleReaction below can re-run it locally off the row's cached data-liked JSON
+// without a re-fetch -- tapping the button only ever adds/removes YOU, so the "others" half never
+// changes. Returns '' (nothing rendered) when no one has reacted -- same "don't show a hollow 0
+// state" instinct as the rest of the app. Avatars use a real photo when the reactor has one (same
+// avatarHtml() pattern as comments -- Jeff, Sep 1: "real avatar/picture thumbnail... rather than
+// just the letter avatar"), a letter circle otherwise.
 function likedByHtml(reactedByMe, otherPreview, otherCount){
-  const list = reactedByMe ? [{ id: ME.id, name: 'You' }, ...otherPreview] : otherPreview;
+  const list = reactedByMe ? [{ id: ME.id, name: 'You', avatar: ME.avatar||'' }, ...otherPreview] : otherPreview;
   const total = otherCount + (reactedByMe ? 1 : 0);
   if(!total) return '';
-  const avs = list.slice(0,3).map(p => `<span class="pp-liked-av">${esc((p.name||'?')[0]||'?')}</span>`).join('');
+  const avs = list.slice(0,3).map(p => p.avatar
+    ? `<img class="pp-liked-av" src="${esc(p.avatar)}" alt="">`
+    : `<span class="pp-liked-av">${esc((p.name||'?')[0]||'?')}</span>`
+  ).join('');
   let text;
   if(total===1) text = `Liked by <b>${esc(list[0].name)}</b>`;
   else if(total===2) text = `Liked by <b>${esc(list[0].name)}</b> and <b>${esc(list[1].name)}</b>`;
@@ -1433,16 +1459,20 @@ async function loadPostComments(id, authorId){
   const cs=await H.get(`/api/sessions/${id}/posts/${authorId}/comments`);
   if(!Array.isArray(cs)){ box.innerHTML='<div class="muted">Comments aren\'t visible here.</div>'; return; }
   if(!cs.length){ box.innerHTML='<div class="muted">No comments yet. Be the first to comment.</div>'; return; }
-  const nm={};
-  for(const c of cs){ if(!(c.userId in nm)) nm[c.userId]= await nameOf(c.userId); }
+  // Jeff, Sep 1: real photo avatars, not just letter circles -- avatarHtml() (defined below) is
+  // the app's existing real-photo-or-initials helper, already used on Home/Profile/friends rows.
+  // people[] caches the {displayName, username, avatar} shape it wants, one lookup per unique
+  // commenter (same /api/friends round-trip nameOf() always made here, just carrying avatar too).
+  const people={};
+  for(const c of cs){ if(!(c.userId in people)) people[c.userId] = await personOf(c.userId); }
   box.innerHTML = cs.map(c=>{
-    const name = c.userId===ME.id?'You':(nm[c.userId]||'User');
-    const ini = c.userId===ME.id?'Y':((nm[c.userId]||'?')[0]||'?');
+    const p = people[c.userId] || { displayName:'User', username:'', avatar:'' };
+    const name = c.userId===ME.id?'You':(p.displayName||'User');
     // "You" used to get an off-palette orange found nowhere else in the app, while everyone else
     // got the old rainbow hash -- two more one-off treatments on top of Home's own green avatar.
-    // avatarColor() is now one consistent accent for everyone (see its definition), including you;
-    // the bold "You"/name label right next to it is what actually says whose comment this is.
-    const col = avatarColor(nm[c.userId]||c.userId);
+    // avatarColor() is now one consistent accent for everyone (see its definition) for anyone who
+    // HASN'T set a photo; avatarHtml() below reaches for the real one first.
+    const avHtml = avatarHtml(c.userId===ME.id ? { ...p, displayName:'You' } : p, 'fav-av');
     const t = new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
     // Per-comment reaction (Task #157 follow-up, Jeff Sep 1: "that instagram feel in that section").
     // Deliberately smaller/quieter than the post-level reaction row above the Comments header --
@@ -1454,7 +1484,7 @@ async function loadPostComments(id, authorId){
     const reactions = Array.isArray(c.reactions) ? c.reactions : [];
     const reactedByMe = reactions.includes(ME.id);
     const ck = id+'-'+authorId+'-'+c.id;
-    return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div><div class="cmt-react-col"><button class="cmt-react-btn'+(reactedByMe?' on':'')+'" id="cmtReact-'+ck+'" onclick="toggleCommentReaction(\''+id+'\',\''+authorId+'\',\''+c.id+'\')" aria-label="'+(reactedByMe?'Remove reaction':'React to this comment')+'"><svg viewBox="0 0 24 24" fill="'+(reactedByMe?'currentColor':'none')+'" stroke="currentColor" stroke-width="'+(reactedByMe?'0':'2')+'" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button><span class="cmt-react-count" id="cmtReactCount-'+ck+'">'+(reactions.length||'')+'</span></div></div>';
+    return '<div class="cmt">'+avHtml+'<div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div><div class="cmt-react-col"><button class="cmt-react-btn'+(reactedByMe?' on':'')+'" id="cmtReact-'+ck+'" onclick="toggleCommentReaction(\''+id+'\',\''+authorId+'\',\''+c.id+'\')" aria-label="'+(reactedByMe?'Remove reaction':'React to this comment')+'"><svg viewBox="0 0 24 24" fill="'+(reactedByMe?'currentColor':'none')+'" stroke="currentColor" stroke-width="'+(reactedByMe?'0':'2')+'" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button><span class="cmt-react-count" id="cmtReactCount-'+ck+'">'+(reactions.length||'')+'</span></div></div>';
   }).join('');
 }
 let CMT_REACT_BUSY = new Set();
@@ -5068,12 +5098,22 @@ async function profileView(id, opts){
     const exList = exs.length ? `<div class="wex-h">Exercises</div><ol class="wexb">${exs.map(e=>`<li>${esc(e)}</li>`).join('')}</ol>${more>0?`<div class="wexb-more">+${more} more</div>`:''}` : '<div class="wexnone">No exercises</div>';
     const collab = (w.collaborators&&w.collaborators.length) ? `with @${esc(w.collaborators[0].username)}${w.collaborators.length>1?` +${w.collaborators.length-1}`:''}` : '';
     const when = w.at ? fmtDate(w.at) : (w.date||'');
+    // Jeff, Sep 1: "how do we show comments on a workout BEFORE clicking in - I can see how many
+    // likes and comments it has [on the thumbnail], then click in to see the actual comments."
+    // Counts only (no names/text) -- this card is a preview, the full thread is one tap away in
+    // viewPost(). Same outline heart glyph as the reaction button itself (post/comment level) so
+    // this reads as "the same like," not a new icon language; a small speech-bubble for comments,
+    // both muted (this is metadata, not a CTA -- tapping the whole card already opens the post).
+    const rc = (w.post && w.post.reactionCount) || 0;
+    const cc = (w.post && w.post.commentCount) || 0;
+    const social = (rc||cc) ? `<div class="wsocial">${rc?`<span class="wsocial-item"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>${rc}</span>`:''}${cc?`<span class="wsocial-item"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>${cc}</span>`:''}</div>` : '';
     return `<div class="wtile" onclick="viewPost('${w.id}','${id}')">
       <div class="wdate">${esc(when)}</div>
       <div class="wtitle">${esc(title)}</div>
       ${img}
       <div class="wex">${exList}</div>
       ${collab?`<div class="wcollab">${collab}</div>`:''}
+      ${social}
     </div>`;
   }
   // isPrivate FIRST: a private profile returns myWorkouts:[] even when the person has plenty,

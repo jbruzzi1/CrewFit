@@ -698,7 +698,14 @@ function profileOf(id, viewerId, localToday) {
           media: (post.media||[]).slice(0,6),
           mediaCount: (post.media||[]).length,
           visibility: post.visibility,
-          at: post.at
+          at: post.at,
+          // Jeff, Sep 1: "how do we show comments/likes BEFORE clicking into the workout" -- these
+          // two counts are the whole answer. reactions/comments already sit on `post` server-side by
+          // the time we're here; we're only exposing their lengths, never the arrays themselves (the
+          // full comment text/authors stay behind the existing per-comment endpoint + its own
+          // canSeePostAuthor visibility check -- a count is not the content).
+          reactionCount: Array.isArray(post.reactions) ? post.reactions.length : 0,
+          commentCount: Array.isArray(post.comments) ? post.comments.length : 0
         } : null
       };
     });
