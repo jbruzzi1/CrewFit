@@ -2614,7 +2614,19 @@ function renderWorkoutEdit(s){
         <span class="muted">to</span><input class="inex-num" id="inex-repsmax-${e.id}" type="number" min="1" placeholder="—" value="${e.defaultRepsMax||''}" oninput="markDirty()"></div>
     </div>`).join('');
   $('app').innerHTML = `<div class="wrap edit-mode">
-    <div class="edit-banner">✎ Editing — tap Save when done</div>
+    <!-- Jeff, Sep 1: "add a save button on the top right when editing a workout. Scrolling to
+         the bottom is annoying and everyone is use to having a save button on the top right of
+         things." This banner was already position:sticky (top:0) -- it rides along at the top of
+         the screen the whole time you're editing, so putting Save here means it's reachable with
+         zero scrolling no matter how far down the exercise list you are. class="sm blue": the
+         plain button.blue + button.sm rules (a solid filled pill, themed in both light/dark --
+         see their own rules in the stylesheet) -- the same "this is THE action, not a suggestion"
+         treatment .sess-actions .sm.blue uses elsewhere (see that rule's own comment) for the
+         identical reason, just without that class's own .sess-actions-scoped selector, which
+         doesn't apply to a button sitting inside .edit-banner. Reused styling, not a new button
+         look. The bottom sticky-bar's own Cancel/Save changes pair is untouched -- this adds a
+         second way to reach Save, it doesn't replace the first. -->
+    <div class="edit-banner"><span>✎ Editing</span><button class="sm blue" onclick="saveWorkoutEdit('${s.id}')">Save</button></div>
     <label class="muted">Workout name</label><input id="editWName" placeholder="e.g. Chest & Back" value="${esc(s.name||'')}" oninput="markDirty()">
     <div class="muted sess-meta">${fmtWhen(s.scheduledAt)}</div>
     <h2>Workout</h2>

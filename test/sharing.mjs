@@ -160,6 +160,37 @@ console.log('\nan invited person can look at the workout before deciding');
   ok(!/class="inv-row"/.test(card), 'and it does not reuse .inv-row, which belongs to the friend picker');
 }
 
+console.log('\nediting a workout: Save is reachable at the top, without scrolling (Jeff, Sep 1)');
+{
+  // "add a save button on the top right when editing a workout. Scrolling to the bottom is
+  // annoying and everyone is use to having a save button on the top right of things." The
+  // edit-banner was already position:sticky (top:0) — it rides along at the top of the screen
+  // the whole time you're editing — so the fix put Save there instead of inventing new sticky
+  // chrome. Checked by source regex (renderWorkoutEdit is one big template literal, same style
+  // as the invite-banner checks above) rather than a full DOM render, since what matters here is
+  // markup shape, not behavior already covered by stale-save-race.mjs's saveWorkoutEdit tests.
+  const src = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const banner = (src.match(/<div class="edit-banner">[\s\S]*?<\/div>/) || [''])[0];
+
+  ok(banner.includes('class="edit-banner"'), 'the edit-banner is still rendered at all');
+  ok(/<button class="sm blue" onclick="saveWorkoutEdit\('\$\{s\.id\}'\)">Save<\/button>/.test(banner),
+     'it contains a Save button wired to the real saveWorkoutEdit(s.id) — the same function the bottom bar calls, not a new/duplicate save path');
+  // .sm.blue is the app's existing "this is THE action" solid-pill treatment (see that class's
+  // own comment, reused deliberately rather than inventing a new button style for one screen).
+  ok(/\.sm\.blue\s*\{|button\.blue\s*\{.*background:var\(--blue\)/.test(css) || /button\.blue\s*\{/.test(css),
+     '.sm/.blue button styling exists in the stylesheet (not an unstyled/invisible button)');
+  ok(/\.edit-banner\s*\{[^}]*display:flex/.test(css),
+     'the banner is a flex row now (label + button), not still centered plain text');
+
+  // The bottom sticky-bar's own Save changes button must be untouched — this adds a second way
+  // to reach Save, it does not replace or duplicate-break the first.
+  ok(/<button class="sec" onclick="exitWorkoutEdit\('\$\{s\.id\}'\)">Cancel<\/button>/.test(src),
+     'the bottom Cancel button is still there, unchanged');
+  ok(/<button class="btn-primary" onclick="saveWorkoutEdit\('\$\{s\.id\}'\)">Save changes<\/button>/.test(src),
+     'the bottom "Save changes" button is still there, unchanged — this is additive, not a replacement');
+}
+
 console.log('\na workout is called the same thing on every screen it appears on');
 {
   // Tapping "Push Day" and landing on a page headed "Aug 14, 5:00 PM" reads like the wrong
