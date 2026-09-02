@@ -821,8 +821,7 @@
         "shoulders"
       ],
       "equipment": [
-        "dumbbells",
-        "cable"
+        "dumbbells"
       ],
       "is_compound": false,
       "level": "beginner",
@@ -849,8 +848,7 @@
         "shoulders"
       ],
       "equipment": [
-        "dumbbells",
-        "cable"
+        "dumbbells"
       ],
       "is_compound": false,
       "level": "beginner",
@@ -864,9 +862,7 @@
         "shoulders"
       ],
       "equipment": [
-        "dumbbells",
-        "cable",
-        "rear delt machine"
+        "dumbbells"
       ],
       "is_compound": false,
       "level": "beginner",
@@ -916,19 +912,16 @@
     },
     {
       "name": "Shrugs",
-      "pattern": "push",
-      "category": "push",
+      "pattern": "pull",
+      "category": "traps",
       "muscle_groups": [
         "traps"
       ],
       "equipment": [
-        "barbell",
-        "dumbbells",
-        "trap machine"
+        "barbell"
       ],
       "is_compound": false,
-      "level": "beginner",
-      "loadType": "pair"
+      "level": "beginner"
     },
     {
       "name": "Smith Machine Shoulder Press",
@@ -998,11 +991,10 @@
       "equipment": [
         "barbell",
         "ez bar",
-        "dumbbells"
+        "bench"
       ],
       "is_compound": false,
-      "level": "beginner",
-      "loadType": "pair"
+      "level": "beginner"
     },
     {
       "name": "Rope Pushdown",
@@ -1419,12 +1411,10 @@
       ],
       "equipment": [
         "preacher bench",
-        "ez bar",
-        "dumbbells"
+        "ez bar"
       ],
       "is_compound": false,
-      "level": "beginner",
-      "loadType": "pair"
+      "level": "beginner"
     },
     {
       "name": "Concentration Curl",
@@ -1475,12 +1465,10 @@
       ],
       "equipment": [
         "incline bench",
-        "dumbbells",
         "barbell"
       ],
       "is_compound": false,
-      "level": "intermediate",
-      "loadType": "pair"
+      "level": "intermediate"
     },
     {
       "name": "Zottman Curl",
@@ -2141,19 +2129,6 @@
       "loadType": "pair"
     },
     {
-      "name": "Barbell Shrug",
-      "pattern": "pull",
-      "category": "traps",
-      "muscle_groups": [
-        "traps"
-      ],
-      "equipment": [
-        "barbell"
-      ],
-      "is_compound": false,
-      "level": "beginner"
-    },
-    {
       "name": "Rack Pull",
       "pattern": "pull",
       "category": "traps",
@@ -2682,12 +2657,10 @@
         "biceps"
       ],
       "equipment": [
-        "cable",
-        "dumbbell"
+        "cable"
       ],
       "is_compound": false,
-      "level": "beginner",
-      "loadType": "pair"
+      "level": "beginner"
     },
     {
       "name": "Cross-Body Hammer Curl",
@@ -2726,12 +2699,10 @@
         "biceps"
       ],
       "equipment": [
-        "barbell",
-        "dumbbell"
+        "barbell"
       ],
       "is_compound": false,
-      "level": "beginner",
-      "loadType": "pair"
+      "level": "beginner"
     },
     {
       "name": "Reverse Curl",
@@ -3763,6 +3734,131 @@
       ],
       "is_compound": true,
       "level": "beginner"
+    },
+    {
+      "name": "Dumbbell Preacher Curl",
+      "pattern": "pull",
+      "category": "biceps",
+      "muscle_groups": [
+        "biceps"
+      ],
+      "equipment": [
+        "preacher bench",
+        "dumbbells"
+      ],
+      "is_compound": false,
+      "level": "beginner",
+      "loadType": "pair"
+    },
+    {
+      "name": "Machine Preacher Curl",
+      "pattern": "pull",
+      "category": "biceps",
+      "muscle_groups": [
+        "biceps"
+      ],
+      "equipment": [
+        "preacher curl machine"
+      ],
+      "is_compound": false,
+      "level": "beginner"
+    },
+    {
+      "name": "Dumbbell Skull Crusher",
+      "pattern": "push",
+      "category": "triceps",
+      "muscle_groups": [
+        "triceps"
+      ],
+      "equipment": [
+        "dumbbells",
+        "bench"
+      ],
+      "is_compound": false,
+      "level": "beginner",
+      "loadType": "pair"
+    },
+    {
+      "name": "Dumbbell Spider Curl",
+      "pattern": "pull",
+      "category": "biceps",
+      "muscle_groups": [
+        "biceps"
+      ],
+      "equipment": [
+        "incline bench",
+        "dumbbells"
+      ],
+      "is_compound": false,
+      "level": "intermediate",
+      "loadType": "pair"
+    },
+    {
+      "name": "Machine Shrug",
+      "pattern": "pull",
+      "category": "traps",
+      "muscle_groups": [
+        "traps"
+      ],
+      "equipment": [
+        "trap machine"
+      ],
+      "is_compound": false,
+      "level": "beginner"
+    },
+    {
+      "name": "Dumbbell 21s Curl",
+      "pattern": "pull",
+      "category": "biceps",
+      "muscle_groups": [
+        "biceps"
+      ],
+      "equipment": [
+        "dumbbell"
+      ],
+      "is_compound": false,
+      "level": "beginner",
+      "loadType": "pair"
+    },
+    {
+      "name": "Machine Lateral Raise",
+      "pattern": "push",
+      "category": "shoulders",
+      "muscle_groups": [
+        "shoulders"
+      ],
+      "equipment": [
+        "lateral raise machine"
+      ],
+      "is_compound": false,
+      "level": "beginner"
+    },
+    {
+      "name": "Machine Rear Delt Fly",
+      "pattern": "push",
+      "category": "shoulders",
+      "muscle_groups": [
+        "shoulders"
+      ],
+      "equipment": [
+        "rear delt machine"
+      ],
+      "is_compound": false,
+      "level": "beginner"
+    },
+    {
+      "name": "Dumbbell Bayesian Curl",
+      "pattern": "pull",
+      "category": "biceps",
+      "muscle_groups": [
+        "biceps"
+      ],
+      "equipment": [
+        "dumbbell"
+      ],
+      "is_compound": false,
+      "level": "beginner",
+      "loadType": "single"
     }
   ]
 }
