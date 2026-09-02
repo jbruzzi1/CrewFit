@@ -112,11 +112,13 @@ console.log('\nthat SAME user, after finishing it -> false, does not still nag s
 console.log('\na second participant in the SAME session who has NOT finished it is still flagged independently');
 {
   const bob = await reg('wr_bob', 'pass1234', 'Bob');
-  await post('/api/friends/request', { username: 'wr_bob' }, alice.token);
-  await post('/api/friends/accept', { from: alice.user.id }, bob.token);
+  await post('/api/follow/' + bob.user.id, {}, alice.token);
+  await post('/api/follow-requests/' + alice.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + alice.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, alice.token);
   const s2 = await post('/api/sessions', {
     name: 'Team Push', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Bench Press' }],
-    inviteUsernames: ['wr_bob'], visibility: 'friends',
+    inviteUsernames: ['wr_bob'], visibility: 'public',
   }, alice.token);
   const invited = await get('/api/sessions', bob.token);
   const mine = invited.find(x => x.name === 'Team Push');
@@ -155,11 +157,13 @@ console.log('\na session scheduled YESTERDAY or TOMORROW does not count as "toda
 console.log('\nan invited-but-not-yet-accepted user is not a participant, so not flagged');
 {
   const finn = await reg('wr_finn', 'pass1234', 'Finn');
-  await post('/api/friends/request', { username: 'wr_finn' }, alice.token);
-  await post('/api/friends/accept', { from: alice.user.id }, finn.token);
+  await post('/api/follow/' + finn.user.id, {}, alice.token);
+  await post('/api/follow-requests/' + alice.user.id + '/accept', {}, finn.token);
+  await post('/api/follow/' + alice.user.id, {}, finn.token);
+  await post('/api/follow-requests/' + finn.user.id + '/accept', {}, alice.token);
   await post('/api/sessions', {
     name: 'Invite Only', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Bench Press' }],
-    inviteUsernames: ['wr_finn'], visibility: 'friends',
+    inviteUsernames: ['wr_finn'], visibility: 'public',
   }, alice.token);
 
   const status = await get('/api/me/workout-reminder-status', finn.token);

@@ -71,15 +71,14 @@ async function user(name) {
     body: JSON.stringify({ username, pin: 'pass1234', displayName: name }) }).then(x => x.json());
   return { id: r.user.id, username, name, H: { ...J, Authorization: 'Bearer ' + r.token } };
 }
-const befriend = async (a, b) => {
-  await fetch(B + '/api/friends/request', { method: 'POST', headers: a.H, body: JSON.stringify({ username: b.username }) });
-  await fetch(B + '/api/friends/accept', { method: 'POST', headers: b.H, body: JSON.stringify({ from: a.id }) });
-};
 // a follows b, and b approves — a is now an approved follower who can see b's private profile
 const follow = async (a, b) => {
   await fetch(B + '/api/follow/' + b.id, { method: 'POST', headers: a.H });
   await fetch(B + '/api/follow-requests/' + a.id + '/accept', { method: 'POST', headers: b.H });
 };
+// v190: "friends" retired -- mutual follow (both directions) reproduces the old symmetric
+// friendship this helper's name still describes.
+const befriend = async (a, b) => { await follow(a, b); await follow(b, a); };
 const get = (u, p) => fetch(B + p, { headers: u.H });
 const post = (u, p, b) => fetch(B + p, { method: 'POST', headers: u.H, body: JSON.stringify(b || {}) });
 
@@ -104,7 +103,7 @@ await befriend(alice, bob);
 await befriend(alice, carol);       // Carol is Alice's friend and nothing else
 
 const s = await fetch(B + '/api/sessions', { method: 'POST', headers: alice.H,
-  body: JSON.stringify({ name: 'Heavy Day', visibility: 'friends', scheduledAt: '2026-08-20T18:00:00Z',
+  body: JSON.stringify({ name: 'Heavy Day', visibility: 'public', scheduledAt: '2026-08-20T18:00:00Z',
     inviteUsernames: [bob.username],
     exercises: [{ name: 'Conventional Deadlift' }] }) }).then(x => x.json());
 await post(bob, `/api/sessions/${s.id}/accept`);
@@ -112,7 +111,7 @@ await post(bob, `/api/sessions/${s.id}/log`, { exerciseId: s.exercises[0].id, we
 await post(alice, `/api/sessions/${s.id}/comments`, { text: 'rack three, meet me there' });
 await post(alice, `/api/sessions/${s.id}/lock`);
 await post(alice, `/api/sessions/${s.id}/post`, { notes: 'felt awful, do not tell anyone',
-  visibility: 'only_me',
+  visibility: 'private',
   media: [{ type: 'image', src: 'data:image/png;base64,' + 'A'.repeat(400) }] });
 
 console.log('a logged-in stranger, related to nobody');
@@ -161,7 +160,7 @@ console.log('\nsomeone holding an invitation they have not answered');
   const dave = await user('Dave');
   await befriend(alice, dave);
   const s2 = await fetch(B + '/api/sessions', { method: 'POST', headers: alice.H,
-    body: JSON.stringify({ name: 'Push', visibility: 'friends', scheduledAt: '2026-08-21T18:00:00Z',
+    body: JSON.stringify({ name: 'Push', visibility: 'public', scheduledAt: '2026-08-21T18:00:00Z',
       inviteUsernames: [bob.username, dave.username],
       exercises: [{ name: 'Flat Barbell Bench Press' }] }) }).then(x => x.json());
   await post(bob, `/api/sessions/${s2.id}/accept`);
@@ -178,14 +177,18 @@ console.log('\nsomeone holding an invitation they have not answered');
   ok((v.comments || []).length > 0, 'and he can read the chat, because deciding means being able to ask');
 }
 
-console.log('\nan "only me" post belongs to whoever wrote it');
+console.log('\na "private" post is shared with the whole crew who trained together, not just its author');
 {
-  // Bob was IN the workout and still must not read Alice's private notes
+  // v190 (Sep 2026), Jeff: "private... only the creator or who was part of it." This deliberately
+  // REVERSES the old rule tested here (the old 'only_me' meant only the author, even to someone who
+  // trained the very same workout) — Bob was IN the workout with Alice, so he can now read what she
+  // wrote, even though he isn't the author. Someone who is NOT part of this session at all (carol,
+  // above — a friend of Alice's but never in the workout) still gets nothing, same as before.
   const v = await get(bob, `/api/sessions/${s.id}`).then(x => x.json());
   const aliceView = (v.posts && v.posts[alice.id]) || {};
-  const bad = leaks(JSON.stringify(aliceView));
-  ok(!bad.length, `even a participant does not get them — ${bad.length ? 'LEAKS ' + bad.join(', ') : 'hidden'}`);
-  ok(aliceView.hidden === true, 'he is told a post exists, not what it says');
+  ok(/do not tell anyone/.test(JSON.stringify(aliceView)),
+    'a fellow participant CAN read it now — private means hidden from the internet at large, not from your own training partners');
+  ok(aliceView.hidden !== true, 'and it is not marked hidden for him');
   const mine = await get(alice, `/api/sessions/${s.id}`).then(x => x.json());
   ok(/do not tell anyone/.test(JSON.stringify((mine.posts && mine.posts[alice.id]) || {})), 'and Alice still reads her own');
 }
@@ -220,7 +223,12 @@ console.log('\na published workout reaches the people it was published for');
   // Session visibility defaults to 'private' and a post carries its OWN. Gating the published
   // record behind the session's meant a post shared publicly could not be opened by anyone, and
   // the one case that did open rendered as though no sets had been logged.
+  // v190 (Sep 2026): a 'public' post is only actually open to a total stranger if the AUTHOR'S OWN
+  // profile is also Public (canSeeProfile(authorId, viewer) gates it, same rule as the rest of the
+  // profile) — every account defaults to Private, so pub has to opt into Public here for "reaches
+  // a total stranger" to be the true statement this block is testing.
   const pub = await user('Pubby'), far = await user('Far');
+  await fetch(B + '/api/me/profile-visibility', { method: 'POST', headers: pub.H, body: JSON.stringify({ visibility: 'public' }) });
   const ps = await fetch(B + '/api/sessions', { method: 'POST', headers: pub.H,
     body: JSON.stringify({ name: 'Shared Day', visibility: 'private', scheduledAt: '2026-08-22T18:00:00Z',
       exercises: [{ name: 'Front Squat' }] }) }).then(x => x.json());
@@ -241,7 +249,7 @@ console.log('\na published workout reaches the people it was published for');
     body: JSON.stringify({ name: 'Quiet Day', visibility: 'private', scheduledAt: '2026-08-23T18:00:00Z',
       exercises: [{ name: 'Front Squat' }] }) }).then(x => x.json());
   await post(pub, `/api/sessions/${priv.id}/lock`);
-  await post(pub, `/api/sessions/${priv.id}/post`, { notes: 'felt awful, do not tell anyone', visibility: 'only_me', media: [] });
+  await post(pub, `/api/sessions/${priv.id}/post`, { notes: 'felt awful, do not tell anyone', visibility: 'private', media: [] });
   const denied = await get(far, `/api/sessions/${priv.id}`);
   ok(denied.status === 403, `and an "only me" post is still refused (got ${denied.status})`);
 }
@@ -256,12 +264,12 @@ console.log('\na profile does not leak what the session route refuses');
   await befriend(guest, vic);                       // Vic knows the guest, not the host
   await follow(vic, guest);                         // and follows the guest, approved — sees the guest's profile
   const hs = await fetch(B + '/api/sessions', { method: 'POST', headers: host.H,
-    body: JSON.stringify({ name: 'Host Day', visibility: 'friends', scheduledAt: '2026-08-24T18:00:00Z',
+    body: JSON.stringify({ name: 'Host Day', visibility: 'public', scheduledAt: '2026-08-24T18:00:00Z',
       inviteUsernames: [guest.username], exercises: [{ name: 'Front Squat' }] }) }).then(x => x.json());
   await post(guest, `/api/sessions/${hs.id}/accept`);
   await post(guest, `/api/sessions/${hs.id}/log`, { exerciseId: hs.exercises[0].id, weight: 487, reps: 3, set: 1 });
   await post(host, `/api/sessions/${hs.id}/lock`);
-  await post(host, `/api/sessions/${hs.id}/post`, { notes: 'felt awful, do not tell anyone', visibility: 'friends', media: [] });
+  await post(host, `/api/sessions/${hs.id}/post`, { notes: 'felt awful, do not tell anyone', visibility: 'private', media: [] });
 
   const direct = await get(vic, `/api/sessions/${hs.id}`);
   ok(direct.status === 403, `the session route refuses Vic (got ${direct.status})`);

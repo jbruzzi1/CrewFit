@@ -43,8 +43,12 @@ const reg = (username, pin, displayName) => post('/api/register', { username, pi
 async function makeSessionWithSwap(hostU, bobU, exerciseName, swapTo) {
   const host = await reg(hostU, 'pass1234', hostU);
   const bob = await reg(bobU, 'pass1234', bobU);
-  await post('/api/friends/request', { username: bobU }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  // v190: "friends" retired -- mutual follow (both directions) reproduces the old symmetric
+  // friendship this helper's name still describes, so canSeeProfile/connectionsOf work either way.
+  await post('/api/follow/' + bob.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + host.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, host.token);
   const s = await post('/api/sessions', {
     name: 'Leg Day', scheduledAt: new Date().toISOString(), exercises: [{ name: exerciseName }],
     inviteUsernames: [bobU], visibility: 'private',
@@ -93,11 +97,15 @@ console.log('\na swap suggestion rejected, then a stale approve on the same edit
 async function makeSessionWithJoinRequest(hostU, bobU) {
   const host = await reg(hostU, 'pass1234', hostU);
   const bob = await reg(bobU, 'pass1234', bobU);
-  await post('/api/friends/request', { username: bobU }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  // v190: "friends" retired -- mutual follow (both directions) reproduces the old symmetric
+  // friendship this helper's name still describes, so canSeeProfile/connectionsOf work either way.
+  await post('/api/follow/' + bob.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + host.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, host.token);
   const s = await post('/api/sessions', {
     name: 'Open Session', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Row' }],
-    visibility: 'friends',
+    visibility: 'public',
   }, host.token);
   const joined = await post('/api/sessions/' + s.id + '/join', {}, bob.token);
   ok(joined.requested, `bob requests to join (got ${JSON.stringify(joined)})`);

@@ -90,11 +90,13 @@ console.log("the exact bug: a departed participant's recap is set to 'Only me', 
   const host = await reg('hr_host', 'pass1234', 'Host');
   const partnerA = await reg('hr_partnera', 'pass1234', 'PartnerA');
   const buddy = await reg('hr_buddy', 'pass1234', 'Buddy');
-  for (const uname of ['hr_partnera', 'hr_buddy']) {
-    await post('/api/friends/request', { username: uname }, host.token);
+  // v190: mutual follow reproduces the old symmetric "friends" relationship.
+  for (const other of [partnerA, buddy]) {
+    await post('/api/follow/' + other.user.id, {}, host.token);
+    await post('/api/follow-requests/' + host.user.id + '/accept', {}, other.token);
+    await post('/api/follow/' + host.user.id, {}, other.token);
+    await post('/api/follow-requests/' + other.user.id + '/accept', {}, host.token);
   }
-  await post('/api/friends/accept', { from: host.user.id }, partnerA.token);
-  await post('/api/friends/accept', { from: host.user.id }, buddy.token);
 
   const s = await post('/api/sessions', {
     name: 'Push Day', scheduledAt: new Date().toISOString(),
@@ -112,10 +114,18 @@ console.log("the exact bug: a departed participant's recap is set to 'Only me', 
   // Overhead Press is deliberately never logged by anyone — the genuinely-empty control case.
   await post('/api/sessions/' + s.id + '/log', { exerciseId: benchId, weight: 185, reps: 5 }, partnerA.token);
   await post('/api/sessions/' + s.id + '/log', { exerciseId: benchId, weight: 185, reps: 5, set: 2 }, partnerA.token);
-  const posted = await post('/api/sessions/' + s.id + '/post', { notes: 'good session', visibility: 'only_me', media: [] }, partnerA.token);
-  ok(!posted.error, `partnerA posts a private ("Only me") recap (got ${posted.error})`);
+  const posted = await post('/api/sessions/' + s.id + '/post', { notes: 'good session', visibility: 'private', media: [] }, partnerA.token);
+  ok(!posted.error, `partnerA posts a private recap (got ${posted.error})`);
   const left = await post('/api/sessions/' + s.id + '/leave', { keep: true }, partnerA.token);
   ok(!!left.left, `partnerA leaves, keeping credit (got ${JSON.stringify(left)})`);
+  // v190 (Sep 2026): 'private' WIDENED to admit every CURRENT member of the session, not just the
+  // author (Jeff: "private... only the creator or who was part of it") — buddy staying a current
+  // participant would now just see partnerA's recap outright, which defeats what this test is
+  // proving. Buddy leaves too (keeping credit, so he still has a real reason to view the session
+  // afterward) so he is genuinely no longer a member when he looks — exactly the "departed viewer,
+  // someone else's real-but-hidden sets" shape the test's own name describes.
+  const buddyLeft = await post('/api/sessions/' + s.id + '/leave', {}, buddy.token);
+  ok(!!buddyLeft.left, `buddy also leaves, keeping credit, before looking (got ${JSON.stringify(buddyLeft)})`);
 
   const ctx = makeCtx();
   vm.runInContext(`TOKEN = ${JSON.stringify(buddy.token)}; ME = ${JSON.stringify(buddy.user)};`, ctx);

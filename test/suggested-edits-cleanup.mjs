@@ -40,8 +40,10 @@ console.log('remove-mine withdraws a still-pending swap suggestion, same as /lea
 {
   const host = await reg('sec_host1', 'pass1234', 'Host1');
   const bob = await reg('sec_bob1', 'pass1234', 'Bob1');
-  await post('/api/friends/request', { username: 'sec_bob1' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  await post('/api/follow/' + bob.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + host.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, host.token);
   const s = await post('/api/sessions', {
     name: 'Leg Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Squat' }],
     inviteUsernames: ['sec_bob1'], visibility: 'private',
@@ -63,8 +65,10 @@ console.log('\nreset-workouts (stripUserFromSession) withdraws it too');
 {
   const host = await reg('sec_host2', 'pass1234', 'Host2');
   const bob = await reg('sec_bob2', 'pass1234', 'Bob2');
-  await post('/api/friends/request', { username: 'sec_bob2' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  await post('/api/follow/' + bob.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + host.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, host.token);
   const s = await post('/api/sessions', {
     name: 'Pull Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Row' }],
     inviteUsernames: ['sec_bob2'], visibility: 'private',
@@ -85,8 +89,10 @@ console.log('\ncontrol: an APPROVED swap survives either route -- it was settled
 {
   const host = await reg('sec_host3', 'pass1234', 'Host3');
   const bob = await reg('sec_bob3', 'pass1234', 'Bob3');
-  await post('/api/friends/request', { username: 'sec_bob3' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  await post('/api/follow/' + bob.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + host.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, host.token);
   const s = await post('/api/sessions', {
     name: 'Arm Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Curl' }],
     inviteUsernames: ['sec_bob3'], visibility: 'private',
@@ -113,8 +119,10 @@ console.log('\ndecline withdraws a still-pending swap suggested before deciding 
   // and if the creator approves it anyway, notifies the decliner about a workout they said no to.
   const host = await reg('sec_host4', 'pass1234', 'Host4');
   const bob = await reg('sec_bob4', 'pass1234', 'Bob4');
-  await post('/api/friends/request', { username: 'sec_bob4' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  await post('/api/follow/' + bob.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + host.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, host.token);
   const s = await post('/api/sessions', {
     name: 'Push Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Bench Press' }],
     inviteUsernames: ['sec_bob4'], visibility: 'private',
@@ -137,8 +145,10 @@ console.log('\ncontrol: an APPROVED swap survives a decline too -- it was settle
 {
   const host = await reg('sec_host5', 'pass1234', 'Host5');
   const bob = await reg('sec_bob5', 'pass1234', 'Bob5');
-  await post('/api/friends/request', { username: 'sec_bob5' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  await post('/api/follow/' + bob.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + host.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, host.token);
   const s = await post('/api/sessions', {
     name: 'Chest Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Fly' }],
     inviteUsernames: ['sec_bob5'], visibility: 'private',
@@ -158,10 +168,14 @@ console.log('\nthe creator editing the invite list and dropping someone withdraw
   const host = await reg('sec_host6', 'pass1234', 'Host6');
   const bob = await reg('sec_bob6', 'pass1234', 'Bob6');
   const charlie = await reg('sec_charlie6', 'pass1234', 'Charlie6');
-  await post('/api/friends/request', { username: 'sec_bob6' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
-  await post('/api/friends/request', { username: 'sec_charlie6' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, charlie.token);
+  await post('/api/follow/' + bob.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + host.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, host.token);
+  await post('/api/follow/' + charlie.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, charlie.token);
+  await post('/api/follow/' + host.user.id, {}, charlie.token);
+  await post('/api/follow-requests/' + charlie.user.id + '/accept', {}, host.token);
   const s = await post('/api/sessions', {
     name: 'Back Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Deadlift' }],
     inviteUsernames: ['sec_bob6', 'sec_charlie6'], visibility: 'private',
@@ -185,8 +199,10 @@ console.log('\ncontrol: re-editing the invite list WITHOUT dropping someone leav
 {
   const host = await reg('sec_host7', 'pass1234', 'Host7');
   const bob = await reg('sec_bob7', 'pass1234', 'Bob7');
-  await post('/api/friends/request', { username: 'sec_bob7' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  await post('/api/follow/' + bob.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + host.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, host.token);
   const s = await post('/api/sessions', {
     name: 'Shoulder Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Press' }],
     inviteUsernames: ['sec_bob7'], visibility: 'private',

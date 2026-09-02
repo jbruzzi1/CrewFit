@@ -90,8 +90,10 @@ console.log('\nkeep-leave (POST /leave with keep:true) credits through the same 
 {
   const dan = await reg('ld_dan', 'pass1234', 'Dan');
   const erin = await reg('ld_erin', 'pass1234', 'Erin');
-  await post('/api/friends/request', { username: 'ld_dan' }, erin.token);
-  await post('/api/friends/accept', { from: erin.user.id }, dan.token);
+  await post('/api/follow/' + dan.user.id, {}, erin.token);
+  await post('/api/follow-requests/' + erin.user.id + '/accept', {}, dan.token);
+  await post('/api/follow/' + erin.user.id, {}, dan.token);
+  await post('/api/follow-requests/' + dan.user.id + '/accept', {}, erin.token);
   const s = await post('/api/sessions', {
     name: 'Shared Session', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Squat' }],
     inviteUsernames: [], visibility: 'private',

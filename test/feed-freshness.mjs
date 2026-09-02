@@ -40,8 +40,10 @@ await new Promise(res => {
 
 const alice = await post('/api/register', { username: 'alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
 const bob   = await post('/api/register', { username: 'bob',   pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
-await post('/api/friends/request', { username: 'bob' }, alice.token);
-await post('/api/friends/accept', { from: alice.user.id }, bob.token);
+await post('/api/follow/' + bob.user.id, {}, alice.token);
+await post('/api/follow-requests/' + alice.user.id + '/accept', {}, bob.token);
+await post('/api/follow/' + alice.user.id, {}, bob.token);
+await post('/api/follow-requests/' + bob.user.id + '/accept', {}, alice.token);
 
 console.log('\na PR older than a week does not haunt the friends feed forever');
 {
@@ -51,23 +53,23 @@ console.log('\na PR older than a week does not haunt the friends feed forever');
   // test is checking (age), and the assertions below would pass for the wrong cause.
   const veryOld = new Date(Date.now() - 40 * 24 * 3600 * 1000).toISOString();
   const old = new Date(Date.now() - 20 * 24 * 3600 * 1000).toISOString();
-  const baselineSess = await post('/api/sessions', { name: 'Baseline Leg Day', visibility: 'friends',
+  const baselineSess = await post('/api/sessions', { name: 'Baseline Leg Day', visibility: 'private',
     scheduledAt: veryOld, exercises: [{ name: 'Deadlift' }], inviteUsernames: ['bob'] }, alice.token).then(r => r.json());
   await post(`/api/sessions/${baselineSess.id}/accept`, {}, bob.token);
   await post(`/api/sessions/${baselineSess.id}/log`, { exerciseId: baselineSess.exercises[0].id, weight: 275, reps: 3, set: 1 }, bob.token);
 
-  const oldSess = await post('/api/sessions', { name: 'Old Leg Day', visibility: 'friends',
+  const oldSess = await post('/api/sessions', { name: 'Old Leg Day', visibility: 'private',
     scheduledAt: old, exercises: [{ name: 'Deadlift' }], inviteUsernames: ['bob'] }, alice.token).then(r => r.json());
   await post(`/api/sessions/${oldSess.id}/accept`, {}, bob.token);
   await post(`/api/sessions/${oldSess.id}/log`, { exerciseId: oldSess.exercises[0].id, weight: 315, reps: 3, set: 1 }, bob.token);
 
   const earlier = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
-  const earlierSess = await post('/api/sessions', { name: 'Earlier Back Day', visibility: 'friends',
+  const earlierSess = await post('/api/sessions', { name: 'Earlier Back Day', visibility: 'private',
     scheduledAt: earlier, exercises: [{ name: 'Bent-Over Row' }], inviteUsernames: ['bob'] }, alice.token).then(r => r.json());
   await post(`/api/sessions/${earlierSess.id}/accept`, {}, bob.token);
   await post(`/api/sessions/${earlierSess.id}/log`, { exerciseId: earlierSess.exercises[0].id, weight: 155, reps: 5, set: 1 }, bob.token);
 
-  const recentSess = await post('/api/sessions', { name: 'Back Day', visibility: 'friends',
+  const recentSess = await post('/api/sessions', { name: 'Back Day', visibility: 'private',
     scheduledAt: new Date().toISOString(), exercises: [{ name: 'Bent-Over Row' }], inviteUsernames: ['bob'] }, alice.token).then(r => r.json());
   await post(`/api/sessions/${recentSess.id}/accept`, {}, bob.token);
   await post(`/api/sessions/${recentSess.id}/log`, { exerciseId: recentSess.exercises[0].id, weight: 185, reps: 5, set: 1 }, bob.token);
@@ -92,10 +94,12 @@ let carl;
   // trying several exercises for the first time each, used to post one "hit a new PR" item per
   // exercise. None of them has beaten anything yet, so none of them should reach the feed.
   carl = await post('/api/register', { username: 'carl', pin: 'pass1234', displayName: 'Carl' }).then(r => r.json());
-  await post('/api/friends/request', { username: 'carl' }, alice.token);
-  await post('/api/friends/accept', { from: alice.user.id }, carl.token);
+  await post('/api/follow/' + carl.user.id, {}, alice.token);
+  await post('/api/follow-requests/' + alice.user.id + '/accept', {}, carl.token);
+  await post('/api/follow/' + alice.user.id, {}, carl.token);
+  await post('/api/follow-requests/' + carl.user.id + '/accept', {}, alice.token);
 
-  const firstSess = await post('/api/sessions', { name: 'First Session Ever', visibility: 'friends',
+  const firstSess = await post('/api/sessions', { name: 'First Session Ever', visibility: 'private',
     scheduledAt: new Date().toISOString(),
     exercises: [{ name: 'Back Squat' }, { name: 'Bench Press' }, { name: 'Pull-Up' }],
     inviteUsernames: [] }, carl.token).then(r => r.json());
@@ -122,7 +126,7 @@ console.log('\nmultiple real PRs from one friend in a week collapse into a singl
   // own baselines within the same week. This should read as ONE line per friend, the same way
   // "completed N workouts" already collapses instead of listing every workout separately.
   // Reuses Carl from above, whose Back Squat / Bench Press / Pull-Up baselines are now beatable.
-  const beatSess = await post('/api/sessions', { name: 'Second Session', visibility: 'friends',
+  const beatSess = await post('/api/sessions', { name: 'Second Session', visibility: 'private',
     scheduledAt: new Date().toISOString(),
     exercises: [{ name: 'Back Squat' }, { name: 'Bench Press' }, { name: 'Pull-Up' }],
     inviteUsernames: [] }, carl.token).then(r => r.json());
@@ -148,12 +152,12 @@ console.log('\nmore than 3 real PRs in a week truncates the line instead of list
 {
   // A fourth lift (Deadlift), baseline then beaten, on top of Carl's three above — four real PRs
   // this week total. The line should name the first three and summarize the rest, not run on.
-  const baseline2 = await post('/api/sessions', { name: 'Deadlift Baseline', visibility: 'friends',
+  const baseline2 = await post('/api/sessions', { name: 'Deadlift Baseline', visibility: 'private',
     scheduledAt: new Date().toISOString(), exercises: [{ name: 'Conventional Deadlift' }],
     inviteUsernames: [] }, carl.token).then(r => r.json());
   await post(`/api/sessions/${baseline2.id}/log`, { exerciseId: baseline2.exercises[0].id, weight: 185, reps: 5, set: 1 }, carl.token);
 
-  const beat2 = await post('/api/sessions', { name: 'Deadlift Beat', visibility: 'friends',
+  const beat2 = await post('/api/sessions', { name: 'Deadlift Beat', visibility: 'private',
     scheduledAt: new Date().toISOString(), exercises: [{ name: 'Conventional Deadlift' }],
     inviteUsernames: [] }, carl.token).then(r => r.json());
   await post(`/api/sessions/${beat2.id}/log`, { exerciseId: beat2.exercises[0].id, weight: 225, reps: 5, set: 1 }, carl.token);
@@ -173,7 +177,7 @@ console.log('\nv239 recap rows: a friend\'s posted recap shows in the feed, thum
   // shape is what a saved photo becomes; the ingest regex accepts it without re-writing a file).
   const sessions = await get('/api/sessions', bob.token).then(r => r.json());
   const backDay = sessions.find(s => s.name === 'Back Day');
-  await post(`/api/sessions/${backDay.id}/post`, { notes: 'good pulls', visibility: 'friends',
+  await post(`/api/sessions/${backDay.id}/post`, { notes: 'good pulls', visibility: 'public',
     media: [{ type: 'image', src: '/uploads/bobrecap.jpg' }] }, bob.token);
   let feed = await get('/api/feed', alice.token).then(r => r.json());
   const recap = feed.find(f => f.type === 'recap' && f.sessionId === backDay.id);
@@ -195,17 +199,24 @@ console.log('\nv239 recap rows: a friend\'s posted recap shows in the feed, thum
 
   // A recap with no photo still gets a row, with no thumbnail to render.
   const earlierBack = sessions.find(s => s.name === 'Earlier Back Day');
-  await post(`/api/sessions/${earlierBack.id}/post`, { notes: 'no pics', visibility: 'friends', media: [] }, bob.token);
+  await post(`/api/sessions/${earlierBack.id}/post`, { notes: 'no pics', visibility: 'public', media: [] }, bob.token);
   feed = await get('/api/feed', alice.token).then(r => r.json());
   const bare = feed.find(f => f.type === 'recap' && f.sessionId === earlierBack.id);
   ok(!!bare && bare.thumb === null, 'a photo-less recap still rows up, thumb explicitly null');
 
-  // An only_me recap must never reach a friend's feed, whatever its timestamp.
-  const oldLeg = sessions.find(s => s.name === 'Old Leg Day');
-  await post(`/api/sessions/${oldLeg.id}/post`, { notes: 'just for me', visibility: 'only_me', media: [] }, bob.token);
+  // v190 (Sep 2026): 'private' WIDENED from the old 'only_me' (strictly author-only) to admit the
+  // creator and every participant of THAT session (see canSeePostAuthor in server.js) — the earlier
+  // sessions in this file all have Alice as their CREATOR (she invited Bob into them), so posting
+  // 'private' on one of THOSE would now correctly reach her, which is not what this block means to
+  // test. A session Bob creates entirely on his own, with nobody else in it, is the case that still
+  // proves a private recap never reaches an outside connection.
+  const bobSolo = await post('/api/sessions', { name: 'Bob Solo Day', visibility: 'private',
+    scheduledAt: new Date().toISOString(), exercises: [{ name: 'Row' }], inviteUsernames: [] }, bob.token).then(r => r.json());
+  await post(`/api/sessions/${bobSolo.id}/log`, { exerciseId: bobSolo.exercises[0].id, weight: 95, reps: 10, set: 1 }, bob.token);
+  await post(`/api/sessions/${bobSolo.id}/post`, { notes: 'just for me', visibility: 'private', media: [] }, bob.token);
   feed = await get('/api/feed', alice.token).then(r => r.json());
-  ok(!feed.some(f => f.type === 'recap' && f.sessionId === oldLeg.id),
-    "an only_me recap stays out of Alice's feed even though it was posted seconds ago");
+  ok(!feed.some(f => f.type === 'recap' && f.sessionId === bobSolo.id),
+    "a private recap on a workout Alice was never part of stays out of her feed even though it was posted seconds ago");
 }
 
 console.log("\nv247: a 'streak' summary row used to be stamped new Date().toISOString() (now), same bug v239 already fixed for 'completed' — a fresh recap posted afterward must still sort above it");
@@ -216,21 +227,23 @@ console.log("\nv247: a 'streak' summary row used to be stamped new Date().toISOS
   // A clean pair sidesteps that entirely.
   const faye = await post('/api/register', { username: 'faye', pin: 'pass1234', displayName: 'Faye' }).then(r => r.json());
   const dave = await post('/api/register', { username: 'dave', pin: 'pass1234', displayName: 'Dave' }).then(r => r.json());
-  await post('/api/friends/request', { username: 'dave' }, faye.token);
-  await post('/api/friends/accept', { from: faye.user.id }, dave.token);
+  await post('/api/follow/' + dave.user.id, {}, faye.token);
+  await post('/api/follow-requests/' + faye.user.id + '/accept', {}, dave.token);
+  await post('/api/follow/' + faye.user.id, {}, dave.token);
+  await post('/api/follow-requests/' + dave.user.id + '/accept', {}, faye.token);
 
   // Build a real 2-day streak via two real /lock calls with explicit localDate (v247's own new
   // mechanism), matching currentStreak's own UTC-day definition of "today"/"yesterday" rather than
   // reaching into the DB to fake it.
   const utcToday = new Date().toISOString().slice(0, 10);
   const utcYesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString().slice(0, 10);
-  const y = await post('/api/sessions', { name: 'Streak Day One', visibility: 'friends',
+  const y = await post('/api/sessions', { name: 'Streak Day One', visibility: 'private',
     scheduledAt: new Date(Date.now() - 24 * 3600 * 1000).toISOString(), exercises: [{ name: 'Overhead Press' }],
     inviteUsernames: [] }, dave.token).then(r => r.json());
   await post(`/api/sessions/${y.id}/log`, { exerciseId: y.exercises[0].id, weight: 65, reps: 8, set: 1 }, dave.token);
   await post(`/api/sessions/${y.id}/lock`, { localDate: utcYesterday }, dave.token);
 
-  const t = await post('/api/sessions', { name: 'Streak Day Two', visibility: 'friends',
+  const t = await post('/api/sessions', { name: 'Streak Day Two', visibility: 'private',
     scheduledAt: new Date().toISOString(), exercises: [{ name: 'Overhead Press' }],
     inviteUsernames: [] }, dave.token).then(r => r.json());
   await post(`/api/sessions/${t.id}/log`, { exerciseId: t.exercises[0].id, weight: 70, reps: 8, set: 1 }, dave.token);
@@ -245,7 +258,7 @@ console.log("\nv247: a 'streak' summary row used to be stamped new Date().toISOS
   // streak row were still stamped "now" at feed-build time, it would tie or beat this every time
   // the feed is re-requested; with the fix it carries the streak's actual last-trained day, always
   // in the past relative to a recap posted after it.
-  await post(`/api/sessions/${t.id}/post`, { notes: 'felt strong', visibility: 'friends', media: [] }, dave.token);
+  await post(`/api/sessions/${t.id}/post`, { notes: 'felt strong', visibility: 'public', media: [] }, dave.token);
   feed = await get('/api/feed', faye.token).then(r => r.json());
   const iStreak = feed.findIndex(f => f.type === 'streak' && f.by === dave.user.id);
   const iRecap = feed.findIndex(f => f.type === 'recap' && f.sessionId === t.id);

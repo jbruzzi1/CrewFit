@@ -48,8 +48,14 @@ console.log('the exact leak: a stranger who can see one participant\'s PUBLIC re
   const alice = await reg('rp_alice', 'pass1234', 'Alice');
   const bob = await reg('rp_bob', 'pass1234', 'Bob');
   const carol = await reg('rp_carol', 'pass1234', 'Carol'); // no relationship to alice or bob at all
-  await post('/api/friends/request', { username: 'rp_bob' }, alice.token);
-  await post('/api/friends/accept', { from: alice.user.id }, bob.token);
+  // v190 (Sep 2026): 'public' post visibility means canSeeProfile(authorId, viewer) -- a genuine
+  // total stranger only reaches it if bob's own profile is ALSO Public (every account defaults to
+  // Private). Opt bob in so "reaches a total stranger" is the true statement this block tests.
+  await post('/api/me/profile-visibility', { visibility: 'public' }, bob.token);
+  await post('/api/follow/' + bob.user.id, {}, alice.token);
+  await post('/api/follow-requests/' + alice.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + alice.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, alice.token);
 
   const s = await post('/api/sessions', {
     name: 'Leg Day', scheduledAt: new Date().toISOString(),
@@ -76,11 +82,13 @@ console.log('the exact leak: a stranger who can see one participant\'s PUBLIC re
 
   console.log('\ncontrol: a genuine friend/invited/alumni tier must keep seeing all of this -- the fix must not overcorrect');
   const dave = await reg('rp_dave', 'pass1234', 'Dave');
-  await post('/api/friends/request', { username: 'rp_dave' }, alice.token);
-  await post('/api/friends/accept', { from: alice.user.id }, dave.token);
+  await post('/api/follow/' + dave.user.id, {}, alice.token);
+  await post('/api/follow-requests/' + alice.user.id + '/accept', {}, dave.token);
+  await post('/api/follow/' + alice.user.id, {}, dave.token);
+  await post('/api/follow-requests/' + dave.user.id + '/accept', {}, alice.token);
   const s2 = await post('/api/sessions', {
     name: 'Pull Day', scheduledAt: new Date().toISOString(),
-    exercises: [{ name: 'Row' }], inviteUsernames: [], visibility: 'friends',
+    exercises: [{ name: 'Row' }], inviteUsernames: [], visibility: 'public',
     location: 'Community Gym', creatorNote: 'wear the good shoes',
   }, alice.token);
   const daveView = await get('/api/sessions/' + s2.id, dave.token); // friend tier: not invited, not a member, just eligible to join

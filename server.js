@@ -458,10 +458,14 @@ app.post('/api/register', async (req, res) => {
   if (findUserByName(username)) return res.status(409).json({ error: 'username taken' });
   const id = uid();
   DB.users[id] = Object.assign({ id, username: String(username).trim(),
-    displayName: capStr(displayName || username, 80).trim(), friends: [], units: 'lb',
+    displayName: capStr(displayName || username, 80).trim(), units: 'lb',
+    // Sep 2026: profiles default Private -- nobody is shown to more people than they signed up
+    // for. followers/following/followReqs are created lazily by ensureFollowArrays on first use,
+    // same as ever; there is no separate "friends" concept to seed any more (see canSeeProfile).
+    profileVisibility: 'private',
     createdAt: new Date().toISOString() }, hashPin(pin));
   await save(DB);
-  res.json({ token: signToken(id), user: { ...publicUser(id), defaultGym: '' } });
+  res.json({ token: signToken(id), user: { ...publicUser(id), defaultGym: '', profileVisibility: 'private' } });
 });
 // Live username availability check (used by the register popup as the user types)
 app.get('/api/register/check', async (req, res) => {
@@ -498,12 +502,13 @@ app.post('/api/login', async (req, res) => {
   }
   delete LOGIN_FAILS[ipKey];
   clearFail('acct:' + uname);
-  // publicUser() deliberately omits defaultGym — it's used everywhere ELSE to describe someone
-  // else (friends list, follow requests), and that field is private. This response describes
-  // the account that just authenticated, so it's the one safe place to add it directly: without
-  // it, a returning user's saved default gym wouldn't take effect until their next full page
-  // load (the client only re-fetches the fuller self-profile on boot, not on an in-app login).
-  res.json({ token: signToken(u.id), user: { ...publicUser(u.id), defaultGym: u.defaultGym || '' } });
+  // publicUser() deliberately omits defaultGym and profileVisibility — both are used everywhere
+  // ELSE to describe someone else (friends list, follow requests), and both are private. This
+  // response describes the account that just authenticated, so it's the one safe place to add
+  // them directly: without it, an in-app login (no full page reload, so tryBoot()'s own
+  // /api/profile/me fetch never runs) would leave ME.profileVisibility stale/undefined and the
+  // Settings toggle could show "Private" for an account the server actually has set to Public.
+  res.json({ token: signToken(u.id), user: { ...publicUser(u.id), defaultGym: u.defaultGym || '', profileVisibility: u.profileVisibility === 'public' ? 'public' : 'private' } });
 });
 
 // ---- Password reset: DISABLED, deliberately ----
@@ -633,6 +638,19 @@ app.post('/api/favorites/toggle', auth, async (req, res) => {
   res.json({ favorited });
 });
 
+// v190 (profile-privacy unification, Sep 2026): the ONE rule for "can this viewer see {id}'s
+// gated stuff" -- profile detail (PRs/streak/activity), a 'public' post, and session joinability
+// all resolve through this now, instead of independently-written copies that drift apart (see the
+// history below: a second copy of this exact check, keyed on the wrong person, once leaked a
+// friends-only recap through a profile page while the session route correctly refused it).
+// Private (default, unset counts as private) = only approved followers, and you. Public = anyone.
+function canSeeProfile(id, viewerId) {
+  if (id === viewerId) return true;
+  const u = DB.users[id];
+  if (!u) return false;
+  if (u.profileVisibility === 'public') return true;
+  return (u.followers || []).includes(viewerId);
+}
 // ---- Profile (per-user, viewable by anyone logged in) ----
 // localToday: the CALLER's own local day (see the comment above currentStreak) — only honored
 // below when id === viewerId, i.e. this is genuinely a self-view. Whoever is viewing someone
@@ -650,15 +668,15 @@ function profileOf(id, viewerId, localToday) {
     else if (s.posts && s.posts[id]) completed.add(s.id);
   }
   const prs = (DB.prs && DB.prs[id]) ? Object.values(DB.prs[id]) : [];
-  // v184: profile detail is gated on APPROVED FOLLOWER now, not friendship. Anyone sees the public
-  // counts; only you and people you've approved to follow you see the workouts/PRs/streak/activity.
-  const isApproved = id === viewerId || ((u.followers || []).includes(viewerId));
+  // v190: gated on canSeeProfile now -- a Public profile admits anyone; a Private one, only you and
+  // approved followers, same as before.
+  const isApproved = canSeeProfile(id, viewerId);
   // Delegates to the one shared rule instead of keeping its own copy — a second, independently
   // written copy of this check used to be keyed on whose profile you are looking at instead of who
   // WROTE the post, so a friend of a participant was handed the creator's friends-only notes and
   // photo URLs on a profile, while the session route correctly refused them. `id` is the profile
   // owner, so this is always specifically THEIR own recap on session `s` — never a partner's.
-  const canSeeMyPost = (s) => canSeePostAuthor(s.posts && s.posts[id], id, viewerId);
+  const canSeeMyPost = (s) => canSeePostAuthor(s.posts && s.posts[id], id, viewerId, s);
   // A profile listed EVERY workout the person had done, including private ones, to any logged-in
   // stranger: the name, the date, the first three exercises, and the usernames of everyone
   // participating OR still holding an unanswered invitation. sessionView goes to the trouble of
@@ -723,6 +741,10 @@ function profileOf(id, viewerId, localToday) {
     // route comment for why "on by default" is safe here.
     notifyStreakReminders: id === viewerId ? (u.notifyStreakReminders !== false) : undefined,
     notifyWorkoutReminders: id === viewerId ? (u.notifyWorkoutReminders !== false) : undefined,
+    // Self only — the OTHER profile's own visibility isn't a thing a viewer needs (canSeeProfile
+    // already decided whether they can see the gated stuff below); the Settings screen's own
+    // Private/Public toggle is the only reader of this.
+    profileVisibility: id === viewerId ? (u.profileVisibility === 'public' ? 'public' : 'private') : undefined,
     workoutsCompleted: completed.size,
     // the follow button's state, and whether they follow you back
     youFollow: id === viewerId ? 'self'
@@ -817,8 +839,7 @@ function followListFor(id, viewerId, kind) {
   const u = DB.users[id];
   if (!u) return null;
   ensureFollowArrays(u);
-  const isApproved = id === viewerId || (u.followers || []).includes(viewerId);
-  if (!isApproved) return { error: 'forbidden' };
+  if (!canSeeProfile(id, viewerId)) return { error: 'forbidden' };
   return (u[kind] || []).filter(fid => DB.users[fid]).map(fid => publicUser(fid));
 }
 app.get('/api/profile/:id/followers', auth, async (req, res) => {
@@ -852,6 +873,30 @@ app.post('/api/me/bio', auth, async (req, res) => {
   await save(DB);
   res.json({ bio: DB.users[req.userId].bio });
 });
+// Jeff, Sep 2026: "make profiles private or public in settings." Private (default) = only
+// approved followers (and you) see profile detail, workouts posted Public, and can request to
+// join a Public-visibility workout. Public = anyone, no approval needed -- canSeeProfile() is the
+// one rule this drives everywhere (profile detail, post visibility, session joinability).
+app.post('/api/me/profile-visibility', auth, async (req, res) => {
+  const { visibility } = req.body || {};
+  const v = visibility === 'public' ? 'public' : 'private';
+  const me = DB.users[req.userId];
+  me.profileVisibility = v;
+  // Flipping to Public doesn't reject anyone waiting on approval -- it makes the wait moot, since
+  // everyone (them included) can already see the profile. Approve them all outright rather than
+  // leaving a pending-requests queue nobody has a reason to check any more.
+  if (v === 'public' && Array.isArray(me.followReqs) && me.followReqs.length) {
+    ensureFollowArrays(me);
+    for (const fromId of me.followReqs.slice()) {
+      if (!me.followers.includes(fromId)) me.followers.push(fromId);
+      const from = DB.users[fromId];
+      if (from) { ensureFollowArrays(from); if (!from.following.includes(req.userId)) from.following.push(req.userId); }
+    }
+    me.followReqs = [];
+  }
+  await save(DB);
+  res.json({ profileVisibility: v });
+});
 // Same cap as a session's own location field (see POST/PUT /api/sessions) — a saved default gets
 // prefilled into that same field, so the two limits have to agree.
 app.post('/api/me/default-gym', auth, async (req, res) => {
@@ -867,6 +912,17 @@ app.post('/api/follow/:id', auth, async (req, res) => {
   if (req.params.id === req.userId) return res.status(400).json({ error: 'cannot follow self' });
   ensureFollowArrays(target); ensureFollowArrays(DB.users[req.userId]);
   if (target.followers.includes(req.userId)) return res.json({ status: 'following' });
+  // Sep 2026: a Public profile has nothing to approve -- everyone can already see it -- so a
+  // follow there lands immediately instead of sitting in target.followReqs. A Private profile
+  // keeps the existing approval step.
+  if (target.profileVisibility === 'public') {
+    target.followers.push(req.userId);
+    const me = DB.users[req.userId];
+    if (!me.following.includes(target.id)) me.following.push(target.id);
+    await save(DB);
+    notify(target.id, { title: 'New follower', body: `${DB.users[req.userId].displayName} started following you` });
+    return res.json({ status: 'following' });
+  }
   if (!target.followReqs.includes(req.userId)) {
     target.followReqs.push(req.userId);
     await save(DB);
@@ -904,13 +960,23 @@ app.post('/api/follow-requests/:id/reject', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// ---- Friends ----
-// friendRequests model: each user has incoming[] / outgoing[] of {from|to, status:'pending'}
-function ensureFriendArrays(u){ if(!u.incoming) u.incoming=[]; if(!u.outgoing) u.outgoing=[]; if(!u.friends) u.friends=[]; }
-// v184: following is now approval-based (Instagram/Strava private-account style). followers[] =
-// people approved to see my private profile; following[] = accounts I follow that approved me;
-// followReqs[] = incoming pending requests. Friends (mutual) stay separate, for workout collaboration.
+// ---- Connections ----
+// v190 (Sep 2026): "Friends" retired as its own system -- followers alone decide who's connected
+// to whom now (see canSeeProfile). followers[] = people approved to see my private profile;
+// following[] = accounts I follow that approved me; followReqs[] = incoming pending requests.
 function ensureFollowArrays(u){ if(!Array.isArray(u.followers)) u.followers=[]; if(!Array.isArray(u.following)) u.following=[]; if(!Array.isArray(u.followReqs)) u.followReqs=[]; }
+// "Connected" = an approved follow in EITHER direction -- Jeff, Sep 2026: "you can invite anyone
+// that follows you to workouts, or vice versa." Used for invite eligibility (does NOT gate who can
+// see whose stuff -- that's canSeeProfile, which is deliberately one-directional: the profile
+// OWNER decides who sees THEM, invite eligibility is symmetric because either side already vouched
+// for the other by following them).
+function connectionsOf(userId) {
+  const u = DB.users[userId];
+  if (!u) return [];
+  const set = new Set([...(u.followers || []), ...(u.following || [])]);
+  set.delete(userId);
+  return [...set];
+}
 // One-time: friends already saw each other's detail, so they become mutual APPROVED followers (no
 // visibility changes for anyone). Old one-directional follows granted nothing, so under the new
 // approval rule they become pending requests the target can accept or ignore — nobody silently
@@ -932,6 +998,63 @@ function migrateFollowApproval() {
   console.log('migrateFollowApproval: friends became approved followers; ' + pending + ' old follows became pending requests');
   return pending;
 }
+// v190 (Sep 2026): retiring the separate "friends" system now that followers alone decide who
+// sees what. Every existing mutual friendship becomes a mutual approved-follow in BOTH directions
+// -- nobody loses a connection, it just becomes the same kind of connection everyone else has.
+// Runs AFTER migrateFollowApproval, so followers[]/following[] are already normalized -- this
+// merges a friend INTO whatever's already there rather than overwriting it (unlike
+// migrateFollowApproval's own friends pass, which predates followers existing at all). One-time,
+// idempotent via the DB flag.
+function migrateFriendsIntoFollowers() {
+  if (DB.friendsRetiredV1) return 0;
+  for (const u of Object.values(DB.users)) ensureFollowArrays(u);
+  let merged = 0;
+  for (const u of Object.values(DB.users)) {
+    const friends = Array.isArray(u.friends) ? u.friends : [];
+    for (const fid of friends) {
+      const f = DB.users[fid];
+      if (!f || fid === u.id) continue;
+      if (!u.followers.includes(fid)) { u.followers.push(fid); merged++; }
+      if (!u.following.includes(fid)) u.following.push(fid);
+      if (!f.followers.includes(u.id)) f.followers.push(u.id);
+      if (!f.following.includes(u.id)) f.following.push(u.id);
+      // A friend was, by definition, already mutually approved -- clear any pending follow
+      // request that happened to exist between them too, so it doesn't linger as a phantom ask.
+      u.followReqs = (u.followReqs || []).filter(x => x !== fid);
+      f.followReqs = (f.followReqs || []).filter(x => x !== u.id);
+    }
+  }
+  DB.friendsRetiredV1 = true;
+  console.log('migrateFriendsIntoFollowers: merged ' + merged + ' friendship(s) into mutual followers');
+  return merged;
+}
+// v190 (Sep 2026): post/session visibility becomes binary (private/public) app-wide, replacing
+// the old 3-way post enum (only_me/friends/public) and 2-way session enum (private/friends).
+// 'public' now means "visible to whoever can see this person's profile" (canSeeProfile) --
+// followers-only if their profile is private, everyone if it's public -- so an existing
+// 'friends'-visibility post/session (which meant exactly "my friends can see this") becomes
+// 'public': its real audience narrows to followers for anyone defaulting Private, never widening
+// past what existed before. 'only_me' becomes 'private', which under the new rule also admits the
+// session's other participants -- Jeff, Sep 2026: "private... only the creator or who was part of
+// it" -- a deliberate widening from the old strictly-solo-author 'only_me', applied consistently
+// to existing recaps too, not just new ones. One-time, idempotent via the DB flag.
+function migratePostAndSessionVisibilityBinary() {
+  if (DB.binaryVisibilityV1) return 0;
+  let touched = 0;
+  for (const s of Object.values(DB.sessions || {})) {
+    if (!s || typeof s !== 'object') continue;
+    if (s.visibility === 'friends') { s.visibility = 'public'; touched++; }
+    for (const p of Object.values(s.posts || {})) {
+      if (!p || typeof p !== 'object') continue;
+      const next = (p.visibility === 'friends' || p.visibility === 'public') ? 'public' : 'private';
+      if (p.visibility !== next) touched++;
+      p.visibility = next;
+    }
+  }
+  DB.binaryVisibilityV1 = true;
+  console.log('migratePostAndSessionVisibilityBinary: touched ' + touched + ' visibility value(s)');
+  return touched;
+}
 app.get('/api/users/search', auth, async (req, res) => {
   const q = normUser(req.query.q);
   // One letter returned twenty arbitrary strangers. Two is the shortest query that means anything.
@@ -947,53 +1070,19 @@ app.get('/api/users/search', auth, async (req, res) => {
     normUser(u.username).includes(q) || normUser(u.displayName).includes(q)
   )).sort((a,b) => score(a)-score(b) || normUser(a.username).localeCompare(normUser(b.username)))
     .slice(0,20).map(u => ({ ...publicUser(u.id), requestStatus:
-    (DB.users[me].outgoing||[]).some(r=>r.to===u.id&&r.status==='pending') ? 'sent' :
-    (DB.users[me].friends||[]).includes(u.id) ? 'friends' : 'none'
+    (u.followers||[]).includes(me) ? 'following' :
+    (u.followReqs||[]).includes(me) ? 'requested' : 'none'
   }));
   res.json(hits);
 });
-app.post('/api/friends/request', auth, async (req, res) => {
-  const { username } = req.body || {};
-  const friend = findUserByName(username);
-  if (!friend) return res.status(404).json({ error: 'user not found' });
-  if (friend.id === req.userId) return res.status(400).json({ error: 'cannot friend self' });
-  const me = DB.users[req.userId]; ensureFriendArrays(me); ensureFriendArrays(friend);
-  if (me.friends.includes(friend.id)) return res.status(400).json({ error: 'already friends' });
-  if (me.outgoing.some(r=>r.to===friend.id && r.status==='pending')) return res.status(400).json({ error: 'request already sent' });
-  me.outgoing.push({ to: friend.id, status:'pending' });
-  friend.incoming.push({ from: req.userId, status:'pending' });
-  notify(friend.id, { title: 'Friend request', body: `${me.displayName||me.username} wants to train with you` });
-  await save(DB);
-  res.json({ ok:true });
-});
-app.post('/api/friends/accept', auth, async (req, res) => {
-  const { from } = req.body || {};
-  const me = DB.users[req.userId]; ensureFriendArrays(me);
-  const req2 = me.incoming.find(r=>r.from===from && r.status==='pending');
-  if(!req2) return res.status(404).json({ error: 'no such request' });
-  req2.status='accepted';
-  me.incoming = me.incoming.filter(r=>!(r.from===from));
-  const other = DB.users[from]; ensureFriendArrays(other);
-  if(!me.friends.includes(from)) me.friends.push(from);
-  if(!other.friends.includes(req.userId)) other.friends.push(req.userId);
-  other.outgoing = other.outgoing.filter(r=>!(r.to===req.userId));
-  await save(DB);
-  res.json({ friends: me.friends.map(publicUser) });
-});
-app.post('/api/friends/reject', auth, async (req, res) => {
-  const { from } = req.body || {};
-  const me = DB.users[req.userId]; ensureFriendArrays(me);
-  me.incoming = me.incoming.filter(r=>!(r.from===from));
-  const other = DB.users[from]; if(other) { ensureFriendArrays(other); other.outgoing = other.outgoing.filter(r=>!(r.to===req.userId)); }
-  await save(DB);
-  res.json({ ok:true });
-});
+// v190 (Sep 2026): kept at the same path/response shape the client already calls everywhere
+// (nameOf/personOf, Home, the create-flow invite picker, the Friends tab) -- only what it's built
+// from changed. `friends` now means "connected" (an approved follow in either direction), not a
+// separate relationship; `followRequests` is unchanged, still the pending-approval queue.
 app.get('/api/friends', auth, async (req, res) => {
-  const me = DB.users[req.userId]; ensureFriendArrays(me); ensureFollowArrays(me);
+  const me = DB.users[req.userId]; ensureFollowArrays(me);
   res.json({
-    friends: me.friends.map(id => ({ ...publicUser(id), streak: currentStreak(id) })),
-    incoming: me.incoming.filter(r=>r.status==='pending').map(r=>({ ...publicUser(r.from), reqId:r.from })),
-    outgoing: me.outgoing.filter(r=>r.status==='pending').map(r=>({ ...publicUser(r.to), reqId:r.to })),
+    friends: connectionsOf(req.userId).map(id => ({ ...publicUser(id), streak: currentStreak(id) })),
     followRequests: (me.followReqs || []).map(id => DB.users[id] ? publicUser(id) : null).filter(Boolean)
   });
 });
@@ -1137,18 +1226,18 @@ app.get('/api/version', (req, res) => {
 });
 
 app.get('/api/feed', auth, async (req, res) => {
-  const myFriends = DB.users[req.userId].friends;
+  const myConnections = connectionsOf(req.userId);
   const items = [];
   const weekAgo = Date.now() - 7*24*3600*1000;
   // PRs from friends — grouped per friend per week (see groupPrsForFeed) so one big improving
   // week is one row, not one row per exercise, firstLog baselines never masquerade as earned
   // PRs, and nothing older than a week lingers.
-  for (const fid of myFriends) {
+  for (const fid of myConnections) {
     const prs = (DB.prs && DB.prs[fid]) ? Object.values(DB.prs[fid]) : [];
     for (const g of groupPrsForFeed(prs, weekAgo)) items.push({ ...g, by: fid });
   }
   // Workouts completed this week (from session history)
-  for (const fid of myFriends) {
+  for (const fid of myConnections) {
     let count = 0, latest = 0;
     for (const s of Object.values(DB.sessions)) {
       for (const h of (s.history || [])) {
@@ -1171,11 +1260,11 @@ app.get('/api/feed', auth, async (req, res) => {
   // visibility gate as everywhere else (canSeePostAuthor); the thumbnail is only sent when the
   // photo has been migrated to an /uploads/ URL - a still-inline data URI would bloat the feed
   // payload, so those rows just go without a thumb until the next boot migrates them.
-  for (const fid of myFriends) {
+  for (const fid of myConnections) {
     for (const s of Object.values(DB.sessions)) {
       const p = s.posts && s.posts[fid];
       if (!p || !p.at || !(new Date(p.at).getTime() >= weekAgo)) continue;   // NaN fails CLOSED, same as the PR path
-      if (!canSeePostAuthor(p, fid, req.userId)) continue;
+      if (!canSeePostAuthor(p, fid, req.userId, s)) continue;
       const img = (p.media || []).find(m => m && m.type === 'image' && typeof m.src === 'string' && m.src.startsWith('/uploads/'));
       items.push({ type: 'recap', by: fid, at: p.at, text: `finished ${s.name || 'a workout'}`,
         sessionId: s.id, thumb: img ? img.src : null });
@@ -1213,7 +1302,8 @@ app.get('/api/templates', auth, async (req, res) => {
   // owner or any other friend. Since v240 removal is undoable for a moment (POST /unhide below,
   // driven by the client's undo toast); once that moment passes it stays out of your list even
   // if you unfriend and re-friend them later.
-  const friendT = all.filter(t => DB.users[req.userId].friends.includes(t.ownerId)
+  const myConnections = connectionsOf(req.userId);
+  const friendT = all.filter(t => myConnections.includes(t.ownerId)
     && !(t.hiddenBy && t.hiddenBy.includes(req.userId)));
   // v239: shared rows carry WHO shared them - two friends' "Legs - Random" were otherwise
   // indistinguishable (Jeff's real list, Aug 28). Display name only; never the id-to-name map.
@@ -1325,14 +1415,14 @@ app.get('/api/sessions/:id/posts/:authorId/comments', auth, async (req, res) => 
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   const p = s.posts && s.posts[req.params.authorId];
-  if (!canSeePostAuthor(p, req.params.authorId, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  if (!canSeePostAuthor(p, req.params.authorId, req.userId, s)) return res.status(403).json({ error: 'forbidden' });
   res.json(objArray(p.comments));
 });
 app.post('/api/sessions/:id/posts/:authorId/comments', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   const p = s.posts && s.posts[req.params.authorId];
-  if (!canSeePostAuthor(p, req.params.authorId, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  if (!canSeePostAuthor(p, req.params.authorId, req.userId, s)) return res.status(403).json({ error: 'forbidden' });
   const text = capStr((req.body || {}).text, 2000);
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
   const c = { id: 'c_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
@@ -1412,8 +1502,11 @@ app.post('/api/sessions', auth, async (req, res) => {
   const ex = exercises.map((e, i) => Object.assign({ id: 'e_' + uid(), order: i }, withDefaults(e)));
   const invites = [];
   if (Array.isArray(inviteUsernames)) {
+    // v190 (Sep 2026): invite eligibility is now "connected" (an approved follow either
+    // direction), not "friend" -- see connectionsOf().
+    const myConnections = connectionsOf(req.userId);
     for (const un of inviteUsernames) {
-      const f = DB.users[req.userId].friends.find(fid => normUser(DB.users[fid] && DB.users[fid].username) === normUser(un));
+      const f = myConnections.find(fid => normUser(DB.users[fid] && DB.users[fid].username) === normUser(un));
       if (f) invites.push(f);
     }
   }
@@ -1421,7 +1514,9 @@ app.post('/api/sessions', auth, async (req, res) => {
     id, creatorId: req.userId,
     scheduledAt: capStr(scheduledAt, 40) || new Date().toISOString(),
     status: 'draft',
-    visibility: visibility === 'friends' ? 'friends' : 'private',
+    // v190 (Sep 2026): binary, matching the posted-recap model -- 'public' = joinable by
+    // whoever can see the creator's profile (canSeeProfile), 'private' = invite-only.
+    visibility: visibility === 'public' ? 'public' : 'private',
     equipment: Array.isArray(equipment) ? equipment.filter(x => typeof x === 'string').slice(0, 20).map(x => capStr(x, 40)) : [],
     location: capStr(location, 120),
     lengthMin: numIn(lengthMin, 1440) || null,
@@ -1576,9 +1671,12 @@ function sessionTier(s, viewerId) {
   if (s.creatorId === viewerId) return 'member';
   if ((s.participants || []).includes(viewerId)) return 'member';
   if (Array.isArray(s.invited) && s.invited.includes(viewerId)) return 'invited';
-  const u = DB.users[viewerId];
-  const friends = (u && Array.isArray(u.friends)) ? u.friends : [];
-  if (s.visibility === 'friends' && friends.includes(s.creatorId)) return 'friend';
+  // v190 (Sep 2026): a "joinable" session used to mean "the creator's friends"; now it means
+  // "whoever can see the creator's profile" (canSeeProfile) -- followers-only if they're Private,
+  // anyone if they're Public. Tier kept named 'friend' internally (it's never shown to a user,
+  // and renaming it would have touched every call site below for no behavior change) -- what it
+  // takes to reach it is what changed.
+  if (s.visibility === 'public' && canSeeProfile(s.creatorId, viewerId)) return 'friend';
   // A PUBLISHED recap is its own thing. Sharing is the point of posting, and session visibility
   // defaults to 'private' — so gating a published recap behind it meant a recap shared publicly
   // could not be opened by the people it was shared with. Each recap's own visibility decides.
@@ -1608,23 +1706,33 @@ function canFinishOrPost(s, userId) {
 }
 
 // A recap carries its OWN visibility, chosen by whoever wrote it — and now every participant has
-// their own, independent of everyone else's. "only me" has to mean only me even to people who
-// were in the same workout; p is one entry of s.posts, authorId is the key it lives under.
-function canSeePostAuthor(p, authorId, viewerId) {
+// their own, independent of everyone else's. p is one entry of s.posts, authorId is the key it
+// lives under; s is the session it belongs to (needed for the 'private' participant check below).
+// v190 (Sep 2026): binary visibility. 'public' = canSeeProfile(authorId, viewerId) -- the exact
+// same audience rule as the rest of the profile (followers-only if Private, everyone if Public).
+// 'private' (or any legacy/unrecognized value) = the creator and every participant of THIS
+// session, not just the post's own author -- Jeff, Sep 2026: "private... only the creator or who
+// was part of it." This is a deliberate reversal of the old rule ("only me" used to mean only the
+// author, even to someone who trained the very same workout) -- private now means hidden from the
+// internet at large, not hidden from your own training partners.
+function canSeePostAuthor(p, authorId, viewerId, s) {
   if (!p) return false;
   if (authorId === viewerId) return true;
-  if (p.visibility === 'public') return true;
-  if (p.visibility === 'friends') {
-    const u = DB.users[viewerId];
-    return !!(u && Array.isArray(u.friends) && u.friends.includes(authorId));
-  }
-  return false;                                    // 'only_me', or no visibility recorded
+  // Membership checked BEFORE the public-visibility branch, not after: 'public' is meant to be a
+  // WIDER audience than 'private' (private already admits every current member), never a narrower
+  // one. Checking canSeeProfile first would let a 'public' post be hidden from a fellow participant
+  // who simply isn't an approved follower of the author -- exactly backwards, and a contradiction
+  // of sessionView's member-tier comment ("a fellow member now sees every recap here, private or
+  // public"). This ordering is what actually makes that true.
+  if (s && (s.creatorId === viewerId || (s.participants || []).includes(viewerId))) return true;
+  if (p.visibility === 'public') return canSeeProfile(authorId, viewerId);
+  return false;
 }
 // Is there ANY recap in this session the viewer is allowed to open — used only to decide whether
 // a non-member gets 'reader' access to the session at all.
 function anyVisiblePost(s, viewerId) {
   for (const [authorId, p] of Object.entries((s && s.posts) || {})) {
-    if (canSeePostAuthor(p, authorId, viewerId)) return true;
+    if (canSeePostAuthor(p, authorId, viewerId, s)) return true;
   }
   return false;
 }
@@ -1642,11 +1750,15 @@ function sessionView(s, viewerId) {
   if (!s) return null;
   const tier = sessionTier(s, viewerId);
   if (tier === 'member') {
-    // still not automatic: an "only me" recap belongs to whoever wrote it, even to someone else
-    // who trained in the very same workout.
+    // v190 (Sep 2026): a member of this session IS "who was part of it" — canSeePostAuthor's
+    // 'private' branch already admits the creator and every participant, so a fellow member now
+    // sees every recap here, private or public (this used to be the opposite: "only me" meant
+    // only me, even to someone who trained the very same workout — Jeff explicitly asked for
+    // that reversed). Kept as an explicit per-post check rather than assuming "member sees all"
+    // so a still-hidden/legacy post shape fails closed instead of open.
     const posts = {};
     for (const [authorId, p] of Object.entries(s.posts || {}))
-      posts[authorId] = canSeePostAuthor(p, authorId, viewerId) ? p : { hidden: true, visibility: p.visibility };
+      posts[authorId] = canSeePostAuthor(p, authorId, viewerId, s) ? p : { hidden: true, visibility: p.visibility };
     // v242: logs survive a keep-leave now, so a member view must decide which entries are
     // shown. Your own always; a CURRENT member's always (that's the shared log sheet); a
     // departed person's only when their published recap admits this viewer — a recap IS its
@@ -1655,7 +1767,7 @@ function sessionView(s, viewerId) {
     const logs = {};
     for (const [uid, arr] of Object.entries(s.logs || {})) {
       const current = (s.participants || []).includes(uid) || s.creatorId === uid;
-      const viaPost = s.posts && s.posts[uid] && canSeePostAuthor(s.posts[uid], uid, viewerId);
+      const viaPost = s.posts && s.posts[uid] && canSeePostAuthor(s.posts[uid], uid, viewerId, s);
       if (uid === viewerId || current || viaPost) logs[uid] = arr;
     }
     // v253 (audit finding): this Object.assign spreads the raw session, so joinRequests — every
@@ -1734,7 +1846,7 @@ function sessionView(s, viewerId) {
   // hidden placeholder (existence + visibility, no content) for the rest — same shape either tier,
   // so the client never has to special-case which one it got.
   for (const [authorId, p] of Object.entries(s.posts || {})) {
-    if (canSeePostAuthor(p, authorId, viewerId)) {
+    if (canSeePostAuthor(p, authorId, viewerId, s)) {
       view.posts[authorId] = p;
       // v242: every tier this loop reaches, not just 'reader'. A friend-tier viewer admitted by
       // the very same recap visibility was still handed logs:{} and rendered "No sets logged" —
@@ -2029,7 +2141,7 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   if (typeof b.location === 'string') s.location = capStr(b.location, 120);
   if ('lengthMin' in b) s.lengthMin = numIn(b.lengthMin, 1440) || null;
   if (typeof b.creatorNote === 'string') s.creatorNote = capStr(b.creatorNote, 2000);
-  if (b.visibility) s.visibility = b.visibility === 'friends' ? 'friends' : 'private';
+  if (b.visibility) s.visibility = b.visibility === 'public' ? 'public' : 'private';
   if (Array.isArray(b.exercises)) {
     // v253 (audit finding, see isPlainExercise above) -- a non-object element would have
     // thrown, both at `e.id` right below and inside withDefaults, returning a generic 500.
@@ -2041,8 +2153,9 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   }
   if (Array.isArray(b.inviteUsernames)) {
   const invites = [];
+  const myConnections = connectionsOf(req.userId);
   for (const un of b.inviteUsernames) {
-    const f = DB.users[req.userId].friends.find(fid => normUser(DB.users[fid] && DB.users[fid].username) === normUser(un));
+    const f = myConnections.find(fid => normUser(DB.users[fid] && DB.users[fid].username) === normUser(un));
     if (f) invites.push(f);
   }
   // v251 (audit finding): same gap as /decline just above -- the creator re-editing the invite
@@ -2206,21 +2319,20 @@ app.post('/api/sessions/:id/suggest/:editId/reject', auth, async (req, res) => {
   res.json(sessionView(s, req.userId));
 });
 
-// join request (friends-visibility sessions)
+// join request (public-visibility sessions)
 app.post('/api/sessions/:id/join', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   // "not joinable" tested a property of the WORKOUT and never asked anything about the caller, so
-  // any logged-in account could ask to join any friends-visibility workout and the reply handed
+  // any logged-in account could ask to join any public-visibility workout and the reply handed
   // back the entire thing — everyone's sets, the whole chat, the post, the invite list, and other
   // people's join requests with their notes. Rejecting them afterwards changed nothing; they
-  // already had it. Asking to join is now something only the creator's friends can do, and the
-  // reply says nothing except that the request was filed.
-  if (!s || s.visibility !== 'friends') return res.status(400).json({ error: 'not joinable' });
-  const me = DB.users[req.userId];
-  const myFriends = (me && Array.isArray(me.friends)) ? me.friends : [];
-  if (s.creatorId !== req.userId && !myFriends.includes(s.creatorId))
+  // already had it. Asking to join is now something only people who can see the creator's profile
+  // can do (canSeeProfile — same rule as everything else, Sep 2026), and the reply says nothing
+  // except that the request was filed.
+  if (!s || s.visibility !== 'public') return res.status(400).json({ error: 'not joinable' });
+  if (s.creatorId !== req.userId && !canSeeProfile(s.creatorId, req.userId))
     return res.status(403).json({ error: 'forbidden' });
   // Already in it (an approved request, or invited-and-accepted separately) — nothing to request.
   // Without this, a stale "Join in?" screen (a second tab, or approval that landed while this one
@@ -3310,14 +3422,18 @@ function migrateMergeDuplicateBrian() {
       return 0;
     }
   }
-  // hand the friendships over, in both directions, without duplicating
+  // hand the friendships over, in both directions, without duplicating -- `friends` is a retired
+  // field (see canSeeProfile/connectionsOf, Sep 2026), but old rows can still carry it, and this
+  // function's job is to fold a duplicate account's data into the real one field-by-field, not to
+  // judge which fields still matter. ensureFriendArrays() itself is gone with the live feature, so
+  // heal the shape inline instead.
   const add = (list, id) => { if (id && !list.includes(id)) list.push(id); };
-  ensureFriendArrays(keep);
+  if (!Array.isArray(keep.friends)) keep.friends = [];
   for (const fid of (drop.friends || [])) {
     if (fid === MERGE_KEEP) continue;
     const other = DB.users[fid];
     if (!other) continue;
-    ensureFriendArrays(other);
+    if (!Array.isArray(other.friends)) other.friends = [];
     add(keep.friends, fid);
     add(other.friends, MERGE_KEEP);
     other.friends = other.friends.filter(x => x !== MERGE_DROP);
@@ -3507,7 +3623,9 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   ensureSessionShape(s);
   if (!canFinishOrPost(s, req.userId)) return res.status(403).json({ error: 'not in this workout' });
   const { notes, media, visibility } = req.body || {};
-  const vis = ['only_me','friends','public'].includes(visibility) ? visibility : 'only_me';
+  // v190 (Sep 2026): binary -- 'private' (default) or 'public'. See canSeePostAuthor for what
+  // each now means.
+  const vis = visibility === 'public' ? 'public' : 'private';
   const incoming = Array.isArray(media) ? media : [];
   if (incoming.length > MEDIA_MAX_ITEMS)
     return res.status(413).json({ error: `Up to ${MEDIA_MAX_ITEMS} photos or videos per workout.` });
@@ -3589,7 +3707,7 @@ app.post('/api/sessions/:id/posts/:authorId/react', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   const p = s.posts && s.posts[req.params.authorId];
-  if (!canSeePostAuthor(p, req.params.authorId, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  if (!canSeePostAuthor(p, req.params.authorId, req.userId, s)) return res.status(403).json({ error: 'forbidden' });
   // Plain array of userIds, same defensive coerce-at-point-of-use as p.comments above (objArray
   // doesn't fit here — it keeps only object entries, and these are bare id strings).
   p.reactions = Array.isArray(p.reactions) ? p.reactions.filter(x => typeof x === 'string') : [];
@@ -3613,7 +3731,7 @@ app.post('/api/sessions/:id/posts/:authorId/comments/:commentId/react', auth, as
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   const p = s.posts && s.posts[req.params.authorId];
-  if (!canSeePostAuthor(p, req.params.authorId, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  if (!canSeePostAuthor(p, req.params.authorId, req.userId, s)) return res.status(403).json({ error: 'forbidden' });
   const c = objArray(p.comments).find(x => x.id === req.params.commentId);
   if (!c) return res.status(404).json({ error: 'not found' });
   c.reactions = Array.isArray(c.reactions) ? c.reactions.filter(x => typeof x === 'string') : [];
@@ -3676,6 +3794,8 @@ app.use((err, req, res, next) => {
   reportUsernameCollisions();
   migrateCreatedAt();
   migrateFollowApproval();    // friends -> approved followers; old follows -> pending requests
+  migrateFriendsIntoFollowers();      // retire "friends" entirely -> mutual followers, both ways
+  migratePostAndSessionVisibilityBinary();   // 3-way post + 2-way session visibility -> one binary rule
   migrateExerciseNames();     // before rebuildAllPrs, which groups by the name
   rebuildAllPrs();
   migrateLoadTypes();

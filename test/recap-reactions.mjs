@@ -56,9 +56,12 @@ const addComment = (id, authorId, text, tok) => postJ(`/api/sessions/${id}/posts
 const commentReact = (id, authorId, commentId, tok) => post(`/api/sessions/${id}/posts/${authorId}/comments/${commentId}/react`, {}, tok);
 const commentReactJ = (id, authorId, commentId, tok) => commentReact(id, authorId, commentId, tok).then(r => r.json());
 
+// v190: mutual follow reproduces the old symmetric "friends" relationship.
 async function makeFriends(a, b) {
-  await postJ('/api/friends/request', { username: b.user.username }, a.token);
-  await postJ('/api/friends/accept', { from: a.user.id }, b.token);
+  await postJ('/api/follow/' + b.user.id, {}, a.token);
+  await postJ('/api/follow-requests/' + a.user.id + '/accept', {}, b.token);
+  await postJ('/api/follow/' + a.user.id, {}, b.token);
+  await postJ('/api/follow-requests/' + b.user.id + '/accept', {}, a.token);
 }
 async function soloPostedWorkout(u, visibility) {
   const s = await postJ('/api/sessions', {
@@ -75,7 +78,7 @@ console.log('\na tap toggles on, a second tap toggles off');
   const alice = await reg('rx_alice', 'pass1234', 'Alice');
   const bob = await reg('rx_bob', 'pass1234', 'Bob');
   await makeFriends(alice, bob);
-  const s = await soloPostedWorkout(alice, 'friends');
+  const s = await soloPostedWorkout(alice, 'public');
 
   const on = await reactJ(s.id, alice.user.id, bob.token);
   ok(on.reacted === true && on.count === 1, `first tap: reacted true, count 1 (got ${JSON.stringify(on)})`);
@@ -91,7 +94,7 @@ console.log('\nthe count is real and shared -- two different people reacting bot
   const finn = await reg('rx_finn', 'pass1234', 'Finn');
   await makeFriends(carl, dee);
   await makeFriends(carl, finn);
-  const s = await soloPostedWorkout(carl, 'friends');
+  const s = await soloPostedWorkout(carl, 'public');
 
   const r1 = await reactJ(s.id, carl.user.id, dee.token);
   ok(r1.count === 1, `dee reacts: count 1 (got ${r1.count})`);
@@ -106,7 +109,7 @@ console.log('\nsomeone who cannot see the recap at all cannot react to it either
 {
   const gwen = await reg('rx_gwen', 'pass1234', 'Gwen');
   const holt = await reg('rx_holt', 'pass1234', 'Holt');   // NOT a friend of gwen
-  const s = await soloPostedWorkout(gwen, 'only_me');
+  const s = await soloPostedWorkout(gwen, 'private');
 
   const r = await react(s.id, gwen.user.id, holt.token);
   ok(r.status === 403, `a non-friend on an only-me recap is refused (got ${r.status})`);
@@ -119,7 +122,7 @@ console.log('\na genuine non-friend is refused on a FRIENDS-visibility recap too
 {
   const paul = await reg('rx_paul', 'pass1234', 'Paul');
   const quinn = await reg('rx_quinn', 'pass1234', 'Quinn');   // NOT a friend of paul
-  const s = await soloPostedWorkout(paul, 'friends');
+  const s = await soloPostedWorkout(paul, 'public');
 
   const r = await react(s.id, paul.user.id, quinn.token);
   ok(r.status === 403, `a non-friend on a friends-visibility recap is refused (got ${r.status})`);
@@ -134,7 +137,7 @@ console.log('\nreacting where there is no post at all is refused, not a crash');
   const jack = await reg('rx_jack', 'pass1234', 'Jack');
   await makeFriends(iris, jack);
   const s = await postJ('/api/sessions', {
-    name: 'Never Posted', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Deadlift' }], visibility: 'friends',
+    name: 'Never Posted', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Deadlift' }], visibility: 'public',
   }, iris.token);
   // iris never calls /post -- s.posts[iris.id] does not exist
   const r = await react(s.id, iris.user.id, jack.token);
@@ -157,12 +160,12 @@ console.log('\nediting notes/photos on an already-posted recap does not wipe exi
   const liam = await reg('rx_liam', 'pass1234', 'Liam');
   const mia = await reg('rx_mia', 'pass1234', 'Mia');
   await makeFriends(liam, mia);
-  const s = await soloPostedWorkout(liam, 'friends');
+  const s = await soloPostedWorkout(liam, 'public');
   await reactJ(s.id, liam.user.id, mia.token);
 
   // liam edits his own notes -- hits POST /post again, same endpoint used to save the recap the
   // first time
-  const edited = await postJ(`/api/sessions/${s.id}/post`, { notes: 'edited notes', visibility: 'friends' }, liam.token);
+  const edited = await postJ(`/api/sessions/${s.id}/post`, { notes: 'edited notes', visibility: 'public' }, liam.token);
   const reactionsAfterEdit = (edited.posts && edited.posts[liam.user.id] && edited.posts[liam.user.id].reactions) || [];
   ok(reactionsAfterEdit.includes(mia.user.id), `mia's reaction survives liam editing his notes (got ${JSON.stringify(reactionsAfterEdit)})`);
 }
@@ -172,7 +175,7 @@ console.log('\nGET /api/sessions/:id already carries reactions on the post -- no
   const noah = await reg('rx_noah', 'pass1234', 'Noah');
   const olive = await reg('rx_olive', 'pass1234', 'Olive');
   await makeFriends(noah, olive);
-  const s = await soloPostedWorkout(noah, 'friends');
+  const s = await soloPostedWorkout(noah, 'public');
   await reactJ(s.id, noah.user.id, olive.token);
 
   const asNoah = await get('/api/sessions/' + s.id, noah.token);
@@ -186,7 +189,7 @@ console.log('\n[comments follow-up] a tap toggles a comment reaction on, a secon
   const rex = await reg('rx_rex', 'pass1234', 'Rex');
   const sam = await reg('rx_sam', 'pass1234', 'Sam');
   await makeFriends(rex, sam);
-  const s = await soloPostedWorkout(rex, 'friends');
+  const s = await soloPostedWorkout(rex, 'public');
   const withComment = await addComment(s.id, rex.user.id, 'nice work', sam.token);
   const c = withComment.posts[rex.user.id].comments.find(x => x.text === 'nice work');
   ok(!!c, 'comment was created');
@@ -204,7 +207,7 @@ console.log('\n[comments follow-up] a comment reaction count is independent -- n
   const vin = await reg('rx_vin', 'pass1234', 'Vin');
   await makeFriends(tia, uri);
   await makeFriends(tia, vin);
-  const s = await soloPostedWorkout(tia, 'friends');
+  const s = await soloPostedWorkout(tia, 'public');
   const afterC1 = await addComment(s.id, tia.user.id, 'first comment', uri.token);
   const c1 = afterC1.posts[tia.user.id].comments.find(x => x.text === 'first comment');
   const afterC2 = await addComment(s.id, tia.user.id, 'second comment', vin.token);
@@ -227,7 +230,7 @@ console.log('\n[comments follow-up] access control on a comment reaction matches
   const xena = await reg('rx_xena', 'pass1234', 'Xena');
   await makeFriends(walt, xena);
   const yara = await reg('rx_yara', 'pass1234', 'Yara');   // NOT a friend of walt
-  const s = await soloPostedWorkout(walt, 'friends');
+  const s = await soloPostedWorkout(walt, 'public');
   const withComment = await addComment(s.id, walt.user.id, 'hi', xena.token);
   const c = withComment.posts[walt.user.id].comments.find(x => x.text === 'hi');
 
@@ -240,7 +243,7 @@ console.log('\n[comments follow-up] a non-owner is refused on an ONLY-ME recap\'
   const ozzy = await reg('rx_ozzy', 'pass1234', 'Ozzy');
   const pia = await reg('rx_pia', 'pass1234', 'Pia');
   await makeFriends(ozzy, pia);   // friendship alone should not be enough against only_me
-  const s = await soloPostedWorkout(ozzy, 'only_me');
+  const s = await soloPostedWorkout(ozzy, 'private');
   // ozzy can't comment on his own only_me-visibility post via a friend either -- simulate a
   // comment existing by having ozzy himself comment, then a friend tries to react to it.
   const withComment = await addComment(s.id, ozzy.user.id, 'solo note', ozzy.token);
@@ -255,7 +258,7 @@ console.log('\n[comments follow-up] reacting to a comment where the target autho
   const remy = await reg('rx_remy', 'pass1234', 'Remy');
   await makeFriends(quin, remy);
   const s = await postJ('/api/sessions', {
-    name: 'Never Posted', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Deadlift' }], visibility: 'friends',
+    name: 'Never Posted', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Deadlift' }], visibility: 'public',
   }, quin.token);
   // quin never calls /post -- s.posts[quin.id] does not exist, so there's no comment to react to
   const r = await commentReact(s.id, quin.user.id, 'c_whatever', remy.token);
@@ -282,12 +285,12 @@ console.log('\n[comments follow-up] a comment reaction survives the recap being 
   const abby = await reg('rx_abby', 'pass1234', 'Abby');
   const bret = await reg('rx_bret', 'pass1234', 'Bret');
   await makeFriends(abby, bret);
-  const s = await soloPostedWorkout(abby, 'friends');
+  const s = await soloPostedWorkout(abby, 'public');
   const withComment = await addComment(s.id, abby.user.id, 'great lift', bret.token);
   const c = withComment.posts[abby.user.id].comments.find(x => x.text === 'great lift');
   await commentReactJ(s.id, abby.user.id, c.id, abby.token);
 
-  const edited = await postJ(`/api/sessions/${s.id}/post`, { notes: 'edited notes', visibility: 'friends' }, abby.token);
+  const edited = await postJ(`/api/sessions/${s.id}/post`, { notes: 'edited notes', visibility: 'public' }, abby.token);
   const gc = edited.posts[abby.user.id].comments.find(x => x.id === c.id);
   ok(!!gc && Array.isArray(gc.reactions) && gc.reactions.includes(abby.user.id),
      `the comment reaction survives abby editing her notes (got ${JSON.stringify(gc && gc.reactions)})`);
