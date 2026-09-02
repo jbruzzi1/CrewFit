@@ -803,6 +803,13 @@
     .rp-new { font-size:15px; font-weight:700; color:var(--fg); }
     .rp-tag { font-size:10px; font-weight:700; color:#067a06; text-transform:uppercase; letter-spacing:.4px; margin-top:2px; }
     .hold-sec { margin-top:4px; padding-top:10px; border-top:1px solid var(--line); }
+    /* Jeff, Sep 2: a .hold-sec (Almost / Hold for now / the Plateau card's only section) is
+       sometimes the very FIRST thing in its .card -- e.g. "Add weight next time" when there's
+       nothing in the ready list, just an Almost one -- and this divider, meant to separate it
+       from a "ready" section above it, then sat as a stray line right under the card's own
+       rounded top edge, floating above the heading with nothing above the line to separate from.
+       The card's own edge is the boundary in that case, not an internal rule. */
+    .hold-sec:first-child { margin-top:0; padding-top:0; border-top:none; }
     .hold-head { font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; padding:2px 2px 0; }
     .hold { display:flex; align-items:center; gap:11px; padding:11px 2px 2px; }
     .hold-ic { flex:0 0 auto; width:27px; height:27px; border-radius:8px; background:#eef1f5; color:var(--muted); display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:800; }
@@ -1047,6 +1054,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=291"></script>
+  <script src="app.js?v=292"></script>
 </body>
 </html>
