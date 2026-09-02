@@ -337,7 +337,7 @@ async function home(opts){
   // weeks=26, not 4: streakWeeks is computed inside the requested window, so a 4-week request
   // silently caps the streak stat at "4 week streak" — false for anyone on a longer run.
   const [sessions, feed, _fr, prog] = await Promise.all([
-    H.get('/api/sessions'), H.get('/api/feed'), H.get('/api/friends'), H.get('/api/progress?weeks=26')
+    H.get('/api/sessions'), H.get('/api/feed'), H.get('/api/friends'), H.get('/api/progress?weeks=26&localToday='+localDateStr())
   ]);
   const myFriends = (_fr && _fr.friends) ? _fr.friends : (Array.isArray(_fr) ? _fr : []);
   const friendName = async (id)=> myFriends.find(f=>f.id===id)?.displayName || 'A friend';   // reads as a phrase, not as someone's name
@@ -2601,7 +2601,7 @@ async function showRecap(id){
   try{
     // weeks=26, not 4: streakWeeks is computed inside the requested window and would cap at 4
     // (same lesson as the Home header). `ready` is window-independent.
-    const p = await H.get('/api/progress?weeks=26');
+    const p = await H.get('/api/progress?weeks=26&localToday='+localDateStr());
     const names = new Set(rows.map(r=>r.nm));
     next = ((p && p.ready) || []).filter(x=>names.has(x.exercise));
     streakW = (p && p.streakWeeks) || 0;
@@ -4093,7 +4093,7 @@ async function progressScreen(opts){
   // scrollTo(0,0) below would yank the screen back to the top on every pill tap, same class of
   // regression openSession's opts.silent already guards against.
   const silent = !!(opts && opts.silent);
-  const d = await H.get('/api/progress?weeks='+PROG_WEEKS);
+  const d = await H.get('/api/progress?weeks='+PROG_WEEKS+'&localToday='+localDateStr());
   if(!d || d.error){ $('app').innerHTML = `<div class="wrap"><h1>Progress</h1><div class="muted">Couldn\'t load progress.</div></div>`; if(!silent) window.scrollTo(0,0); return; }
   PROG_LAST = d;
   const U = d.unit || 'lb';
