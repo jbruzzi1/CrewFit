@@ -39,6 +39,11 @@ function boot(port, dir, databaseUrl) {
   const P = (who, p) => fetch(B+p, { method:'POST', headers:H(who.token) });
 
   const alice = await reg('alicef'), bob = await reg('bobf'), stranger = await reg('strangerf');
+  // Sep 2026: profiles default Public now (Jeff: "let's do public as default, and private if
+  // toggled") -- this whole flow is specifically testing the approval-based PRIVATE-profile
+  // model, so bob opts into Private explicitly rather than relying on a default that no longer
+  // means that.
+  await fetch(B+'/api/me/profile-visibility', { method:'POST', headers:H(bob.token), body:JSON.stringify({ visibility:'private' }) });
   // give bob a logged PR so there is private detail to gate
   const s = await fetch(B+'/api/sessions', { method:'POST', headers:H(bob.token), body:JSON.stringify({ name:'D', visibility:'private', scheduledAt:'2026-08-20T18:00:00Z', exercises:[{name:'Bench Press'}] }) }).then(r=>r.json());
   await fetch(B+`/api/sessions/${s.id}/log`, { method:'POST', headers:H(bob.token), body:JSON.stringify({ exerciseId:s.exercises[0].id, weight:225, reps:5, set:1 }) });

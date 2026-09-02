@@ -4963,7 +4963,7 @@ function openSettings(){
            settings." Private (default for every account) = only approved followers, and you, can
            see your PRs/streak/activity and your posted workouts unless a post is itself made
            Public; Public = anyone can. Same on/off row shape as the two reminder toggles below. -->
-      <button class="sheet-row" onclick="toggleProfileVisibility()">Profile <span class="row-val" id="profileVisVal">${ME.profileVisibility==='public'?'Public':'Private'}</span></button>
+      <button class="sheet-row" onclick="toggleProfileVisibility()">Profile <span class="row-val" id="profileVisVal">${ME.profileVisibility==='private'?'Private':'Public'}</span></button>
       <button class="sheet-row" onclick="toggleStreakReminders()">Streak reminders <span class="row-val" id="streakRemVal">${ME.notifyStreakReminders!==false?'On':'Off'}</span></button>
       <button class="sheet-row" onclick="toggleWorkoutReminders()">Workout reminders <span class="row-val" id="workoutRemVal">${ME.notifyWorkoutReminders!==false?'On':'Off'}</span></button>
       <button class="sheet-row red" onclick="closeSheet(); confirmResetWorkouts()">Reset workouts</button>
@@ -5269,13 +5269,15 @@ function editDefaultGym(){
 // nothing left to approve once anyone can already see you, same reasoning as /api/follow/:id
 // skipping the request step entirely for an already-public profile.
 async function toggleProfileVisibility(){
-  const next = ME.profileVisibility==='public' ? 'private' : 'public';
+  // Public is the default (unset counts as public, same rule as canSeeProfile server-side) --
+  // only an explicit 'private' narrows it, so the toggle flips off of that, not off of 'public'.
+  const next = ME.profileVisibility==='private' ? 'public' : 'private';
   const r = await H.post('/api/me/profile-visibility',{visibility:next});
   if(r && r.error){ alert(r.error); return; }
   if(r && r.profileVisibility){
     ME.profileVisibility = r.profileVisibility;
     const v = document.getElementById('profileVisVal');
-    if(v) v.textContent = ME.profileVisibility==='public' ? 'Public' : 'Private';
+    if(v) v.textContent = ME.profileVisibility==='private' ? 'Private' : 'Public';
   }
 }
 // Task #63: "you're about to lose your streak" push reminder, opt-out toggle. Only matters if

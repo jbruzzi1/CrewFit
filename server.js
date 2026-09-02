@@ -459,13 +459,14 @@ app.post('/api/register', async (req, res) => {
   const id = uid();
   DB.users[id] = Object.assign({ id, username: String(username).trim(),
     displayName: capStr(displayName || username, 80).trim(), units: 'lb',
-    // Sep 2026: profiles default Private -- nobody is shown to more people than they signed up
-    // for. followers/following/followReqs are created lazily by ensureFollowArrays on first use,
-    // same as ever; there is no separate "friends" concept to seed any more (see canSeeProfile).
-    profileVisibility: 'private',
+    // Jeff, Sep 2026: profiles default Public -- discoverable out of the box, same as the app's
+    // general "discoverability beats minimalism" stance. Private is an opt-in you reach through
+    // Settings. followers/following/followReqs are created lazily by ensureFollowArrays on first
+    // use, same as ever; there is no separate "friends" concept to seed any more (see canSeeProfile).
+    profileVisibility: 'public',
     createdAt: new Date().toISOString() }, hashPin(pin));
   await save(DB);
-  res.json({ token: signToken(id), user: { ...publicUser(id), defaultGym: '', profileVisibility: 'private' } });
+  res.json({ token: signToken(id), user: { ...publicUser(id), defaultGym: '', profileVisibility: 'public' } });
 });
 // Live username availability check (used by the register popup as the user types)
 app.get('/api/register/check', async (req, res) => {
@@ -507,8 +508,10 @@ app.post('/api/login', async (req, res) => {
   // response describes the account that just authenticated, so it's the one safe place to add
   // them directly: without it, an in-app login (no full page reload, so tryBoot()'s own
   // /api/profile/me fetch never runs) would leave ME.profileVisibility stale/undefined and the
-  // Settings toggle could show "Private" for an account the server actually has set to Public.
-  res.json({ token: signToken(u.id), user: { ...publicUser(u.id), defaultGym: u.defaultGym || '', profileVisibility: u.profileVisibility === 'public' ? 'public' : 'private' } });
+  // Settings toggle could show the wrong state for an account whose real value differs.
+  // Public is the default (unset counts as public, same rule as canSeeProfile) -- only an
+  // explicit 'private' narrows it.
+  res.json({ token: signToken(u.id), user: { ...publicUser(u.id), defaultGym: u.defaultGym || '', profileVisibility: u.profileVisibility === 'private' ? 'private' : 'public' } });
 });
 
 // ---- Password reset: DISABLED, deliberately ----
@@ -643,12 +646,13 @@ app.post('/api/favorites/toggle', auth, async (req, res) => {
 // all resolve through this now, instead of independently-written copies that drift apart (see the
 // history below: a second copy of this exact check, keyed on the wrong person, once leaked a
 // friends-only recap through a profile page while the session route correctly refused it).
-// Private (default, unset counts as private) = only approved followers, and you. Public = anyone.
+// Public (default, unset counts as public) = anyone. Private is opt-in via Settings = only
+// approved followers, and you.
 function canSeeProfile(id, viewerId) {
   if (id === viewerId) return true;
   const u = DB.users[id];
   if (!u) return false;
-  if (u.profileVisibility === 'public') return true;
+  if (u.profileVisibility !== 'private') return true;
   return (u.followers || []).includes(viewerId);
 }
 // ---- Profile (per-user, viewable by anyone logged in) ----
@@ -683,9 +687,16 @@ function profileOf(id, viewerId, localToday) {
   // withholding the invite list from non-invitees; this route handed the same names to anybody.
   //
   // A workout appears on a profile only if the viewer could legitimately reach it: their own, a
-  // post whose own visibility admits them, or a workout they were actually part of.
+  // post whose own visibility admits them, or a workout they were actually part of. `isApproved`
+  // is deliberately NOT a shortcut here — it only unlocks the prs/streak/recentActivity block
+  // below. A session posted 'private' means "only the creator or who was part of it" (Jeff's own
+  // words) regardless of whether its owner's PROFILE happens to be approved/Public for this
+  // viewer; profile approval is a different question from session-level privacy, and conflating
+  // them used to mean a session marked Private still broadcast its name/date/exercise list to
+  // anyone who could see the owner's profile at all — trivially everyone, once profiles default
+  // to Public (Sep 2026 audit finding).
   const viewerCanSee = s => {
-    if (id === viewerId || isApproved) return true;
+    if (id === viewerId) return true;
     if (canSeeMyPost(s)) return true;
     const t = sessionTier(s, viewerId);
     return t === 'member' || t === 'invited';
@@ -743,8 +754,9 @@ function profileOf(id, viewerId, localToday) {
     notifyWorkoutReminders: id === viewerId ? (u.notifyWorkoutReminders !== false) : undefined,
     // Self only — the OTHER profile's own visibility isn't a thing a viewer needs (canSeeProfile
     // already decided whether they can see the gated stuff below); the Settings screen's own
-    // Private/Public toggle is the only reader of this.
-    profileVisibility: id === viewerId ? (u.profileVisibility === 'public' ? 'public' : 'private') : undefined,
+    // Private/Public toggle is the only reader of this. Public unless explicitly set to
+    // 'private', same rule as canSeeProfile.
+    profileVisibility: id === viewerId ? (u.profileVisibility === 'private' ? 'private' : 'public') : undefined,
     workoutsCompleted: completed.size,
     // the follow button's state, and whether they follow you back
     youFollow: id === viewerId ? 'self'
@@ -873,10 +885,11 @@ app.post('/api/me/bio', auth, async (req, res) => {
   await save(DB);
   res.json({ bio: DB.users[req.userId].bio });
 });
-// Jeff, Sep 2026: "make profiles private or public in settings." Private (default) = only
-// approved followers (and you) see profile detail, workouts posted Public, and can request to
-// join a Public-visibility workout. Public = anyone, no approval needed -- canSeeProfile() is the
-// one rule this drives everywhere (profile detail, post visibility, session joinability).
+// Jeff, Sep 2026: "make profiles private or public in settings" -- then "let's do public as
+// default, and private if toggled." Public (default) = anyone sees profile detail, workouts
+// posted Public, and can request to join a Public-visibility workout, no approval needed.
+// Private is opt-in = only approved followers (and you) -- canSeeProfile() is the one rule this
+// drives everywhere (profile detail, post visibility, session joinability).
 app.post('/api/me/profile-visibility', auth, async (req, res) => {
   const { visibility } = req.body || {};
   const v = visibility === 'public' ? 'public' : 'private';
@@ -914,8 +927,9 @@ app.post('/api/follow/:id', auth, async (req, res) => {
   if (target.followers.includes(req.userId)) return res.json({ status: 'following' });
   // Sep 2026: a Public profile has nothing to approve -- everyone can already see it -- so a
   // follow there lands immediately instead of sitting in target.followReqs. A Private profile
-  // keeps the existing approval step.
-  if (target.profileVisibility === 'public') {
+  // keeps the existing approval step. Public is the default (unset counts as public), same rule
+  // as canSeeProfile.
+  if (target.profileVisibility !== 'private') {
     target.followers.push(req.userId);
     const me = DB.users[req.userId];
     if (!me.following.includes(target.id)) me.following.push(target.id);

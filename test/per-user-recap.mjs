@@ -47,6 +47,12 @@ console.log('two participants each post their own recap on the SAME session — 
   const alice = await post(B, '/api/register', { username: 'recap_alice', pin: 'pass1234', displayName: 'Alice' });
   const bob = await post(B, '/api/register', { username: 'recap_bob', pin: 'pass1234', displayName: 'Bob' });
   const carol = await post(B, '/api/register', { username: 'recap_carol', pin: 'pass1234', displayName: 'Carol' });
+  // Sep 2026: profiles default Public now (Jeff: "let's do public as default, and private if
+  // toggled") -- bob posts a visibility:'public' recap below, and this block's whole point is
+  // that carol (a genuine stranger, connected to neither) still can't reach it; that's only true
+  // if bob's own profile is Private (canSeeProfile gates a 'public' post on the author's profile
+  // visibility, same as everywhere else -- see exposure.mjs's "reaches a total stranger" tests).
+  await post(B, '/api/me/profile-visibility', { visibility: 'private' }, bob.token);
   await post(B, '/api/follow/' + bob.user.id, {}, alice.token);
   await post(B, '/api/follow-requests/' + alice.user.id + '/accept', {}, bob.token);
   await post(B, '/api/follow/' + alice.user.id, {}, bob.token);

@@ -122,6 +122,11 @@ console.log('\na genuine non-friend is refused on a FRIENDS-visibility recap too
 {
   const paul = await reg('rx_paul', 'pass1234', 'Paul');
   const quinn = await reg('rx_quinn', 'pass1234', 'Quinn');   // NOT a friend of paul
+  // Sep 2026: profiles default Public now -- a 'public'-visibility recap only actually stays
+  // closed to a genuine non-follower stranger if the author's own profile is Private too
+  // (canSeeProfile gates it, same rule as everywhere else). That's exactly what this block is
+  // testing, so paul opts into Private explicitly.
+  await postJ('/api/me/profile-visibility', { visibility: 'private' }, paul.token);
   const s = await soloPostedWorkout(paul, 'public');
 
   const r = await react(s.id, paul.user.id, quinn.token);
@@ -230,6 +235,9 @@ console.log('\n[comments follow-up] access control on a comment reaction matches
   const xena = await reg('rx_xena', 'pass1234', 'Xena');
   await makeFriends(walt, xena);
   const yara = await reg('rx_yara', 'pass1234', 'Yara');   // NOT a friend of walt
+  // Sep 2026: profiles default Public now -- walt opts into Private so yara (a genuine
+  // non-follower stranger) is still refused, same reasoning as the post-level block above.
+  await postJ('/api/me/profile-visibility', { visibility: 'private' }, walt.token);
   const s = await soloPostedWorkout(walt, 'public');
   const withComment = await addComment(s.id, walt.user.id, 'hi', xena.token);
   const c = withComment.posts[walt.user.id].comments.find(x => x.text === 'hi');

@@ -99,6 +99,11 @@ try {
 
 const alice = await user('Alice'), bob = await user('Bob'),
       carol = await user('Carol'), mallory = await user('Mallory');
+// Sep 2026: profiles default PUBLIC now (Jeff: "let's do public as default, and private if
+// toggled") -- this file's whole point is proving what a genuinely walled-off account does NOT
+// leak to an unrelated stranger, so alice opts into Private explicitly rather than relying on a
+// default that no longer means that.
+await post(alice, '/api/me/profile-visibility', { visibility: 'private' });
 await befriend(alice, bob);
 await befriend(alice, carol);       // Carol is Alice's friend and nothing else
 
@@ -225,8 +230,9 @@ console.log('\na published workout reaches the people it was published for');
   // the one case that did open rendered as though no sets had been logged.
   // v190 (Sep 2026): a 'public' post is only actually open to a total stranger if the AUTHOR'S OWN
   // profile is also Public (canSeeProfile(authorId, viewer) gates it, same rule as the rest of the
-  // profile) — every account defaults to Private, so pub has to opt into Public here for "reaches
-  // a total stranger" to be the true statement this block is testing.
+  // profile) — profiles default to Public now, so this call is a no-op in practice, but it's kept
+  // explicit so "reaches a total stranger" stays true on its own terms even if the default ever
+  // changes again.
   const pub = await user('Pubby'), far = await user('Far');
   await fetch(B + '/api/me/profile-visibility', { method: 'POST', headers: pub.H, body: JSON.stringify({ visibility: 'public' }) });
   const ps = await fetch(B + '/api/sessions', { method: 'POST', headers: pub.H,
@@ -260,6 +266,10 @@ console.log('\na profile does not leak what the session route refuses');
   // rather than who wrote the post — so a friend of a PARTICIPANT was handed the creator's
   // friends-only notes on a profile while the session route correctly refused them.
   const host = await user('Host'), guest = await user('Guest'), vic = await user('Vic');
+  // Both opt into Private explicitly — profiles default Public now, and this block is testing
+  // exactly what leaks (or doesn't) through the boundary a Private account draws.
+  await post(host, '/api/me/profile-visibility', { visibility: 'private' });
+  await post(guest, '/api/me/profile-visibility', { visibility: 'private' });
   await befriend(host, guest);
   await befriend(guest, vic);                       // Vic knows the guest, not the host
   await follow(vic, guest);                         // and follows the guest, approved — sees the guest's profile
