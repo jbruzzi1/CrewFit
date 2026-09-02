@@ -155,7 +155,7 @@ const EX_LIB = JSON.parse(fs.readFileSync(LIB_FILE, 'utf8')).exercises;
 //
 // They are a starting point, not a prescription: the user edits them, and Progress is built from
 // what they actually lifted, never from these.
-const TIMED_HOLD = /^(plank|side plank|wall sit|hollow body hold|dead hang|plate pinch)$/i;
+const TIMED_HOLD = /^(plank|side plank|wall sit|hollow body hold|dead hang|plate pinch|copenhagen plank|weighted plank)$/i;
 const CARRY_LIKE = /(carry|sled (push|pull))/i;
 const CARDIO_MACHINE = /(treadmill|bike|erg|elliptical|stair|ski|ladder|rope|sled|step mill|rowing machine|shadow boxing)/i;
 

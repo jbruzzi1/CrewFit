@@ -2,7 +2,7 @@
 //
 // Run:  npm test
 //
-// Every one of the 203 library exercises used to get the same target: 3 sets of 8-10 added from
+// Every one of the library exercises used to get the same target: 3 sets of 8-10 added from
 // the library, 3 x 10 everywhere else. So the app prescribed ten-rep deadlifts — the rep count at
 // which a heavy hinge stops being a hinge — and it prescribed a REP COUNT for planks, treadmill
 // runs and farmer's carries, where reps are not the unit at all.
