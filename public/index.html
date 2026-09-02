@@ -27,7 +27,17 @@
        color rather than any accent -- see avatarColor() in app.js for why. */
     :root { color-scheme: light; --shine:rgba(6,122,6,.14); --bg:#fbfbfd; --card:#ffffff; --fg:#15181f; --muted:#6b7280; --green:#16a34a; --avatar:#2b2f38; --blue:#2563eb; --red:#dc2626; --line:#edeff2; }
     * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-    html,body { margin:0; padding:0; background:var(--bg); color:var(--fg); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+    /* Jeff, Sep 2: the page-level scroll bounce felt harsh on a hard swipe. body IS the scroll
+       container here (no inner scroll div -- see the .wrap comment below), so its rubber-band
+       overscroll is the whole screen's. overscroll-behavior-y:none is the standard fix for this
+       exact complaint on an iOS home-screen web app: it turns off that elastic snap-back on the
+       root scroller instead of just containing it (the app already uses `contain` for sheets --
+       see .sheet below -- but sheets aren't the root scroller, so `contain` there only stops a
+       sheet's own overscroll from chaining into a background scroll; on body, `none` is what
+       actually kills the bounce itself). No pull-to-refresh or other gesture in this app depends
+       on the native bounce (checked: no touchstart/touchmove listener anywhere reads a body-level
+       overscroll), so nothing here should behave differently besides the bounce going away. */
+    html,body { margin:0; padding:0; background:var(--bg); color:var(--fg); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; overscroll-behavior-y:none; }
     body { max-width:480px; margin:0 auto; padding-bottom:calc(72px + env(safe-area-inset-bottom)); }
     /* Jeff, Sep 2: "scroll to the bottom of some pages and it leaves a good amount of empty
        space." Root cause (v137, Aug 15): this rule's own padding-bottom was added on top of
@@ -1080,6 +1090,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=294"></script>
+  <script src="app.js?v=295"></script>
 </body>
 </html>
