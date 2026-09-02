@@ -29,7 +29,21 @@
     * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
     html,body { margin:0; padding:0; background:var(--bg); color:var(--fg); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
     body { max-width:480px; margin:0 auto; padding-bottom:calc(72px + env(safe-area-inset-bottom)); }
-    .wrap { padding:14px; padding-left:calc(14px + env(safe-area-inset-left)); padding-right:calc(14px + env(safe-area-inset-right)); padding-bottom:calc(84px + env(safe-area-inset-bottom)); }
+    /* Jeff, Sep 2: "scroll to the bottom of some pages and it leaves a good amount of empty
+       space." Root cause (v137, Aug 15): this rule's own padding-bottom was added on top of
+       `body`'s pre-existing calc(72px + safe-area) nav clearance above -- and since .wrap sits
+       in body's normal document flow (the page itself scrolls, .wrap is not its own scroll
+       container), the two stacked: 72+84=156px of dead air below the real content on every
+       .wrap page, before the true end of scroll. body's 72px is the one other fixed chrome in
+       this file is calibrated against (#updateBar's own `bottom` is literally `calc(72px + ...)`
+       -- see below), so it's the correct, current value; a plain .wrap page (the document itself
+       scrolls, nothing measures .wrap's own box height) doesn't need its own. Two call sites DO
+       still need their own explicit bottom clearance and keep it, deliberately, for reasons
+       specific to them, NOT as a copy of this bug: .rc-wrap (the recap screen) has its own
+       matching padding-bottom because its min-height:100vh box is what a margin-top:auto CTA
+       measures against (see .rc-wrap's own comment); .edit-mode has its own because it clears a
+       DIFFERENT fixed bar (.sticky-bar, not .nav, and taller) on the one screen that shows it. */
+    .wrap { padding:14px; padding-left:calc(14px + env(safe-area-inset-left)); padding-right:calc(14px + env(safe-area-inset-right)); }
     .create-flow > .sec.sm { margin:0 0 14px; }            /* Cancel button -> gap below */
     .create-flow > h1 { margin:0 0 16px; }                  /* New workout title -> gap below */
     .tpl-name-edit { width:100%; margin:0 0 16px; font-size:19px; font-weight:700; line-height:1.2; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:var(--card); color:var(--text); box-sizing:border-box; }
@@ -639,8 +653,14 @@
     /* v237 (Jeff): no dead gap under Done on a short recap - the wrap is a min-full-height
        column and the CTA takes margin-top:auto, so the button settles at the bottom of the
        screen when content is short and simply follows the content when it is long. Not fixed
-       chrome: it scrolls like everything else. */
-    .rc-wrap { padding-top:calc(18px + env(safe-area-inset-top)); display:flex; flex-direction:column; min-height:100vh;  /* border-box: the wrap's own nav-clearance padding is inside this */ }
+       chrome: it scrolls like everything else.
+       Sep 2, 2026: .wrap itself no longer carries its own nav-clearance padding-bottom (that was
+       doubling up with body's -- see the comment on .wrap above) so this rule now supplies its
+       OWN, matching body's calc(72px + safe-area) exactly -- still needed here specifically
+       because this box's min-height:100vh (border-box) is what margin-top:auto on .rc-cta
+       measures against; without it a short recap's Done button would settle flush with the
+       viewport's bottom edge, behind the nav, rather than just above it. */
+    .rc-wrap { padding-top:calc(18px + env(safe-area-inset-top)); padding-bottom:calc(72px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; min-height:100vh; }
     .rc-wrap .rc-cta { margin-top:auto; padding-top:18px; }
     /* v235 celebration: the recap opens like a win. One-shot CSS entrance - a self-drawing
        check, then each block rises in order. All of it is decoration over content that is
@@ -720,7 +740,13 @@
                  color:var(--muted); background:#eef1f5; border-radius:6px; padding:3px 8px; }
     .load-hint { font-size:11.5px; color:var(--muted); }
     /* Inline workout edit mode */
-    .edit-mode { padding-bottom:84px; }
+    /* Sep 2, 2026: .edit-mode used to set its own padding-bottom:84px here, which ALSO stacked
+       with body's calc(72px + safe-area) -- same double-padding bug as .wrap (see that rule's
+       comment), just discovered on this screen during that fix's cold review. .sticky-bar (the
+       fixed bar this screen shows instead of .nav) measures 67px tall, comfortably inside body's
+       72px alone, so no extra reservation is needed here either -- removed rather than left
+       empty. The element still carries both `wrap edit-mode` classes in app.js; `.edit-mode` is
+       kept as a hook for anything screen-specific added here later. */
     .edit-banner { position:sticky; top:0; z-index:30; background:rgba(37,99,235,.10); color:var(--blue); font-weight:600; font-size:13px; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 8px 6px 14px; border-radius:10px; margin-bottom:10px; }
     .inex-row { margin-bottom:10px; }
     .inex-top { display:flex; align-items:center; gap:8px; }
@@ -1054,6 +1080,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=292"></script>
+  <script src="app.js?v=294"></script>
 </body>
 </html>
