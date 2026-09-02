@@ -224,7 +224,13 @@ async function doReg(){ try {
   const u=($('rx').value||'').trim().toLowerCase();
   if(u){ try { const c=await H.get('/api/register/check?username='+encodeURIComponent(u)); if(c && c.available===false){ alert('username taken'); return; } } catch(e){} }
   if(($('rp').value||'').length < 6){ alert('Password must be at least 6 characters.'); return; }
-  const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value}); if(r.token){ setToken(r.token,r.user); home(); } else alert(r.error||'register failed'); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
+  const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value}); if(r.token){ setToken(r.token,r.user); home();
+    // Cold-review catch: this call sits inside doReg's own try/catch, but the account is
+    // ALREADY registered and logged in by this point -- a throw here has no business
+    // surfacing as "Network error, is CrewFit reachable?" to someone who just successfully
+    // signed up. Own try/catch so a walkthrough hiccup can never look like a failed signup.
+    try { openWalkthrough(); } catch(e){}
+  } else alert(r.error||'register failed'); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
 
 // ---- Nav / browser Back ----
 // v254 (Jeff): "when I press back I want the page I was just on, not Home" -- nothing in this app
@@ -4932,6 +4938,76 @@ function toggleTheme(){
   const v = document.getElementById('themeVal');
   if(v) v.textContent = next === 'dark' ? 'Dark' : 'Light';
 }
+// Jeff, Sep 2: "certain things user won't know or find until they happen ... I feel like there
+// are certain things user won't know or find until they happen. For example seeing the weight
+// to add next where the tap to log a set text would be ... maybe a spot in settings that will
+// walk the user through the app if they want it." Nothing like this existed anywhere in the
+// app -- no coachmarks, no tooltips, no help screen of any kind. Scope, per Jeff: a replayable
+// walkthrough reachable from Settings (see the "How CrewFit works" row in openSettings, below),
+// not live coachmarks pinned to the real elements -- lower risk to ship and get right, and
+// still covers the exact gaps he named (the tap-to-log hint, and the suggested-weight box that
+// updates live after each set -- see the comment above refreshLogRec for that mechanic).
+//
+// Five cards, stepped with Back/Next rather than true swipe (simpler to build and to verify
+// with a click-based test; dots make the position clear regardless). State (which card) is
+// stashed on the sheet element itself via sheetEl._wkIdx, matching the _recSeq pattern above --
+// only one walkthrough sheet is ever open at once, so there's nothing to reset between opens.
+//
+// Auto-opens exactly once: right after a brand-new registration succeeds (see doReg, in the
+// auth section near the top of this file), never via a persisted "seen" flag. That keeps this
+// simple and avoids a migration for every existing account -- nobody who already has an
+// account gets this forced open on them; they reach it from Settings, same row, whenever they
+// want. Two of the five cards embed real, live-styled previews (.log-hint, .log-rec.up,
+// .streak-pill, .type-tag-pr) instead of a redrawn approximation, so what's described matches
+// pixel-for-pixel what actually appears elsewhere in the app.
+const WK_CARDS = [
+  { ic:'✓', icClass:'wk-ic-blue',
+    title:'Welcome to CrewFit',
+    body:"A few things about the app aren't obvious until you stumble into them. This is a minute-long tour of the ones that trip people up most — find it again anytime from Settings." },
+  { ic:'→', icClass:'wk-ic-blue',
+    title:'Tap any exercise to log it',
+    body:'Every exercise on a workout shows a blue "Tap to log sets" hint underneath it. Tap in, enter your weight and reps for each set, then hit Save.',
+    preview:'<div class="wk-preview"><div class="wk-preview-ex">Bench Press</div><span class="log-hint">Tap to log sets →</span></div>' },
+  { ic:'↑', icClass:'wk-ic-green',
+    title:'Watch for the suggested weight',
+    body:'Inside the log sheet, a box shows what to try next based on your recent sessions — tap it to fill the weight in for you. It keeps updating after each set you log today, not just before your first one.',
+    preview:'<div class="wk-preview"><div class="log-rec up" style="margin:0;cursor:default"><span class="lr-ic" aria-hidden="true">↑</span><span class="lr-t">Try <b>145 lb</b> today</span><span class="lr-why">hit 10 reps at 140 lb, last 2 sessions</span></div></div>' },
+  { ic:'★', icClass:'wk-ic-green',
+    title:'Beat your best, keep your streak',
+    body:'Beat your last logged set anywhere in the app and it’s marked as a PR. Train at least once a week to keep your streak going — miss a full week and it resets.',
+    preview:'<div class="wk-preview"><div class="wk-preview-row"><span class="type-tag type-tag-pr">PR</span><span class="wk-preview-ex" style="font-weight:500">New personal record</span></div><div class="wk-preview-row"><span class="streak-pill">'+flameSvg()+'3 week streak</span></div></div>' },
+  { ic:'<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>', icClass:'wk-ic-blue',
+    title:'See what your crew is up to',
+    body:'The Friends tab shows workouts, invites, and PRs from people you follow. Add friends from their profile or from a shared workout to start seeing them there.' },
+];
+function walkCardHtml(i){
+  const c = WK_CARDS[i];
+  const isLast = i === WK_CARDS.length - 1;
+  const dots = WK_CARDS.map((_,j)=>`<span class="wk-dot${j===i?' on':''}"></span>`).join('');
+  return `<div class="sheet-head"><h2>How CrewFit works</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="wk-dots">${dots}</div>
+    <div class="wk-card">
+      <div class="wk-ic ${c.icClass}">${c.ic}</div>
+      <h3 class="wk-title">${esc(c.title)}</h3>
+      <p class="wk-body">${esc(c.body)}</p>
+      ${c.preview || ''}
+    </div>
+    <div class="wk-actions">
+      <button class="sec${i===0?' wk-hidden':''}" onclick="walkStep(-1)">Back</button>
+      <button class="blue" onclick="${isLast?'closeSheet()':'walkStep(1)'}">${isLast?'Got it':'Next'}</button>
+    </div>`;
+}
+function openWalkthrough(){
+  const sheetEl = openSheetHtml(`<div class="sheet wk-sheet">${walkCardHtml(0)}</div>`);
+  sheetEl._wkIdx = 0;
+}
+function walkStep(delta){
+  const l = document.querySelectorAll('.sheet-back'); const s = l[l.length-1];
+  if(!s) return;
+  s._wkIdx = Math.max(0, Math.min(WK_CARDS.length - 1, (s._wkIdx||0) + delta));
+  const inner = s.querySelector('.wk-sheet');
+  if(inner) inner.innerHTML = walkCardHtml(s._wkIdx);
+}
 function openSettings(){
   // v249, Jeff Aug 29 (video): tapping "Default gym" used to skip the closeSheet() every other
   // row here does before opening its sub-flow -- it went straight to editDefaultGym() with the
@@ -4959,6 +5035,7 @@ function openSettings(){
       <button class="sheet-row" onclick="closeSheet(); editDefaultGym()">Default gym <span class="row-val">${esc(ME.defaultGym || 'Not set')}</span></button>
       <button class="sheet-row" onclick="closeSheet(); pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
       <button class="sheet-row" onclick="closeSheet(); seedSetupScreen()">Starting weights</button>
+      <button class="sheet-row" onclick="closeSheet(); openWalkthrough()">How CrewFit works</button>
       <!-- v190 (Sep 2026), Jeff: "the ability to make profiles private or public in the
            settings." Private (default for every account) = only approved followers, and you, can
            see your PRs/streak/activity and your posted workouts unless a post is itself made

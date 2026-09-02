@@ -547,6 +547,30 @@
     .stepper { display:inline-flex; align-items:center; gap:12px; }
     .stepper .stp { width:34px; height:34px; border-radius:10px; background:var(--card); color:var(--fg); border:1px solid var(--line); font-size:20px; font-weight:600; display:flex; align-items:center; justify-content:center; cursor:pointer; }
     .stepper b { min-width:28px; text-align:center; font-size:17px; }
+    /* Jeff, Sep 2: "certain things user won't know or find until they happen ... maybe a spot
+       in settings that will walk the user through the app." One sheet, five cards stepped with
+       Back/Next (see openWalkthrough in app.js) rather than true swipe -- simpler to get right
+       and to verify, and dots make the count clear either way. Cards are plain text/icon except
+       two that embed real, live-styled previews (.log-hint, .log-rec.up, .streak-pill,
+       .type-tag-pr below) so what's described matches exactly what the user will actually see,
+       not a redrawn approximation of it. */
+    .wk-dots { display:flex; justify-content:center; gap:6px; margin:2px 0 20px; }
+    .wk-dot { width:6px; height:6px; border-radius:3px; background:var(--line); transition:width .2s,background .2s; }
+    .wk-dot.on { width:16px; background:var(--blue); }
+    .wk-card { text-align:center; padding:2px 4px 6px; }
+    .wk-ic { width:52px; height:52px; border-radius:16px; margin:0 auto 16px; display:flex; align-items:center; justify-content:center; font-size:22px; font-weight:700; }
+    .wk-ic svg { width:24px; height:24px; }
+    .wk-ic-blue { background:rgba(37,99,235,.12); color:var(--blue); }
+    .wk-ic-green { background:rgba(6,122,6,.12); color:#067a06; }
+    .wk-title { margin:0 0 8px; font-size:17px; }
+    .wk-body { margin:0; font-size:14px; color:var(--muted); line-height:1.5; }
+    .wk-preview { margin:16px 2px 0; text-align:left; background:#f7f8fa; border-radius:12px; padding:12px 14px; }
+    .wk-preview-ex { font-weight:600; font-size:14px; }
+    .wk-preview-row { display:flex; align-items:center; justify-content:center; gap:14px; }
+    .wk-preview-row + .wk-preview-row { margin-top:10px; }
+    .wk-actions { display:flex; gap:10px; margin-top:22px; }
+    .wk-actions button { width:auto; flex:1; margin:0; }
+    .wk-actions button.wk-hidden { visibility:hidden; }
     .draft-ex { display:flex; align-items:center; justify-content:flex-start; gap:12px; padding:12px 6px; touch-action:pan-y; position:relative; transition:transform .16s ease; }
     .draft-ex.dragging { position:fixed; z-index:999; background:var(--card); border:1px solid var(--brand); box-shadow:0 10px 28px rgba(0,0,0,.18); border-radius:14px; transform:scale(1.03); opacity:1; transition:none; }
     .drag-placeholder { border:2px dashed var(--brand); border-radius:14px; background:rgba(79,140,255,.07); }
@@ -1079,6 +1103,10 @@
       :where(html.theme-dark) button.blue, :where(html.theme-dark) .btn-primary, :where(html.theme-dark) .btn-answer, :where(html.theme-dark) .chip.on, :where(html.theme-dark) .badge, :where(html.theme-dark) .view-toggle button.on, :where(html.theme-dark) .sess-actions .sm.blue, :where(html.theme-dark) .btn-new { background:#3b6de8; }
       :where(html.theme-dark) .sess-actions .sm.blue { border-color:#3b6de8; }
       :where(html.theme-dark) .btn-new { border-color:#3b6de8; }
+      :where(html.theme-dark) .wk-ic-blue { background:rgba(90,139,255,.14); }
+      :where(html.theme-dark) .wk-ic-green { background:rgba(62,207,114,.14); color:var(--green); }
+      :where(html.theme-dark) .wk-preview { background:#1f2126; }
+      :where(html.theme-dark) .wk-dot { background:#3a3e46; }
 
   </style>
 </head>
@@ -1091,6 +1119,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=297"></script>
+  <script src="app.js?v=298"></script>
 </body>
 </html>
