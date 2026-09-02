@@ -72,7 +72,7 @@ const inlineEditFieldValues = { 'inex-name-ex1': 'Squat', 'inex-sets-ex1': '3', 
 // suggest, submitSession) -- genericEl()'s own .value always reads back '', which would make every
 // one of these bail out early on its own "nothing typed" guard before ever reaching the network
 // call the test is actually about.
-const formFieldDefaults = { chatInput: 'hello team', swEx: 'e1', swTo: 'Incline Press', dt: '', vis: 'only_me', loc: 'Gym', len: '', note: '', wname: 'Leg Day' };
+const formFieldDefaults = { chatInput: 'hello team', swEx: 'e1', swTo: 'Incline Press', dt: '', vis: 'private', loc: 'Gym', len: '', note: '', wname: 'Leg Day' };
 const doc = {
   body,
   createElement: (tag) => tag === 'canvas' ? Object.assign(makeEl('CANVAS'), {
@@ -114,7 +114,7 @@ function mockFetch(url, opts) {
     return Promise.resolve({
       json: () => Promise.resolve(sessionGetOverride || {
         id: 'sess1', logs: {},
-        posts: new Proxy({}, { get: () => ({ notes: 'old notes', media: [], visibility: 'only_me' }) }),
+        posts: new Proxy({}, { get: () => ({ notes: 'old notes', media: [], visibility: 'private' }) }),
       }),
       ok: true, status: 200, text: () => Promise.resolve(''),
     });
@@ -204,8 +204,7 @@ const rejectJoin = vm.runInContext('rejectJoin', ctx);
 const leaveWorkoutConfirmed = vm.runInContext('leaveWorkoutConfirmed', ctx);
 const removeFromMyProfileConfirmed = vm.runInContext('removeFromMyProfileConfirmed', ctx);
 const saveWorkout = vm.runInContext('saveWorkout', ctx);
-const acceptRequest = vm.runInContext('acceptRequest', ctx);
-const rejectRequest = vm.runInContext('rejectRequest', ctx);
+// v190 (Sep 2026): acceptRequest/rejectRequest retired along with the "friends" system itself.
 const acceptFollow = vm.runInContext('acceptFollow', ctx);
 const rejectFollow = vm.runInContext('rejectFollow', ctx);
 const submitSession = vm.runInContext('submitSession', ctx);
@@ -456,7 +455,7 @@ console.log('\nsaveWorkoutEdit: the friend-set-detach confirm sheet must still n
     id: 'sess1',
     exercises: [{ id: 'ex1', name: 'Squat' }, { id: 'ex2', name: 'Bench Press' }],
     logs: { friend1: [{ exerciseId: 'ex2' }] },
-    posts: new Proxy({}, { get: () => ({ notes: 'old notes', media: [], visibility: 'only_me' }) }),
+    posts: new Proxy({}, { get: () => ({ notes: 'old notes', media: [], visibility: 'private' }) }),
   };
   navState.tab = 'me'; inlineEditDomPresent = true;
   const before = calls();
@@ -661,11 +660,10 @@ inlineEditDomPresent = true;
 await checkNavGuard('saveWorkout', () => saveWorkout('sess1'), '/api/sessions/sess1/post', 'showRecap');
 await checkFastPath('saveWorkout', () => saveWorkout('sess1'), '/api/sessions/sess1/post', 'showRecap');
 
-console.log('\nacceptRequest / rejectRequest / acceptFollow / rejectFollow (Friends tab)');
-await checkNavGuard('acceptRequest', () => acceptRequest('u2'), '/api/friends/accept', 'friends');
-await checkFastPath('acceptRequest', () => acceptRequest('u2'), '/api/friends/accept', 'friends');
-await checkNavGuard('rejectRequest', () => rejectRequest('u2'), '/api/friends/reject', 'friends');
-await checkFastPath('rejectRequest', () => rejectRequest('u2'), '/api/friends/reject', 'friends');
+// v190 (Sep 2026): acceptRequest/rejectRequest retired along with the "friends" system itself --
+// only follow requests exist now. acceptFollow/rejectFollow below cover the identical barge-in
+// shape (same guard pattern, same 'friends' re-render target) that these two used to.
+console.log('\nacceptFollow / rejectFollow (Friends tab)');
 await checkNavGuard('acceptFollow', () => acceptFollow('u2'), '/api/follow-requests/u2/accept', 'friends');
 await checkFastPath('acceptFollow', () => acceptFollow('u2'), '/api/follow-requests/u2/accept', 'friends');
 await checkNavGuard('rejectFollow', () => rejectFollow('u2'), '/api/follow-requests/u2/reject', 'friends');

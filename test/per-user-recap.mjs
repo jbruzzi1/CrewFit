@@ -47,8 +47,16 @@ console.log('two participants each post their own recap on the SAME session — 
   const alice = await post(B, '/api/register', { username: 'recap_alice', pin: 'pass1234', displayName: 'Alice' });
   const bob = await post(B, '/api/register', { username: 'recap_bob', pin: 'pass1234', displayName: 'Bob' });
   const carol = await post(B, '/api/register', { username: 'recap_carol', pin: 'pass1234', displayName: 'Carol' });
-  await post(B, '/api/friends/request', { username: 'recap_bob' }, alice.token);
-  await post(B, '/api/friends/accept', { from: alice.user.id }, bob.token);
+  // Sep 2026: profiles default Public now (Jeff: "let's do public as default, and private if
+  // toggled") -- bob posts a visibility:'public' recap below, and this block's whole point is
+  // that carol (a genuine stranger, connected to neither) still can't reach it; that's only true
+  // if bob's own profile is Private (canSeeProfile gates a 'public' post on the author's profile
+  // visibility, same as everywhere else -- see exposure.mjs's "reaches a total stranger" tests).
+  await post(B, '/api/me/profile-visibility', { visibility: 'private' }, bob.token);
+  await post(B, '/api/follow/' + bob.user.id, {}, alice.token);
+  await post(B, '/api/follow-requests/' + alice.user.id + '/accept', {}, bob.token);
+  await post(B, '/api/follow/' + alice.user.id, {}, bob.token);
+  await post(B, '/api/follow-requests/' + bob.user.id + '/accept', {}, alice.token);
 
   const session = await post(B, '/api/sessions', {
     name: 'Leg Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Back Squat' }],
@@ -65,10 +73,10 @@ console.log('two participants each post their own recap on the SAME session — 
 
   // each posts their OWN recap, deliberately different visibility
   const aPost = await post(B, `/api/sessions/${session.id}/post`,
-    { notes: 'quads are toast, keeping this to myself', visibility: 'only_me', media: [] }, alice.token);
+    { notes: 'quads are toast, keeping this to myself', visibility: 'private', media: [] }, alice.token);
   ok(!aPost.error, `alice can post her own recap (${aPost.error || 'ok'})`);
   const bPost = await post(B, `/api/sessions/${session.id}/post`,
-    { notes: 'great session, felt strong', visibility: 'friends', media: [] }, bob.token);
+    { notes: 'great session, felt strong', visibility: 'public', media: [] }, bob.token);
   ok(!bPost.error, `bob can post his own recap independently (${bPost.error || 'ok'})`);
 
   const s0 = await sessionRow(testDb.url, session.id);
@@ -78,10 +86,13 @@ console.log('two participants each post their own recap on the SAME session — 
      "bob's recap is stored under his own id, not overwriting alice's");
   ok(s0.post === undefined, 'the old singular s.post field is gone — posts is the only shape now');
 
-  // Bob is IN the workout, but alice's post is only_me — he must not read it
+  // v190 (Sep 2026): 'private' WIDENED from the old 'only_me' (author-only) to admit the creator
+  // and every participant of THAT session (Jeff: "private... only the creator or who was part of
+  // it") — bob trained this exact workout with alice, so he now reads her recap too, private or
+  // not. (A stranger to the workout entirely still gets nothing — see carol below.)
   const bobView = await get(B, `/api/sessions/${session.id}`, bob.token);
-  ok(bobView.posts[alice.user.id] && bobView.posts[alice.user.id].hidden === true,
-     "bob (a fellow participant) is told alice's recap exists, not what it says — 'only me' means only her");
+  ok(bobView.posts[alice.user.id] && bobView.posts[alice.user.id].notes === 'quads are toast, keeping this to myself',
+     "bob (a fellow participant) CAN read alice's private recap — private now means hidden from the internet at large, not from your own training partners");
   ok(bobView.posts[bob.user.id] && bobView.posts[bob.user.id].notes === 'great session, felt strong',
      "and bob still reads his own in full");
 
@@ -215,7 +226,11 @@ console.log('\na session created under the OLD single-post schema migrates clean
      "the notes survived, now keyed under the author's id");
   ok(after.posts.u1.media && after.posts.u1.media[0].src === '/uploads/already_on_disk.jpg',
      'the photo path survived untouched');
-  ok(after.posts.u1.visibility === 'friends', 'visibility survived');
+  // v190 (Sep 2026): migratePosts() runs BEFORE migratePostAndSessionVisibilityBinary() in the
+  // boot sequence (see the migrations block above app.listen), so the legacy 3-way 'friends' value
+  // this seed row carries gets created here, then immediately normalized to the new binary 'public'
+  // by the very next migration in the same boot — not left as a stale value neither migration owns.
+  ok(after.posts.u1.visibility === 'public', 'visibility survived, then normalized to the new binary scheme (friends -> public)');
   ok(!after.posts.u2, 'the guest, who never posted, has no entry — nothing was invented for them');
 
   const after2 = await sessionRow(testDb.url, 's2');

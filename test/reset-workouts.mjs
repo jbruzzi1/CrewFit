@@ -53,8 +53,10 @@ const reg = (username, pin, displayName) => post('/api/register', { username, pi
 
 const jeff = await reg('reset_jeff', 'pass1234', 'Jeff');
 const brian = await reg('reset_brian', 'pass1234', 'Brian');
-await post('/api/friends/request', { username: 'reset_brian' }, jeff.token);
-await post('/api/friends/accept', { from: jeff.user.id }, brian.token);
+await post('/api/follow/' + brian.user.id, {}, jeff.token);
+await post('/api/follow-requests/' + jeff.user.id + '/accept', {}, brian.token);
+await post('/api/follow/' + jeff.user.id, {}, brian.token);
+await post('/api/follow-requests/' + brian.user.id + '/accept', {}, jeff.token);
 
 console.log('\nguard rails: no confirm, no auth');
 {
@@ -168,8 +170,10 @@ console.log('\na session Jeff already LEFT earlier (alumni-only credit, no live 
 console.log('\nwhen MULTIPLE friends have current credit in a workout Jeff created, the inheritance is deterministic — the same rule /leave already uses, not a coin flip');
 {
   const carla = await reg('reset_carla', 'pass1234', 'Carla');
-  await post('/api/friends/request', { username: 'reset_carla' }, jeff.token);
-  await post('/api/friends/accept', { from: jeff.user.id }, carla.token);
+  await post('/api/follow/' + carla.user.id, {}, jeff.token);
+  await post('/api/follow-requests/' + jeff.user.id + '/accept', {}, carla.token);
+  await post('/api/follow/' + jeff.user.id, {}, carla.token);
+  await post('/api/follow-requests/' + carla.user.id + '/accept', {}, jeff.token);
 
   const trio = await post('/api/sessions', {
     name: 'Squad Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Front Squat' }],
@@ -221,8 +225,10 @@ console.log('\ncreator + the ONLY other credit is a departed (non-current) histo
 console.log("\nv249 (audit finding): a discard-leave-then-reset used to leave a stale recap behind — isTouched only checked participants/invited/history, never s.posts[me]/s.logs[me], so a session where Jeff had posted a recap and then discard-left (no participants, no invited, no history left on it at all) read as 'not touched' and reset-workouts skipped it entirely, leaving that old recap fully visible to Brian even after Jeff asked to erase everything he'd logged");
 {
   const dan = await reg('reset_dan', 'pass1234', 'DanHost');
-  await post('/api/friends/request', { username: 'reset_dan' }, jeff.token);
-  await post('/api/friends/accept', { from: jeff.user.id }, dan.token);
+  await post('/api/follow/' + dan.user.id, {}, jeff.token);
+  await post('/api/follow-requests/' + jeff.user.id + '/accept', {}, dan.token);
+  await post('/api/follow/' + jeff.user.id, {}, dan.token);
+  await post('/api/follow-requests/' + dan.user.id + '/accept', {}, jeff.token);
 
   const s = await post('/api/sessions', {
     name: 'Stale Recap Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Lat Pulldown' }],
@@ -231,7 +237,7 @@ console.log("\nv249 (audit finding): a discard-leave-then-reset used to leave a 
   await post('/api/sessions/' + s.id + '/accept', {}, jeff.token);
   const exId = s.exercises[0].id;
   await post('/api/sessions/' + s.id + '/log', { exerciseId: exId, weight: 120, reps: 10 }, jeff.token);
-  const posted = await post('/api/sessions/' + s.id + '/post', { notes: 'quick pump', visibility: 'friends', media: [] }, jeff.token);
+  const posted = await post('/api/sessions/' + s.id + '/post', { notes: 'quick pump', visibility: 'public', media: [] }, jeff.token);
   ok(!posted.error, `Jeff posts a recap while still a participant, as always (got ${posted.error})`);
   const left = await post('/api/sessions/' + s.id + '/leave', { keep: false }, jeff.token);
   ok(!!left.left, `Jeff discard-leaves — no credit kept, no history added (got ${JSON.stringify(left)})`);

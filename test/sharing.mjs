@@ -40,12 +40,11 @@ async function user(name) {
     .then(x => x.json());
   return { id: r.user.id, username, H: { ...J, Authorization: 'Bearer ' + r.token } };
 }
-// invites only go to friends, so they have to become friends first
+// invites only go to connections (v190: followers, either direction), so they have to follow each
+// other first — a follows b, then b approves the request.
 async function befriend(a, b) {
-  await fetch(B + '/api/friends/request', { method: 'POST', headers: a.H,
-    body: JSON.stringify({ username: b.username }) });
-  await fetch(B + '/api/friends/accept', { method: 'POST', headers: b.H,
-    body: JSON.stringify({ from: a.id }) });
+  await fetch(B + '/api/follow/' + b.id, { method: 'POST', headers: a.H });
+  await fetch(B + `/api/follow-requests/${a.id}/accept`, { method: 'POST', headers: b.H });
 }
 const get = (u, p) => fetch(B + p, { headers: u.H }).then(x => x.json());
 
@@ -57,7 +56,7 @@ console.log('deleting a shared workout cannot erase the other person\'s history'
   const jeff = await user('Jeff'), brian = await user('Brian');
   await befriend(jeff, brian);
   const s = await fetch(B + '/api/sessions', { method: 'POST', headers: jeff.H,
-    body: JSON.stringify({ name: 'Legs', visibility: 'friends', scheduledAt: '2026-08-12T18:00:00Z',
+    body: JSON.stringify({ name: 'Legs', visibility: 'private', scheduledAt: '2026-08-12T18:00:00Z',
       inviteUsernames: [brian.username.toUpperCase()],   // and in the wrong capitalisation
       exercises: [{ name: 'Barbell Back Squat', defaultSets: 3, defaultReps: 8, defaultRepsMax: 10 }] }) })
     .then(x => x.json());
@@ -118,7 +117,7 @@ console.log('\nan invited person can look at the workout before deciding');
   const brian = await user('Brian'), jeff = await user('Jeff');
   await befriend(brian, jeff);
   const s = await fetch(B + '/api/sessions', { method: 'POST', headers: brian.H,
-    body: JSON.stringify({ name: 'Push Day', visibility: 'friends', scheduledAt: '2026-08-14T17:00:00Z',
+    body: JSON.stringify({ name: 'Push Day', visibility: 'private', scheduledAt: '2026-08-14T17:00:00Z',
       inviteUsernames: [jeff.username],
       exercises: [{ name: 'Bench Press', defaultSets: 4, defaultReps: 6, defaultRepsMax: 8 }] }) })
     .then(x => x.json());
@@ -235,7 +234,7 @@ console.log('\nuploads have limits');
   await fetch(B + `/api/sessions/${s.id}/lock`, { method: 'POST', headers: u.H });
   const photo = mb => ({ type: 'image', src: 'data:image/jpeg;base64,' + 'A'.repeat(Math.floor(mb * 1048576 * 4 / 3)) });
   const post = media => fetch(B + `/api/sessions/${s.id}/post`, { method: 'POST', headers: u.H,
-    body: JSON.stringify({ notes: '', media, visibility: 'only_me' }) });
+    body: JSON.stringify({ notes: '', media, visibility: 'private' }) });
 
   const many = await post([photo(0.1), photo(0.1), photo(0.1), photo(0.1), photo(0.1)]);
   ok(many.status === 413, `five photos are refused (got ${many.status})`);

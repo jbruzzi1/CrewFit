@@ -492,7 +492,7 @@ async function home(opts){
   // session shape) fails OPEN — shown, not silently hidden.
   const friendIds = new Set(myFriends.map(f=>f.id));
   const joinable = sessions.filter(s => s.name
-    && s.visibility === 'friends'
+    && s.visibility === 'public'
     && friendIds.has(s.creatorId)
     && !(s.participants||[]).includes(ME.id)
     && !(Array.isArray(s.invited) && s.invited.includes(ME.id))
@@ -847,7 +847,7 @@ async function openSession(id, opts){
   // A pending invitee does not need a head count — "1 person" counts the creator alone and reads
   // like an empty workout. What is actually true is that everyone is waiting on you.
   const pendingMe = !isCreator && !isParticipant && Array.isArray(s.invited) && s.invited.includes(ME.id);
-  const vis = s.visibility==='friends' ? (pendingMe ? 'Friends-only' : 'Friends-only · joinable') : 'Private';
+  const vis = s.visibility==='public' ? (pendingMe ? 'Public' : 'Public · joinable') : 'Private';
   const who = pendingMe ? 'waiting on you'
             : `${s.participants.length} ${s.participants.length===1?'person':'people'}`;
   // one line, no emoji standing in for icons
@@ -978,10 +978,10 @@ async function openSession(id, opts){
   // only)" block above); myJoinReq lets this reflect a request already on file instead of
   // offering to file a second one.
   const myJoinReq = s.joinRequests.find(j => j.userId === ME.id);
-  // visibility==='friends' matches the server's own /join eligibility rule (server.js) — a
+  // visibility==='public' matches the server's own /join eligibility rule (server.js) — a
   // private session reached some other way (e.g. a publicly-shared recap on it) is not actually
   // joinable, and should not offer a button promising otherwise.
-  const joinable = !isCreator && !isParticipant && !respondHere && s.visibility === 'friends';
+  const joinable = !isCreator && !isParticipant && !respondHere && s.visibility === 'public';
 
   // Chat comes BEFORE the answer for someone deciding. Brian messages from the rack — "at the gym,
   // rack 3" — and that used to sit below the exercises AND below the buttons, so the most
@@ -1285,14 +1285,17 @@ async function viewPost(id, authorId, opts){
   </div>`;
   // Jeff, Aug 28: "I made my most recent posted workout on my profile public and it still says
   // 'friends only'." The badge just below was showing s.visibility -- whether the SESSION itself is
-  // joinable by friends or invite-only, set back on the create form -- which is a different setting
+  // joinable by anyone or invite-only, set back on the create form -- which is a different setting
   // from post.visibility, the one actually controlling who can see THIS RECAP on your profile (the
-  // "Only me / Friends / Public" segmented control on the Save/Edit screen, exactly what Jeff had
-  // just changed to Public). s.visibility only ever has two values, so this badge could never even
-  // read "Public" no matter what you set. Show the recap's own visibility instead -- same field,
-  // same wording, as the segmented control that sets it.
-  const postVis = post.visibility || 'only_me';
-  const postVisLabel = postVis==='public' ? 'Public' : postVis==='friends' ? 'Friends' : 'Only me';
+  // Private/Public segmented control on the Save/Edit screen, exactly what Jeff had just changed to
+  // Public). s.visibility only ever has two values, so this badge could never even read "Public" no
+  // matter what you set. Show the recap's own visibility instead -- same field, same wording, as the
+  // segmented control that sets it.
+  // v190 (Sep 2026): binary now -- 'private' (only the creator + session participants) or 'public'
+  // (anyone canSeeProfile allows). The old 3-way 'only_me'/'friends'/'public' is gone server-side;
+  // default here matches the server's own default for a post with no visibility set yet.
+  const postVis = post.visibility === 'public' ? 'public' : 'private';
+  const postVisLabel = postVis==='public' ? 'Public' : 'Private';
   const hasFinishedPost = (s.history||[]).some(h=>h.userId===ME.id);
   // Creator: "Edit session" (the shared exercise list) + "Delete session" (removes it for every
   // participant) -- unchanged, exactly as it always was. Non-creator author: "Remove from my
@@ -1521,7 +1524,7 @@ async function deletePhotoConfirmed(id, authorId, idx){
   const post = s && s.posts && s.posts[authorId];
   if(!post) return;
   const media = (post.media||[]).filter((_,i)=>i!==idx);
-  const r = await H.post(`/api/sessions/${id}/post`, { notes: post.notes||'', media, visibility: post.visibility||'only_me' });
+  const r = await H.post(`/api/sessions/${id}/post`, { notes: post.notes||'', media, visibility: post.visibility||'private' });
   if(r && r.error){ alert(r.error); return; }
   if(nothingNavigatedSince(epoch)) viewPost(id, authorId, {silent:true});
 }
@@ -1550,7 +1553,7 @@ async function addPostPhoto(id, authorId, input){
     });
     media.push({ type, src });
   }
-  const r = await H.post(`/api/sessions/${id}/post`, { notes: post.notes||'', media, visibility: post.visibility||'only_me' });
+  const r = await H.post(`/api/sessions/${id}/post`, { notes: post.notes||'', media, visibility: post.visibility||'private' });
   if(r && r.error){ alert(r.error); return; }
   if(nothingNavigatedSince(epoch)) viewPost(id, authorId, {silent:true});
 }
@@ -1564,7 +1567,7 @@ function editPostNotes(id, authorId){
       title:'Edit notes', label:'Notes', value: post.notes||'', placeholder:"How'd it go?", multiline:true, confirmLabel:'Save',
       onConfirm: async v => {
         const epoch=UI_EPOCH;
-        const r = await H.post(`/api/sessions/${id}/post`, { notes: v||'', media: post.media||[], visibility: post.visibility||'only_me' });
+        const r = await H.post(`/api/sessions/${id}/post`, { notes: v||'', media: post.media||[], visibility: post.visibility||'private' });
         if(r && r.error){ alert(r.error); return; }
         if(nothingNavigatedSince(epoch)) viewPost(id, authorId, {silent:true});
       }
@@ -2683,8 +2686,11 @@ async function showSavePage(id){
   const when = s.scheduledAt ? fmtDate(s.scheduledAt) : '';
   // MY OWN recap-in-progress — each participant posts independently (s.posts, keyed by userId).
   const post = (s.posts && s.posts[ME.id]) || {};
-  const vis = post.visibility || 'only_me';
-  const visHint = vis==='only_me'?'Only you can see this on your profile.' : vis==='friends'?'Friends can see this on your profile.' : 'Anyone can see this on your profile.';
+  // v190 (Sep 2026): binary now -- 'private' or 'public'. Private WIDENED at the same time (it used
+  // to mean author-only) -- everyone who was actually in this workout with you can still see it,
+  // just no one outside it. Public means anyone who can see your profile can see it.
+  const vis = post.visibility === 'public' ? 'public' : 'private';
+  const visHint = vis==='public' ? 'Anyone who can see your profile can see this.' : 'Only you and the others in this workout can see this.';
   const media = Array.isArray(post.media) ? post.media : [];
   $('app').innerHTML = `<div class="wrap save-page">
     <h1>Save workout</h1>
@@ -2711,8 +2717,7 @@ async function showSavePage(id){
     <h2>Visibility</h2>
     <div class="card">
       <div class="seg" id="vis">
-        <button class="${vis==='only_me'?'on':''}" onclick="setSaveVis(this,'only_me')">Only me</button>
-        <button class="${vis==='friends'?'on':''}" onclick="setSaveVis(this,'friends')">Friends</button>
+        <button class="${vis==='private'?'on':''}" onclick="setSaveVis(this,'private')">Private</button>
         <button class="${vis==='public'?'on':''}" onclick="setSaveVis(this,'public')">Public</button>
       </div>
       <div class="fineprint" id="visHint">${visHint}</div>
@@ -2734,7 +2739,7 @@ async function showSavePage(id){
   });
 }
 function setSaveVis(btn,v){ window.__saveVis=v; document.querySelectorAll('#vis button').forEach(b=>b.classList.remove('on')); btn.classList.add('on');
-  document.getElementById('visHint').textContent = v==='only_me'?'Only you can see this on your profile.' : v==='friends'?'Friends can see this on your profile.' : 'Anyone can see this on your profile.'; }
+  document.getElementById('visHint').textContent = v==='public' ? 'Anyone who can see your profile can see this.' : 'Only you and the others in this workout can see this.'; }
 function addWorkoutMedia(input){
   const t=document.getElementById('thumbs'); if(!t) return;
   const MAX=4;
@@ -2768,7 +2773,7 @@ function refreshAddBtn(){
 async function saveWorkout(id){
   const notes=document.getElementById('saveNotes').value;
   const epoch=UI_EPOCH;
-  const r=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'only_me' });
+  const r=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'private' });
   if(r && r.error){ alert(r.error); return; }
   // v252 (audit finding): showRecap used to fire unconditionally after the await, same barge-in
   // shape as the rest of this cluster.
@@ -2907,7 +2912,7 @@ function renderWorkoutEdit(s){
   // Reached only by the creator editing their OWN already-posted recap (see openSession's
   // EDITING_ID gate above) — each participant posts independently now (s.posts, keyed by userId).
   const myPost = s.posts && s.posts[ME.id];
-  const vis = (myPost && myPost.visibility) || 'only_me';
+  const vis = (myPost && myPost.visibility === 'public') ? 'public' : 'private';
   window.__saveVis = vis;
   const media = (myPost && Array.isArray(myPost.media)) ? myPost.media : [];
   window.__saveMedia = media.map(m=>({ type:m.type, src:m.src }));
@@ -2954,11 +2959,10 @@ function renderWorkoutEdit(s){
     <h2>Visibility</h2>
     <div class="card">
       <div class="seg" id="vis">
-        <button class="${vis==='only_me'?'on':''}" onclick="setSaveVis(this,'only_me')">Only me</button>
-        <button class="${vis==='friends'?'on':''}" onclick="setSaveVis(this,'friends')">Friends</button>
+        <button class="${vis==='private'?'on':''}" onclick="setSaveVis(this,'private')">Private</button>
         <button class="${vis==='public'?'on':''}" onclick="setSaveVis(this,'public')">Public</button>
       </div>
-      <div class="fineprint" id="visHint">${vis==='only_me'?'Only you can see this on your profile.':vis==='friends'?'Friends can see this on your profile.':'Anyone can see this on your profile.'}</div>
+      <div class="fineprint" id="visHint">${vis==='public'?'Anyone who can see your profile can see this.':'Only you and the others in this workout can see this.'}</div>
     </div>
     <div class="edit-spacer"></div>
   </div>
@@ -3070,7 +3074,7 @@ async function saveWorkoutEditConfirmed(id, exercisesIn, notesIn, nameIn, epochI
   // blank) and must actually save as blank, not silently snap back to the old name.
   const r1=await H.put('/api/sessions/'+id,{ name:(typeof name==='string' ? name : s.name), scheduledAt:s.scheduledAt, visibility:s.visibility, exercises, invited:(s.invited||[]), location:s.location, lengthMin:s.lengthMin, creatorNote:s.creatorNote });
   if(r1&&r1.error){ alert(r1.error); return; }
-  const r2=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'only_me' });
+  const r2=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'private' });
   if(r2&&r2.error){ alert(r2.error); return; }
   INLINE_DIRTY=false; EDITING_ID=null;
   // v254: quiet/silent, same reasoning as exitWorkoutEdit() -- edit mode was never pushed to history.
@@ -3103,10 +3107,10 @@ async function createFlow(){
     <label class="muted">Note to friends</label><input id="note" placeholder="let's hit legs hard" value="${esc(DRAFT.creatorNote||'')}">
     <label class="muted">Visibility</label>
     <!-- selected= matters: without it this box always opened on Private, so saving an edit
-         silently made a Friends-only workout private and dropped it out of your friends' reach -->
+         silently made a Public workout private and dropped it out of your followers' reach -->
     <select id="vis">
       <option value="private"${(DRAFT.visibility||'private')==='private'?' selected':''}>Private (invite only)</option>
-      <option value="friends"${DRAFT.visibility==='friends'?' selected':''}>Friends-only (joinable)</option>
+      <option value="public"${DRAFT.visibility==='public'?' selected':''}>Public (joinable)</option>
     </select>
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="openAddExercises()">+ Add exercise</button>
@@ -4792,14 +4796,19 @@ function avatarHtml(x, cls){
 }
 async function friends(opts){
   // v254: friends() is a pure tab root (only reached via showTab, which already resets scroll/
-  // history for the tab switch) -- EXCEPT it's also re-invoked by acceptRequest/rejectRequest/
-  // acceptFollow/rejectFollow to quietly refresh the same list in place after an approve/reject
-  // tap. opts.silent (set by those 4) keeps the scroll-to-top below from firing on that quiet
-  // refresh -- without it, approving a request halfway down a long list would yank the screen
-  // back to the top, same class of bug openSession's opts.silent already guards against.
+  // history for the tab switch) -- EXCEPT it's also re-invoked by acceptFollow/rejectFollow to
+  // quietly refresh the same list in place after an approve/reject tap. opts.silent (set by those
+  // 2) keeps the scroll-to-top below from firing on that quiet refresh -- without it, approving a
+  // request halfway down a long list would yank the screen back to the top, same class of bug
+  // openSession's opts.silent already guards against.
+  // v190 (Sep 2026): "friends" retired app-wide -- followers alone decide who's connected to whom
+  // now (Jeff: "remove the friends vs followers and just have followers... invite anyone that
+  // follows you to workouts or vice versa"). This tab kept its name/path (still the one place
+  // people manage who they train with) but now only ever shows follow requests + your connections
+  // -- the old separate "friend request" approve/reject step is gone.
   const silent = !!(opts && opts.silent);
   const data = await H.get('/api/friends');
-  const f = data.friends||[]; const inc = data.incoming||[]; const out = data.outgoing||[]; const freq = data.followRequests||[];
+  const f = data.friends||[]; const freq = data.followRequests||[];
   const flame = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>';
   const friendRows = f.length ? f.map(x=>`
     <div class="friend-row" onclick="profileView('${x.id}')" style="cursor:pointer">
@@ -4810,17 +4819,7 @@ async function friends(opts){
         ${x.streak>1?`<div class="streak-pill">${flame}${x.streak} day streak</div>`:''}
       </div>
     </div>`).join('')
-    : homeEmpty(ICON_PEOPLE, 'No friends yet', 'Search above to find people to train with.');
-  const reqRows = inc.length ? inc.map(x=>`
-    <div class="req">
-      ${avatarHtml(x,'av')}
-      <div class="rc"><b>${esc(x.displayName||x.username)}</b> wants to train with you</div>
-      <div class="ra">
-        <button class="sm ok" onclick="acceptRequest('${x.reqId}')">Approve</button>
-        <button class="sm no" onclick="rejectRequest('${x.reqId}')">Reject</button>
-      </div>
-    </div>`).join('')
-    : '<div class="muted" style="padding:4px 0">No pending requests.</div>';
+    : homeEmpty(ICON_PEOPLE, 'No connections yet', 'Search above to find people to train with.');
   const followReqRows = freq.length ? freq.map(x=>`
     <div class="req">
       ${avatarHtml(x,'av')}
@@ -4830,7 +4829,7 @@ async function friends(opts){
         <button class="sm no" onclick="rejectFollow('${x.id}')">Reject</button>
       </div>
     </div>`).join('') : '';
-  const pending = inc.length + freq.length;
+  const pending = freq.length;
   const badge = pending ? `<span class="badge">${pending}</span>` : '';
   $('app').innerHTML = `<div class="wrap">
     <div class="h1-row"><h1>Friends</h1>${badge}</div>
@@ -4846,7 +4845,6 @@ async function friends(opts){
       <div id="fresults"></div>
     </div>
     ${freq.length?`<h2>Follow requests</h2><div class="card" style="padding:6px 12px">${followReqRows}</div>`:''}
-    ${inc.length?`<h2>Friend requests</h2><div class="card" style="padding:6px 12px">${reqRows}</div>`:''}
     <h2>Friends</h2>
     ${f.length ? `<div class="card" style="padding:6px 12px">${friendRows}</div>` : friendRows}
   </div>`;
@@ -4861,9 +4859,13 @@ async function friendSearch(){
     if(!box) return;
     if(!hits.length){ box.innerHTML='<div class="muted" style="padding:8px 2px">No people found.</div>'; return; }
     box.innerHTML = hits.map(x=>{
-      const btn = x.requestStatus==='friends' ? `<button class="sm" disabled style="background:var(--line);border-color:transparent;color:var(--muted)">Friends</button>`
-        : x.requestStatus==='sent' ? `<button class="sm" disabled style="background:var(--line);border-color:transparent;color:var(--muted)">Requested</button>`
-        : `<button class="sm sec" onclick="sendRequest('${jsq(x.username)}', this)">Add</button>`;
+      // v190: requestStatus is now 'following' (an approved follow, either side already
+      // requested/accepted or the target's profile is public) / 'requested' (pending, awaiting
+      // their approval) / 'none'. sendRequest below now calls /api/follow/:id -- the button needs
+      // the id, not just the username, so it's threaded through here too.
+      const btn = x.requestStatus==='following' ? `<button class="sm" disabled style="background:var(--line);border-color:transparent;color:var(--muted)">Following</button>`
+        : x.requestStatus==='requested' ? `<button class="sm" disabled style="background:var(--line);border-color:transparent;color:var(--muted)">Requested</button>`
+        : `<button class="sm sec" onclick="sendRequest('${jsq(x.id)}', this)">Follow</button>`;
       // Jeff, Aug 27: "the add button or showing if your friends or not is directly under the
       // name" -- this row used a "user-row" class that had no CSS rule anywhere, so the avatar,
       // name/handle, and button just stacked as plain block boxes instead of sitting in a row.
@@ -4874,24 +4876,17 @@ async function friendSearch(){
     }).join('');
   } catch(e){ if(box) box.innerHTML=''; }
 }
-async function sendRequest(username, btn){
-  const r = await H.post('/api/friends/request',{username});
-  if(r.error){ alert(r.error); return; }
-  if(btn){ btn.textContent='Requested'; btn.className='sm'; btn.disabled=true; btn.style.background='var(--line)'; btn.style.borderColor='transparent'; btn.style.color='var(--muted)'; }
+async function sendRequest(id, btn){
+  const r = await H.post('/api/follow/'+id,{});
+  if(r && r.error){ alert(r.error); return; }
+  // status is 'following' immediately when the target's profile is public (no approval needed),
+  // otherwise 'requested' -- same distinction the search results list itself renders.
+  const label = (r && r.status==='following') ? 'Following' : 'Requested';
+  if(btn){ btn.textContent=label; btn.className='sm'; btn.disabled=true; btn.style.background='var(--line)'; btn.style.borderColor='transparent'; btn.style.color='var(--muted)'; }
 }
-// v252 (audit finding): all four below re-rendered the Friends tab unconditionally after their
-// await, same barge-in shape as the rest of this round -- tap Accept, switch to Home before it
-// resolves, and the stale response used to snap the screen back to Friends anyway.
-async function acceptRequest(id){
-  const epoch=UI_EPOCH;
-  const r = await H.post('/api/friends/accept',{from:id});
-  if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends({silent:true});
-}
-async function rejectRequest(id){
-  const epoch=UI_EPOCH;
-  const r = await H.post('/api/friends/reject',{from:id});
-  if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends({silent:true});
-}
+// v252 (audit finding): both below re-render the Friends tab unconditionally after their await,
+// same barge-in shape as the rest of this round -- tap Accept, switch to Home before it resolves,
+// and the stale response used to snap the screen back to Friends anyway.
 async function acceptFollow(id){
   const epoch=UI_EPOCH;
   const r = await H.post('/api/follow-requests/'+id+'/accept',{});
@@ -4964,6 +4959,11 @@ function openSettings(){
       <button class="sheet-row" onclick="closeSheet(); editDefaultGym()">Default gym <span class="row-val">${esc(ME.defaultGym || 'Not set')}</span></button>
       <button class="sheet-row" onclick="closeSheet(); pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
       <button class="sheet-row" onclick="closeSheet(); seedSetupScreen()">Starting weights</button>
+      <!-- v190 (Sep 2026), Jeff: "the ability to make profiles private or public in the
+           settings." Private (default for every account) = only approved followers, and you, can
+           see your PRs/streak/activity and your posted workouts unless a post is itself made
+           Public; Public = anyone can. Same on/off row shape as the two reminder toggles below. -->
+      <button class="sheet-row" onclick="toggleProfileVisibility()">Profile <span class="row-val" id="profileVisVal">${ME.profileVisibility==='private'?'Private':'Public'}</span></button>
       <button class="sheet-row" onclick="toggleStreakReminders()">Streak reminders <span class="row-val" id="streakRemVal">${ME.notifyStreakReminders!==false?'On':'Off'}</span></button>
       <button class="sheet-row" onclick="toggleWorkoutReminders()">Workout reminders <span class="row-val" id="workoutRemVal">${ME.notifyWorkoutReminders!==false?'On':'Off'}</span></button>
       <button class="sheet-row red" onclick="closeSheet(); confirmResetWorkouts()">Reset workouts</button>
@@ -5263,6 +5263,22 @@ function editDefaultGym(){
     title:'Default gym', label:'Prefills new workouts', value:ME.defaultGym||'', placeholder:'e.g. Equinox Downtown',
     onConfirm: v => { const epoch=UI_EPOCH; H.post('/api/me/default-gym',{defaultGym:v}).then(r=>{ if(r.defaultGym!==undefined){ ME.defaultGym=r.defaultGym; if(stillOnProfileWithNothingElseOpen(epoch)) openSettings(); } }); }
   });
+}
+// v190 (Sep 2026): Private/Public profile toggle. Flipping to Public also auto-accepts any
+// follow requests already waiting on you server-side (POST /api/me/profile-visibility) -- there's
+// nothing left to approve once anyone can already see you, same reasoning as /api/follow/:id
+// skipping the request step entirely for an already-public profile.
+async function toggleProfileVisibility(){
+  // Public is the default (unset counts as public, same rule as canSeeProfile server-side) --
+  // only an explicit 'private' narrows it, so the toggle flips off of that, not off of 'public'.
+  const next = ME.profileVisibility==='private' ? 'public' : 'private';
+  const r = await H.post('/api/me/profile-visibility',{visibility:next});
+  if(r && r.error){ alert(r.error); return; }
+  if(r && r.profileVisibility){
+    ME.profileVisibility = r.profileVisibility;
+    const v = document.getElementById('profileVisVal');
+    if(v) v.textContent = ME.profileVisibility==='private' ? 'Private' : 'Public';
+  }
 }
 // Task #63: "you're about to lose your streak" push reminder, opt-out toggle. Only matters if
 // push permission is separately granted (setupPush()) - this just controls whether the server

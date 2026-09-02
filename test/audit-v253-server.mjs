@@ -57,7 +57,14 @@ const put = (p, b, tok) => fetch(B + p, { method: 'PUT', headers: tok ? { ...J, 
 const get = (p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
 const rawStatus = (method, p, b, tok) => fetch(B + p, { method, headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: b !== undefined ? JSON.stringify(b) : undefined }).then(r => r.status);
 const reg = (username, pin, displayName) => post('/api/register', { username, pin, displayName });
-const befriend = async (aTok, aId, bTok, bId) => { await post('/api/friends/request', { username: undefined }, aTok); };
+// v190: "friends" retired -- mutual follow (both directions) reproduces the old symmetric
+// friendship this helper's name still describes.
+const befriend = async (aTok, aId, bTok, bId) => {
+  await post('/api/follow/' + bId, {}, aTok);
+  await post('/api/follow-requests/' + aId + '/accept', {}, bTok);
+  await post('/api/follow/' + aId, {}, bTok);
+  await post('/api/follow-requests/' + bId + '/accept', {}, aTok);
+};
 
 console.log('1. malformed exercise data is rejected with a clean 400, not a generic 500');
 {
@@ -113,8 +120,7 @@ console.log('\n3. a workout left with "keep my credit" still shows up in your ow
 {
   const host = await reg('sec253_c1', 'pass1234', 'C1');
   const bob = await reg('sec253_c2', 'pass1234', 'C2');
-  await post('/api/friends/request', { username: 'sec253_c2' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  await befriend(host.token, host.user.id, bob.token, bob.user.id);
   const s = await post('/api/sessions', { name: 'Legs', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Squat' }], inviteUsernames: ['sec253_c2'], visibility: 'private' }, host.token);
   await post(`/api/sessions/${s.id}/accept`, {}, bob.token);
   // Bob logs a set, then leaves keeping credit -- his history row survives, but he's no longer a
@@ -136,11 +142,9 @@ console.log('\n4. only the creator sees the full joinRequests list -- other part
   const host = await reg('sec253_d1', 'pass1234', 'D1');
   const bob = await reg('sec253_d2', 'pass1234', 'D2');
   const carol = await reg('sec253_d3', 'pass1234', 'D3');
-  await post('/api/friends/request', { username: 'sec253_d2' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
-  await post('/api/friends/request', { username: 'sec253_d3' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, carol.token);
-  const s = await post('/api/sessions', { name: 'Open Session', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Row' }], inviteUsernames: ['sec253_d2'], visibility: 'friends' }, host.token);
+  await befriend(host.token, host.user.id, bob.token, bob.user.id);
+  await befriend(host.token, host.user.id, carol.token, carol.user.id);
+  const s = await post('/api/sessions', { name: 'Open Session', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Row' }], inviteUsernames: ['sec253_d2'], visibility: 'public' }, host.token);
   await post(`/api/sessions/${s.id}/accept`, {}, bob.token);   // bob: regular current participant, not creator
   const joined = await post(`/api/sessions/${s.id}/join`, { note: 'let me in please' }, carol.token);
   ok(joined.requested, `carol independently requests to join (got ${JSON.stringify(joined)})`);
@@ -159,10 +163,8 @@ console.log('\n5. creatorId does not lock to null when a not-yet-logged current 
   const host = await reg('sec253_e1', 'pass1234', 'E1');
   const departed = await reg('sec253_e2', 'pass1234', 'E2');
   const bob = await reg('sec253_e3', 'pass1234', 'E3');
-  await post('/api/friends/request', { username: 'sec253_e2' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, departed.token);
-  await post('/api/friends/request', { username: 'sec253_e3' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  await befriend(host.token, host.user.id, departed.token, departed.user.id);
+  await befriend(host.token, host.user.id, bob.token, bob.user.id);
   const s = await post('/api/sessions', { name: 'Pull', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Pull-up' }], inviteUsernames: ['sec253_e2', 'sec253_e3'], visibility: 'private' }, host.token);
   await post(`/api/sessions/${s.id}/accept`, {}, departed.token);
   await post(`/api/sessions/${s.id}/accept`, {}, bob.token);
@@ -186,9 +188,8 @@ console.log('\n6. declining an invite also clears a separately-filed pending joi
 {
   const host = await reg('sec253_f1', 'pass1234', 'F1');
   const bob = await reg('sec253_f2', 'pass1234', 'F2');
-  await post('/api/friends/request', { username: 'sec253_f2' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
-  const s = await post('/api/sessions', { name: 'Open Session', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Row' }], inviteUsernames: ['sec253_f2'], visibility: 'friends' }, host.token);
+  await befriend(host.token, host.user.id, bob.token, bob.user.id);
+  const s = await post('/api/sessions', { name: 'Open Session', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Row' }], inviteUsernames: ['sec253_f2'], visibility: 'public' }, host.token);
   // bob is invited AND independently asks to join -- /join doesn't check s.invited, so both can
   // exist for the same person at once.
   const joined = await post(`/api/sessions/${s.id}/join`, {}, bob.token);

@@ -38,8 +38,10 @@ const reg = (username, pin, displayName) => post('/api/register', { username, pi
 async function makeSession(hostU, bobU, exerciseNames) {
   const host = await reg(hostU, 'pass1234', hostU);
   const bob = await reg(bobU, 'pass1234', bobU);
-  await post('/api/friends/request', { username: bobU }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  await post('/api/follow/' + bob.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + host.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, host.token);
   const s = await post('/api/sessions', {
     name: 'Push Day', scheduledAt: new Date().toISOString(), exercises: exerciseNames.map(name => ({ name })),
     inviteUsernames: [bobU], visibility: 'private',
@@ -71,8 +73,10 @@ console.log('\nan invited-but-not-yet-accepted person CANNOT suggest adding one 
   // is shaping a workout you haven't actually joined yet, not raising a condition on your invite.
   const host = await reg('sae_h2', 'pass1234', 'sae_h2');
   const bob = await reg('sae_b2', 'pass1234', 'sae_b2');
-  await post('/api/friends/request', { username: 'sae_b2' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, bob.token);
+  await post('/api/follow/' + bob.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + host.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, host.token);
   const s = await post('/api/sessions', { name: 'Leg Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Squat' }], inviteUsernames: ['sae_b2'], visibility: 'private' }, host.token);
   // deliberately no /accept here -- bob is still just invited
   const r = await post('/api/sessions/' + s.id + '/suggest', { type: 'add', name: 'Leg Curl' }, bob.token);

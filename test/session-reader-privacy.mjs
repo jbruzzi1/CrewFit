@@ -48,8 +48,14 @@ console.log('the exact leak: a stranger who can see one participant\'s PUBLIC re
   const alice = await reg('rp_alice', 'pass1234', 'Alice');
   const bob = await reg('rp_bob', 'pass1234', 'Bob');
   const carol = await reg('rp_carol', 'pass1234', 'Carol'); // no relationship to alice or bob at all
-  await post('/api/friends/request', { username: 'rp_bob' }, alice.token);
-  await post('/api/friends/accept', { from: alice.user.id }, bob.token);
+  // v190 (Sep 2026): 'public' post visibility means canSeeProfile(authorId, viewer) -- a genuine
+  // total stranger only reaches it if bob's own profile is ALSO Public (every account defaults to
+  // Private). Opt bob in so "reaches a total stranger" is the true statement this block tests.
+  await post('/api/me/profile-visibility', { visibility: 'public' }, bob.token);
+  await post('/api/follow/' + bob.user.id, {}, alice.token);
+  await post('/api/follow-requests/' + alice.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + alice.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, alice.token);
 
   const s = await post('/api/sessions', {
     name: 'Leg Day', scheduledAt: new Date().toISOString(),
@@ -76,11 +82,13 @@ console.log('the exact leak: a stranger who can see one participant\'s PUBLIC re
 
   console.log('\ncontrol: a genuine friend/invited/alumni tier must keep seeing all of this -- the fix must not overcorrect');
   const dave = await reg('rp_dave', 'pass1234', 'Dave');
-  await post('/api/friends/request', { username: 'rp_dave' }, alice.token);
-  await post('/api/friends/accept', { from: alice.user.id }, dave.token);
+  await post('/api/follow/' + dave.user.id, {}, alice.token);
+  await post('/api/follow-requests/' + alice.user.id + '/accept', {}, dave.token);
+  await post('/api/follow/' + alice.user.id, {}, dave.token);
+  await post('/api/follow-requests/' + dave.user.id + '/accept', {}, alice.token);
   const s2 = await post('/api/sessions', {
     name: 'Pull Day', scheduledAt: new Date().toISOString(),
-    exercises: [{ name: 'Row' }], inviteUsernames: [], visibility: 'friends',
+    exercises: [{ name: 'Row' }], inviteUsernames: [], visibility: 'public',
     location: 'Community Gym', creatorNote: 'wear the good shoes',
   }, alice.token);
   const daveView = await get('/api/sessions/' + s2.id, dave.token); // friend tier: not invited, not a member, just eligible to join
@@ -93,6 +101,46 @@ console.log('the exact leak: a stranger who can see one participant\'s PUBLIC re
   }).then(r => r.json());
   const daveInvited = await get('/api/sessions/' + s2.id, dave.token);
   ok(daveInvited.location === 'Community Gym' && daveInvited.creatorNote === 'wear the good shoes', 'and still does once actually invited');
+}
+
+console.log('\nv190 audit finding: a Public (default) profile must not broadcast a Private-visibility session\'s metadata to a stranger');
+{
+  // Cold-review catch (Sep 2026, when profiles flipped to default-Public): profileOf's
+  // viewerCanSee() used to short-circuit on isApproved (canSeeProfile) alone, which meant "can
+  // this viewer see the owner's PROFILE at all" silently overrode the SESSION's own 'private'
+  // visibility (Jeff: "private... only the creator or who was part of it") for the purposes of
+  // even listing the workout's name/date/exercises. That bypass was always live for anyone with
+  // an explicitly Public profile; it became the DEFAULT case once profiles defaulted to Public.
+  const erin = await reg('rp_erin', 'pass1234', 'Erin');   // fresh account -- left at the new default (Public)
+  const zeke = await reg('rp_zeke', 'pass1234', 'Zeke');   // a total stranger, zero connection to erin
+  const meProf = await get('/api/profile/me', erin.token);
+  ok(meProf.profileVisibility === 'public', `sanity: a fresh account defaults Public (got ${meProf.profileVisibility})`);
+
+  const priv = await post('/api/sessions', {
+    name: 'Secret Leg Day', scheduledAt: new Date().toISOString(),
+    exercises: [{ name: 'Squat' }], inviteUsernames: [], visibility: 'private',
+  }, erin.token);
+  await post('/api/sessions/' + priv.id + '/log', { exerciseId: priv.exercises[0].id, weight: 135, reps: 8 }, erin.token);
+  await post('/api/sessions/' + priv.id + '/lock', {}, erin.token);
+  await post('/api/sessions/' + priv.id + '/post', { notes: 'kept between me and my training partners', visibility: 'private', media: [] }, erin.token);
+
+  const zekeView = await get('/api/profile/' + erin.user.id, zeke.token);
+  ok(!zekeView.limited, "sanity: erin's Public profile is not itself gated (got limited=" + zekeView.limited + ")");
+  const leaked = (zekeView.myWorkouts || []).find(w => w.id === priv.id);
+  ok(!leaked, `a stranger's view of a Public profile does NOT list a Private-visibility session at all (got ${JSON.stringify(leaked)})`);
+
+  console.log('\ncontrol: a Public-visibility session on the same Public profile still shows, and its recap notes still travel with it');
+  const pub = await post('/api/sessions', {
+    name: 'Open Pull Day', scheduledAt: new Date().toISOString(),
+    exercises: [{ name: 'Row' }], inviteUsernames: [], visibility: 'private',
+  }, erin.token);
+  await post('/api/sessions/' + pub.id + '/log', { exerciseId: pub.exercises[0].id, weight: 95, reps: 10 }, erin.token);
+  await post('/api/sessions/' + pub.id + '/lock', {}, erin.token);
+  await post('/api/sessions/' + pub.id + '/post', { notes: 'good one, felt strong', visibility: 'public', media: [] }, erin.token);
+  const zekeView2 = await get('/api/profile/' + erin.user.id, zeke.token);
+  const shown = (zekeView2.myWorkouts || []).find(w => w.id === pub.id);
+  ok(!!shown, 'the Public-visibility session DOES show on the Public profile');
+  ok(shown && shown.post && shown.post.notes === 'good one, felt strong', 'and its recap notes travel with it, same as before this fix');
 }
 
 try { srv && srv.kill(); } catch {}

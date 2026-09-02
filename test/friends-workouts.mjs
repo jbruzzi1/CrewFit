@@ -70,7 +70,7 @@ async function renderJoinable(sessions) {
 
 const base = (over) => Object.assign({
   id: 's-' + Math.random().toString(36).slice(2), name: 'Push Day', creatorId: FRIEND.id,
-  participants: [FRIEND.id], invited: [], visibility: 'friends', exercises: [{ id: 'e1' }],
+  participants: [FRIEND.id], invited: [], visibility: 'public', exercises: [{ id: 'e1' }],
   myJoinRequest: null,
 }, over);
 

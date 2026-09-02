@@ -74,14 +74,14 @@ console.log('"+ Add exercise" mid-create must not revert the form on return');
   await page.evaluate(() => window.createFlow());
   await page.waitForTimeout(200);
   await page.fill('#wname', 'Leg Day');
-  await page.selectOption('#vis', 'friends');
+  await page.selectOption('#vis', 'public');
   await page.click('button:has-text("+ Add exercise")');
   await page.waitForTimeout(300);
   await page.evaluate(() => window.libDone());
   await page.waitForTimeout(300);
   const vis = await page.$eval('#vis', el => el.value);
   const name = await page.$eval('#wname', el => el.value);
-  ok(vis === 'friends', `visibility survives "+ Add exercise" round trip (got ${vis})`);
+  ok(vis === 'public', `visibility survives "+ Add exercise" round trip (got ${vis})`);
   ok(name === 'Leg Day', `workout name survives "+ Add exercise" round trip (got "${name}")`);
   await page.close();
 }
@@ -92,7 +92,7 @@ console.log('\n"Routines" mid-create must not revert the form on return');
   await page.evaluate(() => window.createFlow());
   await page.waitForTimeout(200);
   await page.fill('#wname', 'Push Day');
-  await page.selectOption('#vis', 'friends');
+  await page.selectOption('#vis', 'public');
   await page.click('.tpl-actions button:has-text("Routines")');
   await page.waitForTimeout(300);
   // No routines exist yet, so just navigate straight back the way createFlow() would be
@@ -101,7 +101,7 @@ console.log('\n"Routines" mid-create must not revert the form on return');
   await page.waitForTimeout(300);
   const vis = await page.$eval('#vis', el => el.value);
   const name = await page.$eval('#wname', el => el.value);
-  ok(vis === 'friends', `visibility survives "Routines" round trip (got ${vis})`);
+  ok(vis === 'public', `visibility survives "Routines" round trip (got ${vis})`);
   ok(name === 'Push Day', `workout name survives "Routines" round trip (got "${name}")`);
   await page.close();
 }

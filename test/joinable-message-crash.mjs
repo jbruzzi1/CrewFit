@@ -1,4 +1,4 @@
-// v249 audit finding: a friend viewing a joinable (visibility:'friends') session they were never
+// v249 audit finding: a friend viewing a joinable (visibility:'public') session they were never
 // invited to and haven't joined gets a "Join in?" screen with a "Message {host}" button next to
 // it, wired to openChat(id) = document.getElementById('chatInput').focus(). That button was dead:
 // #chatInput only renders when canChat is true (isCreator || isParticipant || pendingMe, in
@@ -92,11 +92,13 @@ console.log('the exact bug: a friend viewing a joinable session they were never 
 {
   const host = await reg('jm_host', 'pass1234', 'Host');
   const friend = await reg('jm_friend', 'pass1234', 'Friend');
-  await post('/api/friends/request', { username: 'jm_friend' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, friend.token);
+  await post('/api/follow/' + friend.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, friend.token);
+  await post('/api/follow/' + host.user.id, {}, friend.token);
+  await post('/api/follow-requests/' + friend.user.id + '/accept', {}, host.token);
   const s = await post('/api/sessions', {
     name: 'Open Gym', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Deadlift' }],
-    inviteUsernames: [], visibility: 'friends',
+    inviteUsernames: [], visibility: 'public',
   }, host.token);
 
   const ctx = makeCtx();
@@ -120,8 +122,10 @@ console.log('\ncontrol case: an actual pending INVITE still gets a working "Mess
 {
   const host2 = await reg('jm_host2', 'pass1234', 'Host2');
   const invitee = await reg('jm_invitee', 'pass1234', 'Invitee');
-  await post('/api/friends/request', { username: 'jm_invitee' }, host2.token);
-  await post('/api/friends/accept', { from: host2.user.id }, invitee.token);
+  await post('/api/follow/' + invitee.user.id, {}, host2.token);
+  await post('/api/follow-requests/' + host2.user.id + '/accept', {}, invitee.token);
+  await post('/api/follow/' + host2.user.id, {}, invitee.token);
+  await post('/api/follow-requests/' + invitee.user.id + '/accept', {}, host2.token);
   const s2 = await post('/api/sessions', {
     name: 'Pull Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Pull-Up' }],
     inviteUsernames: [], visibility: 'private',
@@ -157,14 +161,16 @@ console.log('\ncold-review catch: a genuinely INVITED person still gets "Message
   // covered above.
   const host3 = await reg('jm_host3', 'pass1234', 'Host3');
   const invitee3 = await reg('jm_invitee3', 'pass1234', 'Invitee3');
-  await post('/api/friends/request', { username: 'jm_invitee3' }, host3.token);
-  await post('/api/friends/accept', { from: host3.user.id }, invitee3.token);
+  await post('/api/follow/' + invitee3.user.id, {}, host3.token);
+  await post('/api/follow-requests/' + host3.user.id + '/accept', {}, invitee3.token);
+  await post('/api/follow/' + host3.user.id, {}, invitee3.token);
+  await post('/api/follow-requests/' + invitee3.user.id + '/accept', {}, host3.token);
   const s3 = await post('/api/sessions', {
     name: 'Already Posted Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Row' }],
-    inviteUsernames: ['jm_invitee3'], visibility: 'friends',
+    inviteUsernames: ['jm_invitee3'], visibility: 'public',
   }, host3.token);
   await post('/api/sessions/' + s3.id + '/log', { exerciseId: s3.exercises[0].id, weight: 95, reps: 10 }, host3.token);
-  const posted3 = await post('/api/sessions/' + s3.id + '/post', { notes: 'done', visibility: 'friends', media: [] }, host3.token);
+  const posted3 = await post('/api/sessions/' + s3.id + '/post', { notes: 'done', visibility: 'public', media: [] }, host3.token);
   ok(!posted3.error, `host posts a recap before the invitee responds (got ${posted3.error})`);
 
   const ctx3 = makeCtx();

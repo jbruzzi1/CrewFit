@@ -42,9 +42,11 @@ await new Promise(res => {
 
 const alice = await post('/api/register', { username: 'alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
 const bob   = await post('/api/register', { username: 'bob',   pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
-await post('/api/friends/request', { username: 'bob' }, alice.token);
-await post('/api/friends/accept', { from: alice.user.id }, bob.token);
-const sess = await post('/api/sessions', { name: 'Legs', visibility: 'friends', scheduledAt: '2026-08-20T18:00:00Z', exercises: [{ name: 'Barbell Back Squat' }] }, alice.token).then(r => r.json());
+await post('/api/follow/' + bob.user.id, {}, alice.token);
+await post('/api/follow-requests/' + alice.user.id + '/accept', {}, bob.token);
+await post('/api/follow/' + alice.user.id, {}, bob.token);
+await post('/api/follow-requests/' + bob.user.id + '/accept', {}, alice.token);
+const sess = await post('/api/sessions', { name: 'Legs', visibility: 'public', scheduledAt: '2026-08-20T18:00:00Z', exercises: [{ name: 'Barbell Back Squat' }] }, alice.token).then(r => r.json());
 const exId = sess.exercises[0].id;
 
 console.log('\npush/subscribe cannot store an unbounded blob');

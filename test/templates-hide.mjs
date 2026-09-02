@@ -32,8 +32,11 @@ async function user(name) {
   return { id: r.user.id, username, H: { ...J, Authorization: 'Bearer ' + r.token } };
 }
 async function befriend(a, b) {
-  await fetch(B + '/api/friends/request', { method: 'POST', headers: a.H, body: JSON.stringify({ username: b.username }) });
-  await fetch(B + '/api/friends/accept', { method: 'POST', headers: b.H, body: JSON.stringify({ from: a.id }) });
+  // v190 (Sep 2026): "friends" retired in favor of mutual follow -- see server.js.
+  await fetch(B + '/api/follow/' + b.id, { method: 'POST', headers: a.H });
+  await fetch(B + '/api/follow-requests/' + a.id + '/accept', { method: 'POST', headers: b.H });
+  await fetch(B + '/api/follow/' + a.id, { method: 'POST', headers: b.H });
+  await fetch(B + '/api/follow-requests/' + b.id + '/accept', { method: 'POST', headers: a.H });
 }
 const get = (u, p) => fetch(B + p, { headers: u.H }).then(x => x.json());
 const post = (u, p, body={}) => fetch(B + p, { method: 'POST', headers: u.H, body: JSON.stringify(body) });

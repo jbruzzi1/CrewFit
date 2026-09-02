@@ -61,10 +61,13 @@ const session = await post('/api/sessions', {
   exercises: [{ name: 'Pull-Up' }, { name: 'Bent-Over Row' }],
   inviteUsernames: [], visibility: 'private',
 }, creator.token);
-// invite by username requires them to already be friends in this app's model — go through the
-// actual friend-request flow rather than poking the DB directly, so this proves the real path.
-await post('/api/friends/request', { username: 'leave_partner' }, creator.token);
-await post('/api/friends/accept', { from: creator.user.id }, participant.token);
+// invite by username requires them to already be connected (v190: mutual follow) in this app's
+// model — go through the actual follow flow rather than poking the DB directly, so this proves the
+// real path.
+await post('/api/follow/' + participant.user.id, {}, creator.token);
+await post('/api/follow-requests/' + creator.user.id + '/accept', {}, participant.token);
+await post('/api/follow/' + creator.user.id, {}, participant.token);
+await post('/api/follow-requests/' + participant.user.id + '/accept', {}, creator.token);
 // now invite them into the session by username
 const withInvite = await fetch(B + '/api/sessions/' + session.id, {
   method: 'PUT', headers: { ...J, Authorization: 'Bearer ' + creator.token },
@@ -283,12 +286,15 @@ console.log('\nv187: finishing is PER PERSON — one participant\'s Log & Finish
     console.log('\nv242: a departed person\'s sets are shown exactly where their RECAP admits the viewer — and nowhere else');
     // Frank: a friend of both creator and partner, in no workout — the friend-tier viewer.
     const frank = await reg('leave_frank', 'pass1234', 'Frank');
-    await post('/api/friends/request', { username: 'leave_frank' }, creator.token);
-    await post('/api/friends/accept', { from: creator.user.id }, frank.token);
-    await post('/api/friends/request', { username: 'leave_frank' }, participant.token);
-    await post('/api/friends/accept', { from: participant.user.id }, frank.token);
+    // v190: mutual follow reproduces the old symmetric "friends" relationship.
+    for (const other of [creator, participant]) {
+      await post('/api/follow/' + frank.user.id, {}, other.token);
+      await post('/api/follow-requests/' + other.user.id + '/accept', {}, frank.token);
+      await post('/api/follow/' + other.user.id, {}, frank.token);
+      await post('/api/follow-requests/' + frank.user.id + '/accept', {}, other.token);
+    }
 
-    const recapDay = await post('/api/sessions', { name: 'Recap Day', visibility: 'friends',
+    const recapDay = await post('/api/sessions', { name: 'Recap Day', visibility: 'public',
       scheduledAt: new Date().toISOString(),
       exercises: [{ name: 'Incline Bench Press' }], inviteUsernames: ['leave_partner'] }, creator.token);
     await post('/api/sessions/' + recapDay.id + '/accept', {}, participant.token);
@@ -296,7 +302,7 @@ console.log('\nv187: finishing is PER PERSON — one participant\'s Log & Finish
     await post('/api/sessions/' + recapDay.id + '/log', { exerciseId: recapDay.exercises[0].id, weight: 185, reps: 4 }, creator.token);
     // partner also floats a swap idea, then publishes a friends-visible recap, then leaves
     await post('/api/sessions/' + recapDay.id + '/suggest', { exerciseId: recapDay.exercises[0].id, swapTo: 'Machine Chest Press' }, participant.token);
-    await post('/api/sessions/' + recapDay.id + '/post', { notes: 'good one', media: [], visibility: 'friends' }, participant.token);
+    await post('/api/sessions/' + recapDay.id + '/post', { notes: 'good one', media: [], visibility: 'public' }, participant.token);
     await post('/api/sessions/' + recapDay.id + '/leave', { keep: true }, participant.token);
 
     const memberView = await fetch(B + '/api/sessions/' + recapDay.id, { headers: { Authorization: 'Bearer ' + creator.token } }).then(r => r.json());
@@ -315,7 +321,7 @@ console.log('\nv187: finishing is PER PERSON — one participant\'s Log & Finish
     ok(pr && Number(pr.weight) === 100, `and their record still says Incline Bench Press 100 (got ${pr && pr.exercise} ${pr && pr.weight})`);
 
     console.log('\nv242: the invited "already started" counts only count people still here');
-    const countsDay = await post('/api/sessions', { name: 'Counts Day', visibility: 'friends',
+    const countsDay = await post('/api/sessions', { name: 'Counts Day', visibility: 'public',
       scheduledAt: new Date().toISOString(),
       exercises: [{ name: 'Lat Pulldown' }], inviteUsernames: ['leave_partner', 'leave_frank'] }, creator.token);
     await post('/api/sessions/' + countsDay.id + '/accept', {}, participant.token);
@@ -468,7 +474,7 @@ console.log("\nJeff, Aug 21: \"I have exercises in my profile that when I click 
   // assertion if the creator actually HAS sets that could leak (cold-review catch: it was vacuous)
   await post('/api/sessions/' + orphSession.id + '/log', { exerciseId: exId, weight: 205, reps: 3 }, creator.token);
   // partner writes a recap before leaving — this is the one thing that should still be theirs to see
-  await post('/api/sessions/' + orphSession.id + '/post', { notes: 'Felt strong today', media: [], visibility: 'only_me' }, participant.token);
+  await post('/api/sessions/' + orphSession.id + '/post', { notes: 'Felt strong today', media: [], visibility: 'private' }, participant.token);
   await post('/api/sessions/' + orphSession.id + '/leave', { keep: true }, participant.token);
 
   const dbNow = await readDb(testDb.url);
@@ -512,7 +518,7 @@ console.log("\nthe new alumni check must not steal ground from a stronger tier �
 {
   const friendlySession = await post('/api/sessions', {
     name: 'Pull Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Lat Pulldown' }],
-    inviteUsernames: ['leave_partner'], visibility: 'friends',
+    inviteUsernames: ['leave_partner'], visibility: 'public',
   }, creator.token);
   await post('/api/sessions/' + friendlySession.id + '/accept', {}, participant.token);
   const exId2 = friendlySession.exercises[0].id;
@@ -566,10 +572,10 @@ console.log("\nv248 (audit finding): a keep-leaver could VIEW their own alumni w
   await post('/api/sessions/' + s.id + '/log', { exerciseId: exId, weight: 135, reps: 8 }, author.token);
 
   console.log('  editing a recap posted BEFORE a keep-leave');
-  const posted = await post('/api/sessions/' + s.id + '/post', { notes: 'felt good', visibility: 'friends', media: [] }, author.token);
+  const posted = await post('/api/sessions/' + s.id + '/post', { notes: 'felt good', visibility: 'public', media: [] }, author.token);
   ok(!posted.error, `posting while still a participant works, as always (got ${posted.error})`);
   await post('/api/sessions/' + s.id + '/leave', { keep: true }, author.token);
-  const edited = await post('/api/sessions/' + s.id + '/post', { notes: 'actually crushed it', visibility: 'friends', media: [] }, author.token);
+  const edited = await post('/api/sessions/' + s.id + '/post', { notes: 'actually crushed it', visibility: 'public', media: [] }, author.token);
   ok(!edited.error, `editing that same recap AFTER a keep-leave no longer 403s (got ${JSON.stringify(edited.error)})`);
   ok(edited.posts && edited.posts[author.user.id] && edited.posts[author.user.id].notes === 'actually crushed it',
     'the edit actually took (notes updated)');
@@ -582,7 +588,7 @@ console.log("\nv248 (audit finding): a keep-leaver could VIEW their own alumni w
   await post('/api/sessions/' + s2.id + '/accept', {}, ally.token);
   await post('/api/sessions/' + s2.id + '/log', { exerciseId: s2.exercises[0].id, weight: 100, reps: 10 }, author.token);
   await post('/api/sessions/' + s2.id + '/leave', { keep: true }, author.token);
-  const firstPost = await post('/api/sessions/' + s2.id + '/post', { notes: 'first post after leaving', visibility: 'friends', media: [] }, author.token);
+  const firstPost = await post('/api/sessions/' + s2.id + '/post', { notes: 'first post after leaving', visibility: 'public', media: [] }, author.token);
   ok(!firstPost.error, `posting for the first time after a keep-leave works (got ${JSON.stringify(firstPost.error)})`);
   ok(firstPost.posts && firstPost.posts[author.user.id] && firstPost.posts[author.user.id].notes === 'first post after leaving',
     'the new post actually saved, with the kept sets now attributable to a real recap');
@@ -595,7 +601,7 @@ console.log("\nv248 (audit finding): a keep-leaver could VIEW their own alumni w
 
   console.log('  a genuine stranger still cannot post to or lock someone else\'s session');
   const outsider = await reg('leave_outsider', 'pass1234', 'Outsider');
-  const strangerPost = await fetch(B + '/api/sessions/' + s2.id + '/post', { method: 'POST', headers: { ...J, Authorization: 'Bearer ' + outsider.token }, body: JSON.stringify({ notes: 'hi', visibility: 'friends', media: [] }) });
+  const strangerPost = await fetch(B + '/api/sessions/' + s2.id + '/post', { method: 'POST', headers: { ...J, Authorization: 'Bearer ' + outsider.token }, body: JSON.stringify({ notes: 'hi', visibility: 'public', media: [] }) });
   ok(strangerPost.status === 403, `an unrelated stranger is still 403'd from posting (got ${strangerPost.status})`);
   const strangerLock = await fetch(B + '/api/sessions/' + s2.id + '/lock', { method: 'POST', headers: { ...J, Authorization: 'Bearer ' + outsider.token }, body: '{}' });
   ok(strangerLock.status === 403, `and from locking (got ${strangerLock.status})`);
@@ -605,11 +611,13 @@ console.log("\nv248 (audit finding): /leave never touched s.joinRequests, so a d
 {
   const host = await reg('leave_host', 'pass1234', 'Host');
   const joiner = await reg('leave_joiner', 'pass1234', 'Joiner');
-  await post('/api/friends/request', { username: 'leave_joiner' }, host.token);
-  await post('/api/friends/accept', { from: host.user.id }, joiner.token);
+  await post('/api/follow/' + joiner.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, joiner.token);
+  await post('/api/follow/' + host.user.id, {}, joiner.token);
+  await post('/api/follow-requests/' + joiner.user.id + '/accept', {}, host.token);
   const s = await post('/api/sessions', {
     name: 'Leg Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Back Squat' }],
-    inviteUsernames: [], visibility: 'friends',
+    inviteUsernames: [], visibility: 'public',
   }, host.token);
 
   console.log('  joining via an approved join request, then leaving');
@@ -643,7 +651,7 @@ console.log("\nv248 (audit finding): /leave never touched s.joinRequests, so a d
   console.log('  the same cleanup happens on /remove-mine, not just /leave');
   const s2 = await post('/api/sessions', {
     name: 'Arm Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Barbell Curl' }],
-    inviteUsernames: [], visibility: 'friends',
+    inviteUsernames: [], visibility: 'public',
   }, host.token);
   const req2 = await post('/api/sessions/' + s2.id + '/join', {}, joiner.token);
   ok(!req2.error, `filing the second join request works (got ${req2.error})`);
