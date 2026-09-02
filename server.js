@@ -2668,7 +2668,22 @@ function recommendationsFor(userId) {
 
 // Weeks of training, most recent last. Counts DISTINCT days with at least one working set,
 // not sessions — two workouts in a day is one training day.
-function weeksFor(userId, count) {
+// Jeff, Sep 2: "It says I have a 3 week streak - yet I haven't worked out for 3 weeks straight."
+// Root cause, confirmed by reproducing his exact scenario: this function predates v247 (see the
+// comment above isValidLocalDateStr) and was never included in that fix. v247 stamped every
+// session-history row with the PERSON'S OWN local calendar day at the moment they hit Finish
+// (creditFinish's `date`, below) specifically so an evening workout for anyone west of UTC
+// doesn't roll into "tomorrow" against the server's clock -- currentStreak/trainedToday/profileOf
+// all read h.date for exactly that reason. This function still derived the trained day from
+// s.scheduledAt/perfDate (the ORIGINAL pre-v247 approach) AND still measured "today"/the start of
+// this week from the server's bare UTC clock instead of an optional localToday -- so a workout
+// whose scheduled timestamp crossed a UTC day/week boundary differently than the user's own local
+// day could land in the wrong weekly bucket, silently inflating (or shrinking) the Consistency
+// streak. Fixed the same way currentStreak was: prefer h.date when a history row exists (a
+// logged-but-not-yet-finished session has no h.date yet, so it still falls back to scheduledAt --
+// there is no better source for that case), and accept an optional localToday for the week
+// boundary itself.
+function weeksFor(userId, count, localToday) {
   const days = new Set();
   for (const s of Object.values(DB.sessions)) {
     const mine = s.logs && s.logs[userId];
@@ -2678,14 +2693,14 @@ function weeksFor(userId, count) {
     // and then left silently vanished from days trained, this week and the streak. A history row
     // is this codebase's permanent record that you trained here -- it is what blocks DELETE from
     // erasing you (othersWithCredit) and what the alumni tier is built on -- so it is exactly as
-    // countable as a working set. Day is keyed to the workout's own scheduled day, same as the
-    // logs path, not to the day the finish button happened to be tapped.
-    const credited = (s.history || []).some(h => h.userId === userId);
-    if (!worked && !credited) continue;
-    days.add(perfDate(s.scheduledAt).slice(0, 10));
+    // countable as a working set.
+    const hist = (s.history || []).find(h => h.userId === userId);
+    if (!worked && !hist) continue;
+    days.add(hist ? hist.date : perfDate(s.scheduledAt).slice(0, 10));
   }
-  const today = new Date();
-  const monday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  const today = isValidLocalDateStr(localToday) ? localToday : new Date().toISOString().slice(0, 10);
+  const [ty, tm, td] = today.split('-').map(Number);
+  const monday = new Date(Date.UTC(ty, tm - 1, td));
   monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));   // start of this week
   const out = [];
   for (let i = count - 1; i >= 0; i--) {
@@ -3161,7 +3176,10 @@ app.get('/api/progress/recommendations', auth, async (req, res) => {
 app.get('/api/progress', auth, async (req, res) => {
   const weeks = Math.min(52, Math.max(4, Number(req.query.weeks) || 13));
   const rec = recommendationsFor(req.userId);
-  const w = weeksFor(req.userId, weeks);
+  // localToday: same trust rule as /streak-status and /profile/me (self-view) -- this is always
+  // the caller's OWN live request, so their own local calendar day is safe to accept. See the
+  // comment above weeksFor for what this fixes.
+  const w = weeksFor(req.userId, weeks, req.query.localToday);
   const trained = w.reduce((a, x) => a + x.days, 0);
   let streak = 0;
   for (let i = w.length - 1; i >= 0; i--) { if (w[i].days > 0) streak++; else break; }
