@@ -225,7 +225,14 @@
     /* Reaction "Liked by" row -- Jeff, Sep 1: the tap target and the who-reacted summary live
        together as ONE row at the top of the Comments card, right above the comment thread, not in
        their own separate section (his own screenshot of Instagram's layout is the reference). */
-    .pp-liked-row { display:flex; align-items:center; gap:8px; padding:6px 4px 12px 0; border-bottom:1px solid var(--line); }
+    /* Jeff, Sep 2: too much air around the heart, and the divider below it landed right on top of
+       "No comments yet" with no room to breathe. Tightened the row's own padding across three
+       rounds (6px/12px -> 4px/8px -> 2px/4px -> now 0/2px, each pass per Jeff's follow-up asking
+       for still less) and gave the comment-list side of the divider its own top padding instead of
+       relying on the row to supply it (see .pp-liked-row + .scrolllist below) -- symmetric spacing
+       around the divider rather than all of it living on one side. */
+    .pp-liked-row { display:flex; align-items:center; gap:8px; padding:0 4px 2px 0; border-bottom:1px solid var(--line); }
+    .pp-liked-row + .scrolllist { padding-top:6px; }
     .pp-react-btn { width:36px; height:36px; background:transparent; border:none; color:var(--fg); display:flex; align-items:center; justify-content:center; cursor:pointer; flex:0 0 auto; padding:0; margin-left:-7px; }
     .pp-react-btn svg { width:22px; height:22px; }
     .pp-react-btn.on { color:var(--blue); }
@@ -1040,6 +1047,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=290"></script>
+  <script src="app.js?v=291"></script>
 </body>
 </html>
