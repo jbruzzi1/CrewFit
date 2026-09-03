@@ -3131,12 +3131,19 @@ async function createFlow(){
     const on = DRAFT.inviteUsernames.includes(f.username) ? 'checked' : '';
     return `<label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap">${av}</div><div class="inv-text"><div class="name">${esc(f.displayName||f.username)}</div><div class="handle">@${esc(f.username)}</div></div></div><span class="check"><input type="checkbox" value="${esc(f.username)}" ${on} onchange="toggleInvite(this)"><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`;
   }).join('') : '<div class="muted">No friends yet — add some in Friends tab.</div>';
-  $('app').innerHTML = `<div class="wrap create-flow"><button class="sec sm" onclick="cancelCreate()">← ${EDITING_SESSION?'Cancel':'Cancel'}</button>
+  $('app').innerHTML = `<div class="wrap create-flow">
+    <div class="create-head">
+      <button class="sec sm" onclick="cancelCreate()">← Cancel</button>
+      <button class="blue sm" onclick="submitSession()">${EDITING_SESSION?'Save changes':'Create workout'}</button>
+    </div>
     <h1>${EDITING_SESSION?'Edit workout':'New workout'}</h1>
+    <h2 class="light">Details</h2>
     <label class="muted">Workout name</label><input id="wname" placeholder="e.g. Chest & Back" value="${esc(DRAFT.name||'')}">
     <label class="muted">When</label><input id="dt" type="datetime-local" value="${esc(DRAFT._dt||'')}">
-    <label class="muted">Location</label><input id="loc" placeholder="e.g. Gold's Gym" value="${esc(DRAFT.location||'')}">
-    <div class="row"><div><label class="muted">Length (min)</label><input id="len" type="number" inputmode="tel" pattern="[0-9]*" placeholder="60" value="${DRAFT.lengthMin||''}"></div></div>
+    <div class="row">
+      <div><label class="muted">Location</label><input id="loc" placeholder="e.g. Gold's Gym" value="${esc(DRAFT.location||'')}"></div>
+      <div><label class="muted">Length (min)</label><input id="len" type="number" inputmode="tel" pattern="[0-9]*" placeholder="60" value="${DRAFT.lengthMin||''}"></div>
+    </div>
     <label class="muted">Note to friends</label><input id="note" placeholder="let's hit legs hard" value="${esc(DRAFT.creatorNote||'')}">
     <label class="muted">Visibility</label>
     <!-- selected= matters: without it this box always opened on Private, so saving an edit
@@ -3160,30 +3167,44 @@ async function createFlow(){
 // the first — and the second could only ever create, so "Save changes" on an edited workout made
 // a duplicate and threw the edit away. The two were not identical, so this is a deliberate merge
 // rather than "keep the first": the edit branch comes from one, the template offer from the other.
+// v305 (cold-review catch): the new sticky top button in createFlow()'s header means this is now
+// reachable from TWO buttons visible on screen at once (the pinned top one and the original bottom
+// one), instead of just the one that used to scroll away -- a slow connection makes "tap top,
+// scroll down out of habit, tap bottom too" a real double-submit path that barely existed before.
+// SUBMIT_BUSY is the same guard shape as ADDLOG_BUSY/FAV_BUSY elsewhere in this file (see their own
+// comments) -- set only once the synchronous "add an exercise first" validation has already passed,
+// since that path returns before anything async starts and has no double-submit risk to guard.
+let SUBMIT_BUSY = false;
 async function submitSession(){
   const dt=$('dt').value; const vis=$('vis').value;
   const location=$('loc').value; const lengthMin=$('len').value; const creatorNote=$('note').value; const name=$('wname').value;
   if(!DRAFT.exercises.length) return alert('Add at least one exercise');
-  const scheduledAt = dt? new Date(dt).toISOString() : new Date().toISOString();
-  const payload={scheduledAt,visibility:vis,name,exercises:DRAFT.exercises,inviteUsernames:DRAFT.inviteUsernames,location,lengthMin:lengthMin?Number(lengthMin):null,creatorNote};
-  const editing = EDITING_SESSION;                 // captured: it is cleared before we navigate
-  const epoch=UI_EPOCH;
-  const r = editing
-    ? await H.put('/api/sessions/'+editing, payload)
-    : await H.post('/api/sessions', payload);
-  if(r.error) return alert(r.error);
-  // MUST be cleared. Nothing cleared it on success before, so the next "+ New workout" would have
-  // saved itself over the workout you had just edited.
-  EDITING_SESSION = null;
-  // Jeff, Aug 27: "do we think we should have a button that pops up every time we create a
-  // workout asking us to save as a routine?" -- this used to interrupt every single workout
-  // creation with a sheet asking exactly that. Removed: it's a second, naggier path to
-  // something already reachable without a popup -- "Save as routine" on this same create form,
-  // "Save this routine" on every session's detail page, and now "Routine" in Quick Workout too.
-  // An interruption on every save just trains you to reflex-tap past it.
-  // v252 (audit finding): home() used to fire unconditionally -- the session was still
-  // created/edited either way (that write is above, unconditional), only the navigation is gated.
-  if(nothingNavigatedSince(epoch)) home();
+  if(SUBMIT_BUSY) return;
+  SUBMIT_BUSY = true;
+  try {
+    const scheduledAt = dt? new Date(dt).toISOString() : new Date().toISOString();
+    const payload={scheduledAt,visibility:vis,name,exercises:DRAFT.exercises,inviteUsernames:DRAFT.inviteUsernames,location,lengthMin:lengthMin?Number(lengthMin):null,creatorNote};
+    const editing = EDITING_SESSION;                 // captured: it is cleared before we navigate
+    const epoch=UI_EPOCH;
+    const r = editing
+      ? await H.put('/api/sessions/'+editing, payload)
+      : await H.post('/api/sessions', payload);
+    if(r.error){ alert(r.error); return; }
+    // MUST be cleared. Nothing cleared it on success before, so the next "+ New workout" would have
+    // saved itself over the workout you had just edited.
+    EDITING_SESSION = null;
+    // Jeff, Aug 27: "do we think we should have a button that pops up every time we create a
+    // workout asking us to save as a routine?" -- this used to interrupt every single workout
+    // creation with a sheet asking exactly that. Removed: it's a second, naggier path to
+    // something already reachable without a popup -- "Save as routine" on this same create form,
+    // "Save this routine" on every session's detail page, and now "Routine" in Quick Workout too.
+    // An interruption on every save just trains you to reflex-tap past it.
+    // v252 (audit finding): home() used to fire unconditionally -- the session was still
+    // created/edited either way (that write is above, unconditional), only the navigation is gated.
+    if(nothingNavigatedSince(epoch)) home();
+  } finally {
+    SUBMIT_BUSY = false;
+  }
 }
 let EDITING_SESSION = null;
 // A NEW workout starts empty. createFlow() cannot do this itself — it is also where you land

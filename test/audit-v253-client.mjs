@@ -65,8 +65,13 @@ const logW = { value: '' }, logR = { value: '' };
 // throwing here ("Cannot read properties of undefined (reading 'add')") the moment addLogSet
 // reached `rirEl.classList.add('hidden')` on a mock that had no classList at all.
 const logRir = makeEl('INPUT'); logRir.value = '';
+// v305: submitSession()'s own field reads -- controllable the same way logW/logR are, for the
+// double-submit-guard test below. Values only matter for that test (a real workout name / blank
+// date-location-length-note / default private visibility), not for anything else in this file.
+const wname = { value: '' }, dtField = { value: '' }, loc = { value: '' }, len = { value: '' }, note = { value: '' }, vis = { value: 'private' };
 const byId = {
   app: appEl, nav: navEl, logW, logR, logRir,
+  wname, dt: dtField, loc, len, note, vis,
   logTypeSeg: null, logSetList: null, logRest: null,   // real DOM absence, not "unknown id"
 };
 const doc = {
@@ -114,6 +119,15 @@ function mockFetch(url, opts) {
       q.push(() => resolve({ ok: true, status: 200, json: () => Promise.resolve({ logs: { me1: [] } }) }));
     });
   }
+  // v305: submitSession()'s own create call -- same queued-slow-request shape as the /log handler
+  // above, reused for the double-submit-guard test (the new sticky top button in createFlow()'s
+  // header put a second, always-visible "Create workout" on screen at once, see SUBMIT_BUSY).
+  if (url === '/api/sessions' && method === 'POST') {
+    return new Promise(resolve => {
+      const q = pending.get(url) || []; pending.set(url, q);
+      q.push(() => resolve({ ok: true, status: 200, json: () => Promise.resolve({ id: 'newsess1' }) }));
+    });
+  }
   return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
 }
 const ctx = {
@@ -154,6 +168,7 @@ const workoutNow = vm.runInContext('workoutNow', ctx);
 const tryBoot = vm.runInContext('tryBoot', ctx);
 const addLogSet = vm.runInContext('addLogSet', ctx);
 const openCropper = vm.runInContext('openCropper', ctx);
+const submitSession = vm.runInContext('submitSession', ctx);
 
 function setTplMode(active, id) {
   vm.runInContext(`TPL_MODE.active=${active}; TPL_MODE.id=${id === null ? 'null' : JSON.stringify(id)}; TPL_MODE.name=${JSON.stringify(id || '')}; TPL_MODE.copy=false;`, ctx);
@@ -296,6 +311,41 @@ console.log('\n=== addLogSet(): double-tap guard ===');
   pendingReleaseAll('/api/sessions/sess1/log');
   await p3;
   ok(postCount === 1, `the guard releases once the request completes -- a later tap logs a new set normally (posted ${postCount} times)`);
+}
+
+console.log('\n=== submitSession(): double-submit guard (v305) ===');
+{
+  // v305: createFlow()'s new sticky top header put a second, ALWAYS-visible "Create workout"
+  // button on screen alongside the original bottom one (see .create-head in index.html) -- a slow
+  // connection now makes "tap top, scroll down out of habit, tap bottom too" a real path to firing
+  // two overlapping POSTs and creating the same workout twice. SUBMIT_BUSY guards it, same shape as
+  // ADDLOG_BUSY above.
+  vm.runInContext('ME = {id:"me1"}; DRAFT = {exercises:[{name:"Bench Press",defaultSets:3,defaultReps:8}], inviteUsernames:[]}; EDITING_SESSION = null;', ctx);
+  wname.value = 'Push Day'; dtField.value = ''; loc.value = ''; len.value = ''; note.value = ''; vis.value = 'private';
+  pending.clear();
+  let postCount = 0;
+  const baseMock = mockFetch;
+  ctx.fetch = (url, opts) => {
+    if (url === '/api/sessions' && (opts && opts.method) === 'POST') postCount++;
+    return baseMock(url, opts);
+  };
+
+  const p1 = submitSession(); // tap the top sticky button
+  const p2 = submitSession(); // accidental tap of the bottom button too, before the first resolves
+  ok(postCount === 1, `a double-submit (top button + bottom button) only fires ONE request, not two (posted ${postCount} times)`);
+  pendingReleaseAll('/api/sessions');
+  await Promise.all([p1, p2]);
+  await new Promise(r => setTimeout(r, 0)); // submitSession's own trailing home() is fire-and-forget
+  ok(postCount === 1, `still only one request once the first resolves -- the second tap was dropped, not queued (posted ${postCount} times)`);
+
+  // The guard must release afterward -- creating a second, later, genuinely separate workout must
+  // still work normally.
+  postCount = 0; pending.clear();
+  vm.runInContext('DRAFT = {exercises:[{name:"Squat",defaultSets:3,defaultReps:5}], inviteUsernames:[]}; EDITING_SESSION = null;', ctx);
+  const p3 = submitSession();
+  pendingReleaseAll('/api/sessions');
+  await p3;
+  ok(postCount === 1, `the guard releases once the request completes -- a later, separate workout still submits normally (posted ${postCount} times)`);
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');

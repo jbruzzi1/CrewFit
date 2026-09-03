@@ -55,8 +55,23 @@
        measures against (see .rc-wrap's own comment); .edit-mode has its own because it clears a
        DIFFERENT fixed bar (.sticky-bar, not .nav, and taller) on the one screen that shows it. */
     .wrap { padding:14px; padding-left:calc(14px + env(safe-area-inset-left)); padding-right:calc(14px + env(safe-area-inset-right)); }
-    .create-flow > .sec.sm { margin:0 0 14px; }            /* Cancel button -> gap below */
     .create-flow > h1 { margin:0 0 16px; }                  /* New workout title -> gap below */
+    /* v305 (Jeff: "clean up the visual and layout of the new workout screen"): Cancel used to sit
+       alone, unpaired, at the very top -- the only screen in the app with a lone top-left button and
+       no matching right-side action -- and the one action that actually finishes this screen (Create
+       workout / Save changes) sat in a plain full-width button at the very bottom, unreachable
+       without scrolling past however many exercises and invitees had been added by then. Same
+       complaint Jeff raised about the workout-log editor on Sep 1 ("add a save button on the top
+       right... scrolling to the bottom is annoying") -- and that fix's own principle applies again
+       here even harder, since this form can run just as long: position:sticky, not a plain header
+       row (a plain row would itself scroll out of view the moment the page scrolls, same as
+       Routines' own pp-head -- fine for that screen since it's short, wrong for this one). Left
+       UNTINTED (.edit-banner's light-blue wash marks "you're in a special edit state, different from
+       normal viewing" -- this is a normal, default screen, not a mode, so it gets a plain sticky bar
+       instead) and the bottom Create workout/Save changes button stays too, exactly like the
+       workout-log editor's own top Save + bottom sticky-bar Save pair -- "a second way to reach Save,
+       not a replacement for the first" (see renderWorkoutEdit's own comment in app.js). */
+    .create-head { position:sticky; top:0; z-index:30; background:var(--bg); display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 0 8px; margin:0 0 8px; }
     .tpl-name-edit { width:100%; margin:0 0 16px; font-size:19px; font-weight:700; line-height:1.2; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:var(--card); color:var(--text); box-sizing:border-box; }
     .tpl-name-edit:focus { outline:none; border-color:var(--green); }
     .create-flow > label.muted:first-of-type { margin-top:0; }
@@ -1117,6 +1132,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=304"></script>
+  <script src="app.js?v=305"></script>
 </body>
 </html>
