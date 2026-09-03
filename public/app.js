@@ -465,16 +465,15 @@ async function home(opts){
   // Primary action (compact), plus a zero-friction start for "I'm at the gym right now" — no
   // name, no schedule, no invite step, just a live session you add lifts to as you go. Jeff, Aug
   // 25: "a 'workout now' button or something for quick workouts."
-  // v306 (Jeff, Sep 3): "Routines" promoted to Home as its own full-width row below the two
-  // primary actions -- deliberately just ONE new button, not a second "Repeat a workout" entry
-  // point (Jeff: "I dont want routine on the home page... just repeat a workout" then, once
-  // Routines itself grew optional full-workout details, settled on folding it all into this one
-  // button instead of building a second feature -- see templateExercises()'s own comment). Opens
-  // the exact same templatesPage() the "Routines" button inside New Workout already does.
+  // v306 (Jeff, Sep 3) tried a third Home button here, "↻ Routines" -- promoted for one-tap
+  // access to Routines (which had just grown optional full-workout details). Pulled again the
+  // same day: Jeff expected tapping it to itself fast-fill a workout, not open the same browse-
+  // then-Use list already reachable from New Workout's own "Routines" button (below, in
+  // .tpl-actions) and from the Workouts tab's "Routines" link -- so it wasn't earning a dedicated
+  // Home slot. Routines/full-details stay; only this shortcut is gone.
   html += `<div class="home-actions">
     <button class="blue btn-new" onclick="newWorkout()">+ New workout</button>
     <button class="btn-quick" onclick="workoutNow()">+ Quick Workout</button>
-    <button class="btn-quick btn-repeat" onclick="templatesPage()">↻ Routines</button>
   </div>`;
 
   // Your Sessions (prime spot) — only sessions you've accepted/joined (exclude pending invites),
@@ -3167,8 +3166,8 @@ async function createFlow(){
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="openAddExercises()">+ Add exercise</button>
     <div class="tpl-actions">
-    <button class="sec sm" onclick="templatesPage()">Routines</button>
-    <button class="sec sm" onclick="tplQuickSaveSheet()">Save as routine</button>
+    <button class="sec" onclick="templatesPage()">Routines</button>
+    <button class="sec" onclick="tplQuickSaveSheet()">Save as routine</button>
     </div>
     <h2>Invite friends</h2><div id="invList" class="card">${invRows}</div>
     ${EDITING_SESSION ? '<button class="blue" onclick="submitSession()">Save changes</button>' : '<button class="blue" onclick="submitSession()">Create workout</button>'}</div>`;
@@ -3604,6 +3603,12 @@ async function templateExercises(){
   // two real bugs this session (see TPL_VIEW_ENTRY_LEN's and resetTransientModes()'s own comments)
   // came from exactly that kind of miss. All optional: leave them blank and a routine saves
   // exactly like it always has, exercises only.
+  // v307 (Jeff, Sep 3): "clean up the placement and visual of the fields." Invite friends had
+  // been squeezed under Visibility as just another <label>, the one field here that's really a
+  // sub-list rather than a single input -- promoted to its own <h2>Invite friends</h2> + card,
+  // matching how createFlow() itself already treats its own Invite friends section (and how this
+  // same screen already treats Exercises). Gives the screen the same three-beat rhythm as New
+  // Workout: Details fields, then a clearly separate Invite friends card, then Exercises.
   const friends = await H.get('/api/friends');
   const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
   const invNames = DRAFT.inviteUsernames || [];
@@ -3626,6 +3631,7 @@ async function templateExercises(){
     </div>
     ${nameField}
     <h2 class="light" style="margin-top:14px">Details <span class="muted" style="font-weight:400;text-transform:none;font-size:12px">(optional)</span></h2>
+    <div class="fineprint" style="margin:0 2px 10px">Leave these blank to save an exercises-only routine, same as before.</div>
     <label class="muted">Location</label><input id="loc" placeholder="e.g. Gold's Gym" value="${esc(DRAFT.location||'')}">
     <label class="muted">Note to friends</label><input id="note" placeholder="let's hit legs hard" value="${esc(DRAFT.creatorNote||'')}">
     <label class="muted">Visibility</label>
@@ -3633,9 +3639,7 @@ async function templateExercises(){
       <option value="private"${(DRAFT.visibility||'private')==='private'?' selected':''}>Private (invite only)</option>
       <option value="public"${DRAFT.visibility==='public'?' selected':''}>Public (joinable)</option>
     </select>
-    <label class="muted">Invite friends</label>
-    <div id="invList" class="card">${invRows}</div>
-    <div class="fineprint" style="margin:6px 2px 14px">Leave these blank to save an exercises-only routine, same as before.</div>
+    <h2>Invite friends</h2><div id="invList" class="card">${invRows}</div>
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button></div>`;
   window.scrollTo(0,0);
