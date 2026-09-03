@@ -50,9 +50,14 @@ function makeEl(tag) {
   return el;
 }
 const body = makeEl('BODY');
-// The active nav tab is a real, mutable stub (not a shallow always-truthy Proxy) -- the fix reads
-// it via document.querySelector('.nav button.active').dataset.tab, and the test needs to actually
-// change it mid-scenario to simulate the user switching tabs.
+// The active nav tab is a real, mutable stub (not a shallow always-truthy Proxy) -- kept for the
+// '.nav button.active' querySelector below, though as of the Sep 2026 Settings-as-a-page rewrite
+// nothing in app.js reads that selector anymore. stillOnProfileWithNothingElseOpen() now reads
+// CURRENT_NAV_STATE (a plain global in app.js) directly instead, so every `navState.tab = 'me'`
+// below is paired with `vm.runInContext(\`CURRENT_NAV_STATE = {t:'tab', tab:'me'};\`, ctx)` --
+// both flipped together so "the user is on their own profile" still means what this file's
+// comments say it means. (The 'home' cases don't need the same pairing: they're each followed by
+// a real showTab('home') call, which updates CURRENT_NAV_STATE for real.)
 const navState = { tab: 'me' };
 const genericEl = () => new Proxy(function () {}, {
   get: (t, k) => k === 'children' || k === 'childNodes' ? [] : (k === 'innerText' || k === 'value' || k === 'textContent') ? '' : genericEl(),
@@ -73,6 +78,11 @@ const inlineEditFieldValues = { 'inex-name-ex1': 'Squat', 'inex-sets-ex1': '3', 
 // one of these bail out early on its own "nothing typed" guard before ever reaching the network
 // call the test is actually about.
 const formFieldDefaults = { chatInput: 'hello team', swEx: 'e1', swTo: 'Incline Press', dt: '', vis: 'private', loc: 'Gym', len: '', note: '', wname: 'Leg Day' };
+// Sep 2026 (Settings-as-a-page): editDefaultGym()'s onConfirm no longer reopens Settings on
+// success -- it patches this row's own value span in place (see the comment above editDefaultGym()
+// in app.js). A real, settable stub (not genericEl()'s Proxy, whose .set() silently swallows every
+// write) so the fast-path test below can actually see whether that patch happened.
+const settingsGymValEl = { textContent: '' };
 const doc = {
   body,
   createElement: (tag) => tag === 'canvas' ? Object.assign(makeEl('CANVAS'), {
@@ -80,6 +90,7 @@ const doc = {
     toDataURL: () => 'data:image/jpeg;base64,stub',
   }) : makeEl('DIV'),
   getElementById: (id) => id === 'teVal' ? { value: 'new value', focus() {} }
+    : id === 'settingsGymVal' ? settingsGymValEl
     : (inlineEditDomPresent && id in inlineEditFieldValues) ? { value: inlineEditFieldValues[id] }
     : (id in formFieldDefaults) ? { value: formFieldDefaults[id], focus() {} } : genericEl(),
   querySelector: (sel) => sel === '.nav button.active' ? { dataset: { tab: navState.tab } }
@@ -246,7 +257,13 @@ async function checkFastPath(label, run, url, navKey) {
 
 console.log('editDefaultGym: a slow save must NOT reopen Settings if the user already opened something else');
 {
-  navState.tab = 'me';
+  // Sep 2026 (Settings-as-a-page): editDefaultGym() doesn't call openSettings() on ANY path anymore
+  // (see the fast-path block further down), so the openSettings half of this is now trivially true
+  // -- kept anyway as a regression guard in case that ever changes back. What still matters here,
+  // and is still a real race: the row's own value span must NOT get patched either, once the user's
+  // moved on to a different sheet.
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); // see the navState comment above
+  settingsGymValEl.textContent = 'old gym';
   editDefaultGym(); // opens the Default Gym text-entry sheet
   vm.runInContext(`_teConfirm()`, ctx); // taps Save -- closes the sheet, fires H.post, in flight now
 
@@ -258,12 +275,13 @@ console.log('editDefaultGym: a slow save must NOT reopen Settings if the user al
   await new Promise(r => setTimeout(r, 5));
   const after = calls();
   ok(after.openSettings === before.openSettings, `Settings does NOT reopen on top of Weight units (before ${before.openSettings}, after ${after.openSettings})`);
+  ok(settingsGymValEl.textContent === 'old gym', `and the (now off-screen) Default gym row is NOT patched either (got "${settingsGymValEl.textContent}")`);
 }
 
 console.log('\neditBio: a slow save must NOT navigate the user back to their profile if they switched tabs');
 {
   pending.clear();
-  navState.tab = 'me';
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); // see the navState comment above
   editBio();
   vm.runInContext(`_teConfirm()`, ctx); // taps Save, in flight
 
@@ -285,7 +303,7 @@ console.log('\neditBio: a slow save must NOT yank the user back from a FRIEND\'S
   // Before this fix, the guard only checked the tab, so it couldn't tell this had happened and
   // would let the stale save barge in on top of the friend's profile.
   pending.clear();
-  navState.tab = 'me';
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); // see the navState comment above
   editBio();
   vm.runInContext(`_teConfirm()`, ctx); // taps Save, in flight
 
@@ -301,7 +319,7 @@ console.log('\neditBio: a slow save must NOT yank the user back from a FRIEND\'S
 console.log('\ntoggleFollow: a slow follow/unfollow must NOT snap the user back to a profile they navigated away from (v251 audit finding)');
 {
   pending.clear();
-  navState.tab = 'me';
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); // see the navState comment above
   const before = calls();
   const followDone = toggleFollow('friend-99', 'none'); // tap Follow -- POST /api/follow/friend-99, in flight
 
@@ -317,7 +335,7 @@ console.log('\ntoggleFollow: a slow follow/unfollow must NOT snap the user back 
 console.log('\ndeletePhotoConfirmed: a slow delete must NOT snap the user back to a recap they left (v251 audit finding, posted-workout cluster)');
 {
   pending.clear();
-  navState.tab = 'me';
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); // see the navState comment above
   const before = calls();
   const delDone = deletePhotoConfirmed('sess1', 'author1', 0); // GET resolves immediately (mocked)...
   await new Promise(r => setTimeout(r, 0)); // ...let that microtask land so the POST /post is actually issued and held
@@ -339,7 +357,7 @@ console.log('\nsavePostedSet: a slow set-edit save must NOT close an unrelated s
   // afterwards. Stubbing closeSheet (see above) proves whether it fires at all, without depending
   // on the real 200ms fade/removal timing.
   pending.clear();
-  navState.tab = 'me';
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); // see the navState comment above
   openSheetHtml('<div>Edit set</div>'); // the Edit-set sheet this save came from
   const before = calls();
   const saveDone = savePostedSet('sess1', 'author1', 'log1'); // PUT /api/sessions/sess1/log/log1, in flight
@@ -363,7 +381,7 @@ console.log('\nexitWorkoutEdit: a slow Cancel must NOT snap the user back to the
   // which is exactly the real race (tap Cancel, then immediately tap a nav tab before the network
   // round trip -- however fast -- has actually completed).
   pending.clear();
-  navState.tab = 'me';
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); // see the navState comment above
   const before = calls();
   const exitDone = exitWorkoutEdit('sess1'); // starts, suspends at its one await
   navState.tab = 'home';
@@ -387,7 +405,7 @@ console.log('\nsaveWorkoutEditConfirmed: a slow Save changes must NOT snap the u
   // checks (a) no bogus alert, (b) the PUT body still carries the exercise data read before
   // navigation, (c) viewPost doesn't barge back in.
   pending.clear(); alertLog.length = 0;
-  navState.tab = 'me'; inlineEditDomPresent = true;
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); inlineEditDomPresent = true; // see the navState comment above
   const before = calls();
   const saveDone = saveWorkoutEditConfirmed('sess1'); // reads .inex-row etc SYNCHRONOUSLY first, then awaits GET
 
@@ -418,7 +436,7 @@ console.log('\nsaveWorkoutEdit: the REAL Save-changes-button function had the id
   // mid-flight: no bogus alert, the PUT still carries what was typed before Save was tapped, and the
   // final viewPost doesn't barge back onto whatever the user moved on to.
   pending.clear(); alertLog.length = 0;
-  navState.tab = 'me'; inlineEditDomPresent = true;
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); inlineEditDomPresent = true; // see the navState comment above
   const before = calls();
   const saveDone = saveWorkoutEdit('sess1'); // reads .inex-row etc SYNCHRONOUSLY first, then awaits its own GET
 
@@ -457,7 +475,7 @@ console.log('\nsaveWorkoutEdit: the friend-set-detach confirm sheet must still n
     logs: { friend1: [{ exerciseId: 'ex2' }] },
     posts: new Proxy({}, { get: () => ({ notes: 'old notes', media: [], visibility: 'private' }) }),
   };
-  navState.tab = 'me'; inlineEditDomPresent = true;
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); inlineEditDomPresent = true; // see the navState comment above
   const before = calls();
   const saveDone = saveWorkoutEdit('sess1'); // reads .inex-row (only ex1) SYNCHRONOUSLY, then awaits its own GET
   await new Promise(r => setTimeout(r, 0)); // let that GET resolve -- ex2 is "touched", so the confirm sheet opens
@@ -484,8 +502,13 @@ console.log('\nsaveWorkoutEdit: the friend-set-detach confirm sheet must still n
 
 console.log('\nthe ordinary fast-save case (the overwhelming common one) must still work -- the fix must not break the everyday flow');
 {
+  // Sep 2026 (Settings-as-a-page): used to assert Settings reopens on an uninterrupted save --
+  // editDefaultGym() no longer reopens it on any path (see the comment above editDefaultGym() in
+  // app.js), it patches #settingsGymVal in place instead. This now proves that patch still happens
+  // on the ordinary fast round trip.
   pending.clear();
-  navState.tab = 'me';
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); // see the navState comment above
+  settingsGymValEl.textContent = 'old gym';
   const before = calls();
   editDefaultGym();
   vm.runInContext(`_teConfirm()`, ctx);
@@ -493,11 +516,12 @@ console.log('\nthe ordinary fast-save case (the overwhelming common one) must st
   pending.get('/api/me/default-gym')();
   await new Promise(r => setTimeout(r, 5));
   const after = calls();
-  ok(after.openSettings === before.openSettings + 1, `Settings still reopens normally when nothing else interrupted the save (before ${before.openSettings}, after ${after.openSettings})`);
+  ok(after.openSettings === before.openSettings, `Settings is never reopened by editDefaultGym, on any path (before ${before.openSettings}, after ${after.openSettings})`);
+  ok(settingsGymValEl.textContent === 'new value', `and the row's own value patches in place on an ordinary fast save (got "${settingsGymValEl.textContent}")`);
 }
 {
   pending.clear();
-  navState.tab = 'me';
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); // see the navState comment above
   const before = calls();
   editBio();
   vm.runInContext(`_teConfirm()`, ctx);
@@ -508,7 +532,7 @@ console.log('\nthe ordinary fast-save case (the overwhelming common one) must st
 }
 {
   pending.clear();
-  navState.tab = 'me';
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); // see the navState comment above
   const before = calls();
   const followDone = toggleFollow('friend-99', 'none');
   pending.get('/api/follow/friend-99')();
@@ -518,7 +542,7 @@ console.log('\nthe ordinary fast-save case (the overwhelming common one) must st
 }
 {
   pending.clear();
-  navState.tab = 'me';
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); // see the navState comment above
   const before = calls();
   const delDone = deletePhotoConfirmed('sess1', 'author1', 0);
   await new Promise(r => setTimeout(r, 0)); // let the mocked GET's microtask land before the POST is issued
@@ -529,7 +553,7 @@ console.log('\nthe ordinary fast-save case (the overwhelming common one) must st
 }
 {
   pending.clear();
-  navState.tab = 'me';
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); // see the navState comment above
   openSheetHtml('<div>Edit set</div>');
   const before = calls();
   const saveDone = savePostedSet('sess1', 'author1', 'log1');
@@ -541,7 +565,7 @@ console.log('\nthe ordinary fast-save case (the overwhelming common one) must st
 }
 {
   pending.clear();
-  navState.tab = 'me';
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); // see the navState comment above
   const before = calls();
   const exitDone = exitWorkoutEdit('sess1');
   await new Promise(r => setTimeout(r, 0));
@@ -551,7 +575,7 @@ console.log('\nthe ordinary fast-save case (the overwhelming common one) must st
 }
 {
   pending.clear();
-  navState.tab = 'me'; inlineEditDomPresent = true;
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); inlineEditDomPresent = true; // see the navState comment above
   const before = calls();
   const saveDone = saveWorkoutEditConfirmed('sess1');
   await new Promise(r => setTimeout(r, 0));
@@ -564,7 +588,7 @@ console.log('\nthe ordinary fast-save case (the overwhelming common one) must st
 }
 {
   pending.clear();
-  navState.tab = 'me'; inlineEditDomPresent = true;
+  navState.tab = 'me'; vm.runInContext(`CURRENT_NAV_STATE = {t:'tab', tab:'me'};`, ctx); inlineEditDomPresent = true; // see the navState comment above
   const before = calls();
   const saveDone = saveWorkoutEdit('sess1');
   await new Promise(r => setTimeout(r, 0));

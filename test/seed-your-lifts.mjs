@@ -203,7 +203,10 @@ console.log('\n--- client markup (source regex, same style as test/favorite-exer
   ok(/H\.post\('\/api\/register'.*setToken\(r\.token,r\.user\); home\(\);/.test(doRegFn.replace(/\n/g, '')),
      'doReg() routes a successful registration straight to home() again -- no seed-setup interruption');
   ok(!/seedSetupScreen/.test(doRegFn), 'and never mentions seedSetupScreen at all');
-  ok(/<button class="sheet-row" onclick="closeSheet\(\); seedSetupScreen\(\)">Starting weights<\/button>/.test(src),
+  // Sep 2026 (Settings-as-a-page): the row's onclick lost its closeSheet() prefix along with every
+  // other row's -- Settings is a full page now (openSettings() writes $('app').innerHTML and calls
+  // navigated()/landOn(), see its own comment in app.js), not a sheet to close first.
+  ok(/<button class="sheet-row" onclick="seedSetupScreen\(\)">Starting weights<\/button>/.test(src),
      'Settings has a permanent "Starting weights" row wired to seedSetupScreen() -- the only entry point now');
   ok(!/SEED_FIRST_RUN/.test(src), 'the first-run plumbing (SEED_FIRST_RUN, Skip, "Save & continue") was removed entirely, not just disconnected');
 
