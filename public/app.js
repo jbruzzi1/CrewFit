@@ -291,6 +291,7 @@ function renderNavState(st){
   else if(st.t==='muscle') libOpenMuscle(st.m, {fromHistory:true});
   else if(st.t==='library') library({fromHistory:true});
   else if(st.t==='seeds') seedSetupScreen({fromHistory:true});
+  else if(st.t==='settings') openSettings({fromHistory:true});
   else renderTabState('home');   // an old/unrecognized entry (e.g. a stray 'sheet' marker) -- never strand the user on nothing
 }
 // A tab-state landing needs its own landOn() call (nothing inside home()/library()/etc. does it,
@@ -5036,57 +5037,102 @@ function walkStep(delta){
   const inner = s.querySelector('.wk-sheet');
   if(inner) inner.innerHTML = walkCardHtml(s._wkIdx);
 }
-function openSettings(){
-  // v249, Jeff Aug 29 (video): tapping "Default gym" used to skip the closeSheet() every other
-  // row here does before opening its sub-flow -- it went straight to editDefaultGym() with the
-  // Settings sheet still open underneath. That let a SECOND full-viewport .sheet-back (Default
-  // Gym, from openSheetHtml in textEntrySheet()) stack directly on top of the first, which is
-  // exactly the state the rest of this file assumes never happens: the comment above _teConfirm
-  // in textEntrySheet() already says "only one text-entry sheet is ever open at a time, same as
-  // closeSheet()'s single .sheet-back assumption elsewhere in this file." Two consequences, both
-  // visible in Jeff's recording: (1) every tap while Default Gym was open dimmed the profile page
-  // through TWO stacked rgba(0,0,0,.35) backdrops instead of one, which reads as the page itself
-  // darkening from an unrelated tap ("affecting things behind it"); (2) closeSheet() only ever
-  // removes the LAST-appended .sheet-back, and it captures that specific element in a closure
-  // before its 200ms fade-out timer runs -- so a closeSheet() aimed at the (still fully live,
-  // still tappable) Settings sheet while Default Gym sat on top of it removed the ORIGINAL
-  // Settings sheet on its own independent timer regardless of what had since stacked above it,
-  // leaving Default Gym's sheet orphaned over a fully bright, fully interactive profile page once
-  // Settings' timer fired -- exactly what frames 010-011 of the video show. Adding closeSheet()
-  // here, matching every sibling row, means Settings is always gone before Default Gym ever
-  // opens: at most one sheet-back ever exists, so neither failure mode is reachable.
-  const inner = `<div class="sheet"><div class="sheet-head"><h2>Settings</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+// v300+ (Sep 2026), Jeff: "clean up the settings page -- maybe add headers for categories and
+// make it easier to see... should this be a full page with a back button... rather than just a
+// pop up window" -- as the row count grew (12 rows by this point) a single flat list in a sheet
+// stopped scanning well, and a sheet's own ~86vh cap (see .sheet's max-height, index.html) meant
+// it was often its own scrollable island rather than a normal page. Settings is now a real
+// full-page screen -- navigated()/landOn()/renderNavState, same pattern as followList/profileView/
+// seedSetupScreen below -- with a "← Back" header matching followList's, and its rows split into
+// named sections (h2 is already styled as a small uppercase muted label app-wide -- see "YOUR
+// SESSIONS"/"WORKOUT" elsewhere -- so this needed zero new CSS). Log out keeps its own separate,
+// unlabeled, gap-spaced group below Reset workouts' "Danger zone" section rather than sharing a
+// header with it -- that split is the v249 fix (see the comment that used to sit here, preserved
+// in spirit below): a harmless, reversible action must never read as equally risky as an
+// irreversible, account-wide one just because a category header groups them together.
+//
+// This conversion touched three call sites that assumed Settings was a SHEET stacked over the
+// profile page underneath, all fixed alongside this function itself:
+//   - editDefaultGym()'s onConfirm used to call openSettings() again to "reopen" the sheet --
+//     with Settings now a real nav entry, that would PUSH A SECOND settings page on top of the
+//     first (the exact duplicate-entry bug documented above followList's own backBtn). It now
+//     patches the row's own value span in place instead, same shape as toggleTheme()/
+//     toggleProfileVisibility() already use for their own rows, only if that span is still on
+//     screen (it won't be if the user has since left Settings -- nothing to patch, and the next
+//     real visit to Settings reads ME.defaultGym fresh anyway).
+//   - stillOnProfileWithNothingElseOpen() (used by editBio/editDefaultGym's success callbacks,
+//     and now applyCrop's) used to treat "the Me tab is still active" as a proxy for "the profile
+//     screen is what's actually showing" -- true in the old world, where Settings-as-sheet only
+//     ever opened FROM the profile page and closed the instant any row was tapped. Settings-as-
+//     page shares that same nav tab (openSettings() doesn't call showTab(), by design -- it's
+//     conceptually a sub-screen of Profile, not its own tab) while showing a DIFFERENT screen, so
+//     the old proxy would incorrectly match "still on Settings" or "still on Starting weights"
+//     too. Rewritten below to check CURRENT_NAV_STATE precisely instead.
+//   - applyCrop() (the avatar cropper's Save) used to re-render the profile page on any successful
+//     upload as long as nothing had navigated since -- true whether or not the profile page was
+//     actually what's on screen. "Edit photo" is now a Settings row (its own #av file input lives
+//     on the Settings page, since the profile page's own #av won't be in the DOM while Settings
+//     is), so uploading a photo from Settings would have clobbered $('app') with the profile page
+//     out from under the user. Tightened to stillOnProfileWithNothingElseOpen()'s same precise
+//     check -- ME.avatar is still updated unconditionally either way, so the next real visit to
+//     profile always shows the new photo even when this skips the in-place re-render.
+function openSettings(opts){
+  const fromHistory = !!(opts && opts.fromHistory);
+  // Jeff (live, looking at the render): "the back button is almost covering the settings ... put
+  // the back button on the right hand side instead" -- followList's plain stacked backBtn-then-h1
+  // (Back left-aligned on its own line, title directly below it with only a few px of margin
+  // between) read as cramped here. Title and Back now share ONE row instead, same shape
+  // .sheet-head already uses for a sheet's own title+action row (h2 pinned to flex:1 so it eats
+  // the remaining space, pushing the button to the far right) -- title stays put on the left,
+  // Back moves to the right with real breathing room between them, no new CSS needed.
+  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Settings</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
+  $('app').innerHTML = `<div class="wrap">${head}
+    <h2>Profile</h2>
     <div class="sheet-list">
-      <button class="sheet-row" onclick="toggleTheme()">Appearance <span class="row-val" id="themeVal">${currentTheme()==='dark'?'Dark':'Light'}</span></button>
-      <button class="sheet-row" onclick="closeSheet(); document.getElementById('av').click()">Edit photo</button>
-      <button class="sheet-row" onclick="closeSheet(); editBio()">Edit bio</button>
-      <button class="sheet-row" onclick="closeSheet(); editDefaultGym()">Default gym <span class="row-val">${esc(ME.defaultGym || 'Not set')}</span></button>
-      <button class="sheet-row" onclick="closeSheet(); pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
-      <button class="sheet-row" onclick="closeSheet(); seedSetupScreen()">Starting weights</button>
-      <button class="sheet-row" onclick="closeSheet(); openWalkthrough()">How CrewFit works</button>
+      <button class="sheet-row" onclick="document.getElementById('av').click()">Edit photo</button>
+      <button class="sheet-row" onclick="editBio()">Edit bio</button>
+      <button class="sheet-row" onclick="editDefaultGym()">Default gym <span class="row-val" id="settingsGymVal">${esc(ME.defaultGym || 'Not set')}</span></button>
       <!-- v190 (Sep 2026), Jeff: "the ability to make profiles private or public in the
            settings." Private (default for every account) = only approved followers, and you, can
            see your PRs/streak/activity and your posted workouts unless a post is itself made
            Public; Public = anyone can. Same on/off row shape as the two reminder toggles below. -->
-      <button class="sheet-row" onclick="toggleProfileVisibility()">Profile <span class="row-val" id="profileVisVal">${ME.profileVisibility==='private'?'Private':'Public'}</span></button>
+      <button class="sheet-row" onclick="toggleProfileVisibility()">Profile visibility <span class="row-val" id="profileVisVal">${ME.profileVisibility==='private'?'Private':'Public'}</span></button>
+    </div>
+    <h2>Preferences</h2>
+    <div class="sheet-list">
+      <button class="sheet-row" onclick="toggleTheme()">Appearance <span class="row-val" id="themeVal">${currentTheme()==='dark'?'Dark':'Light'}</span></button>
+      <button class="sheet-row" onclick="pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
+      <button class="sheet-row" onclick="seedSetupScreen()">Starting weights</button>
+    </div>
+    <h2>Notifications</h2>
+    <div class="sheet-list">
       <button class="sheet-row" onclick="toggleStreakReminders()">Streak reminders <span class="row-val" id="streakRemVal">${ME.notifyStreakReminders!==false?'On':'Off'}</span></button>
       <button class="sheet-row" onclick="toggleWorkoutReminders()">Workout reminders <span class="row-val" id="workoutRemVal">${ME.notifyWorkoutReminders!==false?'On':'Off'}</span></button>
-      <button class="sheet-row red" onclick="closeSheet(); confirmResetWorkouts()">Reset workouts</button>
+    </div>
+    <h2>Help</h2>
+    <div class="sheet-list">
+      <button class="sheet-row" onclick="openWalkthrough()">How CrewFit works</button>
+    </div>
+    <h2>Danger zone</h2>
+    <div class="sheet-list">
+      <button class="sheet-row red" onclick="confirmResetWorkouts()">Reset workouts</button>
     </div>
     <!-- v249, Jeff Aug 29 (video): "the log out button is the same size and very close to the
     reset workout button" -- they shared .sheet-row.red (Reset workouts' own destructive-red
     styling) with only a hairline divider between them, so a genuinely harmless, fully reversible
     action (Log out) read as being exactly as risky as an irreversible one (Reset workouts
     permanently deletes every workout, log, and PR -- see confirmResetWorkouts() above) and sat a
-    thin border away from it. Log out now drops the red styling -- red is reserved for actually
-    destructive actions app-wide -- and moves into its own grouped section with a real gap above
-    it, the same grouped-list pattern iOS Settings uses to keep a sign-out action visually apart
-    from destructive ones. -->
+    thin border away from it. Log out drops the red styling -- red is reserved for actually
+    destructive actions app-wide -- and keeps its own unlabeled, gap-spaced group below Danger
+    zone rather than sharing a header with it, the same grouped-list pattern iOS Settings uses to
+    keep a sign-out action visually apart from destructive ones. -->
     <div class="sheet-list" style="margin-top:14px">
-      <button class="sheet-row" onclick="closeSheet(); logout()">Log out</button>
+      <button class="sheet-row" onclick="logout()">Log out</button>
     </div>
+    <input id="av" type="file" accept="image/*" style="display:none" onchange="uploadAvatar(this)">
   </div>`;
-  openSheetHtml(inner);
+  const st = { t:'settings' };
+  fromHistory ? landOn(st) : navigated(st);
 }
 // Task #64, Jeff Aug 21: "Can you delete all of my workouts and history to let me start over?"
 // Irreversible and account-wide, so this gets its own explaining sheet rather than a bare
@@ -5345,12 +5391,20 @@ async function toggleFollow(id, state){
 // need "and it's the Profile tab" (toggleFollow, the posted-workout action cluster -- see their own
 // comments) can use the same UI_EPOCH staleness check on its own.
 function nothingNavigatedSince(epochAtStart){ return UI_EPOCH === epochAtStart; }
+// v300+ (settings-as-a-page): used to check "is the Me nav tab still active" as a proxy for "the
+// profile screen is on screen" -- correct back when Settings only ever existed as a sheet stacked
+// directly over the profile page, gone the instant any row was tapped. Now that Settings (and
+// Starting weights, reached from it) are real sub-screens that DON'T touch the nav tab classes
+// (openSettings() deliberately never calls showTab() -- it's a sub-screen of Profile, not its own
+// tab), the Me tab reads "active" while looking at either of them too, which made this proxy wrong
+// in exactly the cases editBio/editDefaultGym/applyCrop below now need it to be right about.
+// CURRENT_NAV_STATE is precise instead: {t:'tab',tab:'me'} covers the common case (own profile via
+// the bottom nav), {t:'profile',id:ME.id} covers the less common one (reached some other way, e.g.
+// a feed item about yourself) -- anything else (settings, seeds, a friend's profile, ...) is false.
 function stillOnProfileWithNothingElseOpen(epochAtStart){
   if(!nothingNavigatedSince(epochAtStart)) return false;
-  // dataset.tab is 'me' (the nav button's own key) even though its visible label is "Profile" --
-  // see index.html's nav markup.
-  const activeTab = document.querySelector('.nav button.active');
-  return !!activeTab && activeTab.dataset.tab === 'me';
+  const s = CURRENT_NAV_STATE;
+  return (s.t === 'tab' && s.tab === 'me') || (s.t === 'profile' && s.id === ME.id);
 }
 function editBio(){
   textEntrySheet({
@@ -5366,7 +5420,15 @@ function editBio(){
 function editDefaultGym(){
   textEntrySheet({
     title:'Default gym', label:'Prefills new workouts', value:ME.defaultGym||'', placeholder:'e.g. Equinox Downtown',
-    onConfirm: v => { const epoch=UI_EPOCH; H.post('/api/me/default-gym',{defaultGym:v}).then(r=>{ if(r.defaultGym!==undefined){ ME.defaultGym=r.defaultGym; if(stillOnProfileWithNothingElseOpen(epoch)) openSettings(); } }); }
+    // v300+ (settings-as-a-page): used to call openSettings() again on success -- reopening a
+    // sheet that had been closed to get here. Settings is now a real nav entry, so that would have
+    // PUSHED A SECOND settings page on top of the one still showing (the exact duplicate-entry
+    // shape documented above followList's own backBtn: a Back press right after would land back on
+    // Settings instead of actually leaving it). Patches the row's own value span in place instead,
+    // same shape toggleTheme()/toggleProfileVisibility() already use for their own rows -- only if
+    // that span is still on screen, i.e. Settings is still what's showing; if the user has since
+    // left, there's nothing to patch, and the next real visit to Settings reads ME.defaultGym fresh.
+    onConfirm: v => { const epoch=UI_EPOCH; H.post('/api/me/default-gym',{defaultGym:v}).then(r=>{ if(r.defaultGym!==undefined){ ME.defaultGym=r.defaultGym; if(nothingNavigatedSince(epoch)){ const el=document.getElementById('settingsGymVal'); if(el) el.textContent = ME.defaultGym || 'Not set'; } } }); }
   });
 }
 // v190 (Sep 2026): Private/Public profile toggle. Flipping to Public also auto-accepts any
@@ -5520,9 +5582,16 @@ async function applyCrop(type){
   // it says nothing about whether the user has since navigated away, so the profileView() below
   // used to barge back onto whatever screen they'd moved on to. ME.avatar is still updated
   // unconditionally so the new avatar is correct whenever they do land back on a profile.
+  // v300+ (settings-as-a-page): tightened from bare nothingNavigatedSince() to
+  // stillOnProfileWithNothingElseOpen() -- "Edit photo" is now a Settings row (its own #av file
+  // input lives on the Settings page; see openSettings()'s comment), so uploading a photo FROM
+  // Settings used to satisfy the old check (nothing navigated) and clobber $('app') with the
+  // profile page out from under the user, who was still looking at Settings. Settings has no
+  // avatar preview to update in place, so this just skips the re-render in that case -- the next
+  // real visit to profile always shows the new photo, ME.avatar is already correct above.
   const epoch=UI_EPOCH;
   const r = await H.post('/api/me/avatar',{ data: out, type: type||'image/jpeg' });
-  if(r.avatar){ ME.avatar = r.avatar; if(nothingNavigatedSince(epoch)) profileView(ME.id, {silent:true}); }
+  if(r.avatar){ ME.avatar = r.avatar; if(stillOnProfileWithNothingElseOpen(epoch)) profileView(ME.id, {silent:true}); }
   else alert(r.error||'upload failed');
 }
 // v254: silent -- this is the 'me' tab's render target (via showTab/renderTabState), which already
