@@ -2512,19 +2512,6 @@
       "loadType": "single"
     },
     {
-      "name": "Machine Fly",
-      "pattern": "push",
-      "category": "chest",
-      "muscle_groups": [
-        "chest"
-      ],
-      "equipment": [
-        "machine"
-      ],
-      "is_compound": false,
-      "level": "beginner"
-    },
-    {
       "name": "Guillotine Press",
       "pattern": "push",
       "category": "chest",
@@ -2800,19 +2787,6 @@
       "is_compound": true,
       "level": "beginner",
       "loadType": "pair"
-    },
-    {
-      "name": "Triceps Pushdown (V-Bar)",
-      "pattern": "push",
-      "category": "triceps",
-      "muscle_groups": [
-        "triceps"
-      ],
-      "equipment": [
-        "cable"
-      ],
-      "is_compound": false,
-      "level": "beginner"
     },
     {
       "name": "Fan Bike",
