@@ -1321,8 +1321,13 @@ app.get('/api/templates', auth, async (req, res) => {
     && !(t.hiddenBy && t.hiddenBy.includes(req.userId)));
   // v239: shared rows carry WHO shared them - two friends' "Legs - Random" were otherwise
   // indistinguishable (Jeff's real list, Aug 28). Display name only; never the id-to-name map.
+  // v306: `invited` (see POST/PUT below -- a routine can now optionally carry a saved invite
+  // list, same fields a full workout has) is the owner's own connections, specific people --
+  // stripped from every SHARED row for the same reason hiddenBy and a session's joinRequests
+  // are owner-only elsewhere in this file. It stays on `mine` rows (own routines) untouched.
   res.json({ mine: mine.map(stripHidden),
-    shared: friendT.map(t => ({ ...stripHidden(t), ownerName: (DB.users[t.ownerId] && (DB.users[t.ownerId].displayName || DB.users[t.ownerId].username)) || '' })) });
+    shared: friendT.map(t => { const { invited, ...rest } = stripHidden(t);
+      return { ...rest, ownerName: (DB.users[t.ownerId] && (DB.users[t.ownerId].displayName || DB.users[t.ownerId].username)) || '' }; }) });
 });
 // The non-owner half of "delete a routine": hides it from MY list, never touches the owner's
 // row. See the comment above GET /api/templates for why this can't just be DELETE /:id.
@@ -1347,14 +1352,43 @@ app.post('/api/templates/:id/unhide', auth, async (req, res) => {
   await save(DB);
   res.json({ ok: true });
 });
+// Resolves invite usernames to user ids, scoped to the CALLER's own connections -- identical
+// logic to POST/PUT /api/sessions' own invite resolution. A username that isn't one of the
+// caller's connections is silently dropped rather than erroring, same as sessions: this doubles
+// as the safety net for tplUse() (app.js) carrying a routine's saved invite list forward into a
+// brand new session -- if the routine's owner is no longer connected to whoever they'd invited,
+// or (for a friend's shared routine, though `invited` itself is stripped before it ever reaches
+// a non-owner, see stripHidden's call site above) the names simply wouldn't resolve for the
+// caller and are dropped, never invited by mistake.
+const resolveInvites = (userId, usernames) => {
+  if (!Array.isArray(usernames)) return [];
+  const myConnections = connectionsOf(userId);
+  const out = [];
+  for (const un of usernames) {
+    const f = myConnections.find(fid => normUser(DB.users[fid] && DB.users[fid].username) === normUser(un));
+    if (f) out.push(f);
+  }
+  return out;
+};
 app.post('/api/templates', auth, async (req, res) => {
-  const { name, exercises } = req.body || {};
+  const { name, exercises, location, creatorNote, visibility, inviteUsernames } = req.body || {};
   if (!name || !Array.isArray(exercises) || !exercises.length) return res.status(400).json({ error: 'name + exercises required' });
   // v253 (audit finding, see isPlainExercise above) -- a non-object element would have thrown
   // inside withDefaults below, returning a generic 500 instead of a clean 400.
   if (!exercises.every(isPlainExercise)) return res.status(400).json({ error: 'invalid exercise' });
   const id = 't_' + uid();
   const t = { id, ownerId: req.userId, name: capStr(name, 80), exercises: exercises.map(withDefaults) };
+  // v306 (Jeff, Sep 3): "repeat a workout" folded into Routines instead of a second feature --
+  // a routine can now optionally carry the same full-workout details a session has (location,
+  // note, visibility, invited friends), alongside its exercises. Every one of these is genuinely
+  // optional and only ever set when truthy, so a plain exercises-only routine (the only kind that
+  // existed before this) is stored byte-for-byte the way it always was -- no new blank fields on
+  // old-shaped objects, nothing for existing routines or clients to migrate.
+  if (typeof location === 'string' && location) t.location = capStr(location, 120);
+  if (typeof creatorNote === 'string' && creatorNote) t.creatorNote = capStr(creatorNote, 2000);
+  if (visibility) t.visibility = visibility === 'public' ? 'public' : 'private';
+  const invites = resolveInvites(req.userId, inviteUsernames);
+  if (invites.length) t.invited = invites;
   if (!DB.templates) DB.templates = {};
   DB.templates[id] = t;
   await save(DB);
@@ -1364,12 +1398,22 @@ app.put('/api/templates/:id', auth, async (req, res) => {
   const t = DB.templates && DB.templates[req.params.id];
   if (!t) return res.status(404).json({ error: 'not found' });
   if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
-  const { name, exercises } = req.body || {};
+  const { name, exercises, location, creatorNote, visibility, inviteUsernames } = req.body || {};
   if (name) t.name = capStr(name, 80);
   if (Array.isArray(exercises) && exercises.length) {
     // v253 (audit finding, see isPlainExercise above) -- same generic-500 risk as POST /api/templates.
     if (!exercises.every(isPlainExercise)) return res.status(400).json({ error: 'invalid exercise' });
     t.exercises = exercises.map(withDefaults);
+  }
+  // v306: typeof-string checks (not truthy), matching PUT /api/sessions/:id's own pattern just
+  // above -- so clearing a field back to blank on an edit actually clears it instead of a falsy
+  // '' silently leaving the old value stuck forever.
+  if (typeof location === 'string') { if (location) t.location = capStr(location, 120); else delete t.location; }
+  if (typeof creatorNote === 'string') { if (creatorNote) t.creatorNote = capStr(creatorNote, 2000); else delete t.creatorNote; }
+  if (visibility) t.visibility = visibility === 'public' ? 'public' : 'private';
+  if (Array.isArray(inviteUsernames)) {
+    const invites = resolveInvites(req.userId, inviteUsernames);
+    if (invites.length) t.invited = invites; else delete t.invited;
   }
   await save(DB);
   // stripHidden matters here specifically: once a friend has hidden this routine, t.hiddenBy is

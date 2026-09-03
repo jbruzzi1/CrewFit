@@ -465,9 +465,16 @@ async function home(opts){
   // Primary action (compact), plus a zero-friction start for "I'm at the gym right now" — no
   // name, no schedule, no invite step, just a live session you add lifts to as you go. Jeff, Aug
   // 25: "a 'workout now' button or something for quick workouts."
+  // v306 (Jeff, Sep 3): "Routines" promoted to Home as its own full-width row below the two
+  // primary actions -- deliberately just ONE new button, not a second "Repeat a workout" entry
+  // point (Jeff: "I dont want routine on the home page... just repeat a workout" then, once
+  // Routines itself grew optional full-workout details, settled on folding it all into this one
+  // button instead of building a second feature -- see templateExercises()'s own comment). Opens
+  // the exact same templatesPage() the "Routines" button inside New Workout already does.
   html += `<div class="home-actions">
     <button class="blue btn-new" onclick="newWorkout()">+ New workout</button>
     <button class="btn-quick" onclick="workoutNow()">+ Quick Workout</button>
+    <button class="btn-quick btn-repeat" onclick="templatesPage()">↻ Routines</button>
   </div>`;
 
   // Your Sessions (prime spot) — only sessions you've accepted/joined (exclude pending invites),
@@ -3118,6 +3125,10 @@ let EDITING_TPL = null;
 // null since that path never pushed a routineView entry to begin with.
 let TPL_VIEW_ENTRY_LEN = null;
 let EDITING_ID = null;          // set when a saved workout is in inline edit mode
+// v306: dismisses the "Loaded from X" provenance chip tplUse() sets. Only ever removes the DOM
+// node and clears the DRAFT field it reads from -- nothing else about the loaded exercises/
+// details is touched, so dismissing the chip is purely cosmetic, never an undo.
+function dismissLoadedChip(){ DRAFT._loadedFromTpl = null; const el=$('loadedFromChip'); if(el) el.remove(); }
 async function createFlow(){
   DRAFT = DRAFT || { exercises:[], inviteUsernames:[] };
   if(!DRAFT.exercises) DRAFT.exercises=[];
@@ -3137,6 +3148,7 @@ async function createFlow(){
       <button class="blue sm" onclick="submitSession()">${EDITING_SESSION?'Save changes':'Create workout'}</button>
     </div>
     <h1>${EDITING_SESSION?'Edit workout':'New workout'}</h1>
+    ${DRAFT._loadedFromTpl ? `<div class="upcoming-badge" id="loadedFromChip" style="display:flex;align-items:center;gap:6px;margin:8px 0 4px;width:fit-content;cursor:default"><span>↻ Loaded from "${esc(DRAFT._loadedFromTpl)}"</span><span style="opacity:.6;font-weight:400;margin-left:2px;cursor:pointer" onclick="dismissLoadedChip()">✕</span></div>` : ''}
     <h2 class="light">Details</h2>
     <label class="muted">Workout name</label><input id="wname" placeholder="e.g. Chest & Back" value="${esc(DRAFT.name||'')}">
     <label class="muted">When</label><input id="dt" type="datetime-local" value="${esc(DRAFT._dt||'')}">
@@ -3294,6 +3306,16 @@ async function editSession(id){
   createFlow();
 }
 function toLocalInput(iso){ const d=new Date(iso); const p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; }
+// v306: one subtitle builder shared by the Routines list row and tplView()'s detail header, so
+// a routine that's grown beyond exercises-only (location/public visibility/invited friends) says
+// so in both places the same way, and a plain exercises-only routine reads exactly as it always
+// has -- just the exercise count.
+function tplSubtitle(t){
+  // v306 cold-review catch: plur(n,'invited') pluralizes by appending 's' -- "2 inviteds". 'invited'
+  // isn't a noun plur() can conjugate, so this builds the phrase directly instead of routing it
+  // through plur() at all.
+  return `${plur(t.exercises.length,'exercise')}${t.location?` · ${esc(t.location)}`:''}${t.visibility==='public'?' · Public':''}${(t.invited&&t.invited.length)?` · ${t.invited.length} invited`:''}`;
+}
 // ---- Templates: page-based flow (list -> name -> pick exercises -> save) ----
 const TPL_MODE = { active:false, id:null, name:'', copy:false };   // active while building a template; copy = forking a friend's shared routine
 async function templatesPage(opts){
@@ -3303,11 +3325,21 @@ async function templatesPage(opts){
   // Guarded by element existence: these inputs only exist when this was reached from the
   // create-flow form; every other entry point (the Workouts tab's "Templates" button, the
   // template-builder's own "Back") leaves DRAFT untouched, same as before.
-  if(DRAFT){
+  // v306 cold-review catch: templateExercises() (the routine editor) now has its OWN #loc/#note/
+  // #vis inputs (deliberately same ids, see its own comment, so openAddExercises()'s excursion
+  // stash protects both screens for free). But tplBack() -> tplReturnToList() can call this
+  // function DIRECTLY while the routine editor's DOM is still the one on screen (new-routine
+  // path, no routineView history entry to pop) -- without gating on something unique to
+  // create-flow, this block would read the routine editor's own Details fields as if they were
+  // an abandoned New Workout draft, leaking a cancelled routine edit's location/note/visibility
+  // into DRAFT and silently pre-filling the next unrelated New Workout screen with it. #wname
+  // only ever exists on create-flow's own markup (the routine editor's name field is #tplNameEdit
+  // or a plain <h1>), so gate the whole stash on it actually being create-flow on screen.
+  if(DRAFT && $('wname')){
     if($('loc')) DRAFT.location = $('loc').value;
     if($('len')) DRAFT.lengthMin = $('len').value;
     if($('note')) DRAFT.creatorNote = $('note').value;
-    if($('wname')) DRAFT.name = $('wname').value;
+    DRAFT.name = $('wname').value;
     if($('vis')) DRAFT.visibility = $('vis').value;
     if($('dt')) DRAFT._dt = $('dt').value;
   }
@@ -3326,7 +3358,7 @@ async function templatesPage(opts){
   // left on the row, so it needs its own event.stopPropagation() (same guard every other tappable
   // control nested inside a row's own onclick uses, e.g. ex-fav-btn) or tapping it would ALSO
   // open the detail screen out from under the tap.
-  const row = (t)=>`<div class="lib-item" onclick="tplView('${t.id}')"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${plur(t.exercises.length,'exercise')}${t.ownerName?` · from ${esc(t.ownerName)}`:''}</div></div>
+  const row = (t)=>`<div class="lib-item" onclick="tplView('${t.id}')"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${tplSubtitle(t)}${t.ownerName?` · from ${esc(t.ownerName)}`:''}</div></div>
     <button class="sec sm" onclick="event.stopPropagation(); tplUse('${t.id}')">Use</button></div>`;
   $('app').innerHTML = `<div class="wrap tpl-page">
     <div class="pick-head lib-head"><h1 style="flex:1">Routines</h1>
@@ -3374,7 +3406,7 @@ async function tplView(id, opts){
       ${dots}
     </div>
     <h1 style="margin:18px 0 4px">${esc(t.name)}</h1>
-    <div class="muted" style="font-size:13px;margin:0 2px 14px">${plur(t.exercises.length,'exercise')}${t.ownerName?` · from ${esc(t.ownerName)}`:''}</div>
+    <div class="muted" style="font-size:13px;margin:0 2px 14px">${tplSubtitle(t)}${t.ownerName?` · from ${esc(t.ownerName)}`:''}</div>
     <div class="card">${t.exercises.map(e=>`<div class="lib-item"><div style="flex:1;min-width:0;font-weight:600">${esc(e.name)}</div><span class="draft-chip">${e.defaultSets} × ${repLabel(e)}</span></div>`).join('')}</div>
     <button class="blue" style="margin-top:14px" onclick="tplUse('${id}')">Use this routine</button>
   </div>`;
@@ -3386,7 +3418,9 @@ async function tplView(id, opts){
 }
 function tplNew(){
   TPL_MODE.active=true; TPL_MODE.id=null; TPL_MODE.name=''; TPL_MODE.copy=false;
-  DRAFT={ exercises:[] }; EDITING_TPL=null;
+  // inviteUsernames must be an array from the start -- toggleInvite() calls .includes/.push on
+  // it directly with no fallback, same requirement createFlow()'s own DRAFT already has.
+  DRAFT={ exercises:[], inviteUsernames:[] }; EDITING_TPL=null;
   TPL_VIEW_ENTRY_LEN = null;   // entered straight from the list -- no routineView entry was pushed
   openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Name routine</h2></div>
     <label class="muted">Routine name</label>
@@ -3406,7 +3440,17 @@ async function tplEdit(id){
   const { mine } = await H.get('/api/templates');
   const t = mine.find(x=>x.id===id); if(!t) return;
   TPL_MODE.active=true; TPL_MODE.id=id; TPL_MODE.name=t.name; TPL_MODE.copy=false;
-  DRAFT={ exercises:t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax})) };
+  // v306: resolve t.invited (stored as user ids, see POST/PUT /api/templates) back to usernames
+  // the same way editSession() already does for a session's own invite list, so the editor's
+  // checkboxes can show who's currently invited.
+  let invitedUsernames = [];
+  if(t.invited && t.invited.length){
+    const friends = await H.get('/api/friends');
+    const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
+    invitedUsernames = t.invited.map(fid=>{ const f=friendList.find(x=>x.id===fid); return f?f.username:''; }).filter(Boolean);
+  }
+  DRAFT={ exercises:t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax})),
+    location:t.location||'', creatorNote:t.creatorNote||'', visibility:t.visibility||'private', inviteUsernames:invitedUsernames };
   EDITING_TPL=id;
   templateExercises();
 }
@@ -3420,7 +3464,11 @@ async function tplEditCopy(id){
   const { shared } = await H.get('/api/templates');
   const t = shared.find(x=>x.id===id); if(!t) return;
   TPL_MODE.active=true; TPL_MODE.id=null; TPL_MODE.name=t.name; TPL_MODE.copy=true;
-  DRAFT={ exercises:t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax})) };
+  // v306: location/creatorNote/visibility carry into the copy same as exercises do -- `invited`
+  // never reaches here at all (server strips it from every shared row, see GET /api/templates),
+  // so a copy never auto-invites someone from the original owner's own connections.
+  DRAFT={ exercises:t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax})),
+    location:t.location||'', creatorNote:t.creatorNote||'', visibility:t.visibility||'private', inviteUsernames:[] };
   EDITING_TPL=null;
   templateExercises();
 }
@@ -3546,6 +3594,25 @@ async function templateExercises(){
   const nameField = (TPL_MODE.id || TPL_MODE.copy)
     ? `<input id="tplNameEdit" class="tpl-name-edit" value="${esc(TPL_MODE.name||'')}" placeholder="Routine name" autocomplete="off">`
     : `<h1>${esc(TPL_MODE.name||'Routine')}</h1>`;
+  // v306 (Jeff, Sep 3): optional full-workout details -- Location/Note/Visibility/Invite friends,
+  // same fields createFlow() has, same ids too (#loc/#note/#vis) so openAddExercises()'s existing
+  // stash-before-excursion guard (search "stash details typed so far") already preserves these
+  // across "+ Add exercise" with zero new code -- it stashes into DRAFT generically by element id,
+  // and this screen and createFlow() are never on screen at once. Deliberately riding on DRAFT
+  // (already the vessel for this screen's exercises, see tplNew()/tplEdit()) rather than adding
+  // more fields to TPL_MODE: TPL_MODE's reset is already hand-duplicated at four call sites, and
+  // two real bugs this session (see TPL_VIEW_ENTRY_LEN's and resetTransientModes()'s own comments)
+  // came from exactly that kind of miss. All optional: leave them blank and a routine saves
+  // exactly like it always has, exercises only.
+  const friends = await H.get('/api/friends');
+  const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
+  const invNames = DRAFT.inviteUsernames || [];
+  const invRows = friendList.length ? friendList.map(f=>{
+    const ini = (f.displayName||f.username||'?')[0]||'?';
+    const av = f.avatar ? `<img class="inv-av" src="${esc(f.avatar)}" alt="">` : `<div class="inv-av" style="background:${avatarColor(f.username)};color:#fff">${esc(ini)}</div>`;
+    const on = invNames.includes(f.username) ? 'checked' : '';
+    return `<label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap">${av}</div><div class="inv-text"><div class="name">${esc(f.displayName||f.username)}</div><div class="handle">@${esc(f.username)}</div></div></div><span class="check"><input type="checkbox" value="${esc(f.username)}" ${on} onchange="toggleInvite(this)"><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`;
+  }).join('') : '<div class="muted">No friends yet — add some in Friends tab.</div>';
   // v304, Jeff: "I like having the save buttons at the top instead of the bottom. I feel its more
   // instinctive having that at the top for how users normally work." Save moves up next to Back --
   // same pp-head row/pushed-to-the-far-right shape openSession's Edit/Delete dots and Settings'
@@ -3558,6 +3625,17 @@ async function templateExercises(){
       <button class="blue sm" onclick="finishTemplate()">✓ ${TPL_MODE.id?'Save changes':(TPL_MODE.copy?'Save as my routine':'Create routine')}</button>
     </div>
     ${nameField}
+    <h2 class="light" style="margin-top:14px">Details <span class="muted" style="font-weight:400;text-transform:none;font-size:12px">(optional)</span></h2>
+    <label class="muted">Location</label><input id="loc" placeholder="e.g. Gold's Gym" value="${esc(DRAFT.location||'')}">
+    <label class="muted">Note to friends</label><input id="note" placeholder="let's hit legs hard" value="${esc(DRAFT.creatorNote||'')}">
+    <label class="muted">Visibility</label>
+    <select id="vis">
+      <option value="private"${(DRAFT.visibility||'private')==='private'?' selected':''}>Private (invite only)</option>
+      <option value="public"${DRAFT.visibility==='public'?' selected':''}>Public (joinable)</option>
+    </select>
+    <label class="muted">Invite friends</label>
+    <div id="invList" class="card">${invRows}</div>
+    <div class="fineprint" style="margin:6px 2px 14px">Leave these blank to save an exercises-only routine, same as before.</div>
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button></div>`;
   window.scrollTo(0,0);
@@ -3616,7 +3694,15 @@ async function finishTemplate(){
   if(!DRAFT.exercises.length){ alert('Add at least one exercise'); return; }
   const liveName = ((TPL_MODE.id || TPL_MODE.copy) && $('tplNameEdit')) ? $('tplNameEdit').value.trim() : TPL_MODE.name.trim();
   if(!liveName){ alert('Name your routine first.'); return; }
-  const payload = { name:liveName, exercises:DRAFT.exercises };
+  // v306: read straight off the still-live form, same as createFlow()'s own submitSession() --
+  // openAddExercises()'s stash only fires on the "+ Add exercise" excursion, not on every
+  // keystroke, so DRAFT itself isn't guaranteed current; the DOM is. inviteUsernames is the one
+  // exception -- toggleInvite() already keeps DRAFT.inviteUsernames live on every checkbox tap.
+  const location = $('loc') ? $('loc').value : (DRAFT.location||'');
+  const creatorNote = $('note') ? $('note').value : (DRAFT.creatorNote||'');
+  const visibility = $('vis') ? $('vis').value : (DRAFT.visibility||'private');
+  const inviteUsernames = DRAFT.inviteUsernames || [];
+  const payload = { name:liveName, exercises:DRAFT.exercises, location, creatorNote, visibility, inviteUsernames };
   const epoch=UI_EPOCH;   // v304: same barge-in guard as tplDelete/tplHideConfirmed above
   const r = TPL_MODE.id
     ? await H.put('/api/templates/'+TPL_MODE.id, payload)
@@ -3630,6 +3716,31 @@ async function tplUse(id){
   const t = [...mine,...shared].find(x=>x.id===id); if(!t) return;
   DRAFT = DRAFT || { exercises:[], inviteUsernames:[] };
   DRAFT.exercises = t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}));
+  // v306 (Jeff, Sep 3): a routine can now optionally carry full-workout details too (see
+  // templateExercises()'s own comment) -- Use loads whatever the routine actually has. The
+  // workout name is always set from the routine's own name (harmless even for a plain
+  // exercises-only routine -- saves retyping it, and it's still just a starting point you can
+  // rename before Create). Location/note/visibility only overwrite the in-progress draft when
+  // the routine actually specifies them, so an exercises-only routine leaves them exactly as they
+  // were before this change -- whatever the draft already had, untouched.
+  DRAFT.name = t.name || DRAFT.name;
+  if(typeof t.location === 'string' && t.location) DRAFT.location = t.location;
+  if(typeof t.creatorNote === 'string' && t.creatorNote) DRAFT.creatorNote = t.creatorNote;
+  if(t.visibility) DRAFT.visibility = t.visibility;
+  if(t.invited && t.invited.length){
+    // `invited` is the OWNER's own connections' user ids -- a shared routine never carries it at
+    // all (server strips it, see GET /api/templates), so this only ever fires for your own
+    // routines. Resolved to usernames the same way editSession() does for a session's own list.
+    const friends = await H.get('/api/friends');
+    const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
+    const usernames = t.invited.map(fid=>{ const f=friendList.find(x=>x.id===fid); return f?f.username:''; }).filter(Boolean);
+    if(usernames.length) DRAFT.inviteUsernames = usernames;
+  }
+  // Named provenance chip createFlow() renders right under the h1 -- lives on DRAFT itself (same
+  // pattern as DRAFT._dt) so it's automatically cleared whenever DRAFT is genuinely reset
+  // (newWorkout/workoutNow/editSession all reassign DRAFT wholesale) and automatically survives
+  // in-place re-renders (the "+ Add exercise" excursion) the same way DRAFT._dt already does.
+  DRAFT._loadedFromTpl = t.name;
   EDITING_TPL = null;
   // v253 (audit finding): this is the exact step that turned a leaked TPL_MODE (from backing out
   // of an unrelated routine edit — see tplBack's comment) into a corrupted routine. Use loads this
