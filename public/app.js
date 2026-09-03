@@ -4953,10 +4953,13 @@ function toggleTheme(){
 // than live coachmarks pinned to the real elements during actual use -- that scope call from the
 // first round stands; only the CONTENT of each card changed, not where the tour lives.
 //
-// Six cards, stepped with Back/Next rather than true swipe (simpler to build and to verify with
-// a click-based test; dots make the position clear regardless). State (which card) is stashed on
-// the sheet element itself via sheetEl._wkIdx, matching the _recSeq pattern above -- only one
-// walkthrough sheet is ever open at once, so there's nothing to reset between opens.
+// Eight cards, in one start-to-finish story (Home -> invite friends -> accept a friend's invite
+// -> suggest a change on a workout you joined -> tap to log -> the suggested weight -> Log &
+// Finish -> the friends' feed your finished workout lands in), stepped with Back/Next rather than
+// true swipe (simpler to build and to verify with a click-based test; dots make the position
+// clear regardless). State (which card) is stashed on the sheet element itself via
+// sheetEl._wkIdx, matching the _recSeq pattern above -- only one walkthrough sheet is ever open
+// at once, so there's nothing to reset between opens.
 //
 // Auto-opens exactly once: right after a brand-new registration succeeds (see doReg, in the auth
 // section near the top of this file), never via a persisted "seen" flag. That keeps this simple
@@ -4978,6 +4981,14 @@ const WK_CARDS = [
     title:'Invite friends when you create a workout',
     body:"Building a workout? Check off crew members to invite them before you save — they'll get it on their end and can join in.",
     hl:{top:64.21,left:2.05,width:95.9,height:28.95} },
+  { shot:'accept',
+    title:"Accepting a friend's invite",
+    body:"When a crew member invites you, it shows up right on Home. Accept to join in, Decline if you can't make it — either way, no digging required.",
+    hl:{top:42.42,left:4.36,width:91.28,height:24.35} },
+  { shot:'suggest',
+    title:'Joined a workout? Suggest a change',
+    body:"Didn't create the workout but want a different exercise? Propose a replacement or suggest adding one — the creator approves it before it changes for everyone.",
+    hl:{top:33.03,left:2.56,width:94.87,height:67.37} },
   { shot:'taplog',
     title:'Tap any exercise to log it',
     body:'Every exercise shows a "Tap to log sets" hint underneath it — but once CrewFit knows your recent numbers, that hint upgrades to a specific suggestion like "Try 140 lb today." Either way, tap in and log your sets.',
@@ -4986,10 +4997,10 @@ const WK_CARDS = [
     title:'Watch for the suggested weight',
     body:'Inside the log sheet, a box shows what to try next based on your recent sessions — tap it to fill the weight in for you. It keeps updating after each set you log today.',
     hl:{top:56.32,left:4.62,width:90.77,height:18.95} },
-  { shot:'suggest',
-    title:'Joined a workout? Suggest a change',
-    body:"Didn't create the workout but want a different exercise? Propose a replacement or suggest adding one — the creator approves it before it changes for everyone.",
-    hl:{top:33.03,left:2.56,width:94.87,height:67.37} },
+  { shot:'finish',
+    title:"Log & Finish when you're done",
+    body:"This locks in your sets, counts toward your streak and weekly volume, and lets you post a recap — which is what shows up in your crew's feed.",
+    hl:{top:36.25,left:2.05,width:28.37,height:13.13} },
   { shot:'feed',
     title:'See what your crew is up to',
     body:"Friends' Activity shows workouts, streaks, and PRs from people you follow — tap one to see the full workout.",
