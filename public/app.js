@@ -292,6 +292,8 @@ function renderNavState(st){
   else if(st.t==='library') library({fromHistory:true});
   else if(st.t==='seeds') seedSetupScreen({fromHistory:true});
   else if(st.t==='settings') openSettings({fromHistory:true});
+  else if(st.t==='routines') templatesPage({fromHistory:true});
+  else if(st.t==='routineView') tplView(st.id, {fromHistory:true});
   else renderTabState('home');   // an old/unrecognized entry (e.g. a stray 'sheet' marker) -- never strand the user on nothing
 }
 // A tab-state landing needs its own landOn() call (nothing inside home()/library()/etc. does it,
@@ -319,6 +321,16 @@ function resetTransientModes(){
   EDITING_ID = null;                                          // stuck inline-edit on a posted workout
   EDITING_TPL = null;                                         // stuck template edit
   if(typeof TPL_MODE === 'object' && TPL_MODE) { TPL_MODE.active = false; TPL_MODE.id = null; TPL_MODE.name = ''; TPL_MODE.copy = false; }
+  // NOT resetting TPL_VIEW_ENTRY_LEN here (cold-review catch, round 2): tplBack() calls
+  // closeSheet(); resetTransientModes(); tplReturnToList() in that exact order -- nulling it here
+  // ran BEFORE tplReturnToList() ever got to read it, so Cancel out of the editor always fell into
+  // the wrong branch (templatesPage({replace:true}) over a still-pushed routineView entry, i.e. the
+  // exact "wasted extra Back press" duplicate-entry bug this whole mechanism exists to prevent),
+  // while Save (finishTemplate(), which never calls resetTransientModes()) worked correctly. Every
+  // real reader of TPL_VIEW_ENTRY_LEN (tplReturnToList(), reachable only via tplBack/tplDelete/
+  // tplHideConfirmed/finishTemplate) is only ever invoked downstream of a tplView()/tplNew() call
+  // that just (re)armed it fresh -- there is no reachable path where a stale leftover value poisons
+  // an unrelated later call, so there's nothing here to defend against in the first place.
 }
 
 // ---- Open empty states (v222 Home, v225 app-wide) ----
@@ -3091,6 +3103,20 @@ async function saveWorkoutEditConfirmed(id, exercisesIn, notesIn, nameIn, epochI
 // ---- Create flow ----
 let DRAFT = { exercises:[], inviteUsernames:[] } ;
 let EDITING_TPL = null;
+// v304 (cold-review catch): tplReturnToList() originally branched on CURRENT_NAV_STATE.t==='routineView'
+// to decide whether the editor was reached via tplView() -- but CURRENT_NAV_STATE is a single global
+// that ANY navigated()/landOn() call anywhere in the app overwrites, and "+ Add exercise" inside the
+// editor (tplOpenPicker -> openAddExercises -> showTab('lib', true)) does exactly that unconditionally,
+// even though keepModes=true only skips resetTransientModes(), not the trailing navigated() call.
+// So the single most expected edit (adding an exercise) silently clobbered CURRENT_NAV_STATE to
+// {t:'tab',tab:'lib'} (or {t:'muscle',m} if a category was drilled into) before Save ever ran,
+// making tplReturnToList() fall through to the wrong branch and leave the picker's own pushed
+// entries stranded on the stack. Same shape as backToSessionAfterSwapPicker's fix for the identical
+// problem with the swap/suggest-add pickers (see its own comment) -- track how many entries deep
+// the editor actually is via history.length itself, not a global that gets overwritten by unrelated
+// navigation. Set only by tplView() (both push and fromHistory land here); tplNew() resets it to
+// null since that path never pushed a routineView entry to begin with.
+let TPL_VIEW_ENTRY_LEN = null;
 let EDITING_ID = null;          // set when a saved workout is in inline edit mode
 async function createFlow(){
   DRAFT = DRAFT || { exercises:[], inviteUsernames:[] };
@@ -3249,7 +3275,7 @@ async function editSession(id){
 function toLocalInput(iso){ const d=new Date(iso); const p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; }
 // ---- Templates: page-based flow (list -> name -> pick exercises -> save) ----
 const TPL_MODE = { active:false, id:null, name:'', copy:false };   // active while building a template; copy = forking a friend's shared routine
-async function templatesPage(){
+async function templatesPage(opts){
   // Same gap as openAddExercises() had: "Browse templates" is also reachable mid-create (from
   // createFlow()'s form), and tplUse() returns via createFlow() too — so without stashing here,
   // browsing templates mid-create silently reverted name/visibility/date/location/length/note.
@@ -3272,28 +3298,75 @@ async function templatesPage(){
   // gated). A friend's shared routine gets Remove instead of Delete -- same word Jeff would use,
   // but it can only ever take the routine out of YOUR OWN list (POST .../hide, see the comment
   // above GET /api/templates in server.js), never touch your friend's copy of it.
-  // v226 (audit item 1): Use is the one visible action — it's what people tap most. Edit /
-  // Delete / Remove live in the same ⋯ overflow menu viewPost and openSession already use
-  // (pp-dots/pp-menu/togglePostMenu), so all three screens handle secondary actions one way and
-  // no solid-red button sits in the main list. Row is position:relative so the absolutely
-  // positioned .pp-menu anchors to its own row.
-  const row = (t)=>`<div class="lib-item" style="position:relative"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${plur(t.exercises.length,'exercise')}${t.ownerName?` · from ${esc(t.ownerName)}`:''}</div></div>
-    <button class="sec sm" onclick="tplUse('${t.id}')">Use</button>
-    <button class="pp-dots" onclick="togglePostMenu('${t.id}')" aria-label="More">\u22ef</button>
-    <div class="pp-menu" id="ppMenu-${t.id}" style="display:none">${t.ownerId===ME.id
-      ?`<button onclick="tplEdit('${t.id}')">Edit</button><button class="danger" onclick="tplDelete('${t.id}')">Delete</button>`
-      :`<button onclick="tplEditCopy('${t.id}')">Edit a copy</button><button class="danger" onclick="tplHide('${t.id}')">Remove</button>`}</div></div>`;
+  // v304 (Sep 2026), Jeff: "I want to be able to click on the routine and it show what the
+  // routine is - while also still having the three dot edit button on the top right." The row's
+  // ⋯ menu (Edit/Delete/Edit a copy/Remove, v226) moves off the list and onto a new detail
+  // screen (tplView() below), reached by tapping the row itself -- Use is the only other control
+  // left on the row, so it needs its own event.stopPropagation() (same guard every other tappable
+  // control nested inside a row's own onclick uses, e.g. ex-fav-btn) or tapping it would ALSO
+  // open the detail screen out from under the tap.
+  const row = (t)=>`<div class="lib-item" onclick="tplView('${t.id}')"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${plur(t.exercises.length,'exercise')}${t.ownerName?` · from ${esc(t.ownerName)}`:''}</div></div>
+    <button class="sec sm" onclick="event.stopPropagation(); tplUse('${t.id}')">Use</button></div>`;
   $('app').innerHTML = `<div class="wrap tpl-page">
     <div class="pick-head lib-head"><h1 style="flex:1">Routines</h1>
       <button class="icon-btn" onclick="tplNew()" title="New routine">＋</button></div>
     <div class="muted" style="font-size:13px;margin:4px 2px 12px">Reusable workouts. Build one, then use it to start a new session in a tap.</div>
     ${mine.length?mine.map(row).join(''):homeEmpty(ICON_LIST, 'No routines yet', 'Tap + to create one, or save a finished workout as a routine.')}
     ${shared.length?`<div class="lib-cat" style="margin-top:12px">Shared by friends</div>`+shared.map(row).join(''):''}</div>`;
-  window.scrollTo(0,0);
+  // v304: templatesPage() becomes a real page in the nav-history stack (navigated()/landOn(),
+  // same as followList/profileView/openSettings) now that tplView() sits a level below it and
+  // needs somewhere real to Back to -- it used to be a bare direct call with no history entry.
+  // opts.replace is a third mode alongside push (navigated, a fresh "enter Routines" tap) and
+  // fromHistory (landOn, a popstate restore): every path that LEAVES a nested screen back to this
+  // list -- tplBack() cancelling out of the editor, finishTemplate() on success, tplDelete/
+  // tplHideConfirmed after a destructive action, tplUnhide's toast refresh -- uses it so the list
+  // re-render replaceState()s whatever's currently on top of the stack (the routineView entry, or
+  // a stale routines entry) instead of pushing a fresh one. Without it, backing out of the editor
+  // after opening it from tplView would leave a dead, already-deleted routineView entry sitting
+  // one Back press away.
+  const st = {t:'routines'};
+  if(opts && opts.replace){ landOn(st); history.replaceState(st, '', location.href); }
+  else if(opts && opts.fromHistory){ landOn(st); }
+  else navigated(st);
+}
+// The detail screen Jeff asked for: tap a routine on the list, see every exercise it has, with
+// the same ⋯ menu (Edit / Delete, or Edit a copy / Remove for a friend's shared routine) the
+// list row used to carry, now up in the header next to Back -- same pp-head/pp-dots/pp-menu
+// anatomy openSession uses for its own Edit session/Delete session pair. "Use this routine" stays
+// reachable here too, so viewing a routine before starting it doesn't cost an extra trip back.
+async function tplView(id, opts){
+  const fromHistory = !!(opts && opts.fromHistory);
+  const { mine, shared } = await H.get('/api/templates');
+  const t = [...mine, ...shared].find(x=>x.id===id);
+  // Gone (deleted, or a friend un-shared it) since the list was last drawn -- e.g. a stale link
+  // via Back/Forward. Nothing to show; land back on the list rather than stranding on a dead page.
+  if(!t){ templatesPage({replace:true}); return; }
+  const isOwner = t.ownerId===ME.id;
+  const menuItems = isOwner
+    ? `<button onclick="tplEdit('${id}')">Edit</button><button class="danger" onclick="tplDelete('${id}')">Delete</button>`
+    : `<button onclick="tplEditCopy('${id}')">Edit a copy</button><button class="danger" onclick="tplHide('${id}')">Remove</button>`;
+  const dots = `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">⋯</button><div class="pp-menu" id="ppMenu-${id}" style="display:none">${menuItems}</div>`;
+  document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
+  $('app').innerHTML = `<div class="wrap">
+    <div class="pp-head">
+      <button class="sec sm" onclick="history.back()">← Back</button>
+      ${dots}
+    </div>
+    <h1 style="margin:18px 0 4px">${esc(t.name)}</h1>
+    <div class="muted" style="font-size:13px;margin:0 2px 14px">${plur(t.exercises.length,'exercise')}${t.ownerName?` · from ${esc(t.ownerName)}`:''}</div>
+    <div class="card">${t.exercises.map(e=>`<div class="lib-item"><div style="flex:1;min-width:0;font-weight:600">${esc(e.name)}</div><span class="draft-chip">${e.defaultSets} × ${repLabel(e)}</span></div>`).join('')}</div>
+    <button class="blue" style="margin-top:14px" onclick="tplUse('${id}')">Use this routine</button>
+  </div>`;
+  const st = {t:'routineView', id};
+  fromHistory ? landOn(st) : navigated(st);
+  // Baseline depth for tplReturnToList()'s history.go() math -- see TPL_VIEW_ENTRY_LEN's own comment.
+  // Captured AFTER the push/land above so it already counts this routineView entry itself.
+  TPL_VIEW_ENTRY_LEN = history.length;
 }
 function tplNew(){
   TPL_MODE.active=true; TPL_MODE.id=null; TPL_MODE.name=''; TPL_MODE.copy=false;
   DRAFT={ exercises:[] }; EDITING_TPL=null;
+  TPL_VIEW_ENTRY_LEN = null;   // entered straight from the list -- no routineView entry was pushed
   openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Name routine</h2></div>
     <label class="muted">Routine name</label>
     <input id="tplName" placeholder="e.g. Push Day" autocomplete="off">
@@ -3392,7 +3465,13 @@ async function tplDelete(id){
   confirmSheet('Delete routine?',
     `"${esc(t.name)}" will be gone from your Routines — there's no undo. Workouts you already logged with it are not affected.`,
     'Delete routine',
-    async ()=>{ const r = await H.delete('/api/templates/'+id); if(r.error) alert(r.error); else templatesPage(); });
+    // v304: reached only from tplView()'s ⋯ menu now, which always pushed its own {t:'routineView'}
+    // entry to get here -- tplReturnToList() pops that for real instead of replacing it, same
+    // reasoning as tplBack()'s own comment above. epoch-guarded (same shape as swapPick/
+    // suggestAddPick -- see nothingNavigatedSince's own comment) so a delete that resolves after
+    // the user has already tapped away to some other screen doesn't yank them back with a
+    // history.go()/replaceState() over navigation that has nothing to do with this routine.
+    async ()=>{ const epoch=UI_EPOCH; const r = await H.delete('/api/templates/'+id); if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) tplReturnToList(); });
 }
 // Jeff, Aug 28: the non-owner half of "delete a routine" -- takes a friend's shared routine out
 // of YOUR list only. v240: removal now gets an undo moment (toast below) instead of being
@@ -3403,9 +3482,10 @@ async function tplHide(id){
   confirmSheet('Remove routine?', `"${esc(t.name)}" comes off your own list only — your friend's routine is untouched.`, 'Remove routine', () => tplHideConfirmed(id, t.name));
 }
 async function tplHideConfirmed(id, name){
+  const epoch=UI_EPOCH;   // v304: same barge-in guard as tplDelete's callback above
   const r = await H.post('/api/templates/'+id+'/hide', {});
   if(r && r.error){ alert(r.error); return; }
-  templatesPage();
+  if(nothingNavigatedSince(epoch)) tplReturnToList(); // v304: same reasoning as tplDelete's cb above -- always reached from tplView() now
   showUndoToast(`Removed "${esc(name)}"`, () => tplUnhide(id));
 }
 async function tplUnhide(id){
@@ -3414,7 +3494,7 @@ async function tplUnhide(id){
   // only re-render if the user is still ON the routines page — the toast outlives navigation,
   // and yanking someone back to Routines from another tab because they tapped Undo is worse
   // than letting the restored routine simply be there next time they look
-  if(document.querySelector('.tpl-page')) templatesPage();
+  if(document.querySelector('.tpl-page')) templatesPage({replace:true});
 }
 // ---- Undo toast (v240) ----
 // A single transient bar above the nav offering to take back the action just taken. Same slot
@@ -3445,12 +3525,20 @@ async function templateExercises(){
   const nameField = (TPL_MODE.id || TPL_MODE.copy)
     ? `<input id="tplNameEdit" class="tpl-name-edit" value="${esc(TPL_MODE.name||'')}" placeholder="Routine name" autocomplete="off">`
     : `<h1>${esc(TPL_MODE.name||'Routine')}</h1>`;
+  // v304, Jeff: "I like having the save buttons at the top instead of the bottom. I feel its more
+  // instinctive having that at the top for how users normally work." Save moves up next to Back --
+  // same pp-head row/pushed-to-the-far-right shape openSession's Edit/Delete dots and Settings'
+  // own Back already use -- instead of sitting full-width at the very bottom of the screen, below
+  // "+ Add exercise", where it used to be the last thing on the page rather than the first thing
+  // reached. "+ Add exercise" stays where it is, right after the list it adds to.
   $('app').innerHTML = `<div class="wrap create-flow">
-    <button class="sec sm" onclick="tplBack()">← Back</button>
+    <div class="pp-head" style="margin-bottom:14px">
+      <button class="sec sm" onclick="tplBack()">← Back</button>
+      <button class="blue sm" onclick="finishTemplate()">✓ ${TPL_MODE.id?'Save changes':(TPL_MODE.copy?'Save as my routine':'Create routine')}</button>
+    </div>
     ${nameField}
     <h2>Exercises</h2><div id="draftList" class="card"></div>
-    <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button>
-    <button class="blue" onclick="finishTemplate()">✓ ${TPL_MODE.id?'Save changes':(TPL_MODE.copy?'Save as my routine':'Create routine')}</button></div>`;
+    <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button></div>`;
   window.scrollTo(0,0);
   renderDraft();
 }
@@ -3465,18 +3553,56 @@ async function templateExercises(){
 // that unrelated routine with whatever was just picked -- while the new workout the user thought
 // they were creating never gets created at all. No error, no confirmation. Traced and confirmed
 // end to end (not just the reviewer's report) before fixing.
-function tplBack(){ closeSheet(); resetTransientModes(); templatesPage(); }
+//
+// v304: the editor is reached two different ways now, and leaving it (Back, or a successful Save)
+// has to go back wherever it was actually entered from. tplNew() (the list's own "+") never pushed
+// anything beyond the list itself -- TPL_VIEW_ENTRY_LEN is null the whole time -- so a plain
+// in-place re-render is correct there. tplEdit()/tplEditCopy() are only ever reached from tplView()
+// (see its own ⋯ menu), which DID push its own {t:'routineView'} entry on the way in -- popping
+// that for real is what avoids leaving a redundant duplicate 'routines' entry behind on every
+// single edit (confirmed by hand: without this, View -> Edit -> Save, done twice in a row, leaves
+// TWO extra "wasted" Back presses behind before Home is actually reached -- the exact
+// closeSheet()-replaces-instead-of-pops shape documented elsewhere in this file, just one level up).
+//
+// v304 cold-review fix: this used to branch on CURRENT_NAV_STATE.t==='routineView' instead of
+// TPL_VIEW_ENTRY_LEN. That broke the single most expected edit -- "+ Add exercise" -- because
+// openAddExercises()'s showTab('lib', true) unconditionally overwrites CURRENT_NAV_STATE (and
+// drilling into a muscle group overwrites it again), so by the time Save ran, CURRENT_NAV_STATE no
+// longer said 'routineView' even though the editor really was still nested under one. Tracking depth
+// via history.length instead (same fix shape as backToSessionAfterSwapPicker, see TPL_VIEW_ENTRY_LEN's
+// own comment) survives that excursion: however many entries the picker pushed, popping
+// (that many + 1) always lands back below the routineView entry, in one shot, no stragglers.
+function tplReturnToList(){
+  // Delete/Remove reach here straight out of a confirmSheet callback: dismissConfirm() only fades
+  // the sheet's backdrop (class 'show' off, the element itself removed 200ms later) -- H.delete
+  // resolves well inside that window, so the pop below can fire while that fading .sheet-back is
+  // still physically in the DOM. The popstate handler up top treats ANY .sheet-back as "a sheet is
+  // still open, just dismiss it" and swallows the real navigation, stranding the screen on the
+  // stale pre-delete detail view instead of the list (caught via _verify_routines.mjs: the list
+  // never re-rendered after Delete). Force it out immediately so popstate sees what it expects.
+  document.querySelectorAll('.sheet-back').forEach(s=>s.remove());
+  if(TPL_VIEW_ENTRY_LEN!=null){
+    const delta = (history.length - TPL_VIEW_ENTRY_LEN) + 1;
+    TPL_VIEW_ENTRY_LEN = null;
+    history.go(delta>0 ? -delta : -1);
+  } else {
+    templatesPage({replace:true});
+  }
+}
+function tplBack(){ closeSheet(); resetTransientModes(); tplReturnToList(); }
 function tplOpenPicker(){ openAddExercises(); }
 async function finishTemplate(){
   if(!DRAFT.exercises.length){ alert('Add at least one exercise'); return; }
   const liveName = ((TPL_MODE.id || TPL_MODE.copy) && $('tplNameEdit')) ? $('tplNameEdit').value.trim() : TPL_MODE.name.trim();
   if(!liveName){ alert('Name your routine first.'); return; }
   const payload = { name:liveName, exercises:DRAFT.exercises };
+  const epoch=UI_EPOCH;   // v304: same barge-in guard as tplDelete/tplHideConfirmed above
   const r = TPL_MODE.id
     ? await H.put('/api/templates/'+TPL_MODE.id, payload)
     : await H.post('/api/templates', payload);
   if(r.error) return alert(r.error);
-  TPL_MODE.active=false; TPL_MODE.id=null; TPL_MODE.copy=false; templatesPage();
+  TPL_MODE.active=false; TPL_MODE.id=null; TPL_MODE.copy=false;
+  if(nothingNavigatedSince(epoch)) tplReturnToList();
 }
 async function tplUse(id){
   const { mine, shared } = await H.get('/api/templates');
