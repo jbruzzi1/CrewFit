@@ -973,6 +973,9 @@
        for the same bug in the Accept/Decline pair). */
     .btn-quick { width:auto; margin:0; padding:12px 16.5px; font-size:14px; border-radius:14px; background:#fff; color:var(--blue); border:1.5px solid var(--blue); display:inline-flex; align-items:center; gap:7px; font-weight:700; }
     .btn-quick svg { width:16px; height:16px; flex:0 0 auto; }
+    /* v306: "Routines" sits below the New workout/Quick Workout pair, not squeezed beside them --
+       flex:1 1 100% forces it onto its own row inside .home-actions' existing flex-wrap. */
+    .home-actions .btn-repeat { flex:1 1 100%; justify-content:center; }
     .btn-quick:active { background:#eef4ff; }
     /* Workout detail: pending invitees, distinct from joined "Who's in" chips */
     .crew-invited-label { font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; margin:12px 0 6px 2px; }
@@ -1136,6 +1139,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=306"></script>
+  <script src="app.js?v=307"></script>
 </body>
 </html>
