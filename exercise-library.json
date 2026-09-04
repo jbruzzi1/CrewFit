@@ -1,5 +1,5 @@
 {
-  "_note": "Comprehensive exercise library for any well-stocked commercial gym. pattern = movement category (push/pull/legs/core/cardio). muscle_groups drive conflict detection (Phase 3) and muscle-group filtering. equipment drives equipment-aware reorder (Phase 3) and filtering. is_compound + level added for smart filtering. Source: standard lifts across Hevy/Strong/Fitbod/Gravl, expanded to full commercial-gym coverage. loadType marks exercises where the entered weight is ambiguous: pair = two implements, number is per hand; single = one implement, number is the whole load; added = bodyweight movement, number is added weight only. Absent = unambiguous. Do NOT infer this from the equipment tags — they are inconsistent (Goblet Squat is tagged \"dumbbells\" but uses one).",
+  "_note": "Comprehensive exercise library for any well-stocked commercial gym. pattern = movement category (push/pull/legs/core/cardio). muscle_groups = the PRIMARY movers -- the muscle tiles list an exercise under each of them, so only groups the lift is genuinely FOR (a sled push is legs AND cardio; a bench press is chest, not triceps). secondary = helper muscles that get worked along the way -- shown in the row subtitle and detail sheet, searchable, and credited in the weekly-volume meter exactly like a primary, but never a tile the exercise is filed under. equipment drives equipment-aware reorder (Phase 3) and filtering. is_compound + level added for smart filtering. Source: standard lifts across Hevy/Strong/Fitbod/Gravl, expanded to full commercial-gym coverage. loadType marks exercises where the entered weight is ambiguous: pair = two implements, number is per hand; single = one implement, number is the whole load; added = bodyweight movement, number is added weight only. Absent = unambiguous (barbell, cable stack, machine, landmine). Naming (Sep 2026 audit): implement first when siblings exist (Barbell Shrug / Dumbbell Shrug / Cable Shrug), bench pressing says Bench Press (Flat Dumbbell Bench Press), no parenthetical qualifiers, singular names. Tags follow the load: 'dumbbells' when loadType is pair, 'dumbbell' when it is one. Renaming or merging an entry? Add the old name to EXERCISE_RENAMES in server.js so every user's logged history follows it.",
   "exercises": [
     {
       "name": "Barbell Back Squat",
@@ -22,8 +22,7 @@
       "category": "legs",
       "muscle_groups": [
         "quads",
-        "glutes",
-        "shoulders"
+        "glutes"
       ],
       "equipment": [
         "barbell",
@@ -69,12 +68,12 @@
         "glutes"
       ],
       "equipment": [
-        "dumbbells",
+        "dumbbell",
         "bench"
       ],
       "is_compound": true,
       "level": "intermediate",
-      "loadType": "pair"
+      "loadType": "single"
     },
     {
       "name": "Walking Lunge",
@@ -107,7 +106,23 @@
       "loadType": "pair"
     },
     {
-      "name": "Romanian Deadlift",
+      "name": "Forward Lunge",
+      "pattern": "legs",
+      "category": "legs",
+      "muscle_groups": [
+        "quads",
+        "glutes"
+      ],
+      "equipment": [
+        "dumbbells",
+        "bodyweight"
+      ],
+      "is_compound": true,
+      "level": "beginner",
+      "loadType": "pair"
+    },
+    {
+      "name": "Barbell Romanian Deadlift",
       "pattern": "legs",
       "category": "legs",
       "muscle_groups": [
@@ -121,12 +136,29 @@
       "level": "intermediate"
     },
     {
+      "name": "Dumbbell Romanian Deadlift",
+      "pattern": "legs",
+      "category": "legs",
+      "muscle_groups": [
+        "hamstrings",
+        "glutes"
+      ],
+      "equipment": [
+        "dumbbells"
+      ],
+      "is_compound": true,
+      "level": "beginner",
+      "loadType": "pair"
+    },
+    {
       "name": "Conventional Deadlift",
       "pattern": "legs",
       "category": "legs",
       "muscle_groups": [
         "hamstrings",
-        "glutes",
+        "glutes"
+      ],
+      "secondary": [
         "lats",
         "traps"
       ],
@@ -143,7 +175,9 @@
       "muscle_groups": [
         "hamstrings",
         "glutes",
-        "lats",
+        "quads"
+      ],
+      "secondary": [
         "traps"
       ],
       "equipment": [
@@ -157,9 +191,11 @@
       "pattern": "legs",
       "category": "legs",
       "muscle_groups": [
+        "quads",
         "hamstrings",
-        "glutes",
-        "lats",
+        "glutes"
+      ],
+      "secondary": [
         "traps"
       ],
       "equipment": [
@@ -169,7 +205,7 @@
       "level": "beginner"
     },
     {
-      "name": "Hip Thrust",
+      "name": "Barbell Hip Thrust",
       "pattern": "legs",
       "category": "legs",
       "muscle_groups": [
@@ -178,6 +214,19 @@
       "equipment": [
         "barbell",
         "bench"
+      ],
+      "is_compound": false,
+      "level": "beginner"
+    },
+    {
+      "name": "Machine Hip Thrust",
+      "pattern": "legs",
+      "category": "legs",
+      "muscle_groups": [
+        "glutes"
+      ],
+      "equipment": [
+        "hip thrust machine"
       ],
       "is_compound": false,
       "level": "beginner"
@@ -190,8 +239,8 @@
         "glutes"
       ],
       "equipment": [
-        "barbell",
-        "bench"
+        "bodyweight",
+        "barbell"
       ],
       "is_compound": false,
       "level": "beginner"
@@ -202,8 +251,7 @@
       "category": "legs",
       "muscle_groups": [
         "hamstrings",
-        "glutes",
-        "lats"
+        "glutes"
       ],
       "equipment": [
         "barbell"
@@ -253,13 +301,12 @@
     {
       "name": "Standing Calf Raise",
       "pattern": "legs",
-      "category": "legs",
+      "category": "calves",
       "muscle_groups": [
         "calves"
       ],
       "equipment": [
-        "calf raise machine",
-        "smith machine"
+        "calf raise machine"
       ],
       "is_compound": false,
       "level": "beginner"
@@ -267,7 +314,7 @@
     {
       "name": "Seated Calf Raise",
       "pattern": "legs",
-      "category": "legs",
+      "category": "calves",
       "muscle_groups": [
         "calves"
       ],
@@ -280,7 +327,7 @@
     {
       "name": "Donkey Calf Raise",
       "pattern": "legs",
-      "category": "legs",
+      "category": "calves",
       "muscle_groups": [
         "calves"
       ],
@@ -300,7 +347,7 @@
         "glutes"
       ],
       "equipment": [
-        "dumbbells",
+        "dumbbell",
         "kettlebell"
       ],
       "is_compound": true,
@@ -319,7 +366,8 @@
         "bodyweight"
       ],
       "is_compound": true,
-      "level": "advanced"
+      "level": "advanced",
+      "loadType": "added"
     },
     {
       "name": "Box Squat",
@@ -343,8 +391,7 @@
       "category": "legs",
       "muscle_groups": [
         "quads",
-        "glutes",
-        "lats"
+        "glutes"
       ],
       "equipment": [
         "barbell"
@@ -364,7 +411,8 @@
         "ghr machine"
       ],
       "is_compound": false,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "added"
     },
     {
       "name": "Cable Pull-Through",
@@ -381,7 +429,7 @@
       "level": "beginner"
     },
     {
-      "name": "Split Squat (static)",
+      "name": "Split Squat",
       "pattern": "legs",
       "category": "legs",
       "muscle_groups": [
@@ -389,7 +437,8 @@
         "glutes"
       ],
       "equipment": [
-        "dumbbells"
+        "dumbbells",
+        "bodyweight"
       ],
       "is_compound": true,
       "level": "beginner",
@@ -414,7 +463,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps",
         "shoulders"
       ],
@@ -430,7 +481,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "shoulders",
         "triceps"
       ],
@@ -446,7 +499,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -457,11 +512,13 @@
       "level": "intermediate"
     },
     {
-      "name": "Flat Dumbbell Press",
+      "name": "Flat Dumbbell Bench Press",
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps",
         "shoulders"
       ],
@@ -474,11 +531,13 @@
       "loadType": "pair"
     },
     {
-      "name": "Incline Dumbbell Press",
+      "name": "Incline Dumbbell Bench Press",
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "shoulders",
         "triceps"
       ],
@@ -491,11 +550,13 @@
       "loadType": "pair"
     },
     {
-      "name": "Decline Dumbbell Press",
+      "name": "Decline Dumbbell Bench Press",
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -511,27 +572,32 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
         "chest press machine"
       ],
-      "is_compound": false,
+      "is_compound": true,
       "level": "beginner"
     },
     {
-      "name": "Incline Machine Press",
+      "name": "Incline Machine Chest Press",
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
-        "shoulders"
+        "chest"
+      ],
+      "secondary": [
+        "shoulders",
+        "triceps"
       ],
       "equipment": [
         "incline press machine"
       ],
-      "is_compound": false,
+      "is_compound": true,
       "level": "beginner"
     },
     {
@@ -565,7 +631,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "shoulders"
       ],
       "equipment": [
@@ -591,11 +659,31 @@
       "loadType": "pair"
     },
     {
+      "name": "Incline Dumbbell Fly",
+      "pattern": "push",
+      "category": "push",
+      "muscle_groups": [
+        "chest"
+      ],
+      "secondary": [
+        "shoulders"
+      ],
+      "equipment": [
+        "dumbbells",
+        "incline bench"
+      ],
+      "is_compound": false,
+      "level": "beginner",
+      "loadType": "pair"
+    },
+    {
       "name": "Chest Dip",
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -610,7 +698,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps",
         "shoulders"
       ],
@@ -625,7 +715,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps",
         "shoulders"
       ],
@@ -642,8 +734,11 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
-        "shoulders"
+        "chest"
+      ],
+      "secondary": [
+        "shoulders",
+        "triceps"
       ],
       "equipment": [
         "bodyweight",
@@ -672,7 +767,9 @@
       "category": "push",
       "muscle_groups": [
         "shoulders",
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -686,7 +783,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -702,19 +801,25 @@
       "muscle_groups": [
         "chest"
       ],
+      "secondary": [
+        "triceps"
+      ],
       "equipment": [
-        "dumbbells"
+        "dumbbells",
+        "bench"
       ],
       "is_compound": false,
       "level": "beginner",
       "loadType": "pair"
     },
     {
-      "name": "Overhead Barbell Press",
+      "name": "Barbell Overhead Press",
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -724,11 +829,30 @@
       "level": "intermediate"
     },
     {
-      "name": "Strict Dumbbell Shoulder Press",
+      "name": "Seated Barbell Overhead Press",
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
+        "triceps"
+      ],
+      "equipment": [
+        "barbell",
+        "bench"
+      ],
+      "is_compound": true,
+      "level": "intermediate"
+    },
+    {
+      "name": "Standing Dumbbell Shoulder Press",
+      "pattern": "push",
+      "category": "push",
+      "muscle_groups": [
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -743,7 +867,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -758,21 +884,25 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
         "shoulder press machine"
       ],
-      "is_compound": false,
+      "is_compound": true,
       "level": "beginner"
     },
     {
-      "name": "Seated Dumbbell Press",
+      "name": "Seated Dumbbell Shoulder Press",
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -788,9 +918,11 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps",
-        "glutes"
+        "quads"
       ],
       "equipment": [
         "barbell"
@@ -799,24 +931,26 @@
       "level": "intermediate"
     },
     {
-      "name": "Single-Arm Dumbbell Press",
+      "name": "Single-Arm Dumbbell Shoulder Press",
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
-        "dumbbells"
+        "dumbbell"
       ],
       "is_compound": true,
       "level": "beginner",
       "loadType": "single"
     },
     {
-      "name": "Lateral Raise",
+      "name": "Dumbbell Lateral Raise",
       "pattern": "push",
-      "category": "push",
+      "category": "shoulders",
       "muscle_groups": [
         "shoulders"
       ],
@@ -830,7 +964,7 @@
     {
       "name": "Cable Lateral Raise",
       "pattern": "push",
-      "category": "push",
+      "category": "shoulders",
       "muscle_groups": [
         "shoulders"
       ],
@@ -841,9 +975,9 @@
       "level": "beginner"
     },
     {
-      "name": "Front Raise",
+      "name": "Dumbbell Front Raise",
       "pattern": "push",
-      "category": "push",
+      "category": "shoulders",
       "muscle_groups": [
         "shoulders"
       ],
@@ -855,9 +989,9 @@
       "loadType": "pair"
     },
     {
-      "name": "Rear Delt Fly",
+      "name": "Dumbbell Rear Delt Fly",
       "pattern": "push",
-      "category": "push",
+      "category": "shoulders",
       "muscle_groups": [
         "shoulders"
       ],
@@ -871,7 +1005,7 @@
     {
       "name": "Reverse Pec Deck",
       "pattern": "push",
-      "category": "push",
+      "category": "shoulders",
       "muscle_groups": [
         "shoulders"
       ],
@@ -884,7 +1018,7 @@
     {
       "name": "Face Pull",
       "pattern": "push",
-      "category": "push",
+      "category": "shoulders",
       "muscle_groups": [
         "shoulders",
         "traps"
@@ -911,7 +1045,7 @@
       "level": "intermediate"
     },
     {
-      "name": "Shrugs",
+      "name": "Barbell Shrug",
       "pattern": "pull",
       "category": "traps",
       "muscle_groups": [
@@ -928,7 +1062,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -942,7 +1078,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "triceps",
+        "triceps"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
@@ -953,11 +1091,13 @@
       "level": "intermediate"
     },
     {
-      "name": "Dip (Triceps)",
+      "name": "Triceps Dip",
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "triceps",
+        "triceps"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
@@ -968,29 +1108,29 @@
       "loadType": "added"
     },
     {
-      "name": "Overhead Dumbbell Extension",
+      "name": "Overhead Dumbbell Triceps Extension",
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
         "triceps"
       ],
       "equipment": [
-        "dumbbells"
+        "dumbbell"
       ],
       "is_compound": false,
       "level": "beginner",
-      "loadType": "pair"
+      "loadType": "single"
     },
     {
-      "name": "Skull Crusher",
+      "name": "EZ-Bar Skull Crusher",
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
         "triceps"
       ],
       "equipment": [
-        "barbell",
         "ez bar",
+        "barbell",
         "bench"
       ],
       "is_compound": false,
@@ -1023,6 +1163,19 @@
       "level": "beginner"
     },
     {
+      "name": "Straight-Bar Pushdown",
+      "pattern": "push",
+      "category": "push",
+      "muscle_groups": [
+        "triceps"
+      ],
+      "equipment": [
+        "cable"
+      ],
+      "is_compound": false,
+      "level": "beginner"
+    },
+    {
       "name": "Single-Arm Cable Pushdown",
       "pattern": "push",
       "category": "push",
@@ -1036,7 +1189,7 @@
       "level": "beginner"
     },
     {
-      "name": "Triceps Kickback",
+      "name": "Dumbbell Triceps Kickback",
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
@@ -1067,7 +1220,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "triceps",
+        "triceps"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
@@ -1083,7 +1238,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1098,7 +1255,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1113,7 +1272,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1124,11 +1285,13 @@
       "level": "beginner"
     },
     {
-      "name": "Wide-Grip Pulldown",
+      "name": "Wide-Grip Lat Pulldown",
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1139,11 +1302,13 @@
       "level": "beginner"
     },
     {
-      "name": "Close-Grip Pulldown",
+      "name": "Close-Grip Lat Pulldown",
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1154,11 +1319,13 @@
       "level": "beginner"
     },
     {
-      "name": "Neutral-Grip Pulldown",
+      "name": "Neutral-Grip Lat Pulldown",
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1173,7 +1340,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1187,8 +1356,10 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
-        "traps"
+        "lats"
+      ],
+      "secondary": [
+        "biceps"
       ],
       "equipment": [
         "barbell"
@@ -1201,7 +1372,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1216,11 +1389,13 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
-        "dumbbells",
+        "dumbbell",
         "bench"
       ],
       "is_compound": true,
@@ -1232,7 +1407,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1247,7 +1424,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1261,7 +1440,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1271,17 +1452,37 @@
       "level": "beginner"
     },
     {
+      "name": "Chest-Supported Dumbbell Row",
+      "pattern": "pull",
+      "category": "pull",
+      "muscle_groups": [
+        "lats"
+      ],
+      "secondary": [
+        "biceps"
+      ],
+      "equipment": [
+        "dumbbells",
+        "incline bench"
+      ],
+      "is_compound": true,
+      "level": "beginner",
+      "loadType": "pair"
+    },
+    {
       "name": "Machine Row",
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
         "row machine"
       ],
-      "is_compound": false,
+      "is_compound": true,
       "level": "beginner"
     },
     {
@@ -1289,7 +1490,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1304,7 +1507,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1320,8 +1525,10 @@
       "category": "pull",
       "muscle_groups": [
         "lats",
-        "biceps",
         "abdominals"
+      ],
+      "secondary": [
+        "biceps"
       ],
       "equipment": [
         "dumbbells"
@@ -1335,15 +1542,18 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
-        "traps"
+        "lats"
+      ],
+      "secondary": [
+        "biceps"
       ],
       "equipment": [
-        "dumbbells"
+        "dumbbell",
+        "bench"
       ],
       "is_compound": true,
       "level": "advanced",
-      "loadType": "pair"
+      "loadType": "single"
     },
     {
       "name": "Barbell Curl",
@@ -1373,11 +1583,13 @@
       "loadType": "pair"
     },
     {
-      "name": "Hammer Curl",
+      "name": "Dumbbell Hammer Curl",
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "biceps",
+        "biceps"
+      ],
+      "secondary": [
         "forearms"
       ],
       "equipment": [
@@ -1403,15 +1615,15 @@
       "loadType": "pair"
     },
     {
-      "name": "Preacher Curl",
+      "name": "EZ-Bar Preacher Curl",
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
         "biceps"
       ],
       "equipment": [
-        "preacher bench",
-        "ez bar"
+        "ez bar",
+        "preacher bench"
       ],
       "is_compound": false,
       "level": "beginner"
@@ -1424,7 +1636,7 @@
         "biceps"
       ],
       "equipment": [
-        "dumbbells"
+        "dumbbell"
       ],
       "is_compound": false,
       "level": "beginner",
@@ -1457,15 +1669,16 @@
       "level": "beginner"
     },
     {
-      "name": "Spider Curl",
+      "name": "EZ-Bar Spider Curl",
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
         "biceps"
       ],
       "equipment": [
-        "incline bench",
-        "barbell"
+        "ez bar",
+        "barbell",
+        "incline bench"
       ],
       "is_compound": false,
       "level": "intermediate"
@@ -1499,19 +1712,6 @@
       "level": "beginner"
     },
     {
-      "name": "Cable Rope Curl",
-      "pattern": "pull",
-      "category": "pull",
-      "muscle_groups": [
-        "biceps"
-      ],
-      "equipment": [
-        "cable"
-      ],
-      "is_compound": false,
-      "level": "beginner"
-    },
-    {
       "name": "Hanging Leg Raise",
       "pattern": "core",
       "category": "core",
@@ -1523,6 +1723,20 @@
       ],
       "is_compound": false,
       "level": "intermediate"
+    },
+    {
+      "name": "Lying Leg Raise",
+      "pattern": "core",
+      "category": "core",
+      "muscle_groups": [
+        "abdominals"
+      ],
+      "equipment": [
+        "bodyweight",
+        "mat"
+      ],
+      "is_compound": false,
+      "level": "beginner"
     },
     {
       "name": "Captain's Chair Leg Raise",
@@ -1546,6 +1760,19 @@
       ],
       "equipment": [
         "cable"
+      ],
+      "is_compound": false,
+      "level": "beginner"
+    },
+    {
+      "name": "Machine Crunch",
+      "pattern": "core",
+      "category": "core",
+      "muscle_groups": [
+        "abdominals"
+      ],
+      "equipment": [
+        "ab crunch machine"
       ],
       "is_compound": false,
       "level": "beginner"
@@ -1590,7 +1817,7 @@
       "level": "beginner"
     },
     {
-      "name": "Crunches",
+      "name": "Crunch",
       "pattern": "core",
       "category": "core",
       "muscle_groups": [
@@ -1626,7 +1853,7 @@
       ],
       "equipment": [
         "bodyweight",
-        "dumbbells",
+        "dumbbell",
         "plate"
       ],
       "is_compound": false,
@@ -1728,7 +1955,7 @@
       "level": "advanced"
     },
     {
-      "name": "Toe Touchers",
+      "name": "Toe Touch Crunch",
       "pattern": "core",
       "category": "core",
       "muscle_groups": [
@@ -1769,7 +1996,7 @@
       "level": "beginner"
     },
     {
-      "name": "Treadmill Walk (incline)",
+      "name": "Incline Treadmill Walk",
       "pattern": "cardio",
       "category": "cardio",
       "muscle_groups": [
@@ -1786,7 +2013,9 @@
       "pattern": "cardio",
       "category": "cardio",
       "muscle_groups": [
-        "cardio",
+        "cardio"
+      ],
+      "secondary": [
         "lats"
       ],
       "equipment": [
@@ -1826,7 +2055,9 @@
       "pattern": "cardio",
       "category": "cardio",
       "muscle_groups": [
-        "cardio",
+        "cardio"
+      ],
+      "secondary": [
         "glutes"
       ],
       "equipment": [
@@ -1853,7 +2084,9 @@
       "pattern": "cardio",
       "category": "cardio",
       "muscle_groups": [
-        "cardio",
+        "cardio"
+      ],
+      "secondary": [
         "lats"
       ],
       "equipment": [
@@ -1880,7 +2113,9 @@
       "pattern": "cardio",
       "category": "cardio",
       "muscle_groups": [
-        "cardio",
+        "cardio"
+      ],
+      "secondary": [
         "calves"
       ],
       "equipment": [
@@ -1894,7 +2129,9 @@
       "pattern": "cardio",
       "category": "cardio",
       "muscle_groups": [
-        "cardio",
+        "cardio"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
@@ -1938,8 +2175,10 @@
       "category": "cardio",
       "muscle_groups": [
         "cardio",
-        "lats",
         "hamstrings"
+      ],
+      "secondary": [
+        "lats"
       ],
       "equipment": [
         "sled"
@@ -1950,7 +2189,7 @@
     {
       "name": "Sit-Up",
       "pattern": "core",
-      "category": "abdominals",
+      "category": "core",
       "muscle_groups": [
         "abdominals"
       ],
@@ -1963,7 +2202,7 @@
     {
       "name": "Flutter Kick",
       "pattern": "core",
-      "category": "abdominals",
+      "category": "core",
       "muscle_groups": [
         "abdominals"
       ],
@@ -1974,9 +2213,9 @@
       "level": "beginner"
     },
     {
-      "name": "Scissor Kicks",
+      "name": "Scissor Kick",
       "pattern": "core",
-      "category": "abdominals",
+      "category": "core",
       "muscle_groups": [
         "abdominals"
       ],
@@ -1989,7 +2228,7 @@
     {
       "name": "Bird Dog",
       "pattern": "core",
-      "category": "abdominals",
+      "category": "core",
       "muscle_groups": [
         "abdominals"
       ],
@@ -2000,29 +2239,30 @@
       "level": "beginner"
     },
     {
-      "name": "Deadlift (Romanian) to Row",
+      "name": "Dumbbell Romanian Deadlift to Row",
       "pattern": "pull",
       "category": "lats",
       "muscle_groups": [
         "lats",
-        "abdominals"
+        "hamstrings",
+        "glutes"
       ],
       "equipment": [
-        "dumbbell"
+        "dumbbells"
       ],
       "is_compound": true,
       "level": "intermediate",
       "loadType": "pair"
     },
     {
-      "name": "Wrist Curl",
+      "name": "Dumbbell Wrist Curl",
       "pattern": "pull",
       "category": "forearms",
       "muscle_groups": [
         "forearms"
       ],
       "equipment": [
-        "dumbbell",
+        "dumbbells",
         "bench"
       ],
       "is_compound": false,
@@ -2030,30 +2270,45 @@
       "loadType": "pair"
     },
     {
-      "name": "Reverse Wrist Curl",
+      "name": "Dumbbell Reverse Wrist Curl",
       "pattern": "pull",
       "category": "forearms",
       "muscle_groups": [
         "forearms"
       ],
       "equipment": [
-        "dumbbell",
+        "dumbbells",
         "bench"
       ],
       "is_compound": false,
       "level": "beginner",
       "loadType": "pair"
+    },
+    {
+      "name": "Barbell Wrist Curl",
+      "pattern": "pull",
+      "category": "forearms",
+      "muscle_groups": [
+        "forearms"
+      ],
+      "equipment": [
+        "barbell",
+        "bench"
+      ],
+      "is_compound": false,
+      "level": "beginner"
     },
     {
       "name": "Farmer's Carry",
       "pattern": "pull",
       "category": "forearms",
       "muscle_groups": [
-        "forearms"
+        "forearms",
+        "traps"
       ],
       "equipment": [
-        "dumbbell",
-        "kettlebell"
+        "dumbbells",
+        "kettlebells"
       ],
       "is_compound": true,
       "level": "beginner",
@@ -2122,7 +2377,7 @@
         "traps"
       ],
       "equipment": [
-        "dumbbell"
+        "dumbbells"
       ],
       "is_compound": false,
       "level": "beginner",
@@ -2134,8 +2389,8 @@
       "category": "traps",
       "muscle_groups": [
         "traps",
-        "lats",
-        "glutes"
+        "glutes",
+        "hamstrings"
       ],
       "equipment": [
         "barbell",
@@ -2165,7 +2420,7 @@
         "calves"
       ],
       "equipment": [
-        "leg press"
+        "leg press machine"
       ],
       "is_compound": false,
       "level": "beginner"
@@ -2184,19 +2439,6 @@
       "is_compound": false,
       "level": "beginner",
       "loadType": "single"
-    },
-    {
-      "name": "Calf Raise on Leg Press",
-      "pattern": "legs",
-      "category": "calves",
-      "muscle_groups": [
-        "calves"
-      ],
-      "equipment": [
-        "leg press"
-      ],
-      "is_compound": false,
-      "level": "beginner"
     },
     {
       "name": "Smith Machine Calf Raise",
@@ -2218,6 +2460,9 @@
       "muscle_groups": [
         "lats"
       ],
+      "secondary": [
+        "biceps"
+      ],
       "equipment": [
         "barbell",
         "bench"
@@ -2227,16 +2472,19 @@
     },
     {
       "name": "Deficit Deadlift",
-      "pattern": "pull",
+      "pattern": "legs",
       "category": "hamstrings",
       "muscle_groups": [
         "hamstrings",
-        "lats",
         "glutes"
+      ],
+      "secondary": [
+        "lats",
+        "traps"
       ],
       "equipment": [
         "barbell",
-        "plates"
+        "plate"
       ],
       "is_compound": true,
       "level": "intermediate"
@@ -2265,7 +2513,7 @@
       "equipment": [
         "dumbbell"
       ],
-      "is_compound": true,
+      "is_compound": false,
       "level": "beginner",
       "loadType": "single"
     },
@@ -2278,10 +2526,11 @@
         "hamstrings"
       ],
       "equipment": [
-        "back extension"
+        "back extension bench"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "added"
     },
     {
       "name": "Nordic Curl",
@@ -2322,13 +2571,13 @@
       ],
       "equipment": [
         "barbell",
-        "plates"
+        "plate"
       ],
       "is_compound": true,
       "level": "intermediate"
     },
     {
-      "name": "Good Morning (Seated)",
+      "name": "Seated Good Morning",
       "pattern": "legs",
       "category": "hamstrings",
       "muscle_groups": [
@@ -2336,7 +2585,7 @@
       ],
       "equipment": [
         "barbell",
-        "machine"
+        "bench"
       ],
       "is_compound": false,
       "level": "intermediate"
@@ -2351,7 +2600,7 @@
       ],
       "equipment": [
         "bench",
-        "dumbbell"
+        "dumbbells"
       ],
       "is_compound": true,
       "level": "beginner",
@@ -2366,7 +2615,7 @@
         "glutes"
       ],
       "equipment": [
-        "dumbbell",
+        "dumbbells",
         "plate"
       ],
       "is_compound": true,
@@ -2387,22 +2636,7 @@
       "level": "beginner"
     },
     {
-      "name": "Bulgarian Split Squat (Dumbbell)",
-      "pattern": "legs",
-      "category": "quads",
-      "muscle_groups": [
-        "quads",
-        "glutes"
-      ],
-      "equipment": [
-        "dumbbell"
-      ],
-      "is_compound": true,
-      "level": "intermediate",
-      "loadType": "pair"
-    },
-    {
-      "name": "Cable Kickback",
+      "name": "Cable Glute Kickback",
       "pattern": "legs",
       "category": "glutes",
       "muscle_groups": [
@@ -2436,23 +2670,26 @@
       ],
       "equipment": [
         "bodyweight",
-        "barbell"
+        "dumbbell"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "single"
     },
     {
-      "name": "B-stance Hip Thrust",
+      "name": "B-Stance Hip Thrust",
       "pattern": "legs",
       "category": "glutes",
       "muscle_groups": [
-        "glutes",
+        "glutes"
+      ],
+      "secondary": [
         "hamstrings"
       ],
       "equipment": [
         "barbell"
       ],
-      "is_compound": true,
+      "is_compound": false,
       "level": "intermediate"
     },
     {
@@ -2460,11 +2697,13 @@
       "pattern": "push",
       "category": "chest",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
-        "dumbbell"
+        "dumbbells"
       ],
       "is_compound": true,
       "level": "beginner",
@@ -2475,53 +2714,15 @@
       "pattern": "push",
       "category": "chest",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
         "bodyweight"
       ],
       "is_compound": true,
-      "level": "beginner"
-    },
-    {
-      "name": "Cable Crossover",
-      "pattern": "push",
-      "category": "chest",
-      "muscle_groups": [
-        "chest"
-      ],
-      "equipment": [
-        "cable"
-      ],
-      "is_compound": false,
-      "level": "beginner"
-    },
-    {
-      "name": "Plate Press",
-      "pattern": "push",
-      "category": "chest",
-      "muscle_groups": [
-        "chest"
-      ],
-      "equipment": [
-        "plate"
-      ],
-      "is_compound": false,
-      "level": "beginner",
-      "loadType": "single"
-    },
-    {
-      "name": "Machine Fly",
-      "pattern": "push",
-      "category": "chest",
-      "muscle_groups": [
-        "chest"
-      ],
-      "equipment": [
-        "machine"
-      ],
-      "is_compound": false,
       "level": "beginner"
     },
     {
@@ -2532,7 +2733,8 @@
         "chest"
       ],
       "equipment": [
-        "barbell"
+        "barbell",
+        "bench"
       ],
       "is_compound": true,
       "level": "advanced"
@@ -2542,7 +2744,9 @@
       "pattern": "push",
       "category": "shoulders",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -2564,20 +2768,6 @@
       ],
       "is_compound": false,
       "level": "beginner"
-    },
-    {
-      "name": "Bent-Over Lateral Raise",
-      "pattern": "push",
-      "category": "shoulders",
-      "muscle_groups": [
-        "shoulders"
-      ],
-      "equipment": [
-        "dumbbell"
-      ],
-      "is_compound": false,
-      "level": "beginner",
-      "loadType": "pair"
     },
     {
       "name": "Plate Raise",
@@ -2607,28 +2797,28 @@
       "level": "beginner"
     },
     {
-      "name": "W Raises",
+      "name": "Dumbbell W Raise",
       "pattern": "push",
       "category": "shoulders",
       "muscle_groups": [
         "shoulders"
       ],
       "equipment": [
-        "dumbbell"
+        "dumbbells"
       ],
       "is_compound": false,
       "level": "beginner",
       "loadType": "pair"
     },
     {
-      "name": "Y Raises",
+      "name": "Dumbbell Y Raise",
       "pattern": "push",
       "category": "shoulders",
       "muscle_groups": [
         "shoulders"
       ],
       "equipment": [
-        "dumbbell"
+        "dumbbells"
       ],
       "is_compound": false,
       "level": "beginner",
@@ -2667,11 +2857,13 @@
       "pattern": "pull",
       "category": "biceps",
       "muscle_groups": [
-        "biceps",
+        "biceps"
+      ],
+      "secondary": [
         "forearms"
       ],
       "equipment": [
-        "dumbbell"
+        "dumbbells"
       ],
       "is_compound": false,
       "level": "beginner",
@@ -2689,10 +2881,10 @@
       ],
       "is_compound": false,
       "level": "beginner",
-      "loadType": "pair"
+      "loadType": "single"
     },
     {
-      "name": "21s Curl",
+      "name": "Barbell 21s Curl",
       "pattern": "pull",
       "category": "biceps",
       "muscle_groups": [
@@ -2720,7 +2912,7 @@
       "level": "beginner"
     },
     {
-      "name": "Cable Curl (Single Arm)",
+      "name": "Single-Arm Cable Curl",
       "pattern": "pull",
       "category": "biceps",
       "muscle_groups": [
@@ -2737,13 +2929,15 @@
       "pattern": "push",
       "category": "triceps",
       "muscle_groups": [
-        "triceps",
+        "triceps"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
         "bodyweight"
       ],
-      "is_compound": false,
+      "is_compound": true,
       "level": "beginner"
     },
     {
@@ -2751,17 +2945,19 @@
       "pattern": "push",
       "category": "triceps",
       "muscle_groups": [
-        "triceps",
+        "triceps"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
         "bodyweight"
       ],
-      "is_compound": false,
+      "is_compound": true,
       "level": "beginner"
     },
     {
-      "name": "Overhead Rope Extension",
+      "name": "Rope Overhead Triceps Extension",
       "pattern": "push",
       "category": "triceps",
       "muscle_groups": [
@@ -2771,60 +2967,6 @@
         "cable"
       ],
       "is_compound": false,
-      "level": "beginner"
-    },
-    {
-      "name": "Lying Triceps Extension (EZ)",
-      "pattern": "push",
-      "category": "triceps",
-      "muscle_groups": [
-        "triceps"
-      ],
-      "equipment": [
-        "ez bar"
-      ],
-      "is_compound": false,
-      "level": "beginner"
-    },
-    {
-      "name": "Dumbbell Floor Press (Triceps)",
-      "pattern": "push",
-      "category": "triceps",
-      "muscle_groups": [
-        "triceps",
-        "chest"
-      ],
-      "equipment": [
-        "dumbbell"
-      ],
-      "is_compound": true,
-      "level": "beginner",
-      "loadType": "pair"
-    },
-    {
-      "name": "Triceps Pushdown (V-Bar)",
-      "pattern": "push",
-      "category": "triceps",
-      "muscle_groups": [
-        "triceps"
-      ],
-      "equipment": [
-        "cable"
-      ],
-      "is_compound": false,
-      "level": "beginner"
-    },
-    {
-      "name": "Fan Bike",
-      "pattern": "cardio",
-      "category": "cardio",
-      "muscle_groups": [
-        "cardio"
-      ],
-      "equipment": [
-        "cardio machine"
-      ],
-      "is_compound": true,
       "level": "beginner"
     },
     {
@@ -2837,7 +2979,7 @@
       "equipment": [
         "bodyweight"
       ],
-      "is_compound": true,
+      "is_compound": false,
       "level": "beginner"
     },
     {
@@ -2846,7 +2988,8 @@
       "category": "cardio",
       "muscle_groups": [
         "cardio",
-        "glutes"
+        "glutes",
+        "hamstrings"
       ],
       "equipment": [
         "kettlebell"
@@ -2854,19 +2997,6 @@
       "is_compound": true,
       "level": "beginner",
       "loadType": "single"
-    },
-    {
-      "name": "Step Mill",
-      "pattern": "cardio",
-      "category": "cardio",
-      "muscle_groups": [
-        "cardio"
-      ],
-      "equipment": [
-        "cardio machine"
-      ],
-      "is_compound": true,
-      "level": "beginner"
     },
     {
       "name": "Dumbbell Calf Raise",
@@ -3090,7 +3220,8 @@
         "kettlebell"
       ],
       "is_compound": true,
-      "level": "intermediate"
+      "level": "intermediate",
+      "loadType": "single"
     },
     {
       "name": "Single-Leg Leg Press",
@@ -3156,7 +3287,9 @@
       "muscle_groups": [
         "quads",
         "hamstrings",
-        "glutes",
+        "glutes"
+      ],
+      "secondary": [
         "traps"
       ],
       "equipment": [
@@ -3172,7 +3305,9 @@
       "muscle_groups": [
         "quads",
         "hamstrings",
-        "glutes",
+        "glutes"
+      ],
+      "secondary": [
         "traps"
       ],
       "equipment": [
@@ -3182,7 +3317,7 @@
       "level": "advanced"
     },
     {
-      "name": "Hip Abduction Machine",
+      "name": "Machine Hip Abduction",
       "pattern": "legs",
       "category": "glutes",
       "muscle_groups": [
@@ -3195,7 +3330,7 @@
       "level": "beginner"
     },
     {
-      "name": "Hip Adduction Machine",
+      "name": "Machine Hip Adduction",
       "pattern": "legs",
       "category": "glutes",
       "muscle_groups": [
@@ -3218,15 +3353,13 @@
         "cable"
       ],
       "is_compound": false,
-      "level": "beginner",
-      "loadType": "single"
+      "level": "beginner"
     },
     {
       "name": "Copenhagen Plank",
       "pattern": "core",
       "category": "glutes",
       "muscle_groups": [
-        "glutes",
         "abdominals"
       ],
       "equipment": [
@@ -3264,11 +3397,13 @@
       "level": "beginner"
     },
     {
-      "name": "Incline Smith Machine Press",
+      "name": "Incline Smith Machine Bench Press",
       "pattern": "push",
       "category": "chest",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "shoulders",
         "triceps"
       ],
@@ -3284,7 +3419,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "shoulders",
         "triceps"
       ],
@@ -3332,51 +3469,36 @@
         "cable"
       ],
       "is_compound": false,
-      "level": "intermediate",
-      "loadType": "single"
-    },
-    {
-      "name": "Landmine Chest Press",
-      "pattern": "push",
-      "category": "chest",
-      "muscle_groups": [
-        "chest",
-        "shoulders",
-        "triceps"
-      ],
-      "equipment": [
-        "landmine"
-      ],
-      "is_compound": true,
-      "level": "intermediate",
-      "loadType": "single"
+      "level": "intermediate"
     },
     {
       "name": "Single-Arm Lat Pulldown",
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
         "cable"
       ],
       "is_compound": true,
-      "level": "intermediate",
-      "loadType": "single"
+      "level": "intermediate"
     },
     {
-      "name": "Assisted Pull-Up (Machine)",
+      "name": "Machine-Assisted Pull-Up",
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
-        "machine",
-        "pull-up bar"
+        "assisted pull-up machine"
       ],
       "is_compound": true,
       "level": "beginner"
@@ -3386,7 +3508,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -3400,7 +3524,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -3423,11 +3549,13 @@
       "level": "beginner"
     },
     {
-      "name": "Banded Pull-Apart",
+      "name": "Band Pull-Apart",
       "pattern": "push",
       "category": "shoulders",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "traps"
       ],
       "equipment": [
@@ -3442,15 +3570,16 @@
       "category": "shoulders",
       "muscle_groups": [
         "shoulders",
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
         "landmine"
       ],
       "is_compound": true,
-      "level": "intermediate",
-      "loadType": "single"
+      "level": "intermediate"
     },
     {
       "name": "Cuban Press",
@@ -3498,7 +3627,9 @@
       "pattern": "pull",
       "category": "biceps",
       "muscle_groups": [
-        "biceps",
+        "biceps"
+      ],
+      "secondary": [
         "forearms"
       ],
       "equipment": [
@@ -3527,7 +3658,9 @@
       "pattern": "push",
       "category": "triceps",
       "muscle_groups": [
-        "triceps",
+        "triceps"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
@@ -3551,7 +3684,7 @@
       "loadType": "pair"
     },
     {
-      "name": "Single-Arm Cable Overhead Extension",
+      "name": "Single-Arm Cable Overhead Triceps Extension",
       "pattern": "push",
       "category": "triceps",
       "muscle_groups": [
@@ -3561,8 +3694,7 @@
         "cable"
       ],
       "is_compound": false,
-      "level": "beginner",
-      "loadType": "single"
+      "level": "beginner"
     },
     {
       "name": "Weighted Sit-Up",
@@ -3588,7 +3720,7 @@
       ],
       "equipment": [
         "barbell",
-        "plates"
+        "plate"
       ],
       "is_compound": false,
       "level": "advanced"
@@ -3604,7 +3736,8 @@
         "decline bench"
       ],
       "is_compound": false,
-      "level": "beginner"
+      "level": "beginner",
+      "loadType": "added"
     },
     {
       "name": "Toes-to-Bar",
@@ -3616,7 +3749,7 @@
       "equipment": [
         "pull-up bar"
       ],
-      "is_compound": true,
+      "is_compound": false,
       "level": "advanced"
     },
     {
@@ -3696,7 +3829,9 @@
       "category": "cardio",
       "muscle_groups": [
         "cardio",
-        "abdominals",
+        "abdominals"
+      ],
+      "secondary": [
         "shoulders"
       ],
       "equipment": [
@@ -3711,7 +3846,9 @@
       "category": "cardio",
       "muscle_groups": [
         "cardio",
-        "quads",
+        "quads"
+      ],
+      "secondary": [
         "shoulders"
       ],
       "equipment": [
@@ -3726,7 +3863,9 @@
       "category": "cardio",
       "muscle_groups": [
         "cardio",
-        "abdominals",
+        "abdominals"
+      ],
+      "secondary": [
         "shoulders"
       ],
       "equipment": [
@@ -3814,7 +3953,7 @@
         "biceps"
       ],
       "equipment": [
-        "dumbbell"
+        "dumbbells"
       ],
       "is_compound": false,
       "level": "beginner",
@@ -3832,33 +3971,6 @@
       ],
       "is_compound": false,
       "level": "beginner"
-    },
-    {
-      "name": "Machine Rear Delt Fly",
-      "pattern": "push",
-      "category": "shoulders",
-      "muscle_groups": [
-        "shoulders"
-      ],
-      "equipment": [
-        "rear delt machine"
-      ],
-      "is_compound": false,
-      "level": "beginner"
-    },
-    {
-      "name": "Dumbbell Bayesian Curl",
-      "pattern": "pull",
-      "category": "biceps",
-      "muscle_groups": [
-        "biceps"
-      ],
-      "equipment": [
-        "dumbbell"
-      ],
-      "is_compound": false,
-      "level": "beginner",
-      "loadType": "single"
     }
   ]
 }

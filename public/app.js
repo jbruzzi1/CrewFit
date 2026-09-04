@@ -1873,7 +1873,7 @@ function seedPickerPick(name){
 // pass PUT /api/me/seeds's EX_LIB.some(...) check. Shown as blank rows even when nothing is seeded
 // yet, so it's obvious what to fill in rather than an empty page; anything already seeded that
 // ISN'T one of these six (e.g. added via "+ Add another lift" on a prior visit) is appended after.
-const SEED_DEFAULTS = ['Barbell Back Squat','Conventional Deadlift','Flat Barbell Bench Press','Overhead Barbell Press','Pull-Up','Barbell Row'];
+const SEED_DEFAULTS = ['Barbell Back Squat','Conventional Deadlift','Flat Barbell Bench Press','Barbell Overhead Press','Pull-Up','Barbell Row'];
 // In-memory working copy of what's on screen -- stashed/restored the same way DRAFT is for the
 // create-flow (see openAddExercises's comment above), so a value typed but not yet saved, and a
 // lift just picked from openSeedPicker, both survive the round trip through the library picker.
@@ -3892,6 +3892,18 @@ const EQ_FAMILY = [
 // String(name), so no stored exercise can have a non-string name today. It is here so that a future
 // write path cannot make .toLowerCase() and .localeCompare() throw in a list render.
 function eqList(e){ const q = e && e.equipment; return (Array.isArray(q)?q:[]).filter(x=>typeof x==='string'); }
+// v311 (Jeff, Sep 4): "if an exercise only SLIGHTLY uses triceps and is MAINLY used for chest, we
+// shouldn't have it as a tricep exercise ... if it is genuinely used in multiple muscle groups
+// that's fine -- a sled for legs and not just cardio should be in each." The library splits the
+// two: muscle_groups = the PRIMARY movers, and the muscle tiles file an exercise under each of
+// them (Sled Push sits in Cardio, Quads and Glutes; Bench Press only in Chest). secondary = the
+// helpers worked along the way (that bench press's triceps). The row subtitle, the detail sheet
+// and search show both; the weekly-volume meter credits both (Jeff chose to leave that as is).
+// Before this the Triceps tile held 48 exercises, 30 of them chest/shoulder presses.
+function exMuscles(e){
+  const p = e && e.muscle_groups, s = e && e.secondary;
+  return (Array.isArray(p)?p:[]).concat(Array.isArray(s)?s:[]).filter(x=>typeof x==='string');
+}
 function exName(e){ return String((e && e.name) || ''); }
 function eqFamilies(e){
   const eq=eqList(e).map(x=>x.toLowerCase());
@@ -4728,7 +4740,7 @@ function renderLibGroups(){
     const matches = lib.filter(e =>
       (!SEED_MODE || !e.custom) &&
       (exName(e).toLowerCase().includes(q) ||
-      (e.muscle_groups||[]).join(' ').toLowerCase().includes(q) ||
+      exMuscles(e).join(' ').toLowerCase().includes(q) ||
       eqList(e).join(' ').toLowerCase().includes(q))
     ).sort((a,b)=>exName(a).localeCompare(exName(b)));
     $('lib2').innerHTML = matches.length ? `<div class="card">${matches.map(exRowHtml).join('')}</div>`
@@ -4821,7 +4833,7 @@ function exRowHtml(e){
     return `<div class="ex-row" onclick="swapPick('${jsq(e.name)}')">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${esc((e.muscle_groups||[]).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
+          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
         </div>
         <div class="ex-badges">${exBadges(e)}</div>
         <div class="mg-chev">›</div>
@@ -4831,7 +4843,7 @@ function exRowHtml(e){
     return `<div class="ex-row" onclick="suggestAddPick('${jsq(e.name)}')">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${esc((e.muscle_groups||[]).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
+          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
         </div>
         <div class="ex-badges">${exBadges(e)}</div>
         <div class="mg-chev">›</div>
@@ -4843,7 +4855,7 @@ function exRowHtml(e){
     return `<div class="ex-row" onclick="seedPickerPick('${jsq(e.name)}')">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${esc((e.muscle_groups||[]).slice(0,2).join(' · '))}</div>
+          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}</div>
         </div>
         <div class="ex-badges">${exBadges(e)}</div>
         <div class="mg-chev">›</div>
@@ -4856,7 +4868,7 @@ function exRowHtml(e){
     return `<div class="ex-row ${added?'ex-on':''}" onclick="libToggle('${jsq(e.name)}', this)">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${esc((e.muscle_groups||[]).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
+          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
         </div>
         <div class="ex-badges">${exBadges(e)}</div>
         ${favBtnHtml(e)}
@@ -4866,7 +4878,7 @@ function exRowHtml(e){
   return `<div class="ex-row" onclick="exDetail('${jsq(e.name)}')">
       <div class="ex-main">
         <div class="ex-name">${esc(e.name)}</div>
-        <div class="ex-mg">${esc((e.muscle_groups||[]).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
+        <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
       </div>
       <div class="ex-badges">${exBadges(e)}</div>
       ${favBtnHtml(e)}
@@ -4884,7 +4896,7 @@ function renderLibExercises(){
     (!SEED_MODE || !e.custom) &&
     (!eq || eqFamilies(e).includes(eq)) &&
     (!fav || FAVORITES.has(e.name)) &&
-    (!q || exName(e).toLowerCase().includes(q) || (e.muscle_groups||[]).join(' ').includes(q))
+    (!q || exName(e).toLowerCase().includes(q) || exMuscles(e).join(' ').includes(q))
   ).sort((a,b)=>exName(a).localeCompare(exName(b)));
   $('lib2').innerHTML = list.length ? `<div class="card">${list.map(exRowHtml).join('')}</div>`
     // Distinct copy for the empty-Favorites case -- "No exercises here" reads like this muscle
@@ -4929,7 +4941,7 @@ function exDetail(name){
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>${esc(e.name)}</h2>${favBtnHtml(e)}<button class="sec sm" onclick="closeSheet()">✕</button></div>
       <div class="sheet-thumb">${exThumb(e)}<span class="sheet-thumb-cap">${esc((e.muscle_groups||[])[0]||'abdominals')}</span></div>
-      <div class="sheet-mg">${esc((e.muscle_groups||[]).join(' · '))}</div>
+      <div class="sheet-mg">${esc(exMuscles(e).join(' · '))}</div>
       <div class="ex-badges" style="margin:8px 0">${exBadges(e)}</div>
       <div class="sheet-row"><span>Equipment</span><b>${eqs}</b></div>
       <div class="sheet-row"><span>Pattern</span><b>${esc(e.pattern||'—')}</b></div>

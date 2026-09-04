@@ -53,13 +53,13 @@ async function makeSession(hostU, bobU, exerciseNames) {
 console.log('a participant suggests adding a new exercise -- files as a pending edit with no exerciseId, notifies the creator');
 {
   const { host, bob, s } = await makeSession('sae_h1', 'sae_b1', ['Bench Press']);
-  const r = await post('/api/sessions/' + s.id + '/suggest', { type: 'add', name: 'Lateral Raise' }, bob.token);
+  const r = await post('/api/sessions/' + s.id + '/suggest', { type: 'add', name: 'Dumbbell Lateral Raise' }, bob.token);
   ok(!r.error, `suggest goes through (got ${r.error})`);
   const edit = (r.suggestedEdits || []).find(e => e.proposedBy === bob.user.id);
   ok(!!edit, 'a suggestedEdits entry was created');
   ok(edit && edit.type === 'add', `edit is typed 'add' (got ${edit && edit.type})`);
   ok(edit && !edit.exerciseId, `edit has no exerciseId -- it isn't replacing anything (got ${edit && edit.exerciseId})`);
-  ok(edit && edit.swapTo === 'Lateral Raise', `edit carries the proposed name (got ${edit && edit.swapTo})`);
+  ok(edit && edit.swapTo === 'Dumbbell Lateral Raise', `edit carries the proposed name (got ${edit && edit.swapTo})`);
   ok(edit && edit.status === 'pending', `edit starts pending (got ${edit && edit.status})`);
   ok(r.exercises.length === 1, `the exercise list is untouched until approved (got ${r.exercises.length})`);
 }
@@ -149,19 +149,19 @@ console.log('\nrejecting an add-suggestion leaves the exercise list untouched');
 
 console.log('\na double-tap approve on an already-approved add-suggestion is refused, not applied twice');
 {
-  const { host, bob, s } = await makeSession('sae_h8', 'sae_b8', ['Skull Crusher']);
-  const suggested = await post('/api/sessions/' + s.id + '/suggest', { type: 'add', name: 'Cable Kickback' }, bob.token);
+  const { host, bob, s } = await makeSession('sae_h8', 'sae_b8', ['EZ-Bar Skull Crusher']);
+  const suggested = await post('/api/sessions/' + s.id + '/suggest', { type: 'add', name: 'Cable Glute Kickback' }, bob.token);
   const editId = suggested.suggestedEdits.find(e => e.proposedBy === bob.user.id).id;
   await post('/api/sessions/' + s.id + '/suggest/' + editId + '/approve', {}, host.token);
   const staleApprove = await post('/api/sessions/' + s.id + '/suggest/' + editId + '/approve', {}, host.token);
   ok(staleApprove.error === 'already decided', `the stale second approve is refused (got ${JSON.stringify(staleApprove)})`);
   const after = await get('/api/sessions/' + s.id, host.token);
-  ok(after.exercises.filter(e => e.name === 'Cable Kickback').length === 1, `the exercise was appended exactly once, not twice (got ${after.exercises.filter(e => e.name === 'Cable Kickback').length})`);
+  ok(after.exercises.filter(e => e.name === 'Cable Glute Kickback').length === 1, `the exercise was appended exactly once, not twice (got ${after.exercises.filter(e => e.name === 'Cable Glute Kickback').length})`);
 }
 
 console.log('\nan ordinary swap suggestion (no type field, exactly what every pre-existing client call sends) still works unchanged');
 {
-  const { host, bob, s } = await makeSession('sae_h9', 'sae_b9', ['Hip Thrust']);
+  const { host, bob, s } = await makeSession('sae_h9', 'sae_b9', ['Barbell Hip Thrust']);
   const suggested = await post('/api/sessions/' + s.id + '/suggest', { exerciseId: s.exercises[0].id, swapTo: 'Glute Bridge' }, bob.token);
   const edit = suggested.suggestedEdits.find(e => e.proposedBy === bob.user.id);
   ok(edit && edit.type === 'swap', `an old-style call with no type field is stored as 'swap' (got ${edit && edit.type})`);

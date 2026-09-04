@@ -57,8 +57,18 @@ console.log('vocabulary (public/muscle-icons/*.png); an unknown group renders wi
   const iconFiles = new Set(readdirSync(new URL('../public/muscle-icons/', import.meta.url))
     .filter(f => f.endsWith('.png')).map(f => f.replace(/\.png$/, '')));
   const unknown = new Set();
-  for (const e of ex) for (const m of e.muscle_groups || []) if (!KNOWN_ICON_KEYS.has(m)) unknown.add(m);
-  ok(unknown.size === 0, `every muscle_groups value has a matching icon key (unmapped: ${JSON.stringify([...unknown])})`);
+  for (const e of ex) for (const m of (e.muscle_groups || []).concat(e.secondary || [])) if (!KNOWN_ICON_KEYS.has(m)) unknown.add(m);
+  ok(unknown.size === 0, `every muscle_groups / secondary value has a matching icon key (unmapped: ${JSON.stringify([...unknown])})`);
+  // v311: muscle_groups = primary movers (the tiles), secondary = helpers. A group in both would be
+  // filed under a tile AND counted twice in volume; an empty/non-array secondary is a typo.
+  const badSec = ex.filter(e => e.secondary !== undefined && (!Array.isArray(e.secondary) || !e.secondary.length
+    || e.secondary.some(m => typeof m !== 'string' || (e.muscle_groups || []).includes(m))));
+  ok(badSec.length === 0, `secondary (when present) is a non-empty string array disjoint from muscle_groups (bad: ${JSON.stringify(badSec.map(e => e.name))})`);
+  const presses = ex.filter(e => /Bench Press|Overhead Press|Shoulder Press/.test(e.name) && !/Close-Grip/.test(e.name));
+  ok(presses.length > 8 && presses.every(e => !(e.muscle_groups || []).includes('triceps')),
+    `no chest/shoulder press is filed under Triceps (Jeff, Sep 4) -- triceps is a helper there (${presses.filter(e => (e.muscle_groups||[]).includes('triceps')).map(e => e.name)})`);
+  const sled = ex.find(e => e.name === 'Sled Push');
+  ok(sled && ['cardio', 'quads', 'glutes'].every(m => sled.muscle_groups.includes(m)), `a lift that is genuinely several things (Sled Push) stays primary in each (got ${JSON.stringify(sled && sled.muscle_groups)})`);
   // sanity on the map itself: every key it points at (except the 'core' fallback for 'abdominals')
   // must actually have a .png on disk, or a group renders a broken image instead of the neutral icon.
   const missingFiles = [...KNOWN_ICON_KEYS].filter(k => k !== 'abdominals' && !iconFiles.has(k));

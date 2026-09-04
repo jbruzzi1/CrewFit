@@ -116,7 +116,7 @@ console.log('\nre-opening the screen later (Settings -> "Starting weights") sees
 {
   const u = await newUser();
   await putSeed(u, { exercise: 'Barbell Row', weight: '155', reps: '6' }); // in SEED_DEFAULTS
-  await putSeed(u, { exercise: 'Incline Dumbbell Press', weight: '65', reps: '8' }); // not a default
+  await putSeed(u, { exercise: 'Incline Dumbbell Bench Press', weight: '65', reps: '8' }); // not a default
   const r = await getSeeds(u);
   ok(Object.keys(r.seeds).length === 2, `both present (got ${JSON.stringify(Object.keys(r.seeds))})`);
 }
@@ -124,10 +124,10 @@ console.log('\nre-opening the screen later (Settings -> "Starting weights") sees
 console.log('\nseeds are per-user, not shared or global (same isolation shape as favorites)');
 {
   const a = await newUser(), b = await newUser();
-  await putSeed(a, { exercise: 'Overhead Barbell Press', weight: '95', reps: '5' });
+  await putSeed(a, { exercise: 'Barbell Overhead Press', weight: '95', reps: '5' });
   const ra = await getSeeds(a), rb = await getSeeds(b);
-  ok('Overhead Barbell Press' in ra.seeds, "shows up in A's own list");
-  ok(!('Overhead Barbell Press' in rb.seeds), "does not leak into B's list");
+  ok('Barbell Overhead Press' in ra.seeds, "shows up in A's own list");
+  ok(!('Barbell Overhead Press' in rb.seeds), "does not leak into B's list");
 }
 
 console.log('\n/api/me/seeds requires login, same as every other per-user route');

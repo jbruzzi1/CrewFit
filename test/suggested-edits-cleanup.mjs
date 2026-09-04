@@ -98,7 +98,7 @@ console.log('\ncontrol: an APPROVED swap survives either route -- it was settled
     inviteUsernames: ['sec_bob3'], visibility: 'private',
   }, host.token);
   await post('/api/sessions/' + s.id + '/accept', {}, bob.token);
-  const suggested = await post('/api/sessions/' + s.id + '/suggest', { exerciseId: s.exercises[0].id, swapTo: 'Hammer Curl' }, bob.token);
+  const suggested = await post('/api/sessions/' + s.id + '/suggest', { exerciseId: s.exercises[0].id, swapTo: 'Dumbbell Hammer Curl' }, bob.token);
   const editId = suggested.suggestedEdits.find(e => e.proposedBy === bob.user.id).id;
   const approved = await post('/api/sessions/' + s.id + '/suggest/' + editId + '/approve', {}, host.token);
   ok(!approved.error, `host approves the swap (got ${approved.error})`);
