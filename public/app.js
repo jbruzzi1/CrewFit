@@ -3892,6 +3892,13 @@ const EQ_FAMILY = [
 // String(name), so no stored exercise can have a non-string name today. It is here so that a future
 // write path cannot make .toLowerCase() and .localeCompare() throw in a list render.
 function eqList(e){ const q = e && e.equipment; return (Array.isArray(q)?q:[]).filter(x=>typeof x==='string'); }
+// v311 (Jeff, Sep 4): "if an exercise only SLIGHTLY uses triceps and is MAINLY used for chest, we
+// shouldn't have it as a tricep exercise" -- the library's muscle tiles list an exercise under its
+// MAIN muscle only (muscle_groups[0], the order the library is curated in). The secondary groups
+// stay on the entry: they still show in the row subtitle and the detail sheet, still match the
+// All-muscles search, and still feed the weekly-volume meter (Jeff chose to leave that as is).
+// Before this the Triceps tile held 48 exercises, 30 of them chest/shoulder presses.
+function primaryMuscle(e){ const m = e && e.muscle_groups; return (Array.isArray(m) && typeof m[0]==='string') ? m[0] : ''; }
 function exName(e){ return String((e && e.name) || ''); }
 function eqFamilies(e){
   const eq=eqList(e).map(x=>x.toLowerCase());
@@ -4739,7 +4746,7 @@ function renderLibGroups(){
   // PUT /api/me/seeds rejects anything else (server.js) -- so custom rows are excluded from both the
   // per-muscle counts here and the filtered list in renderLibExercises below.
   const counts = {}; LIB_CATS.forEach(c=>c.muscles.forEach(m=>counts[m]=0));
-  lib.forEach(e=>{ if(SEED_MODE && e.custom) return; (e.muscle_groups||[]).forEach(m=>{ if(m in counts) counts[m]++; }); });
+  lib.forEach(e=>{ if(SEED_MODE && e.custom) return; const m=primaryMuscle(e); if(m in counts) counts[m]++; });
   const blocks = LIB_CATS.map(cat=>{
     const rows = cat.muscles.map(m=>`
       <div class="mg-card" onclick="libOpenMuscle('${m}')">
@@ -4757,7 +4764,7 @@ function libOpenMuscle(m, opts){
   const silent = !!(opts && opts.silent);
   const fromHistory = !!(opts && opts.fromHistory);
   LIB_STATE.view='muscle'; LIB_STATE.muscle=m; LIB_STATE.eq=''; LIB_STATE.q=''; LIB_STATE.fav=false;
-  const eqs = [...new Set(window._LIB2.filter(e=>(e.muscle_groups||[]).includes(m)).flatMap(eqFamilies))];
+  const eqs = [...new Set(window._LIB2.filter(e=>primaryMuscle(e)===m).flatMap(eqFamilies))];
   const head = LIB_ADDMODE
     ? `<div class="pick-head lib-head">
          <button class="sec sm" onclick="library()">‹ All muscles</button>
@@ -4880,7 +4887,7 @@ function libToggle(name, el){
 function renderLibExercises(){
   const {muscle,eq,q,fav}=LIB_STATE;
   const list = window._LIB2.filter(e=>
-    (e.muscle_groups||[]).includes(muscle) &&
+    primaryMuscle(e)===muscle &&
     (!SEED_MODE || !e.custom) &&
     (!eq || eqFamilies(e).includes(eq)) &&
     (!fav || FAVORITES.has(e.name)) &&

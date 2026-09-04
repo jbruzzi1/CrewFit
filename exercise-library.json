@@ -171,9 +171,9 @@
       "pattern": "legs",
       "category": "legs",
       "muscle_groups": [
-        "quads",
         "hamstrings",
         "glutes",
+        "quads",
         "traps"
       ],
       "equipment": [
