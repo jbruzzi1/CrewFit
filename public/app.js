@@ -2085,7 +2085,7 @@ function refreshLogRec(exId){
     else if(r.seed) box.innerHTML=`<div class="log-rec soon">
         <span class="lr-ic" aria-hidden="true">⋯</span>
         <span class="lr-t">When to add weight</span>
-        <span class="lr-why">Your working weight is ${r.seed.weight} ${U}. Hit the top of your rep range at that weight and this box gives you your next working weight.</span>
+        <span class="lr-why">Working weight ${r.seed.weight} ${U}. Top out your rep range there and this box gives you the next one.</span>
       </div>`;
     else box.innerHTML='';
   }).catch(()=>{});
