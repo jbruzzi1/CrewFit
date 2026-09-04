@@ -4120,10 +4120,13 @@ function trendChart(d, U){
   const head = isOverall
     ? `<div><span class="ch-val">${lastV>=0?'+':''}${Math.round(lastV)}%</span> <span class="ch-unit">overall strength</span></div>`
     : `<div><span class="ch-val">${Math.round(lastV)}</span> <span class="ch-unit">${U} estimated max</span></div>`;
+  // Sep 5: the weight range has to end at the SAME session changePct was computed from (server's
+  // currentWeight, the best-of-recent-window session) -- not literally the last logged session's
+  // weight, or a lighter off-day weight could sit right next to a green "▲" and contradict itself.
   const drivers = isOverall ? `<div class="drv-head">What's driving it</div>${
     t.lifts.slice().sort((a,b)=>b.changePct-a.changePct).map(l=>`<div class="drv">
       <div class="drv-n">${esc(l.name)}</div>
-      <div class="drv-w">${l.points[0].weight} → ${l.points[l.points.length-1].weight} ${U}</div>
+      <div class="drv-w">${l.points[0].weight} → ${l.currentWeight} ${U}</div>
       <div class="drv-p ${l.changePct>0.5?'up':'flat'}">${l.changePct>0.5?'▲ '+Math.round(l.changePct)+'%':'—'}</div>
     </div>`).join('')}` : '';
 

@@ -3002,6 +3002,37 @@ function trendFor(userId) {
     .filter(x => x.points.length >= 2)                   // one point is not a trend
     .sort((a, b) => b.points.length - a.points.length);  // most logged first = the default 5
 
+  // Sep 5 (Jeff: "I was having an off day and exhausted so didn't lift my heaviest ... it
+  // dropped my strength trend a ton overall"): the overall % and each lift's own changePct used
+  // to read "now" as literally that lift's single most recent session -- one rough day, especially
+  // one that touched several lifts at once, could yank the whole overall number down immediately,
+  // with nothing to recover it until the NEXT session on every affected lift individually beat it.
+  // estMax()'s RIR bump (Aug 22, comment above) already protects a single SET from being misjudged
+  // when you honestly had more in the tank -- this protects a single SESSION the same way when you
+  // genuinely didn't. The app already has the right instinct for this exact shape of problem:
+  // plateausFor() (below) deliberately compares your BEST set across a trailing window rather than
+  // your literal latest one, specifically so "one rough or one lucky session ... doesn't flip the
+  // flag." currentEst() applies that same idea here -- "now" for a lift is the best estimated max
+  // across its last TREND_SMOOTH_SESSIONS sessions (as of whatever date is being asked about), not
+  // literally its single most recent set. A real, sustained drop across several sessions still
+  // shows up; this only absorbs one bad day. Applies to the OVERALL line/number and to changePct
+  // (the per-lift headline used in "what's driving it") -- NOT to an individual lift's own chart,
+  // which stays the raw literal points on purpose so an off day is still honestly visible there.
+  //
+  // bestPointOfWindow() (not just the number) so toChip() below can also report the WEIGHT that
+  // earned changePct, not just the score -- an early version of this fix kept showing the driver
+  // row's weight range as literal-first-to-literal-last (e.g. "200 -> 180 lb") right next to the
+  // now-smoothed "+10%", which self-contradicts (a lighter weight next to a green up-arrow). The
+  // row has to name the session that actually produced the number beside it.
+  const TREND_SMOOTH_SESSIONS = 3;
+  const bestPointOfWindow = (points, asOfDate) => {
+    const upTo = asOfDate ? points.filter(p => p.at <= asOfDate) : points;
+    if (!upTo.length) return points[0];
+    const window = upTo.slice(-TREND_SMOOTH_SESSIONS);
+    return window.reduce((best, p) => (p.est > best.est ? p : best), window[0]);
+  };
+  const currentEst = (points, asOfDate) => bestPointOfWindow(points, asOfDate).est;
+
   // Overall stays computed from EVERY eligible lift, never just the picked/displayed subset --
   // it is a holistic "how is your training going" number, and shrinking it to whatever chips
   // happen to be picked would make it lie by omission the moment someone picks fewer than 5.
@@ -3010,17 +3041,23 @@ function trendFor(userId) {
   const overall = !lifts.length ? [] : dates.map(d => {
     let acc = 0;
     for (const l of lifts) {
-      const upTo = l.points.filter(p => p.at <= d);
-      const cur = upTo.length ? upTo[upTo.length - 1].est : l.points[0].est;
+      const cur = currentEst(l.points, d);
       acc += (cur / l.points[0].est) * (l.points[0].est / wsum);
     }
     return { at: d, pct: Number(((acc - 1) * 100).toFixed(1)) };
   });
 
-  const toChip = l => ({
-    name: l.name, points: l.points,
-    changePct: Number(((l.points[l.points.length-1].est / l.points[0].est - 1) * 100).toFixed(1))
-  });
+  const toChip = l => {
+    const bestPoint = bestPointOfWindow(l.points);
+    return {
+      name: l.name, points: l.points,
+      changePct: Number(((bestPoint.est / l.points[0].est - 1) * 100).toFixed(1)),
+      // The weight from the SAME session changePct is computed against -- not literally the most
+      // recent session's weight -- so "what's driving it" never shows a lighter number next to a
+      // green up-arrow (see the comment above bestPointOfWindow).
+      currentWeight: bestPoint.weight
+    };
+  };
   const allNames = lifts.map(l => l.name);
 
   // Picks are validated HERE, not at save time (see POST /api/me/trend-picks) -- a name that no
