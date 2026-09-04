@@ -136,7 +136,12 @@ console.log('\nv187: an invited participant gets their OWN Log & Finish AND thei
   ok(sink.html.includes('Leave workout'), 'the participant sees a "Leave workout" button');
   ok(sink.html.includes('Log & Finish'), 'AND their own "Log & Finish" — not creator-only anymore');
   ok(!sink.html.includes('Delete session'), 'and NOT "Delete session" (still creator-only)');
-  ok(!sink.html.includes('>Edit<'), 'and NOT the plan "Edit" button (still creator-only)');
+  ok(!sink.html.includes('Edit session'), 'and NOT the plan "Edit session" button (still creator-only)');
+  // Sep 4 (Jeff: notes should be editable while the workout is active, not just after): every
+  // participant gets their OWN bare "Edit" button now, next to the Notes heading -- this is a
+  // different control from the plan-edit one just checked above (own notes, not the shared
+  // exercise list), so it's fine, and expected, for a non-creator to see it here.
+  ok(sink.html.includes('>Edit<'), 'the participant DOES see the Notes "Edit" button (their own notes, unrelated to the plan)');
 
   console.log('\nJeff, Aug 20: tapping Leave before finishing now ASKS first — it does not silently assume Keep');
   sink.html = '';

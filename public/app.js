@@ -888,8 +888,9 @@ async function openSession(id, opts){
   if(edits) html += `<h2 class="pt">Suggested changes</h2>${edits}`;
   if(jr) html += `<h2 class="pt">Join requests</h2>${jr}`;
   if(myPost){
-    // Completed/saved workout: Photos (where swap slot was), then Notes — MY OWN recap, since
-    // each participant now finishes and posts independently (s.posts in server.js).
+    // Completed/saved workout: Photos (where swap slot was) — MY OWN recap, since each
+    // participant now finishes and posts independently (s.posts in server.js). Notes moved out
+    // of this block below (Sep 4) so it renders whether or not you've posted yet.
     const postMedia = (Array.isArray(myPost.media)) ? myPost.media : [];
     if(isCreator || postMedia.length){
       html += `<h2>Photos</h2><div class="card center-v">
@@ -900,7 +901,6 @@ async function openSession(id, opts){
         ${postMedia.length?`<div class="thumbs">${postMedia.map(m=>`<div class="thumb">${m.type==='image'?`<img src="${esc(m.src)}">`:`<video src="${esc(m.src)}" muted></video>`}</div>`).join('')}</div>`:''}
       </div>`;
     }
-    html += `<h2>Notes</h2><div class="notes-box">${myPost.notes ? esc(myPost.notes) : '<span class="muted">How\'d it go?</span>'}</div>`;
   } else if(!isCreator && canEdit){
     // You have joined and can log, so tapping a card logs — which means the cards are taken and
     // suggesting needs its own door. The creator does NOT get this: they have Edit, and a creator
@@ -921,6 +921,22 @@ async function openSession(id, opts){
       <div class="muted" style="font-size:12.5px;margin:2px 2px 8px">Want to add something new? ${hostFirst} approves that too.</div>
       <button class="sec sm" style="background:var(--line)" onclick="openSuggestAddPicker('${s.id}')">Suggest adding an exercise →</button>
     </div>`;
+  }
+  // Sep 4 (Jeff: "Can we add the notes section that we fill after the workout - also within the
+  // workout while its active"). Unconditional now (used to live only inside `if(myPost)` above,
+  // i.e. after you'd already posted) -- shown to anyone who's actually in the workout, whether or
+  // not they've finished. Reads myPost.notes once you've posted for real, s.myDraftNotes (a
+  // separate, own-eyes-only field -- see the server comment above /draft-notes for why it isn't
+  // just an early write into s.posts) before that. Same notes-box look either way; Edit opens the
+  // same sheet, editWorkoutNotes decides which endpoint to save to.
+  // Empty-state copy branches on myPost (Jeff, Sep 4, same day: "How'd it go? is past tense and we
+  // will now be adding notes DURING the workout") -- "How'd it go?" only makes sense once the
+  // workout is actually done and this is really the recap; while it's still active/no post yet,
+  // "How's it going?" is the same prompt in present tense.
+  if(isCreator || isParticipant){
+    const myNotes = myPost ? (myPost.notes||'') : (s.myDraftNotes||'');
+    const notesPrompt = myPost ? "How'd it go?" : "How's it going?";
+    html += `<h2>Notes<button class="sec sm" onclick="editWorkoutNotes('${s.id}')">Edit</button></h2><div class="notes-box">${myNotes ? esc(myNotes) : `<span class="muted">${notesPrompt}</span>`}</div>`;
   }
   const isPosted = !!myPost;
   // Accept/Decline is for an actual INVITE — someone was asked. Before Home's Friends' Workouts
@@ -1527,6 +1543,33 @@ function editPostNotes(id, authorId){
         const r = await H.post(`/api/sessions/${id}/post`, { notes: v||'', media: post.media||[], visibility: post.visibility||'private' });
         if(r && r.error){ alert(r.error); return; }
         if(nothingNavigatedSince(epoch)) viewPost(id, authorId, {silent:true});
+      }
+    });
+  });
+}
+// Sep 4 (Jeff: "Can we add the notes section that we fill after the workout - also within the
+// workout while its active"). Reached from openSession, always your own notes (no authorId param
+// -- unlike editPostNotes above, this is never someone else's). Before you've posted a real
+// recap, saves go to POST /:id/draft-notes (own-eyes-only scratch, does NOT mark the workout
+// "completed" anywhere -- see that route's server comment for why /post specifically had to be
+// avoided here); once myPost exists, switches to the same /post endpoint editPostNotes already
+// uses, carrying over its existing media/visibility untouched. Either way re-renders openSession,
+// not viewPost -- this is the active-screen editor, not the recap-detail one.
+function editWorkoutNotes(id){
+  H.get('/api/sessions/'+id).then(s => {
+    const myPost = s && s.posts && s.posts[ME.id];
+    const value = myPost ? (myPost.notes||'') : ((s && s.myDraftNotes) || '');
+    // Same past/present branch as the notes-box empty state in openSession above (Jeff, Sep 4:
+    // "How'd it go? is past tense and we will now be adding notes DURING the workout").
+    textEntrySheet({
+      title:'Edit notes', label:'Notes', value, placeholder: myPost ? "How'd it go?" : "How's it going?", multiline:true, confirmLabel:'Save',
+      onConfirm: async v => {
+        const epoch=UI_EPOCH;
+        const r = myPost
+          ? await H.post(`/api/sessions/${id}/post`, { notes: v||'', media: myPost.media||[], visibility: myPost.visibility||'private' })
+          : await H.post(`/api/sessions/${id}/draft-notes`, { notes: v||'' });
+        if(r && r.error){ alert(r.error); return; }
+        if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
       }
     });
   });
@@ -2625,6 +2668,7 @@ async function showSavePage(id){
   // nothing here needs the String()/slice defense anymore.
   const when = s.scheduledAt ? fmtDate(s.scheduledAt) : '';
   // MY OWN recap-in-progress — each participant posts independently (s.posts, keyed by userId).
+  const hasPost = !!(s.posts && s.posts[ME.id]);
   const post = (s.posts && s.posts[ME.id]) || {};
   // v190 (Sep 2026): binary now -- 'private' or 'public'. Private WIDENED at the same time (it used
   // to mean author-only) -- everyone who was actually in this workout with you can still see it,
@@ -2640,7 +2684,17 @@ async function showSavePage(id){
       <div class="tag">${esc(exNames.join(' · '))}</div>
     </div>
     <h2>Notes</h2>
-    <div class="card"><textarea id="saveNotes" placeholder="How'd it go?">${esc(post.notes||'')}</textarea></div>
+    <!-- Sep 4 (Jeff: notes should also be jottable while the workout is active): whatever was
+         typed into the in-progress Notes box (s.myDraftNotes, its own field -- see the server
+         comment above /draft-notes) carries over here as the starting point BEFORE you've ever
+         posted. Cold-review catch, same day: gated on hasPost, not on post.notes being truthy --
+         post.notes||s.myDraftNotes would keep re-surfacing a stale, already-superseded draft
+         every time this screen is reopened after posting (e.g. via "Add a photo/video" on an
+         already-posted recap) whenever the real posted notes happen to be blank, which is a
+         perfectly normal thing to post. Once a real post exists, its own notes are the only
+         source of truth, blank or not -- the server also clears s.draftNotes on a successful
+         /post now, this is belt-and-suspenders on the client. -->
+    <div class="card"><textarea id="saveNotes" placeholder="How'd it go?">${esc(hasPost ? (post.notes||'') : (s.myDraftNotes||''))}</textarea></div>
     <h2>Photo / video</h2>
     <div class="card center-v">
       <div class="media-line">

@@ -1625,7 +1625,8 @@ app.post('/api/sessions', auth, async (req, res) => {
     logs: {},
     comments: [],
     history: [],
-    posts: {}
+    posts: {},
+    draftNotes: {}
   };
   DB.sessions[id] = session;
   await save(DB);
@@ -1716,6 +1717,7 @@ function ensureSessionShape(s) {
   s.joinRequests = objArray(s.joinRequests);
   s.history = objArray(s.history);
   if (!isObj(s.posts)) s.posts = {};
+  if (!isObj(s.draftNotes)) s.draftNotes = {};
   return s;
 }
 
@@ -1872,7 +1874,12 @@ function sessionView(s, viewerId) {
     // above (in the rare case they've also filed their own request).
     const joinRequests = (s.creatorId === viewerId) ? (s.joinRequests || [])
       : (s.joinRequests || []).filter(j => j.userId === viewerId);
-    return Object.assign({}, s, { posts, logs, joinRequests });
+    // Same "yourself and nobody else" rule as joinRequests just above -- draftNotes is scratch,
+    // own-eyes-only scribbling mid-workout, not a recap anyone else in the session gets to read.
+    // `draftNotes: undefined` overrides the raw s.draftNotes object the spread below would
+    // otherwise leak (every participant's draft, keyed by their id) with just your own string.
+    const myDraftNotes = (s.draftNotes && s.draftNotes[viewerId]) || '';
+    return Object.assign({}, s, { posts, logs, joinRequests, draftNotes: undefined, myDraftNotes });
   }
   if (tier === 'stranger') return null;
 
@@ -2100,6 +2107,7 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // points they fed — no credit means no credit.
   if (discard) {
     if (s.logs) delete s.logs[me];
+    if (s.draftNotes) delete s.draftNotes[me];
     for (const exId of Object.keys(s.variations || {})) {
       if (s.variations[exId]) delete s.variations[exId][me];
     }
@@ -2181,6 +2189,7 @@ app.post('/api/sessions/:id/remove-mine', auth, async (req, res) => {
   if (!hasConnection) return res.status(403).json({ error: 'not yours' });
   if (s.posts) delete s.posts[me];
   if (s.logs) delete s.logs[me];
+  if (s.draftNotes) delete s.draftNotes[me];
   s.participants = (s.participants || []).filter(x => x !== me);
   s.invited = (s.invited || []).filter(x => x !== me);
   s.history = (s.history || []).filter(h => h.userId !== me);
@@ -2548,6 +2557,7 @@ function stripUserFromSession(s, userId) {
   s.history      = (s.history || []).filter(h => h.userId !== userId);
   if (s.attendance) delete s.attendance[userId];
   if (s.posts) delete s.posts[userId];
+  if (s.draftNotes) delete s.draftNotes[userId];
   for (const exId of Object.keys(s.variations || {})) {
     if (s.variations[exId]) delete s.variations[exId][userId];
   }
@@ -2601,7 +2611,8 @@ app.post('/api/me/reset-workouts', auth, async (req, res) => {
       || (s.invited || []).includes(me)
       || (s.history || []).some(h => h.userId === me)
       || (s.posts && s.posts[me])
-      || (s.logs && s.logs[me]);
+      || (s.logs && s.logs[me])
+      || (s.draftNotes && s.draftNotes[me]);
     if (!isTouched) continue;
     if (isCreator) {
       const others = othersWithCredit(s, me);
@@ -3929,6 +3940,34 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
     comments: existingComments,
     reactions: existingReactions
   };
+  // Cold-review catch (Sep 4): a real post now exists with its own notes -- including possibly
+  // blank, if that's what the person actually typed/left. A leftover draft from before they
+  // posted must not go on masquerading as "what to prefill" the next time they reopen this
+  // screen (e.g. tapping "Add a photo/video" on an already-posted recap re-opens showSavePage),
+  // or a discarded draft could silently overwrite an intentionally-blank real recap on the next
+  // unrelated save. The draft did its job (getting notes typed during the workout to this point);
+  // once posted, s.posts[req.userId].notes is the one source of truth.
+  if (s.draftNotes) delete s.draftNotes[req.userId];
+  await save(DB);
+  res.json(sessionView(s, req.userId));
+});
+// ---- Draft notes on an ACTIVE (not yet posted) session ----
+// Jeff, Sep 4: "Can we add the notes section that we fill after the workout - also within the
+// workout while its active." Deliberately its OWN field, not a write into s.posts -- s.posts[me]
+// existing is exactly what profileOf() (below) counts as "workout completed" for the Workouts
+// stat/profile list, AND what the friends'-activity feed (GET /api/feed) reads as "finished a
+// workout" for the recap row it shows your connections. Routing draft notes through /post would
+// have quietly marked a still-in-progress workout as done and broadcast it to friends before you
+// ever hit Log & Finish. draftNotes is scratch, own-eyes-only (see sessionView's member-tier
+// branch, which deliberately does not spread the whole s.draftNotes object to other members) --
+// the client reads it back as a starting point once you actually post your real recap.
+app.post('/api/sessions/:id/draft-notes', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  if (!canFinishOrPost(s, req.userId)) return res.status(403).json({ error: 'not in this workout' });
+  const { notes } = req.body || {};
+  s.draftNotes[req.userId] = String(notes || '').slice(0, 2000);
   await save(DB);
   res.json(sessionView(s, req.userId));
 });
