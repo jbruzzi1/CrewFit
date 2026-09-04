@@ -120,7 +120,17 @@
        since this sits ON an icon rather than beside a heading. Parent buttons (.home-bell,
        .profile-set) are already a positioning context (relative/absolute respectively), so this
        needs no positioned wrapper of its own. */
-    .notif-dot { position:absolute; top:0; right:0; min-width:15px; height:15px; padding:0 3px; border-radius:999px; background:var(--blue); color:#fff; font-size:9.5px; font-weight:700; line-height:1; display:flex; align-items:center; justify-content:center; box-sizing:border-box; box-shadow:0 0 0 2px var(--card); }
+    /* Sep 4 (Jeff: "the number ... does not look properly centered"): flex-centering a
+       line-box isn't the same as centering the glyph ink -- measured with a Range on the text
+       node (see the notif-dot centering check in test/_render_notifications.mjs), the digit sat
+       ~0.5px high in the 15px circle. padding-top:0.5px nudges it down to dead center (verified
+       0 top/bottom delta on both "3" and "9+"); do not remove without re-measuring.
+       Sep 4 (Jeff: "I don't like that black outline on the notifications widget") -- dropped the
+       cutout ring (was box-shadow:0 0 0 2px var(--card), meant to separate the badge from the
+       icon behind it the way iOS badges do). It assumed a flat --card backdrop; sitting on the
+       Home gradient instead, the ring read as a mismatched dark outline. The blue fill against
+       the bell already reads as its own shape without it. */
+    .notif-dot { position:absolute; top:0; right:0; min-width:15px; height:15px; padding:0.5px 3px 0; border-radius:999px; background:var(--blue); color:#fff; font-size:9.5px; font-weight:700; line-height:1; display:flex; align-items:center; justify-content:center; box-sizing:border-box; }
     .home-greet { font-size:21px; color:var(--fg); font-weight:700; letter-spacing:-0.01em; }
     .home-sub { font-size:13px; color:var(--muted); margin-top:3px; }
     /* v221: adaptive stat row — open on the page, no card box (Jeff: "no windows"). Numbers only
@@ -142,12 +152,17 @@
     .home-empty .he-title { font-weight:600; font-size:13.5px; color:var(--fg); margin:0 0 3px; }
     .home-empty .he-sub { font-size:12.5px; color:var(--muted); margin:0; }
     .home-empty .he-cta { display:inline-block; margin-top:8px; font-size:13px; font-weight:600; color:var(--blue); cursor:pointer; }
-    /* v221: the "window" — a faint sky wash at the very top of Home only, fading to the page
+    /* v221: the "window" — a sky wash at the very top of Home only, fading to the page
        background by ~380px down. Painted on .home-head itself (the wrap spans the whole app
        column, and body is already a 480px column), so it needs no body class, no JS toggling,
        and dies with the page. Not a header gradient rule violation: the header bar itself stays
-       flat; this is atmosphere behind the whole top zone of one screen. */
-    .home-head { background-image:linear-gradient(180deg, #eef4fd 0%, #f7fafd 55%, rgba(251,251,253,0) 100%); background-repeat:no-repeat; background-size:100% 380px; }
+       flat; this is atmosphere behind the whole top zone of one screen.
+       Sep 4 (Jeff: "more slightly more visible blue gradient" then, after seeing it, "that's too
+       much"): a half-step up from the original, not the fuller --s1 wash tried first -- eases
+       from a touch bluer than the original top tone straight into the plain page background
+       (solid final stop instead of fading-through-transparent, so it never washes out to a grey
+       no-man's-land in between). */
+    .home-head { background-image:linear-gradient(180deg, #e0eafb 0%, #eef4fd 45%, #fbfbfd 100%); background-repeat:no-repeat; background-size:100% 380px; }
     .act-chip { flex:0 0 auto; font-size:11px; font-weight:700; border-radius:999px; padding:3px 8px; vertical-align:middle; }
     /* was .act-chip.pr — the element also matched the unrelated .pr list-row class used by the
        Progress tab's PR list (line ~564: display:flex, padding:11px 2px, border-bottom). .act-chip
@@ -458,13 +473,12 @@
     .add-row button { width:auto; margin:0; }
     /* padding-left 0 so the avatar shares the 14px left edge of everything below it */
     .profile-head { display:flex; align-items:center; gap:16px; padding:6px 0 14px; position:relative; }
-    /* Sep 4: right:0 moved to right:44px to make room for .profile-notif (the new bell) at the
-       row's outer edge -- "the notifications widget... to the right of the settings widget"
-       (Jeff) means the bell sits further from center than the gear, i.e. right:0 is the bell's
-       slot now and the gear gives up the corner. */
-    .profile-set { position:absolute; top:2px; right:44px; width:40px; height:40px; border-radius:50%; border:none; background:transparent; color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; padding:0; }
+    /* Sep 4, corrected same day (Jeff: "I wanted the bell on the left not the right") -- the
+       gear keeps its original right:0 corner slot, .profile-notif (the bell) sits just inside it
+       at right:44px, so left-to-right it reads [bell][gear], bell closer to center/left. */
+    .profile-set { position:absolute; top:2px; right:0; width:40px; height:40px; border-radius:50%; border:none; background:transparent; color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; padding:0; }
     .profile-set:active { background:#f1f3f6; }
-    .profile-notif { right:0; }
+    .profile-notif { right:44px; }
     .sheet-list { display:flex; flex-direction:column; margin-top:4px; }
     .sheet-row { background:transparent; color:var(--fg); border:none; border-bottom:1px solid var(--line); text-align:left; padding:15px 4px; font-size:15px; font-weight:500; width:100%; margin:0; border-radius:0; }
     .sheet-row:last-child { border-bottom:none; }
@@ -1167,7 +1181,10 @@
       :where(html.theme-dark) .nav button { color:#a2a7b0; }
       :where(html.theme-dark) .sess-actions .sm, :where(html.theme-dark) .sess-actions .sm.sec { border-color:#4a4f59; }
       /* -- structure & chrome -- */
-      :where(html.theme-dark) .home-head { background-image:linear-gradient(180deg, #1a2030 0%, #171b24 55%, rgba(19,20,23,0) 100%); }
+      /* Sep 4 (Jeff: too much on the first pass, see the light comment above) -- a half-step up
+         from the original top tone, easing straight into --bg by the same solid-final-stop
+         approach as the light version, instead of the richer --s1/--s2 hold tried first. */
+      :where(html.theme-dark) .home-head { background-image:linear-gradient(180deg, #232c47 0%, #1a2030 45%, #131417 100%); }
       :where(html.theme-dark) .card { box-shadow:0 1px 2px rgba(0,0,0,.35), 0 8px 20px -10px rgba(0,0,0,.55); }
       :where(html.theme-dark) .home-head .card, :where(html.theme-dark) .pp-menu { box-shadow:0 8px 24px rgba(0,0,0,.5); }
       :where(html.theme-dark) .sheet-back { background:rgba(0,0,0,.6); }
@@ -1201,6 +1218,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=316"></script>
+  <script src="app.js?v=319"></script>
 </body>
 </html>

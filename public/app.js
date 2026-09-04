@@ -5505,9 +5505,9 @@ async function profileView(id, opts){
        </label>`
     : avatar;
   const settingsBtn = isMe ? `<button class="profile-set" title="Settings" onclick="openSettings()">${gearSvg()}</button>` : '';
-  // Sep 4 (Jeff): "notifications widget... to the right of the settings widget" -- same round
-  // transparent .profile-set button, positioned further out (see the CSS comment on .profile-set
-  // in index.html for why the gear had to move to make room).
+  // Sep 4 (Jeff, corrected same day): bell sits left of the settings gear -- same round
+  // transparent .profile-set button, positioned via .profile-notif (see the CSS comment on
+  // .profile-set in index.html).
   const notifBtn = isMe ? notifBellHtml('profile-set profile-notif', notifCount) : '';
   const FOLLOW_LABEL = { none: ['Follow','blue'], requested: ['Requested','sec'], following: ['Following','sec'] };
   const [flabel, fcls] = FOLLOW_LABEL[p.youFollow] || FOLLOW_LABEL.none;
