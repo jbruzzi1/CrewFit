@@ -601,6 +601,71 @@
       "level": "beginner"
     },
     {
+      "name": "Decline Machine Chest Press",
+      "pattern": "push",
+      "category": "push",
+      "muscle_groups": [
+        "chest"
+      ],
+      "secondary": [
+        "triceps"
+      ],
+      "equipment": [
+        "decline press machine"
+      ],
+      "is_compound": true,
+      "level": "beginner"
+    },
+    {
+      "name": "Plate-Loaded Chest Press",
+      "pattern": "push",
+      "category": "push",
+      "muscle_groups": [
+        "chest"
+      ],
+      "secondary": [
+        "triceps"
+      ],
+      "equipment": [
+        "plate-loaded chest press machine"
+      ],
+      "is_compound": true,
+      "level": "beginner"
+    },
+    {
+      "name": "Incline Plate-Loaded Chest Press",
+      "pattern": "push",
+      "category": "push",
+      "muscle_groups": [
+        "chest"
+      ],
+      "secondary": [
+        "shoulders",
+        "triceps"
+      ],
+      "equipment": [
+        "plate-loaded incline press machine"
+      ],
+      "is_compound": true,
+      "level": "beginner"
+    },
+    {
+      "name": "Decline Plate-Loaded Chest Press",
+      "pattern": "push",
+      "category": "push",
+      "muscle_groups": [
+        "chest"
+      ],
+      "secondary": [
+        "triceps"
+      ],
+      "equipment": [
+        "plate-loaded decline press machine"
+      ],
+      "is_compound": true,
+      "level": "beginner"
+    },
+    {
       "name": "Pec Deck",
       "pattern": "push",
       "category": "push",
