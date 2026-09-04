@@ -707,6 +707,26 @@
     .ql-mic-icon.ql-rec { color:#b45309; border-color:#f59e0b; animation:qlPulse 1.1s ease-in-out infinite; }
     @keyframes qlPulse { 50% { opacity:.4; } }
     @media (prefers-reduced-motion: reduce){ .ql-mic-icon.ql-rec { animation:none; } }
+    /* v312 (Jeff, Sep 4): "get rid of the logging page and have it all on the active workout
+       page. no additional pop up page ... shows all the sets I've logged, and the ability to log
+       all in that one page." Each exercise card on the active workout is now the logger the
+       sheet used to be (exLogBlockHtml in app.js). The set rows reuse the posted-workout view's
+       .pp-set language -- Jeff sent that screen as the target -- just a size up, since here they
+       are the working surface rather than a recap. The hairline under the name is the card's
+       own header rule, same as his screenshot. */
+    .ex-log .ex-head { padding-bottom:9px; border-bottom:1px solid var(--line); }
+    .ex-log .ex-sub { margin:4px 0 0; font-size:12.5px; }
+    .ex-log .ex-log-sets { margin:6px 0 4px; }
+    .ex-log .pp-set { font-size:14px; padding:6px 0; gap:10px; }
+    .ex-log .pp-set-n { width:26px; height:26px; border-radius:7px; font-size:12px; }
+    .ex-log .pp-set-edit { font-size:12px; }
+    .ex-log .ex-log-empty { font-size:12.5px; padding:6px 0 4px; }
+    .ex-log .log-rec { margin:6px 0 8px; }
+    .ex-log .type-picker { margin:6px 0 8px; }
+    .ex-log .seg { margin:4px 0 8px; }
+    .ex-log .load-note { margin-top:8px; }
+    .ex-log .rest { margin-top:10px; }
+    .ex-log .pp-pr.pr-pop { animation:prPop .5s cubic-bezier(.34,1.56,.64,1) both; }
     .rest { display:inline-flex; align-items:center; gap:8px; margin-top:14px; padding:8px 12px; background:#eef1f5; border-radius:999px; font-size:12px; color:var(--muted); }
     .rest b { color:var(--fg); font-size:14px; font-weight:700; }
     .note { font-size:11px; color:var(--muted); margin-top:14px; }
@@ -1151,6 +1171,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=311"></script>
+  <script src="app.js?v=312"></script>
 </body>
 </html>

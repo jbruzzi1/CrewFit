@@ -307,6 +307,12 @@ window.addEventListener('popstate', (e)=>{
   // dismiss it, exactly like tapping its ✕ -- not touch the screen underneath, which is already
   // showing correctly and shouldn't be re-rendered (and re-scrolled) out from under the user.
   if(document.querySelectorAll('.sheet-back').length){ closeSheet(true); return; }
+  // v312 (cold-review catch): a {t:'sheet'} entry with NO sheet open is a stale marker -- e.g. the
+  // Edit-set sheet's entry after the Delete-set confirm stacked on it and delLogSetConfirmed's
+  // closeAllSheets() collapsed only the topmost one. Landing on it used to fall through to the
+  // Home tab (renderNavState's catch-all), yanking the user off the workout they were on. Step
+  // over it instead: the screen underneath is already right, so touch nothing and keep going back.
+  if(e.state && e.state.t==='sheet'){ history.back(); return; }
   popToNavState(e.state || {t:'tab', tab:'home'});
 });
 // Everything here is a half-finished intention. None of it should survive walking away from the
@@ -564,46 +570,20 @@ async function home(opts){
   if(!silent) window.scrollTo(0,0);
 }
 
-// Bumped on every silent refresh kicked off below, so an older, slower response can never
-// overwrite what a newer one already applied (e.g. two quick taps on "+ Add" firing two
-// out-of-order background refreshes).
-let SESSION_SILENT_SEQ = 0;
-// The exercise-card recommendation text (below) is deliberately not re-fetched on a silent
-// refresh -- but $('app').innerHTML is still fully rewritten on that same silent pass (every
-// openSession render replaces the whole card list, silent or not), so without saving what the
-// last REAL fetch found, that rewrite would blank out the recommendation on every exercise
-// EXCEPT the one just logged -- not just skip re-fetching for it. Keyed by session id so a
-// stale cache from a previous session can never leak into a different one's cards.
-let REC_BY_NAME_CACHE = { sid: null, data: {} };
-// A silent refresh is "for" this exact sheet — the one open when it was kicked off — not just
-// "any sheet at all": editLogSet stacks a second .sheet-back on top of the log sheet without
-// closing it, so while both are open a generic .sheet-back.show selector here would match
-// whichever one is on top, not necessarily this one. Checking the specific element openLogSheet
-// stamped onto LOGVIEW avoids that ambiguity regardless of which sheet closeSheet() targets.
-function logSheetStillOpenFor(sid){
-  return !!(LOGVIEW && LOGVIEW.sid===sid && LOGVIEW.sheetEl
-    && document.body.contains(LOGVIEW.sheetEl) && LOGVIEW.sheetEl.classList.contains('show'));
-}
-// opts.silent: used for a background refresh fired after logging/editing/deleting a set, to
-// update the "✓ N sets logged" badge on the page sitting UNDER the still-open log sheet —
-// without leaving and re-entering. Must never alert() or steal the screen: if the fetch fails
-// (expired session included — authScreen() may already have repainted #app to the login
-// screen by the time this resolves), or the user has since closed the sheet or navigated
-// elsewhere, it just quietly does nothing.
+// v312 (Jeff, Sep 4): "get rid of the logging page and have it all on the active workout page.
+// no additional pop up page." The per-exercise log sheet (openLogSheet, and the opts.silent
+// background re-render of this screen that kept the "N sets logged" badge current underneath
+// it) is gone. Every exercise card on this screen IS the logger now -- see exLogBlockHtml below
+// -- and logging a set updates that one card in place (renderExSets) instead of re-rendering
+// the page, so nothing typed into another exercise's row is ever wiped by it.
 async function openSession(id, opts){
-  const silent = !!(opts && opts.silent);
   const fromHistory = !!(opts && opts.fromHistory);   // v254: reached via popstate -- land, don't push again
-  // v254: opts.quiet is DELIBERATELY separate from opts.silent, not another name for the same
-  // thing. silent's meaning predates this fix and is narrow and specific -- SESSION_SILENT_SEQ/
-  // logSheetStillOpenFor below gate it to exactly one case: a background refresh behind a still-
-  // open log sheet, and the whole function returns early (before ever rendering) if that specific
-  // sheet isn't open. sendChat/suggest/approve/reject/approveJoin/rejectJoin/requestJoin/
-  // enterWorkoutEdit/exitWorkoutEdit/saveWorkoutEditConfirmed all re-render this SAME session
-  // screen after an action taken ON it, with no log sheet involved -- passing silent:true for
-  // those (an earlier draft of this fix did) made the function bail out at the logSheetStillOpenFor
-  // check and never render at all, silently no-op'ing e.g. every Approve/Reject tap. quiet:true
-  // renders normally (UI_EPOCH still bumps, exactly as these callers' pre-v254 plain openSession(id)
-  // calls always did) and only skips the new navigated()/landOn() scroll+history call below.
+  // v254: sendChat/suggest/approve/reject/approveJoin/rejectJoin/requestJoin/enterWorkoutEdit/
+  // exitWorkoutEdit/saveWorkoutEditConfirmed all re-render this SAME session screen after an
+  // action taken ON it. quiet:true renders normally (UI_EPOCH still bumps) and only skips the
+  // navigated()/landOn() scroll+history call below. (v312: the old opts.silent -- a background
+  // re-render behind the log sheet -- is gone with the sheet; a set logged inline updates its own
+  // card in place instead, see renderExSets.)
   const quiet = !!(opts && opts.quiet);
   // v250 (audit follow-up): same gap as profileView()/followList()/viewPost() -- a real
   // (non-silent) call here is a navigation to a full-screen view without a tab switch or new
@@ -612,11 +592,9 @@ async function openSession(id, opts){
   // editBio/editDefaultGym save on the SAME screen look stale for no reason. Bumped up front,
   // before the fetch below, so a slow unrelated save can't resolve in the gap between this tap
   // and the fetch finishing and still think it's on the old screen.
-  if(!silent) UI_EPOCH++;
-  const mySeq = silent ? ++SESSION_SILENT_SEQ : null;
+  UI_EPOCH++;
   const s = await H.get('/api/sessions/'+id);
-  if(!s || s.error){ if(!silent && !s._expired) alert(s && s.error ? s.error : 'Session not found'); return; }
-  if(silent && (mySeq !== SESSION_SILENT_SEQ || !logSheetStillOpenFor(id))) return;
+  if(!s || s.error){ if(!s._expired) alert(s && s.error ? s.error : 'Session not found'); return; }
   // defensive: older/persisted sessions may lack these array fields
   s.participants = s.participants || [];
   s.invited = s.invited || [];
@@ -679,43 +657,9 @@ async function openSession(id, opts){
   // ...and for pending invitees, but only when the server actually handed us the real list (see
   // invitedIds below) — for anyone else it's just our own id or nothing, already covered above.
   if(isCreator || isParticipant){ for(const pid of (s.invited||[])){ await nameOfCached(pid); } }
-  // Jeff, Aug 31: "I am completing a set BEFORE I click tap to log a set... which means I am not
-  // seeing the notes on the app telling me what weight to do next." Nothing INSIDE the log sheet
-  // can ever fix that -- it only opens after the set it would have informed. This screen's
-  // exercise cards are the one place guaranteed to be seen before that first tap (the log sheet
-  // stays open for every set of an exercise once you're in it, so you only pass back through here
-  // between exercises) -- so a compact version of the same advice belongs on the card itself, not
-  // just inside the sheet. Fetched once here rather than once per exercise; skipped entirely when
-  // canEdit is false (a spectator/pending-invite view never shows a log tap target, so it never
-  // needs this either). Deliberately the barebones /api/progress/recommendations, not the full
-  // /api/progress (weeksFor/trendFor/recordsFor) -- this screen only needs the same ready/holds/
-  // soon lists recommendationsFor() already produces, not the rest of that work.
-  // Also skipped on a silent background refresh (see addLogSet/editLogSet/delLogSetConfirmed's
-  // openSession(...,{silent:true}) calls, fired behind a still-open log sheet after every set):
-  // the card list isn't visible then, and logging one exercise's set can't change what another
-  // exercise's recommendation says -- so re-fetching would be a full extra round trip, on the
-  // single highest-frequency action in the app, purchasing an update nothing can see yet.
-  // NOT skipped, though, is USING what the last real fetch already found: this whole render
-  // still rewrites $('app').innerHTML on a silent pass same as any other (see REC_BY_NAME_CACHE's
-  // own comment above) -- an empty recByName here would silently erase the recommendation off
-  // every OTHER exercise's card the moment any one set gets logged, not just skip refreshing it.
-  const recByName = {};
-  if(canEdit && !silent){
-    const rec = await H.get('/api/progress/recommendations');
-    if(rec && !rec.error){
-      for(const x of (rec.ready||[])) recByName[x.exercise] = { state:'ready', weight:x.suggested, unit:rec.unit, bodyweight:x.bodyweight, step:x.step };
-      // hold and soon both mean "load the same weight again" from where you're standing -- the
-      // difference between them is about how the algorithm got there, not something worth a
-      // second phrase on a screen this compact. Only set when ready hasn't already claimed this
-      // exercise (it never will for the same exercise, but this mirrors recommendationsFor's own
-      // ready/hold/soon being mutually exclusive rather than assuming it silently).
-      for(const x of (rec.holds||[])) if(!recByName[x.exercise]) recByName[x.exercise] = { state:'hold', weight:x.weight, unit:rec.unit, bodyweight:x.bodyweight };
-      for(const x of (rec.soon||[]))  if(!recByName[x.exercise]) recByName[x.exercise] = { state:'hold', weight:x.weight, unit:rec.unit, bodyweight:x.bodyweight };
-    }
-    REC_BY_NAME_CACHE = { sid: id, data: recByName };
-  } else if(canEdit && silent && REC_BY_NAME_CACHE.sid === id){
-    Object.assign(recByName, REC_BY_NAME_CACHE.data);
-  }
+  // v312: when you can log, every card carries its own logger (exLogBlockHtml) -- the load-type
+  // tag ("per dumbbell" / "added weight") comes from the library, looked up by name once here.
+  const LIBN = canEdit ? await libByName() : {};
   // my variation view (each exercise = its own card tile; swap suggestion nested inside)
   const myEx = s.exercises.map(e=>{
     const v = s.variations[e.id] && s.variations[e.id][ME.id];
@@ -739,48 +683,22 @@ async function openSession(id, opts){
     // telling you what is already happening instead.
     const pendingSwap = (editByEx[e.id]||[]).find(ed=>ed.status==='pending');
     const offerSwap = canSuggest && !pendingSwap;
-    const tap = canEdit ? ` onclick="openLogSheet('${s.id}','${e.id}')"`
-              : (offerSwap ? ` onclick="openSwapPicker('${s.id}','${e.id}')"` : '');
-    const cls = (canEdit || offerSwap) ? 'ex-card log-row' : 'ex-card';
-    const cnt = (s.logs && s.logs[ME.id]) ? s.logs[ME.id].filter(l=>l.exerciseId===e.id).length : 0;
+    // v312: a card you can log on is not a tap target any more -- it carries its own logger (below).
+    const tap = (!canEdit && offerSwap) ? ` onclick="openSwapPicker('${s.id}','${e.id}')"` : '';
+    const cls = (!canEdit && offerSwap) ? 'ex-card log-row' : 'ex-card';
     const swapBy = pendingSwap
       ? (() => { const n = nameCache[pendingSwap.proposedBy];
                  return n === 'You' ? 'you' : (isUnknownName(n) ? 'someone' : String(n).split(' ')[0]); })()
       : '';
-    // Recommendation looked up under whatever openLogSheet will ITSELF look it up under once
-    // tapped -- its own recName (openLogSheet, above) only ever checks the CURRENT USER's own
-    // personal variation, never an approved swap edit (approving one only records the swap under
-    // the proposer's variation, per the approve handler in server.js -- it does not rename the
-    // exercise for anyone else). Prioritizing `approved` here the way `name` (the display label
-    // above) correctly does would key this lookup by a name the log sheet never actually tracks
-    // recommendations under for most viewers -- silently hiding the recommendation (or worse,
-    // surfacing a real but unrelated one for whatever exercise happens to share that name).
-    // A pending swap means this exercise's identity is still up in the air -- showing a weight
-    // recommendation for it now would be advice for whichever lift it turns out NOT to be half
-    // the time, so it waits for that to resolve like everything else on this line does.
+    // The "when to add weight" box is looked up under the CURRENT USER's own swap when there is
+    // one, never an approved swap edit (approving one only records the swap under the proposer's
+    // variation, per the approve handler in server.js -- it does not rename the exercise for
+    // anyone else). A pending swap means this exercise's identity is still up in the air, so the
+    // box waits for that to resolve.
     const recExName = (v && v.swapTo) || e.name;
-    const rec = (canEdit && cnt===0 && !pendingSwap) ? recByName[recExName] : null;
-    // Trailing arrow kept on both (Jeff, Aug 31, round 3) -- "Tap to log sets" and "Suggest a
-    // swap" both end in one, and this line opens the exact same sheet the same way, so dropping
-    // the arrow just because the text changed to a recommendation would make it the odd one out
-    // rather than signal anything real. Only "✓ N logged" goes without one, since that line
-    // reports something already done rather than prompting the tap.
-    const recText = !rec ? '' : rec.state==='ready'
-      ? (rec.bodyweight ? `Add ${rec.step} ${rec.unit} today →` : `Try ${rec.weight} ${rec.unit} today →`)
-      : (rec.bodyweight ? `Repeat bodyweight →` : `Repeat ${rec.weight} ${rec.unit} →`);
-    // Jeff, Aug 31, round 2: the side-by-side badge "loses that clean look" -- back to one line in
-    // the exact spot "Tap to log sets" already occupies (same as the original v260 shipped design),
-    // but no longer flat blue for both states. "Try X today" (time to add weight) gets the same
-    // green the log sheet's own box already uses for that exact state (.log-rec.up), so the two
-    // surfaces agree instead of inventing a third shade; "Repeat X" (nothing new) stays a quiet
-    // neutral gray -- routine information, not something that needs to compete for attention the
-    // way a new max does. rec-${rec.state} carries the color; log-hint keeps the base sizing/spacing
-    // so this reads as the same kind of line as every other hint on the list, just recolored.
     // A pending swap outranks everything else this line could say. It is the state of the lift.
     const statusTag = pendingSwap ? `<span class="swap-pending">Swap suggested by ${esc(swapBy)}</span>`
-                     : canEdit ? (cnt ? `<span class="logged">✓ ${cnt} set${cnt>1?'s':''} logged</span>`
-                                : (recText ? `<span class="log-hint rec-${rec.state}">${esc(recText)}</span>` : `<span class="log-hint">Tap to log sets →</span>`))
-                     : (offerSwap ? `<span class="log-hint">Suggest a swap →</span>` : '');
+                     : (!canEdit && offerSwap) ? `<span class="log-hint">Suggest a swap →</span>` : '';
     // Who ELSE has worked this lift. Without it a shared workout shows you nothing your partner
     // did — you invite someone, they train, and the screen looks the same as if you were alone.
     // Gated on inTheWorkout: GET /api/sessions/:id hands the FULL logs of every participant to any
@@ -799,7 +717,11 @@ async function openSession(id, opts){
     // No "4 x 6-8" on the list at all — Jeff's call, twice. The workout list answers one question,
     // which is what you are doing; the prescription is an instruction and it now lives in the log
     // sheet, where you read it at the moment you act on it rather than four lifts in advance.
-    let head = `<div class="ex-head"${tap}><div class="ex-main"><div class="ex-name">${name}</div>${statusTag}${crewLine}</div></div>`;
+    let head = canEdit
+      ? exLogBlockHtml(s, e, { name, statusTag, crewLine,
+          loadType: (LIBN[e.name] && LIBN[e.name].loadType) || '',
+          exLogs: ((s.logs && s.logs[ME.id]) || []).filter(l => l.exerciseId === e.id) })
+      : `<div class="ex-head"${tap}><div class="ex-main"><div class="ex-name">${name}</div>${statusTag}${crewLine}</div></div>`;
     let sub = '';
     for(const ed of (editByEx[e.id]||[])){
       const byName = nameCache[ed.proposedBy] || ed.proposedBy;
@@ -812,7 +734,7 @@ async function openSession(id, opts){
       }
       // approved/rejected swaps: no residual row (approved becomes the exercise name above; rejected leaves original)
     }
-    return `<div class="${cls}">${head}${sub}</div>`;
+    return `<div class="${cls}${canEdit?' ex-log':''}"${canEdit?` data-sid="${s.id}" data-ex="${e.id}" data-load="${esc((LIBN[e.name] && LIBN[e.name].loadType) || '')}" data-rec="${pendingSwap?'':esc(recExName)}"`:''}>${head}${sub}</div>`;
   }).join('');
   // suggested edits: swaps whose target exercise no longer exists, PLUS -- v262b -- every
   // "add a new exercise" suggestion, which never had a target exercise to begin with (editByEx
@@ -948,7 +870,7 @@ async function openSession(id, opts){
     </div></div>`;
   } else {
     html += myEx;
-    if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap an exercise to log your sets.</div>`;
+    if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">${qlExample()} · tap a set to edit or delete it. Set # auto-fills. Hit the top of your rep range two sessions in a row at the same weight and the card tells you your next working weight.</div>`;
     else if(canSuggest) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Not feeling one of these? Tap it to propose a replacement — ${esc(isUnknownName(nameCache[s.creatorId])?'the host':String(nameCache[s.creatorId]).split(' ')[0])} approves it.</div>`;
   }
   if(edits) html += `<h2 class="pt">Suggested changes</h2>${edits}`;
@@ -1097,25 +1019,23 @@ async function openSession(id, opts){
     html += crewBlock + chatBlock;
   }
   html += `</div>`;
-  // Re-checked here, not just right after the fetch: the name-lookup awaits above take their
-  // own time, and a silent refresh must not land on whatever screen the user has since moved to.
-  if(silent && (mySeq !== SESSION_SILENT_SEQ || !logSheetStillOpenFor(id))) return;
+  // v312 (cold-review catch): this screen re-renders itself after a chat message, an approved
+  // swap, a join decision... With the loggers inline, a weight typed but not yet added, a picked
+  // set type, an opened RIR box and a ticking rest would all be wiped by that. Carry them across.
+  const kept = captureLogState();
   $('app').innerHTML = html;
+  restoreLogState(kept);
+  // v312: every inline logger's "when to add weight" box loads after the page is on screen, so
+  // it never delays the render -- same as the old sheet did for its one exercise.
+  if(canEdit) for(const e of s.exercises) refreshLogRec(e.id);
   // v254 (Jeff): tapping into a screen used to leave the window wherever it happened to be
   // scrolled from the PREVIOUS screen, so a session opened after scrolling halfway down Home
-  // could render already scrolled to the middle. A silent background refresh (this same render,
-  // fired after logging a set) must NOT do this -- it would yank you away from the exact set row
-  // you're mid-workout on. Same !silent gate as everything else in this function.
-  if(!silent && !quiet){ const st={t:'session', id}; fromHistory ? landOn(st) : navigated(st); }
+  // could render already scrolled to the middle.
+  if(!quiet){ const st={t:'session', id}; fromHistory ? landOn(st) : navigated(st); }
   if(isPosted) loadPostComments(s.id, ME.id); else loadChat(s);
-  // v262 (cold-review fix): every existing caller of openSession ignores its return value, so this
-  // is safe to add -- but the two new deep-link entry points below (tryBoot's ?openLog= branch and
-  // the serviceWorker message listener) both used to call openLogSheet() UNCONDITIONALLY right
-  // after, even when this function hit the error branch above and returned undefined. That meant a
-  // dead/expired link fired openSession's alert, then openLogSheet's own SEPARATE fetch-and-alert
-  // right on top of it (openLogSheet has no _expired guard at all, so it would alert even over a
-  // freshly-rendered login screen). Returning true only from this, the successful-render path, lets
-  // both call sites gate on it and skip openLogSheet entirely when the session didn't open.
+  // v262: the two deep-link entry points (tryBoot's ?openLog= branch and the serviceWorker message
+  // listener) gate their follow-up (v312: focusLogBlock) on this -- true only from the successful-
+  // render path, so a dead/expired link alerts once here and does nothing more.
   return true;
 }
 // ===== Dedicated POSTED-WORKOUT view (read-only, like an Instagram/Hevy post) =====
@@ -1968,7 +1888,12 @@ const SET_TYPES = [
 ];
 const TYPE_CLASS = { normal:'t-normal', warmup:'t-warm', drop:'t-drop', failure:'t-fail' };
 const TYPE_LABEL = { normal:'Normal', warmup:'Warm up', drop:'Drop', failure:'Failure' };
-let LOGVIEW = { sid:null, exId:null };
+// v312: every exercise card on the active-workout screen is its own logger (see exLogBlockHtml).
+// The card is `.ex-log[data-ex=<exercise id>]`, with data-sid / data-load (library loadType) /
+// data-rec (the name the "when to add weight" box is looked up under); its fields are found by
+// data-f inside it, never by document-wide id, so six loggers can sit on one page.
+function logBlock(exId){ return document.querySelector(`.ex-log[data-ex="${exId}"]`); }
+function lf(exId, key){ const b = logBlock(exId); return b ? b.querySelector(`[data-f="${key}"]`) : null; }
 
 // ---- Load type: what the number in the weight box actually means ----
 // The library tags exercises whose entered weight is ambiguous (see exercise-library.json):
@@ -2008,69 +1933,104 @@ function loadHintText(loadType, w){
   if(loadType==='added')  return n ? `${n} ${U} on top of bodyweight` : 'weight added, not bodyweight';
   return '';
 }
-function updateLoadHint(){
-  const el=document.getElementById('logLoadHint'); if(!el) return;
-  const w=document.getElementById('logW'); if(!w) return;
+function updateLoadHint(exId){
+  const el=lf(exId,'loadHint'); if(!el) return;
+  const w=lf(exId,'w'); if(!w) return;
   el.textContent = loadHintText(el.dataset.load, w.value);
 }
-async function openLogSheet(sid, exId){
-  const s = await H.get('/api/sessions/'+sid);
-  if(!s || s.error){ alert(s && s.error ? s.error : 'Session not found'); return; }
-  const e = s.exercises.find(x=>x.id===exId); if(!e) return;
-  // A swapped exercise logs under the swap, so the advice has to be looked up under the swap too.
-  // Asking about the template's name on a swapped lift returned "first time logging this" for
-  // someone with months of history on it.
-  const myVar = s.variations && s.variations[exId] && s.variations[exId][ME.id];
-  const recName = (myVar && myVar.swapTo) || e.name;
-  const libEntry = (await libByName())[e.name];
-  const loadType = libEntry && libEntry.loadType ? libEntry.loadType : '';
-  LOGVIEW = { sid, exId, loadType, recName };
-  const mine = (s.logs && s.logs[ME.id]) || [];
-  const exLogs = mine.filter(l=>l.exerciseId===exId);
-  const bestLog = exLogs.slice().sort((a,b)=>((Number(b.weight)||0)*(Number(b.reps)||0))-((Number(a.weight)||0)*(Number(a.reps)||0)))[0];
-  const last = bestLog ? `${bestLog.weight} × ${bestLog.reps}` : '—';
-  history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
-  const sheet = document.createElement('div'); sheet.className='sheet-back';
-  sheet.innerHTML = `
-    <div class="sheet" onclick="event.stopPropagation()">
-      <div class="sheet-head"><h2>Log · ${esc(e.name)}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
-      <div class="ex-sub">${repLabel(e) ? `Target: <b>${e.defaultSets} × ${repLabel(e)}</b> · ` : ''}Last time: <b>${esc(last)}</b></div>
-      <div id="logRec"></div>
-      <div id="logSetList"></div>
-      <div class="type-picker">
-        <button type="button" class="type-pill t-normal" id="logTypePill" onclick="toggleTypeSeg()" aria-label="Set type: Normal. Tap to change.">${TYPE_LABEL.normal} <svg width="9" height="9" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        <div class="seg hidden" id="logTypeSeg">
-          ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" data-t="${t.key}" onclick="logSetType('${t.key}')">${t.label}</div>`).join('')}
-        </div>
+// The inner markup of one exercise card on the active-workout screen, when you can log on it
+// (v312, Jeff: "get rid of the logging page and have it all on the active workout page"). What the
+// log sheet used to hold, one card per exercise: name + target, the sets you've logged (the same
+// rows the posted-workout view shows -- W/D/F badge or set number, "143 lb × 12 reps", PR pill,
+// Edit), the live "when to add weight" box, the set-type pill, and the mic / weight / reps / RIR /
+// + Add row. The outer <div class="ex-card ex-log" data-...> is written by openSession.
+function exLogBlockHtml(s, e, o){
+  const target = repLabel(e) ? `<div class="ex-sub">Target <b>${e.defaultSets} × ${repLabel(e)}</b></div>` : '';
+  const loadType = o.loadType || '';
+  return `<div class="ex-head"><div class="ex-main"><div class="ex-name">${o.name}</div>${target}${o.statusTag||''}${o.crewLine||''}</div></div>
+    <div class="pp-sets ex-log-sets" data-f="sets">${exSetRowsHtml(s.id, e.id, o.exLogs, loadType)}</div>
+    <div data-f="rec"></div>
+    <div class="type-picker">
+      <button type="button" class="type-pill t-normal" data-f="typePill" onclick="toggleTypeSeg('${e.id}')" aria-label="Set type: Normal. Tap to change.">${TYPE_LABEL.normal} <svg width="9" height="9" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <div class="seg hidden" data-f="typeSeg">
+        ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" data-t="${t.key}" onclick="logSetType('${e.id}','${t.key}')">${t.label}</div>`).join('')}
       </div>
-      <div class="add-row">
-        <button type="button" class="icon-btn ql-mic-icon" aria-label="Hold to speak a set" onpointerdown="qlMicDown(event)" onpointerup="qlMicUp()" onpointercancel="qlMicUp()"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-        <input id="logW" placeholder="${loadType==='pair'? myUnit()+' each' : myUnit()}" type="number" inputmode="decimal" step="any" oninput="updateLoadHint()">
-        <input id="logR" placeholder="reps" type="number" inputmode="tel" pattern="[0-9]*">
-        <button type="button" class="rir-toggle" id="logRirToggle" onclick="toggleRirInput()" aria-label="Add reps in reserve" title="Reps in reserve (optional)">RIR</button>
-        <input id="logRir" class="hidden" placeholder="RIR" type="number" inputmode="tel" pattern="[0-9]*" style="flex:0 0 60px; padding-left:8px; padding-right:6px" title="Reps in reserve (optional)">
-        <button class="add-btn" onclick="addLogSet()">+ Add</button>
-      </div>
-      ${loadType?`<div class="load-note">
-        <span class="load-chip">${LOAD_LABEL[loadType]}</span>
-        <span class="load-hint" id="logLoadHint" data-load="${loadType}">${loadHintText(loadType,'')}</span>
-      </div>`:''}
-      <div id="logRest"></div>
-      <div class="note">${qlExample()} · tap a set to edit or delete it. Set # auto-fills.</div>
-    </div>`;
-  sheet.onclick=(ev)=>{ if(ev.target===sheet) closeSheet(); };
-  document.body.appendChild(sheet);
-  requestAnimationFrame(()=>sheet.classList.add('show'));
-  // Stamped onto LOGVIEW so a background silent refresh (see openSession's opts.silent) can
-  // check THIS exact sheet's presence/visibility, not just "some .sheet-back.show exists
-  // somewhere" — editLogSet stacks a second .sheet-back on top of this one without closing it,
-  // so while both are open a generic selector here could match either one.
-  LOGVIEW.sheetEl = sheet;
-  renderLogSets(s);
-  // The advice belongs HERE, at the moment the weight is chosen — not only on a tab the user
-  // has to remember to open before leaving for the gym. Loaded after the sheet is on screen
-  // so it never delays opening.
-  refreshLogRec();
+    </div>
+    <div class="add-row">
+      <button type="button" class="icon-btn ql-mic-icon" data-f="mic" aria-label="Hold to speak a set" onpointerdown="qlMicDown(event,'${e.id}')" onpointerup="qlMicUp()" onpointercancel="qlMicUp()"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      <input data-f="w" placeholder="${myUnit()}" type="number" inputmode="decimal" step="any" oninput="updateLoadHint('${e.id}')">
+      <input data-f="r" placeholder="reps" type="number" inputmode="tel" pattern="[0-9]*">
+      <button type="button" class="rir-toggle" data-f="rirBtn" onclick="toggleRirInput('${e.id}')" aria-label="Add reps in reserve" title="Reps in reserve (optional)">RIR</button>
+      <input data-f="rir" class="hidden" placeholder="RIR" type="number" inputmode="tel" pattern="[0-9]*" style="flex:0 0 60px; padding-left:8px; padding-right:6px" title="Reps in reserve (optional)">
+      <button class="add-btn" onclick="addLogSet('${e.id}')">+ Add</button>
+    </div>
+    ${loadType?`<div class="load-note">
+      <span class="load-chip">${LOAD_LABEL[loadType]}</span>
+      <span class="load-hint" data-f="loadHint" data-load="${loadType}">${loadHintText(loadType,'')}</span>
+    </div>`:''}
+    <div data-f="rest"></div>`;
+}
+// The set rows inside a card. Same shape as the posted-workout view's rows (Jeff sent that
+// screenshot as the target): a W/D/F badge or the set number, "143 lb × 12 reps", PR, Edit.
+// Prefer the loadType stamped on the set when it was logged; fall back to the exercise's current
+// tag only for sets predating the stamp -- re-tagging an exercise must not change how sets
+// already logged under the old meaning read.
+function exSetRowsHtml(sid, exId, exLogs, loadType, justLoggedId){
+  const rows = (exLogs||[]).slice().sort((a,b)=>(a.set||0)-(b.set||0));
+  if(!rows.length) return `<div class="ex-log-empty muted">No sets yet</div>`;
+  const suffixFor = l => { const t = l.loadType || loadType || ''; return t==='pair' ? ' each' : t==='added' ? ' added' : ''; };
+  // RIR is optional per set - only shown when actually tracked, never a fabricated "RIR 0".
+  const rirFor = l => (l.rir!==undefined && l.rir!==null) ? ` · RIR ${l.rir}` : '';
+  return rows.map(l=>{
+    const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''};
+    return `<div class="pp-set pp-set-mine" onclick="editLogSet('${sid}','${exId}','${l.id}')">
+      <span class="pp-set-n ${b.c}">${b.t}</span>
+      <span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)}${suffixFor(l)} × ${Number(l.reps)||0} reps${rirFor(l)}</span>
+      ${l.isPr?`<span class="pp-pr${l.id===justLoggedId?' pr-pop':''}">PR</span>`:''}
+      <span class="pp-set-edit muted">Edit</span>
+    </div>`; }).join('');
+}
+// Re-render one card's set rows from a fresh session object, in place -- nothing else on the
+// page is touched, so what's typed into every other exercise's row survives.
+function renderExSets(exId, s, justLoggedId){
+  const block = logBlock(exId); if(!block) return;
+  const list = block.querySelector('[data-f="sets"]'); if(!list) return;
+  const mine = (s && s.logs && s.logs[ME.id]) || [];
+  list.innerHTML = exSetRowsHtml(block.dataset.sid, exId, mine.filter(l=>l.exerciseId===exId), block.dataset.load || '', justLoggedId);
+}
+// What a re-render of the workout screen must not lose (see openSession): per card, the typed
+// weight/reps/RIR, whether RIR is open, the picked set type -- and the one rest timer if it is
+// still counting down (REST_UNTIL, see startRest).
+function captureLogState(){
+  const out = {};
+  document.querySelectorAll('.ex-log').forEach(b=>{
+    const g = k => b.querySelector(`[data-f="${k}"]`);
+    const on = b.querySelector('[data-f="typeSeg"] .chip.on');
+    out[b.dataset.ex] = { w: g('w') ? g('w').value : '', r: g('r') ? g('r').value : '', rir: g('rir') ? g('rir').value : '',
+      rirOpen: !!(g('rir') && !g('rir').classList.contains('hidden')), type: on ? on.getAttribute('data-t') : 'normal' };
+  });
+  return out;
+}
+function restoreLogState(kept){
+  for(const exId of Object.keys(kept||{})){
+    const k = kept[exId]; if(!logBlock(exId)) continue;
+    const w = lf(exId,'w'), r = lf(exId,'r'), rir = lf(exId,'rir');
+    if(w && k.w) { w.value = k.w; updateLoadHint(exId); }
+    if(r && k.r) r.value = k.r;
+    if(rir && k.rir) rir.value = k.rir;
+    if(k.rirOpen) toggleRirInput(exId);
+    if(k.type && k.type !== 'normal') logSetType(exId, k.type);
+  }
+  if(REST_EX && REST_UNTIL > Date.now() && logBlock(REST_EX)) startRest(REST_EX, REST_UNTIL);
+}
+// Deep links (a lock-screen "log this set" notification, ?openLog=) used to open the log sheet
+// on the exercise; now they bring that exercise's card into view and put the cursor in its
+// weight box.
+function focusLogBlock(exId){
+  const block = logBlock(exId); if(!block) return false;
+  try{ block.scrollIntoView({ block:'start', behavior:'smooth' }); }catch(e){ block.scrollIntoView(); }
+  const w = lf(exId,'w'); if(w) w.focus({ preventScroll:true });
+  return true;
 }
 // Jeff, Aug 30: "the 'when to add weight next' shows when you tap to log a set. I feel most
 // people ... I do a set and THEN tap log a set. so I would see the added weight after my set."
@@ -2082,31 +2042,28 @@ async function openLogSheet(sid, exId){
 // (below) turns it from a one-time pre-set prediction into live, running feedback: log your first
 // set and the box updates using what you actually just did, same as looking at it again after
 // setting the bar down instead of before picking it up.
-// Reads recName AND the sheet element itself at call time, into the closure below, rather than
-// re-reading LOGVIEW once the fetch resolves — LOGVIEW is one shared global reused for whichever
-// log sheet is currently open (editLogSet/saveLogSet reassign it to a freshly reopened sheet), so
-// a slow response landing after the user closed this sheet and opened a DIFFERENT exercise's would
-// otherwise render THIS exercise's stale advice into the NEW sheet's #logRec (cold-review catch).
-// A second, same-sheet race is also possible: log two sets back-to-back (nothing blocks the
-// "+ Add" button while the previous refresh is still in flight) and the two GETs can resolve out
-// of order, painting set 1's now-stale advice over set 2's correct one with no error and nothing
-// visibly wrong. Guarded with a per-sheet counter stashed directly on the element (sheetEl
-// already uniquely identifies "this open sheet" — no separate map to keep in sync) — each call
-// stamps the next number and only the response matching the CURRENT stamp is allowed to render.
-function refreshLogRec(){
-  const recName = LOGVIEW && LOGVIEW.recName;
-  const sheetEl = LOGVIEW && LOGVIEW.sheetEl;
-  if(!recName || !sheetEl) return;
-  const mySeq = (sheetEl._recSeq = (sheetEl._recSeq||0) + 1);
+// v312: one box per exercise card, found through its own card element (captured into the closure
+// below at call time) -- a slow response landing after the page re-rendered or was left must not
+// paint into whatever is on screen now. A same-card race is also possible: log two sets back-to-
+// back and the two GETs can resolve out of order, painting set 1's now-stale advice over set 2's
+// correct one with no error and nothing visibly wrong. Guarded with a per-card counter stashed on
+// the element -- each call stamps the next number and only the response matching the CURRENT
+// stamp is allowed to render.
+function refreshLogRec(exId){
+  const block = logBlock(exId); if(!block) return;
+  const recName = block.dataset && block.dataset.rec;
+  if(typeof recName !== 'string' || !recName) return;
+  const mySeq = (block._recSeq = (typeof block._recSeq === 'number' ? block._recSeq : 0) + 1);
   H.get('/api/progress/exercise/'+encodeURIComponent(recName)).then(r=>{
-    if(sheetEl._recSeq !== mySeq) return;   // superseded by a newer refresh on this same sheet
-    const box=sheetEl.querySelector('#logRec'); if(!box||!r||r.error) return;
+    if(block._recSeq !== mySeq) return;   // superseded by a newer refresh on this same card
+    if(!document.body.contains(block)) return;   // the page re-rendered or was left meanwhile
+    const box=block.querySelector('[data-f="rec"]'); if(!box||!r||r.error) return;
     const U=r.unit||'lb';
     // A pull-up or dip stores weight 0 — "at 0 lb" reads as a bug, "at bodyweight" reads as English.
     const W=w=>(Number(w)>0? `${w} ${U}` : 'bodyweight');
     if(r.ready) box.innerHTML=`<div class="log-rec up" role="button" tabindex="0"
-        onclick="useSuggested(${r.ready.suggested})"
-        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();useSuggested(${r.ready.suggested});}">
+        onclick="useSuggested('${exId}',${r.ready.suggested})"
+        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();useSuggested('${exId}',${r.ready.suggested});}">
         <span class="lr-ic" aria-hidden="true">↑</span>
         <span class="lr-t">${r.ready.bodyweight
           ? `Add <b>${r.ready.step} ${U}</b> today`
@@ -2125,16 +2082,16 @@ function refreshLogRec(){
         <span class="lr-t">One more like that</span>
         <span class="lr-why">hit ${r.soon.targetRepsMax} reps at ${W(r.soon.weight)} again and the weight goes up</span>
       </div>`;
-    // Nothing to advise yet. Say what is coming anyway — otherwise the one feature that tells you
-    // what to do next is only ever explained on a tab a new user has no reason to open. This is a
-    // catch-all on purpose: the box must never render empty, whatever shape the history is in.
-    else box.innerHTML=`<div class="log-rec soon">
+    // Nothing to advise yet. With a seeded working weight there is still something personal to
+    // say; otherwise the card stays clean -- v312: with every exercise's logger on one page, the
+    // generic "here's how this works" box repeated on each fresh lift read as clutter, so that
+    // one sentence lives once, in the note under the workout list (openSession).
+    else if(r.seed) box.innerHTML=`<div class="log-rec soon">
         <span class="lr-ic" aria-hidden="true">⋯</span>
         <span class="lr-t">When to add weight</span>
-        <span class="lr-why">${r.seed
-          ? `Your working weight is ${r.seed.weight} ${U}. Hit the top of your rep range at that weight and this box gives you your next working weight.`
-          : `Hit the top of your rep range two sessions in a row at the same weight. Then this box gives you your next working weight.`}</span>
+        <span class="lr-why">Your working weight is ${r.seed.weight} ${U}. Hit the top of your rep range at that weight and this box gives you your next working weight.</span>
       </div>`;
+    else box.innerHTML='';
   }).catch(()=>{});
 }
 // NOTE: this state deliberately says the SAME thing no matter how much history you have.
@@ -2144,10 +2101,10 @@ function refreshLogRec(){
 // sessions topped out or at what weight, so no status built on it can be reliably true. The
 // box has one job; it now states that job and nothing else, until it has real advice.
 // One tap fills the weight box, so the advice is one action rather than something to memorise.
-function useSuggested(w){
-  const el=document.getElementById('logW'); if(!el) return;
-  el.value=w; updateLoadHint();
-  const box=document.getElementById('logRec'); if(box) box.classList.add('used');
+function useSuggested(exId, w){
+  const el=lf(exId,'w'); if(!el) return;
+  el.value=w; updateLoadHint(exId);
+  const box=lf(exId,'rec'); if(box) box.classList.add('used');
 }
 // Jeff, Aug 31: "do we think this is the best way for us to log? ... a simpler way, a cleaner
 // way?" -- the 4-chip Normal/Warm up/Drop/Failure row used to sit permanently expanded above the
@@ -2159,10 +2116,10 @@ function useSuggested(w){
 // previous set stays visibly obvious even collapsed. It must never be possible to silently log a
 // real working set as a warm-up because the picker quietly stayed open (or closed) on an old
 // choice from a few sets ago.
-function logSetType(key){
-  const seg=document.getElementById('logTypeSeg'); if(!seg) return;
+function logSetType(exId, key){
+  const seg=lf(exId,'typeSeg'); if(!seg) return;
   seg.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on', c.getAttribute('data-t')===key));
-  const pill=document.getElementById('logTypePill');
+  const pill=lf(exId,'typePill');
   if(pill){
     pill.className = `type-pill ${TYPE_CLASS[key]||'t-normal'}`;
     pill.setAttribute('aria-label', `Set type: ${TYPE_LABEL[key]||'Normal'}. Tap to change.`);
@@ -2173,8 +2130,8 @@ function logSetType(key){
 // Tapping the pill reveals the same 4 chips it always had; tapping ANY chip (including the one
 // already selected) re-collapses via logSetType above -- so tapping the current type is a
 // no-op "never mind" close, with no separate cancel button needed.
-function toggleTypeSeg(){
-  const seg=document.getElementById('logTypeSeg'); const pill=document.getElementById('logTypePill');
+function toggleTypeSeg(exId){
+  const seg=lf(exId,'typeSeg'); const pill=lf(exId,'typePill');
   if(!seg||!pill) return;
   seg.classList.remove('hidden'); pill.classList.add('hidden');
 }
@@ -2182,8 +2139,8 @@ function toggleTypeSeg(){
 // addLogSet below): it's an occasional, deliberate read on effort, not something that should
 // occupy a permanent slot in the row for the 1 in 10 sets it actually applies to. Revealed by
 // this button, replacing it in the same slot so the row's width doesn't jump.
-function toggleRirInput(){
-  const btn=document.getElementById('logRirToggle'); const inp=document.getElementById('logRir');
+function toggleRirInput(exId){
+  const btn=lf(exId,'rirBtn'); const inp=lf(exId,'rir');
   if(!btn||!inp) return;
   btn.classList.add('hidden'); inp.classList.remove('hidden'); inp.focus();
 }
@@ -2341,17 +2298,17 @@ function parseQuickLog(raw){
 // logs anything on its own -- so this is purely: same brain, smaller, less competitive body. The
 // separate "Log" checkmark button is gone too; it only ever called addLogSet() after a parse, and
 // the real "+ Add" button right there already does exactly that once the fields are filled.
-function qlApplyParse(raw){
+function qlApplyParse(raw, exId){
   const p = parseQuickLog(raw);
   // conflicting unit -> fill NOTHING (see the block comment above); everything else fills only
   // the parts actually said, leaving already-typed boxes alone
   if(p && !(p.unit && p.unit !== myUnit())){
-    if(p.weight!==null){ const w=document.getElementById('logW'); if(w){ w.value=p.weight; if(typeof updateLoadHint==='function') updateLoadHint(); } }
-    if(p.reps!==null){ const el=document.getElementById('logR'); if(el) el.value=p.reps; }
+    if(p.weight!==null){ const w=lf(exId,'w'); if(w){ w.value=p.weight; updateLoadHint(exId); } }
+    if(p.reps!==null){ const el=lf(exId,'r'); if(el) el.value=p.reps; }
     // RIR now starts hidden behind the "RIR" toggle (v259) -- filling the field without also
     // revealing it would silently set an RIR value the user can never see or verify on screen.
-    if(p.rir!==null){ const el=document.getElementById('logRir'); if(el){ el.value=p.rir; el.classList.remove('hidden'); const btn=document.getElementById('logRirToggle'); if(btn) btn.classList.add('hidden'); } }
-    if(p.setType!==null) logSetType(p.setType);
+    if(p.rir!==null){ const el=lf(exId,'rir'); if(el){ el.value=p.rir; el.classList.remove('hidden'); const btn=lf(exId,'rirBtn'); if(btn) btn.classList.add('hidden'); } }
+    if(p.setType!==null) logSetType(exId, p.setType);
   }
 }
 // The worked example now lives in the small note line under the row instead of inside a fake
@@ -2378,21 +2335,18 @@ function qlExample(){ return QL_EXAMPLES[Math.floor(Math.random()*QL_EXAMPLES.le
 // through its own keyboard's mic into a plain number field. The transcript re-parses as it
 // grows, so the fields fill while still talking. Recording state shows in the LIVE gold (that's
 // what gold means in this app), never red.
-let QL_REC = null;
+let QL_REC = null, QL_EX = null;   // QL_EX: which exercise's card the mic is held on (v312)
 function qlRecUi(on){
-  // the LAST .ql-mic-icon, same reasoning as the old .ql-field lookup this replaces: for ~200ms
-  // after closeSheet a dismissed sheet is still in the DOM animating out, and a plain
-  // querySelector would style THAT stale one instead of the live one (cold-review catch, v244).
-  const btns = document.querySelectorAll('.ql-mic-icon');
-  const b = btns.length ? btns[btns.length-1] : null;
+  const b = QL_EX ? lf(QL_EX,'mic') : null;
   if(b) b.classList.toggle('ql-rec', on);
 }
-function qlMicDown(ev){
+function qlMicDown(ev, exId){
   if(ev && ev.preventDefault) ev.preventDefault();               // no text-select / scroll on hold
   if(QL_REC) return;   // a second finger while already listening must not orphan the first recognition (cold-review catch)
   try{ if(ev && ev.target && ev.target.setPointerCapture && ev.pointerId !== undefined) ev.target.setPointerCapture(ev.pointerId); }catch(e){}
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const w = document.getElementById('logW');
+  QL_EX = exId;
+  const w = lf(exId,'w');
   if(!SR){ if(w) w.focus(); return; }
   try{
     QL_REC = new SR();
@@ -2401,7 +2355,7 @@ function qlMicDown(ev){
     QL_REC.onresult = (e)=>{
       let txt = '';
       for(let i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript;
-      qlApplyParse(txt);
+      qlApplyParse(txt, exId);
     };
     QL_REC.onend = ()=>{ QL_REC = null; qlRecUi(false); };
     QL_REC.onerror = ()=>{ QL_REC = null; qlRecUi(false); if(w) w.focus(); };  // mic denied/unavailable -> keyboard path
@@ -2413,40 +2367,6 @@ function qlMicUp(){
   if(QL_REC){ try{ QL_REC.stop(); }catch(e){} }
   qlRecUi(false);
 }
-function renderLogSets(s, justLoggedId){
-  // Jeff, Sep 1: "when I edit a set...it goes back to just the log page without showing the
-  // other sets." Root cause: saveLogSet/delLogSetConfirmed call closeAllSheets() then immediately
-  // openLogSheet() -- but closeAllSheets() only strips the .show class synchronously; the actual
-  // DOM removal of the old sheet(s) is deferred 200ms (for the close transition, see its own
-  // comment). openLogSheet's freshly-appended sheet has its OWN #logSetList, so for that 200ms
-  // window TWO elements share id="logSetList" -- the dying old one (still first in document
-  // order, still holding the pre-edit rows) and the new visible one (empty). A plain
-  // document.getElementById('logSetList') always resolves to the OLD one, so this function wrote
-  // the freshly-fetched sets into an element that was about to be deleted -- the sheet on screen
-  // never got populated. Scoping the lookup to LOGVIEW.sheetEl (the exact sheet this call is
-  // meant to fill, always stamped right before every renderLogSets call site) sidesteps the id
-  // collision instead of touching closeAllSheets' close-transition timing.
-  const list=(LOGVIEW&&LOGVIEW.sheetEl)?LOGVIEW.sheetEl.querySelector('#logSetList'):document.getElementById('logSetList');
-  if(!list) return;
-  const mine=(s.logs&&s.logs[ME.id])||[];
-  const exLogs=mine.filter(l=>l.exerciseId===LOGVIEW.exId).sort((a,b)=>(a.set||0)-(b.set||0));
-  if(!exLogs.length){ list.innerHTML='<div class="muted" style="padding:10px 2px">No sets logged yet.</div>'; return; }
-  // Prefer the loadType stamped on the set when it was logged; fall back to the exercise's
-  // current tag only for sets predating the stamp. Re-tagging an exercise must not change
-  // how sets already logged under the old meaning are displayed.
-  const fallback = (LOGVIEW && LOGVIEW.loadType) || '';
-  const suffixFor = l => { const t = l.loadType || fallback;
-    return t==='pair' ? ' each' : t==='added' ? ' added' : ''; };
-  // RIR (task #62) is optional per set - only shown when actually tracked, never a fabricated
-  // "RIR 0" for sets logged before this existed or where it was just left blank.
-  const rirFor = l => (l.rir!==undefined && l.rir!==null) ? ` · RIR ${l.rir}` : '';
-  list.innerHTML = exLogs.map(l=>`<div class="set-row" onclick="editLogSet('${l.id}')">
-      <div class="set-n">${l.set||'·'}</div>
-      <div class="set-vals"><b>${Number(l.weight)||0} ${unitOf(l)}${suffixFor(l)}</b> · <span class="sub">${Number(l.reps)||0} reps${rirFor(l)}</span></div>
-      <span class="type-tag ${TYPE_CLASS[l.setType]||'t-normal'}">${TYPE_LABEL[l.setType]||'Normal'}</span>
-      ${l.isPr?`<span class="type-tag type-tag-pr${l.id===justLoggedId?' pr-pop':''}">PR</span>`:''}
-    </div>`).join('');
-}
 // v253 (audit finding): the single most-tapped action in the whole app — logging a set — had no
 // double-tap guard at all, unlike everywhere else this exact class of bug has already been found
 // and fixed (confirmSheet's stacking guard, applyCrop's _crop.done, the approve/reject status
@@ -2454,27 +2374,29 @@ function renderLogSets(s, justLoggedId){
 // POSTs and logged the same set twice. Same shape as applyCrop's guard: block re-entry for the
 // duration of the network round-trip, release it whether the save succeeded or failed.
 let ADDLOG_BUSY = false;
-async function addLogSet(){
+async function addLogSet(exId){
   if(ADDLOG_BUSY) return;
-  const w=document.getElementById('logW').value, r=document.getElementById('logR').value;
-  const rirEl=document.getElementById('logRir'), rir=rirEl?rirEl.value:'';
+  const block = logBlock(exId); if(!block) return;
+  const sid = block.dataset.sid;
+  const wEl=lf(exId,'w'), rEl=lf(exId,'r'), rirEl=lf(exId,'rir');
+  const w=wEl?wEl.value:'', r=rEl?rEl.value:'', rir=rirEl?rirEl.value:'';
   // reps are required — a set with a weight and no reps used to save as reps:0, which then
   // read as a failed set. Weight may legitimately be blank/0 for bodyweight movements. RIR is
   // optional (task #62) - blank just means it was not tracked for this set.
   if(!(Number(r) > 0)){ alert('How many reps did you do?'); return; }
-  const seg=document.getElementById('logTypeSeg');
+  const seg=lf(exId,'typeSeg');
   const type=(seg&&seg.querySelector('.chip.on'))?seg.querySelector('.chip.on').getAttribute('data-t'):'normal';
   ADDLOG_BUSY = true;
   try {
-    const s=await H.post(`/api/sessions/${LOGVIEW.sid}/log`,{exerciseId:LOGVIEW.exId,weight:w,reps:r,setType:type,rir});
+    const s=await H.post(`/api/sessions/${sid}/log`,{exerciseId:exId,weight:w,reps:r,setType:type,rir});
     // Leave what was typed in the boxes if it did not save. They were cleared unconditionally, so
     // a failed request threw the set away and you had to remember it and type it again.
     if(s.error){ alert(s.error); return; }
     // v235: the PR chip pops in ONLY on the set that was just logged - a re-render must not
     // replay the animation on every old PR in the list. Newest `at` among my sets = this one.
-    const justMine = ((s.logs&&s.logs[ME.id])||[]).filter(l=>l.exerciseId===LOGVIEW.exId);
+    const justMine = ((s.logs&&s.logs[ME.id])||[]).filter(l=>l.exerciseId===exId);
     const newest = justMine.slice().sort((a,b)=>String(b.at).localeCompare(String(a.at)))[0];
-    LOGVIEW.sid && renderLogSets(s, newest && newest.isPr ? newest.id : null);
+    renderExSets(exId, s, newest && newest.isPr ? newest.id : null);
     // Jeff, Aug 30: "how do we think we can make this more convenient" -- weight and reps used to
     // clear to blank after every set, so three straight sets of the same weight meant retyping
     // the same numbers three times. Straight sets (same weight, same reps) are the overwhelmingly
@@ -2483,34 +2405,34 @@ async function addLogSet(){
     // deliberately NOT carried over: it is a per-set read on how much was left in the tank, and a
     // stale leftover number here would misrecord effort on a set it was never actually true for
     // (e.g. 2 RIR on set 1, all-out on set 3) — silently wrong is worse than asking again.
-    document.getElementById('logW').value=w; document.getElementById('logR').value=r;
+    if(wEl) wEl.value=w; if(rEl) rEl.value=r;
     // RIR collapses back behind its toggle too, not just blanks -- same "ask again" reasoning as
     // clearing the value itself: leaving it open and empty after a set that didn't have one typed
     // still invites a leftover glance/assumption it applies to the next set. Both jobs, one line.
-    if(rirEl){ rirEl.value=''; rirEl.classList.add('hidden'); const rirBtn=document.getElementById('logRirToggle'); if(rirBtn) rirBtn.classList.remove('hidden'); }
+    if(rirEl){ rirEl.value=''; rirEl.classList.add('hidden'); const rirBtn=lf(exId,'rirBtn'); if(rirBtn) rirBtn.classList.remove('hidden'); }
     // Live feedback instead of a one-time prediction — see refreshLogRec's own comment. Fire-and-
     // forget: the sets list above has already updated and must not wait on this.
-    refreshLogRec();
-    startRest();
-    // Update the "✓ N sets logged" badge on the workout page behind this sheet right now, instead
-    // of only the next time it's opened. Fire-and-forget on purpose — the sheet above has already
-    // been updated and must not wait on this.
-    if(LOGVIEW.sid) openSession(LOGVIEW.sid, {silent:true});
+    refreshLogRec(exId);
+    startRest(exId);
   } finally {
     ADDLOG_BUSY = false;
   }
 }
-async function editLogSet(logId){
-  const s=await H.get('/api/sessions/'+LOGVIEW.sid);
-  const mine=(s.logs&&s.logs[ME.id])||[];
+// Editing a logged set is the one small sheet left in the logging flow (Jeff's target screenshot
+// is the posted-workout view, whose Edit works the same way): Save/Delete close it and the card
+// underneath refreshes itself in place.
+async function editLogSet(sid, exId, logId){
+  const s=await H.get('/api/sessions/'+sid);
+  const mine=(s&&s.logs&&s.logs[ME.id])||[];
   const l=mine.find(x=>x.id===logId); if(!l) return;
+  const block = logBlock(exId); const loadType = block ? (block.dataset.load||'') : '';
   history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet=document.createElement('div'); sheet.className='sheet-back';
   sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>Edit set</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
       <div class="ex-sub">Set ${l.set||''}</div>
-      <label class="muted" style="font-size:12px">Weight (${unitOf(l)}${(LOGVIEW&&LOGVIEW.loadType==='pair')?', each hand':(LOGVIEW&&LOGVIEW.loadType==='added')?' added':''})</label>
+      <label class="muted" style="font-size:12px">Weight (${unitOf(l)}${loadType==='pair'?', each hand':loadType==='added'?' added':''})</label>
       <input id="edW" type="number" inputmode="decimal" step="any" value="${l.weight}">
       <label class="muted" style="font-size:12px">Reps</label>
       <input id="edR" type="number" inputmode="tel" pattern="[0-9]*" value="${l.reps}">
@@ -2518,42 +2440,46 @@ async function editLogSet(logId){
       <input id="edRir" type="number" inputmode="tel" pattern="[0-9]*" value="${(l.rir!==undefined&&l.rir!==null)?l.rir:''}">
       <label class="muted" style="font-size:12px">Type</label>
       <select id="edT">${SET_TYPES.map(t=>`<option value="${t.key}"${t.key===l.setType?' selected':''}>${t.label}</option>`).join('')}</select>
-      <button class="blue" onclick="saveLogSet('${logId}')">Save</button>
-      <button class="red" style="margin-top:8px" onclick="delLogSet('${logId}')">Delete set</button>
+      <button class="blue" onclick="saveLogSet('${sid}','${exId}','${logId}')">Save</button>
+      <button class="red" style="margin-top:8px" onclick="delLogSet('${sid}','${exId}','${logId}')">Delete set</button>
     </div>`;
   sheet.onclick=(ev)=>{ if(ev.target===sheet) closeSheet(); };
   document.body.appendChild(sheet);
   requestAnimationFrame(()=>sheet.classList.add('show'));
 }
-async function saveLogSet(logId){
+async function saveLogSet(sid, exId, logId){
   const w=document.getElementById('edW').value, r=document.getElementById('edR').value, t=document.getElementById('edT').value;
   const rirEl=document.getElementById('edRir'), rir=rirEl?rirEl.value:'';
-  const s=await H.put(`/api/sessions/${LOGVIEW.sid}/log/${logId}`,{weight:w,reps:r,setType:t,rir});
+  const s=await H.put(`/api/sessions/${sid}/log/${logId}`,{weight:w,reps:r,setType:t,rir});
   if(s.error){ alert(s.error); return; }
-  const sid = LOGVIEW.sid;
-  // closeAllSheets, not closeSheet — this can be stacked on top of the log sheet it opened from
-  // (editLogSet), and both are about to be replaced by the fresh one below.
-  closeAllSheets(); openLogSheet(LOGVIEW.sid, LOGVIEW.exId);
-  if(sid) openSession(sid, {silent:true});
+  closeSheet();
+  // The PUT already returns the updated session -- paint it straight in, then let the
+  // "when to add weight" box catch up on its own.
+  if(logBlock(exId)){ renderExSets(exId, s); refreshLogRec(exId); }
 }
-async function delLogSet(logId){
-  confirmSheet('Delete set?', "The set comes off this workout — there's no undo.", 'Delete set', () => delLogSetConfirmed(logId));
+async function delLogSet(sid, exId, logId){
+  confirmSheet('Delete set?', "The set comes off this workout — there's no undo.", 'Delete set', () => delLogSetConfirmed(sid, exId, logId));
 }
-async function delLogSetConfirmed(logId){
-  const s=await H.delete(`/api/sessions/${LOGVIEW.sid}/log/${logId}`);
+async function delLogSetConfirmed(sid, exId, logId){
+  const s=await H.delete(`/api/sessions/${sid}/log/${logId}`);
   if(s.error){ alert(s.error); return; }
-  const sid = LOGVIEW.sid;
-  // closeAllSheets, not closeSheet — same reasoning as saveLogSet above.
-  closeAllSheets(); openLogSheet(LOGVIEW.sid, LOGVIEW.exId);
-  if(sid) openSession(sid, {silent:true});
+  // confirmSheet is stacked on top of the Edit-set sheet -- both go.
+  closeAllSheets();
+  if(logBlock(exId)){ renderExSets(exId, s); refreshLogRec(exId); }
 }
-let REST_TIMER=null;
-function startRest(){
-  const box=document.getElementById('logRest'); if(!box) return;
-  let sec=60; box.innerHTML=`<div class="rest"><span>Rest</span><b id="restN">1:00</b><span>· tap to dismiss</span></div>`;
-  box.querySelector('.rest').onclick=()=>{ clearInterval(REST_TIMER); box.innerHTML=''; };
+let REST_TIMER=null, REST_EX=null, REST_UNTIL=0;
+// One rest timer for the whole page: starting one on a card stops whatever was ticking on another.
+// `until` (ms epoch) is passed by restoreLogState so a re-render resumes the countdown where it was.
+function startRest(exId, until){
   clearInterval(REST_TIMER);
-  REST_TIMER=setInterval(()=>{ sec--; const el=document.getElementById('restN'); if(el) el.textContent=`${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`; if(sec<=0){ clearInterval(REST_TIMER); box.innerHTML=''; } },1000);
+  document.querySelectorAll('.ex-log [data-f="rest"]').forEach(el=>{ el.innerHTML=''; });
+  const box=lf(exId,'rest'); if(!box) return;
+  REST_EX = exId; REST_UNTIL = until || (Date.now() + 60*1000);
+  const restLeft = ()=>{ const sec=Math.max(0, Math.round((REST_UNTIL-Date.now())/1000)); return `${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`; };
+  const restStop = ()=>{ clearInterval(REST_TIMER); REST_EX=null; REST_UNTIL=0; box.innerHTML=''; };
+  box.innerHTML=`<div class="rest"><span>Rest</span><b data-f="restN">${restLeft()}</b><span>· tap to dismiss</span></div>`;
+  box.querySelector('.rest').onclick=restStop;
+  REST_TIMER=setInterval(()=>{ const el=box.querySelector('[data-f="restN"]'); if(el) el.textContent=restLeft(); if(REST_UNTIL-Date.now()<=0) restStop(); },1000);
 }
 // Jeff, Aug 30: "I accidentally logged my work[out]... should we put an 'are you sure' style
 // button when logging instead of reactivating." Log & Finish used to fire lock() on a single tap
@@ -2910,8 +2836,7 @@ async function exitWorkoutEdit(id){
   const s = await H.get('/api/sessions/'+id);
   if(!nothingNavigatedSince(epoch)) return;
   // v254: quiet/silent, same reasoning as enterWorkoutEdit() above -- edit mode was never pushed to
-  // history, so landing back on the session/post must not push a duplicate entry either. viewPost's
-  // opts.silent has no logSheetStillOpenFor-style gate (unlike openSession's), so it's safe as-is;
+  // history, so landing back on the session/post must not push a duplicate entry either.
   // openSession needs opts.quiet specifically -- see openSession's own comment for why.
   if(s && s.posts && s.posts[ME.id]) viewPost(id, ME.id, {silent:true}); else openSession(id, {quiet:true});
 }
@@ -4983,9 +4908,8 @@ function closeSheet(fromPopstate){
 // them are live afterward, so they're all collapsed back to CURRENT_NAV_STATE here -- otherwise a
 // later Back press pops through stale 'sheet' markers with no sheet left to dismiss, and the
 // popstate handler's own fallback for an unrecognized state strands the user on the Home tab
-// rather than wherever they actually were. Both callers immediately reopen a fresh sheet right
-// after this (openLogSheet), which pushes its own new entry on top -- net one entry per one
-// actually-open sheet, same invariant closeSheet()/dismissConfirm() keep for the single-sheet case.
+// rather than wherever they actually were. Same invariant closeSheet()/dismissConfirm() keep for
+// the single-sheet case.
 function closeAllSheets(){
   const hadSheets = document.querySelectorAll('.sheet-back').length > 0;
   document.querySelectorAll('.sheet-back').forEach(s=>{ s.classList.remove('show'); setTimeout(()=>s.remove(),200); });
@@ -5658,9 +5582,8 @@ async function toggleFollow(id, state){
 // resolves the user may already be looking at something else entirely: another sheet they opened,
 // or a different tab. Barging in at that point with a stale reopen/navigate is not just visually
 // jarring -- for editBio it silently yanks the user off whatever they moved on to and back to
-// their own profile with zero warning. Same principle openSession's own `silent` refresh already
-// applies (see SESSION_SILENT_SEQ/logSheetStillOpenFor above): a background response is only
-// allowed to act on the screen if that screen is still actually the one in front of the user.
+// their own profile with zero warning. The principle: a background response is only allowed to
+// act on the screen if that screen is still actually the one in front of the user.
 // v251: factored out of stillOnProfileWithNothingElseOpen below so callers that don't specifically
 // need "and it's the Profile tab" (toggleFollow, the posted-workout action cluster -- see their own
 // comments) can use the same UI_EPOCH staleness check on its own.
@@ -6019,7 +5942,7 @@ async function tryBoot(){
       const [sid, exId] = openLog.split(':');
       // v262 (cold-review fix): gate openLogSheet on openSession actually succeeding -- see the
       // comment at openSession's `return true;` for why calling both unconditionally double-alerted.
-      if(sid && exId){ const opened = await openSession(sid); if(opened) await openLogSheet(sid, exId); return; }
+      if(sid && exId){ const opened = await openSession(sid); if(opened) focusLogBlock(exId); return; }
     }
     home();
     return;
@@ -6067,7 +5990,7 @@ if('serviceWorker' in navigator && typeof navigator.serviceWorker.addEventListen
       if(!ME || !ME.id) return;
       // same success-gating as tryBoot's ?openLog= branch above -- see openSession's `return true;` comment.
       const opened = await openSession(d.sid);
-      if(opened) await openLogSheet(d.sid, d.exId);
+      if(opened) focusLogBlock(d.exId);
     }
   });
 }

@@ -4,9 +4,9 @@
 // regression coverage for those fixes, same pattern as audit-v253-client.mjs/audit-v254-nav.mjs:
 //   1. openSession now returns true only on its successful-render path (every pre-existing caller
 //      already ignored its return value, so this was safe to add).
-//   2. Both deep-link call sites gate openLogSheet() on that return value -- without this, a dead
-//      or expired session double-alerted (openSession's own alert, then openLogSheet's SEPARATE
-//      fetch-and-alert stacking right on top, since openLogSheet has no _expired guard at all).
+//   2. Both deep-link call sites gate their follow-up (v312: focusLogBlock, the inline card;
+//      before that openLogSheet) on that return value -- without this, a dead or expired session
+//      double-alerted (openSession's own alert, then the sheet's SEPARATE fetch-and-alert).
 //   3. The serviceWorker 'message' listener is registered synchronously, before BOOT_DONE (the
 //      named boot IIFE) has resolved ME -- a postMessage arriving in that window used to call
 //      openSession() immediately (TOKEN alone passes server auth) and crash deep inside its own
@@ -109,7 +109,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   vm.runInContext(SRC, ctx, { filename: 'public/app.js' });
   await vm.runInContext('BOOT_DONE', ctx);
   ok(alertCalls.length === 1, `tryBoot dead-link fires exactly one alert (got ${alertCalls.length}: ${JSON.stringify(alertCalls)})`);
-  ok(sessionFetchCalls.length === 1, `only openSession's fetch ran, openLogSheet's own fetch was skipped (got ${sessionFetchCalls.length} session fetches: ${JSON.stringify(sessionFetchCalls)})`);
+  ok(sessionFetchCalls.length === 1, `only openSession's fetch ran (got ${sessionFetchCalls.length} session fetches: ${JSON.stringify(sessionFetchCalls)})`);
 }
 
 // ---- Test B: live deep link (?openLog=goodsid:ex1) via tryBoot -- must proceed normally ----
@@ -120,9 +120,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   vm.runInContext(SRC, ctx, { filename: 'public/app.js' });
   await vm.runInContext('BOOT_DONE', ctx);
   ok(alertCalls.length === 0, `tryBoot live-link fires no alert (got ${alertCalls.length}: ${JSON.stringify(alertCalls)})`);
-  // openSession fetches the session once; openLogSheet fetches it again independently (its own
-  // documented separate fetch) -- so 2 total fetches of goodsid is the correct, expected count.
-  ok(sessionFetchCalls.length === 2, `both openSession AND openLogSheet fetched goodsid (got ${sessionFetchCalls.length}: ${JSON.stringify(sessionFetchCalls)})`);
+  // v312: the log sheet is gone -- the deep link opens the session (one fetch) and then just
+  // scrolls to / focuses that exercise's inline card (focusLogBlock, no fetch of its own).
+  ok(sessionFetchCalls.length === 1, `openSession fetched goodsid once and focusLogBlock needed no fetch (got ${sessionFetchCalls.length}: ${JSON.stringify(sessionFetchCalls)})`);
 }
 
 // ---- Test C: message listener race -- postMessage arrives BEFORE BOOT_DONE resolves ----
@@ -142,10 +142,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const meNow = vm.runInContext('ME', ctx);
   ok(meNow === null || meNow === undefined, 'ME is still unset during the race window (confirms this is a real race, not a no-op test)');
   await vm.runInContext('BOOT_DONE', ctx);
-  await sleep(5); // let the now-unblocked listener's own awaits (openSession/openLogSheet) settle
+  await sleep(5); // let the now-unblocked listener's own awaits (openSession) settle
   const meAfter = vm.runInContext('ME', ctx);
   ok(meAfter && meAfter.id === 'me1', 'ME is populated once BOOT_DONE resolves');
-  ok(sessionFetchCalls.length === 2, `deep link proceeds correctly once boot completes (got ${sessionFetchCalls.length} fetches, expected 2: openSession + openLogSheet)`);
+  ok(sessionFetchCalls.length === 1, `deep link proceeds correctly once boot completes (got ${sessionFetchCalls.length} fetches, expected 1: openSession; v312 focusLogBlock fetches nothing)`);
   ok(alertCalls.length === 0, `no alert fired for the delayed-but-valid deep link (got ${JSON.stringify(alertCalls)})`);
 }
 

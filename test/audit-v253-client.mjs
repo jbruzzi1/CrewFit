@@ -69,6 +69,13 @@ const logRir = makeEl('INPUT'); logRir.value = '';
 // double-submit-guard test below. Values only matter for that test (a real workout name / blank
 // date-location-length-note / default private visibility), not for anything else in this file.
 const wname = { value: '' }, dtField = { value: '' }, loc = { value: '' }, len = { value: '' }, note = { value: '' }, vis = { value: 'private' };
+// v312: the log sheet is gone -- addLogSet(exId) reads its fields from the exercise's own inline
+// card (.ex-log[data-ex]) via data-f, not from document-wide ids. One fake card, same stand-ins.
+const setList = makeEl('DIV');
+const exLogCard = { dataset: { sid: 'sess1', ex: 'ex1', load: '' },
+  querySelector: (sel) => sel === '[data-f="w"]' ? logW : sel === '[data-f="r"]' ? logR : sel === '[data-f="rir"]' ? logRir
+    : sel === '[data-f="sets"]' ? setList : null,
+  querySelectorAll: () => [] };
 const byId = {
   app: appEl, nav: navEl, logW, logR, logRir,
   wname, dt: dtField, loc, len, note, vis,
@@ -78,7 +85,7 @@ const doc = {
   body,
   createElement: () => makeEl('DIV'),
   getElementById: (id) => (id in byId) ? byId[id] : genericEl(),
-  querySelector: (sel) => sel === '.nav button.active' ? { dataset: { tab: 'me' } } : sel === '.sheet-back' ? (body._children.filter(c => c.className === 'sheet-back').at(-1) || null) : genericEl(),
+  querySelector: (sel) => sel === '.nav button.active' ? { dataset: { tab: 'me' } } : sel === '.sheet-back' ? (body._children.filter(c => c.className === 'sheet-back').at(-1) || null) : sel === '.ex-log[data-ex="ex1"]' ? exLogCard : genericEl(),
   querySelectorAll: () => [],
   addEventListener() {}, documentElement: genericEl(), head: genericEl(), cookie: '', readyState: 'complete',
 };
@@ -285,7 +292,7 @@ console.log('\n=== Boot: a network/server hiccup must not log out a valid sessio
 
 console.log('\n=== addLogSet(): double-tap guard ===');
 {
-  vm.runInContext('LOGVIEW = {sid:"sess1", exId:"ex1"}; ME = {id:"me1"};', ctx);
+  vm.runInContext('ME = {id:"me1"};', ctx);
   logW.value = '135'; logR.value = '8'; logRir.value = '';
   pending.clear();
   let postCount = 0;
@@ -295,8 +302,8 @@ console.log('\n=== addLogSet(): double-tap guard ===');
     return baseMock(url, opts);
   };
 
-  const p1 = addLogSet(); // first tap
-  const p2 = addLogSet(); // accidental fast second tap, before the first request has resolved
+  const p1 = addLogSet('ex1'); // first tap
+  const p2 = addLogSet('ex1'); // accidental fast second tap, before the first request has resolved
   ok(postCount === 1, `a fast double-tap on Log Set only fires ONE request, not two (posted ${postCount} times)`);
   pendingReleaseAll('/api/sessions/sess1/log'); // release whatever actually went out
   await Promise.all([p1, p2]);
@@ -307,7 +314,7 @@ console.log('\n=== addLogSet(): double-tap guard ===');
   // put them back, same as the user typing the next set.)
   postCount = 0; pending.clear();
   logW.value = '145'; logR.value = '6';
-  const p3 = addLogSet();
+  const p3 = addLogSet('ex1');
   pendingReleaseAll('/api/sessions/sess1/log');
   await p3;
   ok(postCount === 1, `the guard releases once the request completes -- a later tap logs a new set normally (posted ${postCount} times)`);

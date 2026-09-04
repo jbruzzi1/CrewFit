@@ -1,3 +1,6 @@
+// v312 note: the per-exercise log sheet this file describes is gone (logging is inline on the
+// workout page now), but the stack it tests still happens -- the Delete-set confirmSheet stacks on
+// top of the Edit-set sheet, and delLogSetConfirmed() closes both with closeAllSheets(). Kept as-is.
 // v247: closeSheet() used to grab the FIRST .sheet-back in document order — the OLDEST open
 // sheet. That's invisible almost everywhere because only one sheet is ever open at a time, but
 // editLogSet() stacks a second .sheet-back on top of the still-open log sheet (tap a set row
