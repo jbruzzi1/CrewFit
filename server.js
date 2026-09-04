@@ -39,7 +39,10 @@ webpush.setVapidDetails('mailto:jeff@example.com', vapid.publicKey, vapid.privat
 // commits or fully rolls back, and a SELECT can't return "corrupted," only real rows or a loud
 // connection/query error.
 const db = require('./db');
-const { firstExerciseStartNotification } = require('./notify-helpers');
+// notify-helpers.js's firstExerciseStartNotification() is no longer called from this file (see the
+// comment above POST /api/sessions, Sep 5: the creator no longer gets self-notified on their own
+// workout) -- left required nowhere here on purpose, the function/its test still live in
+// notify-helpers.js and test/first-exercise-notify.mjs, imported directly by the test instead.
 async function load() { return db.load(); }
 async function save(d) { return db.save(d); }
 
@@ -1632,12 +1635,17 @@ app.post('/api/sessions', auth, async (req, res) => {
   await save(DB);
   // notify invited friends
   for (const fid of invites) notify(fid, { title: 'Workout invite', body: `${DB.users[req.userId].displayName} invited you to a workout` });
-  // Jeff, Aug 31: lock-screen nudge naming the exercise you're about to walk up to -- see
-  // notify-helpers.js for the full reasoning and why this is scoped to "starting now," not every
-  // session creation. Self-notifying the creator (not an invited friend) is a new pattern here;
-  // notify() itself doesn't care whose id it's called with.
-  const startNotif = firstExerciseStartNotification(session);
-  if (startNotif) notify(req.userId, startNotif);
+  // Jeff, Aug 31: lock-screen nudge naming the exercise you're about to walk up to, sent to the
+  // CREATOR themselves the moment their own "starting now" session was created (see
+  // notify-helpers.js for the original full reasoning and the START_WINDOW_MS scoping).
+  // Reversed Sep 5: "Push notifications on created workouts shouldn't immediately show for the
+  // creator who made it (they don't need to be notified instantly after making their own
+  // workout)." You already know you just made it -- no push needed to tell you so. Left
+  // firstExerciseStartNotification()/notify-helpers.js and its test in place rather than deleting
+  // them: the decision logic is still correct and still unit-tested, this route just no longer
+  // calls it. public/sw.js's openLog push-click handling and tryBoot's ?openLog= deep-link branch
+  // (app.js) exist only to serve this notification's tap target -- now unreachable via this path,
+  // left as harmless passthrough rather than ripped out, since nothing else generates that link.
   res.json(session);
 });
 

@@ -1848,7 +1848,15 @@ function seedPickerPick(name){
 // pass PUT /api/me/seeds's EX_LIB.some(...) check. Shown as blank rows even when nothing is seeded
 // yet, so it's obvious what to fill in rather than an empty page; anything already seeded that
 // ISN'T one of these six (e.g. added via "+ Add another lift" on a prior visit) is appended after.
-const SEED_DEFAULTS = ['Barbell Back Squat','Conventional Deadlift','Flat Barbell Bench Press','Barbell Overhead Press','Pull-Up','Barbell Row'];
+// Sep 5 (Jeff: "update the default exercises in the starting weight to be the most commonly done
+// lifts for men and women"): same six movement patterns, one swap -- Pull-Up out, Lat Pulldown in.
+// Squat/deadlift/bench/overhead-press/row are consistently the most logged lifts across genders in
+// every major lifting app's own usage data, so those five stayed. Pull-Up was the outlier: it's
+// bodyweight-only (awkward to even call it a "starting WEIGHT" for most people) and a large share
+// of beginners of either sex can't yet do one at all, making it a poor first-day default. Lat
+// Pulldown is the same vertical-pull pattern, has an actual external load to seed, and is one of
+// the most commonly performed pulling exercises in the gym for both men and women.
+const SEED_DEFAULTS = ['Barbell Back Squat','Conventional Deadlift','Flat Barbell Bench Press','Barbell Overhead Press','Lat Pulldown','Barbell Row'];
 // In-memory working copy of what's on screen -- stashed/restored the same way DRAFT is for the
 // create-flow (see openAddExercises's comment above), so a value typed but not yet saved, and a
 // lift just picked from openSeedPicker, both survive the round trip through the library picker.
@@ -1924,9 +1932,7 @@ function renderSeedSetup(){
         : `<button class="txt-btn" style="padding:6px 0" onclick="seedOpenGoal(${i})">+ Set a goal</button>`}
     </div>`).join('');
   $('app').innerHTML = `<div class="wrap">
-    <div class="pick-head lib-head">
-      <h1 style="flex:1">Starting weights</h1>
-    </div>
+    <div class="pp-head"><h1 style="margin:0;flex:1">Starting weights</h1><button class="sec sm" onclick="history.back()">← Back</button></div>
     <div class="muted" style="font-size:13px;margin:2px 2px 14px">Already lifting these? Enter what you're working with now so Progress starts from where you actually are, not from zero.</div>
     ${rows}
     <button class="sec" style="width:100%;margin:2px 0 18px" onclick="seedAddAnother()">+ Add another lift</button>
@@ -5241,13 +5247,13 @@ const WK_CARDS = [
     body:"Didn't create the workout but want a different exercise? Propose a replacement or suggest adding one — the creator approves it before it changes for everyone.",
     hl:{top:33.03,left:2.56,width:94.87,height:67.37} },
   { shot:'taplog',
-    title:'Tap any exercise to log it',
-    body:'Every exercise shows a "Tap to log sets" hint underneath it — but once CrewFit knows your recent numbers, that hint upgrades to a specific suggestion like "Try 140 lb today." Either way, tap in and log your sets.',
-    hl:{top:35.39,left:4.87,width:90.26,height:29.61} },
+    title:'Log sets right on the card',
+    body:"Every exercise on the workout screen has its own weight, reps, and + Add fields built right in — no separate screen to open. Just enter a set and tap + Add.",
+    hl:{top:35.53,left:4.87,width:90.26,height:13.42} },
   { shot:'suggested',
     title:'Watch for the suggested weight',
-    body:'Inside the log sheet, a box shows what to try next based on your recent sessions — tap it to fill the weight in for you. It keeps updating after each set you log today.',
-    hl:{top:56.32,left:4.62,width:90.77,height:18.95} },
+    body:'A box on the card shows what to try next based on your recent sessions — tap it to fill the weight in for you. It keeps updating after each set you log today.',
+    hl:{top:56.18,left:7.44,width:85.13,height:16.98} },
   { shot:'finish',
     title:"Log & Finish when you're done",
     body:"This locks in your sets, counts toward your streak and weekly volume, and lets you post a recap — which is what shows up in your crew's feed.",
