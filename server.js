@@ -204,7 +204,10 @@ function defaultTargetFor(nameOrEx) {
 // the shape before handing it to withDefaults. See isPlainExercise below -- every call site now
 // rejects a malformed element with a normal 400 before it ever reaches here.
 function withDefaults(e) {
-  const name = capStr(e && e.name, 80);             // another user's exercise name renders in your app
+  // currentExerciseName: a tab still running a pre-audit app.js (see EXERCISE_RENAMES) can post an
+  // old library name for a while after deploy; file it under the current one, same as the boot
+  // migration did for everything already stored, so history never splits on a stale client.
+  const name = currentExerciseName(capStr(e && e.name, 80));   // another user's exercise name renders in your app
   const d = defaultTargetFor(name);
   const reps = numIn(e.defaultReps, 10000) || d.reps;
   const max  = numIn(e.defaultRepsMax, 10000) || d.repsMax;
@@ -543,7 +546,11 @@ function publicUser(id) {
 app.get('/api/exercises', async (req, res) => {
   // ownerId is stripped: this route needs no login, and it was handing out a real user id beside
   // every custom exercise name to anyone who asked.
-  const custom = Object.values(DB.customExercises || {}).flat().map(({ ownerId, ...rest }) => sanitizeExercise(rest));
+  const custom = Object.values(DB.customExercises || {}).flat().map(({ ownerId, ...rest }) => sanitizeExercise(rest))
+    // a custom exercise someone made under a name the library has SINCE adopted (the Sep 2026
+    // audit added Dumbbell Romanian Deadlift, Incline Dumbbell Fly, ...) would list twice --
+    // findExLibEntry already resolves that name to the library entry, so show only that one
+    .filter(c => !EX_LIB.some(e => e.name === c.name));
   // computed per request, never at boot — 203 entries is nothing, and startup work in this file
   // has crashed the server three times
   res.json(EX_LIB.concat(custom).map(withTarget));
@@ -629,7 +636,7 @@ app.get('/api/favorites', auth, async (req, res) => {
 // One toggle endpoint, not separate add/remove routes -- the one caller (toggleFavorite() in
 // app.js) always wants "flip it and tell me the new state," same shape as the star it's driving.
 app.post('/api/favorites/toggle', auth, async (req, res) => {
-  const name = capStr((req.body || {}).name, 80);
+  const name = currentExerciseName(capStr((req.body || {}).name, 80));   // stale client, old name -- see EXERCISE_RENAMES
   if (!name) return res.status(400).json({ error: 'name required' });
   const u = DB.users[req.userId];
   u.favoriteExercises = u.favoriteExercises || [];
@@ -2301,12 +2308,12 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
   if (type === 'add' && !isParticipant && !approvedJoin) return res.status(403).json({ error: 'accept the invite first' });
   let edit;
   if (type === 'add') {
-    const name = capStr((req.body || {}).name, 80).trim();
+    const name = currentExerciseName(capStr((req.body || {}).name, 80).trim());   // stale client -- see EXERCISE_RENAMES
     if (!name) return res.status(400).json({ error: 'needs a name' });
     edit = { id: 'se_' + uid(), type: 'add', exerciseId: null, proposedBy: req.userId, swapTo: name, status: 'pending' };
   } else {
     const exerciseId = capStr((req.body || {}).exerciseId, 64);
-    const swapTo = capStr((req.body || {}).swapTo, 80);
+    const swapTo = currentExerciseName(capStr((req.body || {}).swapTo, 80));   // stale client -- see EXERCISE_RENAMES
     edit = { id: 'se_' + uid(), type: 'swap', exerciseId, proposedBy: req.userId, swapTo, status: 'pending' };
   }
   s.suggestedEdits.push(edit);
@@ -3075,7 +3082,8 @@ app.put('/api/me/seeds', auth, async (req, res) => {
   // a working weight is self-correcting (real logs replace it within a week) whereas a
   // self-reported all-time best is permanent, may be unbeatable, and would block the first
   // real record forever.
-  const { exercise, weight, reps, goal } = req.body || {};
+  const { weight, reps, goal } = req.body || {};
+  const exercise = currentExerciseName((req.body || {}).exercise);   // stale client, old name -- see EXERCISE_RENAMES
   if (!EX_LIB.some(e => e.name === exercise))
     return res.status(400).json({ error: 'Pick an exercise from the library' });
   const u = DB.users[req.userId];
@@ -3114,7 +3122,7 @@ app.post('/api/me/trend-picks', auth, async (req, res) => {
   const seen = new Set();
   const clean = [];
   for (const p of picks) {
-    const name = capStr(p, 80);
+    const name = currentExerciseName(capStr(p, 80));   // stale client, old name -- see EXERCISE_RENAMES
     if (!name || seen.has(name)) continue;
     seen.add(name);
     clean.push(name);
@@ -3413,6 +3421,127 @@ function migrateExerciseNames() {
   if (orphans.length) console.log('migrateExerciseNames: ' + orphans.length +
     ' set(s) were ALREADY orphaned before this fix and cannot be named: ' + orphans.slice(0,20).join(', '));
   return stamped;
+}
+
+// Sep 2026 library audit (Jeff: "Flat Dumbbell Press ... should say Flat Dumbbell Bench Press",
+// "Bulgarian split squats should be just one dumbbell", "make corrections throughout the entire
+// exercise library"). Everything in this app keys off the exercise NAME string -- logged sets
+// (exerciseName), PRs (rebuilt from those), favorites, trend picks, seeded lifts, routines, swap
+// variations, pending suggestions and finish history -- so renaming a library entry without
+// touching stored data would split every user's history in two: "Flat Dumbbell Press" up to
+// today, "Flat Dumbbell Bench Press" from tomorrow, with the PR and the progression suggestion
+// lost in between. This map is the single source of truth for old -> current name; the migration
+// below walks every stored reference through it on boot. Idempotent (a name already current is
+// left alone), and it runs BEFORE rebuildAllPrs so PRs regroup under the new names in the same
+// boot. Merged duplicates (Cable Crossover -> Cable Fly) go through the same map. When a future
+// audit renames or merges an entry, add it HERE, never just in exercise-library.json.
+const EXERCISE_RENAMES = {
+  "Flat Dumbbell Press":                "Flat Dumbbell Bench Press",
+  "Incline Dumbbell Press":             "Incline Dumbbell Bench Press",
+  "Decline Dumbbell Press":             "Decline Dumbbell Bench Press",
+  "Incline Machine Press":              "Incline Machine Chest Press",
+  "Incline Smith Machine Press":        "Incline Smith Machine Bench Press",
+  "Overhead Barbell Press":             "Barbell Overhead Press",
+  "Strict Dumbbell Shoulder Press":     "Standing Dumbbell Shoulder Press",
+  "Seated Dumbbell Press":              "Seated Dumbbell Shoulder Press",
+  "Single-Arm Dumbbell Press":          "Single-Arm Dumbbell Shoulder Press",
+  "Lateral Raise":                      "Dumbbell Lateral Raise",
+  "Front Raise":                        "Dumbbell Front Raise",
+  "Rear Delt Fly":                      "Dumbbell Rear Delt Fly",
+  "W Raises":                           "Dumbbell W Raise",
+  "Y Raises":                           "Dumbbell Y Raise",
+  "Shrugs":                             "Barbell Shrug",
+  "Dip (Triceps)":                      "Triceps Dip",
+  "Overhead Dumbbell Extension":        "Overhead Dumbbell Triceps Extension",
+  "Skull Crusher":                      "EZ-Bar Skull Crusher",
+  "Triceps Kickback":                   "Dumbbell Triceps Kickback",
+  "Wide-Grip Pulldown":                 "Wide-Grip Lat Pulldown",
+  "Close-Grip Pulldown":                "Close-Grip Lat Pulldown",
+  "Neutral-Grip Pulldown":              "Neutral-Grip Lat Pulldown",
+  "Hammer Curl":                        "Dumbbell Hammer Curl",
+  "Preacher Curl":                      "EZ-Bar Preacher Curl",
+  "Spider Curl":                        "EZ-Bar Spider Curl",
+  "21s Curl":                           "Barbell 21s Curl",
+  "Cable Curl (Single Arm)":            "Single-Arm Cable Curl",
+  "Crunches":                           "Crunch",
+  "Scissor Kicks":                      "Scissor Kick",
+  "Toe Touchers":                       "Toe Touch Crunch",
+  "Treadmill Walk (incline)":           "Incline Treadmill Walk",
+  "Deadlift (Romanian) to Row":         "Dumbbell Romanian Deadlift to Row",
+  "Wrist Curl":                         "Dumbbell Wrist Curl",
+  "Reverse Wrist Curl":                 "Dumbbell Reverse Wrist Curl",
+  "Good Morning (Seated)":              "Seated Good Morning",
+  "Split Squat (static)":               "Split Squat",
+  "Assisted Pull-Up (Machine)":         "Machine-Assisted Pull-Up",
+  "Hip Abduction Machine":              "Machine Hip Abduction",
+  "Hip Adduction Machine":              "Machine Hip Adduction",
+  "B-stance Hip Thrust":                "B-Stance Hip Thrust",
+  "Cable Kickback":                     "Cable Glute Kickback",
+  "Banded Pull-Apart":                  "Band Pull-Apart",
+  "Romanian Deadlift":                  "Barbell Romanian Deadlift",
+  "Hip Thrust":                         "Barbell Hip Thrust",
+  "Overhead Rope Extension":            "Rope Overhead Triceps Extension",
+  "Single-Arm Cable Overhead Extension": "Single-Arm Cable Overhead Triceps Extension",
+  // merged duplicates -> the entry that survived
+  "Bulgarian Split Squat (Dumbbell)":   "Bulgarian Split Squat",
+  "Calf Raise on Leg Press":            "Leg Press Calf Raise",
+  "Dumbbell Floor Press (Triceps)":     "Dumbbell Floor Press",
+  "Lying Triceps Extension (EZ)":       "EZ-Bar Skull Crusher",
+  "Plate Press":                        "Svend Press",
+  "Cable Crossover":                    "Cable Fly",
+  "Bent-Over Lateral Raise":            "Dumbbell Rear Delt Fly",
+  "Machine Rear Delt Fly":              "Reverse Pec Deck",
+  "Cable Rope Curl":                    "Rope Hammer Curl",
+  "Dumbbell Bayesian Curl":             "Incline Dumbbell Curl",
+  "Landmine Chest Press":               "Landmine Press",
+  "Fan Bike":                           "Assault Bike",
+  "Step Mill":                          "Stair Climber",
+  "Machine Fly":                        "Pec Deck",
+  "Triceps Pushdown (V-Bar)":           "V-Bar Pushdown",
+};
+function currentExerciseName(name) {
+  return (typeof name === 'string' && Object.prototype.hasOwnProperty.call(EXERCISE_RENAMES, name))
+    ? EXERCISE_RENAMES[name] : name;
+}
+function migrateExerciseRenames() {
+  let n = 0;
+  const ren = (v) => { const c = currentExerciseName(v); if (c !== v) n++; return c; };
+  // a list of names where the same lift must not appear twice after two old names collapse into one
+  const renList = (arr) => {
+    const out = []; for (const v of arr) { const c = ren(v); if (!out.includes(c)) out.push(c); }
+    return out;
+  };
+  for (const u of Object.values(DB.users || {})) {
+    if (!u || typeof u !== 'object') continue;
+    if (Array.isArray(u.favoriteExercises)) u.favoriteExercises = renList(u.favoriteExercises);
+    if (Array.isArray(u.trendPicks)) u.trendPicks = renList(u.trendPicks);
+    if (u.seeded && typeof u.seeded === 'object') {
+      for (const k of Object.keys(u.seeded)) {
+        const c = ren(k);
+        if (c === k) continue;
+        if (!u.seeded[c]) u.seeded[c] = u.seeded[k];      // a seed already under the new name wins
+        delete u.seeded[k];
+      }
+    }
+  }
+  for (const s of Object.values(DB.sessions || {})) {
+    if (!s || typeof s !== 'object') continue;
+    for (const e of (s.exercises || [])) if (e && typeof e.name === 'string') e.name = ren(e.name);
+    for (const arr of Object.values(s.logs || {})) for (const l of (arr || [])) {
+      if (l && typeof l.exerciseName === 'string') l.exerciseName = ren(l.exerciseName);
+    }
+    for (const perUser of Object.values(s.variations || {})) for (const v of Object.values(perUser || {})) {
+      if (v && typeof v.swapTo === 'string') v.swapTo = ren(v.swapTo);
+    }
+    for (const e of (s.suggestedEdits || [])) if (e && typeof e.swapTo === 'string') e.swapTo = ren(e.swapTo);
+    for (const h of (s.history || [])) if (h && Array.isArray(h.exercises)) h.exercises = h.exercises.map(ren);
+  }
+  for (const t of Object.values(DB.templates || {})) {
+    if (!t || typeof t !== 'object' || !Array.isArray(t.exercises)) continue;   // templates get no shape-heal pass; never let one bad row stop boot
+    for (const e of t.exercises) if (e && typeof e.name === 'string') e.name = ren(e.name);
+  }
+  if (n) console.log('migrateExerciseRenames: moved ' + n + ' stored reference(s) to current library names');
+  return n;
 }
 
 // v168: replace every stored plaintext password with a scrypt hash. Runs once; after it the
@@ -3873,6 +4002,7 @@ app.use((err, req, res, next) => {
   migrateFriendsIntoFollowers();      // retire "friends" entirely -> mutual followers, both ways
   migratePostAndSessionVisibilityBinary();   // 3-way post + 2-way session visibility -> one binary rule
   migrateExerciseNames();     // before rebuildAllPrs, which groups by the name
+  migrateExerciseRenames();   // after the stamp above (it walks exerciseName), before the PR regroup
   rebuildAllPrs();
   migrateLoadTypes();
   await save(DB);

@@ -58,10 +58,10 @@ ok(new Set(lib.map(shape2 => shape(shape2.name))).size >= 5,
    `and they do not all share one target (${new Set(lib.map(e => shape(e.name))).size} distinct)`);
 
 console.log('\nheavy barbell work is not prescribed at ten reps');
-for (const n of ['Conventional Deadlift', 'Sumo Deadlift', 'Romanian Deadlift', 'Barbell Back Squat', 'Front Squat'])
+for (const n of ['Conventional Deadlift', 'Sumo Deadlift', 'Barbell Romanian Deadlift', 'Barbell Back Squat', 'Front Squat'])
   ok(BY[n] && BY[n].defaultReps <= 6 && !BY[n].defaultRepsMax,
      `${n}: ${shape(n)} — ACSM's strength band is 3-6 reps at >=80% 1RM`);
-for (const n of ['Flat Barbell Bench Press', 'Overhead Barbell Press', 'Barbell Row'])
+for (const n of ['Flat Barbell Bench Press', 'Barbell Overhead Press', 'Barbell Row'])
   ok(BY[n] && BY[n].defaultReps === 6 && BY[n].defaultRepsMax === 8, `${n}: ${shape(n)}`);
 
 console.log('\nreps are not invented for exercises measured in time');
@@ -74,7 +74,7 @@ for (const n of ['Burpee', 'Kettlebell Swing'])
   ok(BY[n] && !BY[n].timed && BY[n].defaultReps > 0, `${n}: ${shape(n)}`);
 
 console.log('\nsmall muscles get the higher reps they need');
-for (const n of ['Lateral Raise', 'Face Pull', 'Standing Calf Raise', 'Cable Crunch'])
+for (const n of ['Dumbbell Lateral Raise', 'Face Pull', 'Standing Calf Raise', 'Cable Crunch'])
   ok(BY[n] && BY[n].defaultReps >= 12, `${n}: ${shape(n)}`);
 
 console.log('\nthree sets everywhere — ACSM frames volume as a weekly target, not a per-exercise one');
@@ -87,15 +87,15 @@ console.log('\nthe target survives into a real workout');
   const H = { ...J, Authorization: 'Bearer ' + u.token };
   const s = await fetch(B + '/api/sessions', { method: 'POST', headers: H,
     body: JSON.stringify({ name: 'Mixed', visibility: 'private', scheduledAt: '2026-08-20T18:00:00Z',
-      exercises: [{ name: 'Conventional Deadlift' }, { name: 'Plank' }, { name: 'Lateral Raise' },
+      exercises: [{ name: 'Conventional Deadlift' }, { name: 'Plank' }, { name: 'Dumbbell Lateral Raise' },
                   { name: 'Flat Barbell Bench Press', defaultSets: 5, defaultReps: 5 }] }) }).then(r => r.json());
   const ex = Object.fromEntries((s.exercises || []).map(e => [e.name, e]));
   ok(ex['Conventional Deadlift'] && ex['Conventional Deadlift'].defaultReps === 5,
      `a deadlift added with no target gets 3 × 5 (got ${ex['Conventional Deadlift'] && ex['Conventional Deadlift'].defaultReps})`);
   ok(ex['Plank'] && !ex['Plank'].defaultReps,
      `a plank gets NO rep target rather than a made-up one (got ${JSON.stringify(ex['Plank'] && ex['Plank'].defaultReps)})`);
-  ok(ex['Lateral Raise'] && ex['Lateral Raise'].defaultReps === 12 && ex['Lateral Raise'].defaultRepsMax === 20,
-     `a lateral raise gets 3 × 12–20 (got ${shapeOf(ex['Lateral Raise'])})`);
+  ok(ex['Dumbbell Lateral Raise'] && ex['Dumbbell Lateral Raise'].defaultReps === 12 && ex['Dumbbell Lateral Raise'].defaultRepsMax === 20,
+     `a lateral raise gets 3 × 12–20 (got ${shapeOf(ex['Dumbbell Lateral Raise'])})`);
   ok(ex['Flat Barbell Bench Press'] && ex['Flat Barbell Bench Press'].defaultSets === 5 && ex['Flat Barbell Bench Press'].defaultReps === 5,
      'and anything the user set themselves is left exactly alone');
 }

@@ -1873,7 +1873,7 @@ function seedPickerPick(name){
 // pass PUT /api/me/seeds's EX_LIB.some(...) check. Shown as blank rows even when nothing is seeded
 // yet, so it's obvious what to fill in rather than an empty page; anything already seeded that
 // ISN'T one of these six (e.g. added via "+ Add another lift" on a prior visit) is appended after.
-const SEED_DEFAULTS = ['Barbell Back Squat','Conventional Deadlift','Flat Barbell Bench Press','Overhead Barbell Press','Pull-Up','Barbell Row'];
+const SEED_DEFAULTS = ['Barbell Back Squat','Conventional Deadlift','Flat Barbell Bench Press','Barbell Overhead Press','Pull-Up','Barbell Row'];
 // In-memory working copy of what's on screen -- stashed/restored the same way DRAFT is for the
 // create-flow (see openAddExercises's comment above), so a value typed but not yet saved, and a
 // lift just picked from openSeedPicker, both survive the round trip through the library picker.
