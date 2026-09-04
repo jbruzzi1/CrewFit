@@ -552,6 +552,18 @@
     .icon-btn { flex:0 0 auto; width:34px; height:34px; border-radius:50%; border:1px solid var(--line); background:var(--card); color:var(--blue); font-size:20px; line-height:1; display:flex; align-items:center; justify-content:center; cursor:pointer; }
     .txt-btn { flex:0 0 auto; background:transparent; color:var(--blue); border:none; font-size:14px; font-weight:600; padding:6px 8px; border-radius:8px; width:auto; margin:0; cursor:pointer; }
     .txt-btn:active { background:rgba(37,99,235,.12); }
+    /* Sep 4: "Edit set" sheet's Save/Delete redesign -- Delete used to be a second full-strength
+       solid CTA (button.red) stacked right under Save, so both read as equally likely actions.
+       Destructive actions elsewhere in the app are quiet red text, never a filled button (the
+       ⋯ menu's danger row, .sheet-row.red for Log out) -- this brings Delete in line with that:
+       one clear primary action, one quiet exit. The extra top margin (vs. Save's own 6px) is what
+       actually separates the two, since neither has a border or fill to lean on.
+       The sheet's own ✕ (editLogSet + its posted-workout twin editPostedSet -- "same sheet shape"
+       per the comment above them) swapped the tiny .sec.sm pill for .icon-btn, the circular close
+       target already used for the seed-row Remove ✕ -- a real tap target instead of a button sized
+       to its own 12px label. */
+    .danger-text { background:transparent; color:var(--red); border:none; font-size:14px; font-weight:600; width:100%; margin:14px 0 0; padding:10px; border-radius:10px; cursor:pointer; text-align:center; }
+    .danger-text:active { opacity:.55; }
     .tpl-page { padding-top:8px; }
     .lib-head { padding-bottom:6px; }
     /* Seed-your-lifts (starting weights) screen -- one .card per lift, echoing .sheet's own
@@ -1172,6 +1184,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=314"></script>
+  <script src="app.js?v=315"></script>
 </body>
 </html>
