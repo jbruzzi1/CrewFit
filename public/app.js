@@ -1530,14 +1530,14 @@ async function editPostedSet(id, authorId, logId){
   if(!l) return;
   openSheetHtml(`
     <div class="sheet" onclick="event.stopPropagation()">
-      <div class="sheet-head"><h2>Edit set</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <div class="sheet-head"><h2>Edit set</h2><button class="icon-btn" onclick="closeSheet()" aria-label="Close">✕</button></div>
       <div class="ex-sub">Set ${l.set||''}</div>
       <label class="muted" style="font-size:12px">Weight (${unitOf(l)})</label>
       <input id="ppEdW" type="number" inputmode="decimal" step="any" value="${l.weight}">
       <label class="muted" style="font-size:12px">Reps</label>
       <input id="ppEdR" type="number" inputmode="tel" pattern="[0-9]*" value="${l.reps}">
       <button class="blue" onclick="savePostedSet('${id}','${authorId}','${logId}')">Save</button>
-      <button class="red" style="margin-top:8px" onclick="deletePostedSet('${id}','${authorId}','${logId}')">Delete set</button>
+      <button class="danger-text" onclick="deletePostedSet('${id}','${authorId}','${logId}')">Delete set</button>
     </div>`);
 }
 async function savePostedSet(id, authorId, logId){
@@ -2407,7 +2407,7 @@ async function editLogSet(sid, exId, logId){
   const sheet=document.createElement('div'); sheet.className='sheet-back';
   sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
-      <div class="sheet-head"><h2>Edit set</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <div class="sheet-head"><h2>Edit set</h2><button class="icon-btn" onclick="closeSheet()" aria-label="Close">✕</button></div>
       <div class="ex-sub">Set ${l.set||''}</div>
       <label class="muted" style="font-size:12px">Weight (${unitOf(l)}${loadType==='pair'?', each hand':loadType==='added'?' added':''})</label>
       <input id="edW" type="number" inputmode="decimal" step="any" value="${l.weight}">
@@ -2418,7 +2418,7 @@ async function editLogSet(sid, exId, logId){
       <label class="muted" style="font-size:12px">Type</label>
       <select id="edT">${SET_TYPES.map(t=>`<option value="${t.key}"${t.key===l.setType?' selected':''}>${t.label}</option>`).join('')}</select>
       <button class="blue" onclick="saveLogSet('${sid}','${exId}','${logId}')">Save</button>
-      <button class="red" style="margin-top:8px" onclick="delLogSet('${sid}','${exId}','${logId}')">Delete set</button>
+      <button class="danger-text" onclick="delLogSet('${sid}','${exId}','${logId}')">Delete set</button>
     </div>`;
   sheet.onclick=(ev)=>{ if(ev.target===sheet) closeSheet(); };
   document.body.appendChild(sheet);
