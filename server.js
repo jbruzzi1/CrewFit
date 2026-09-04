@@ -1995,7 +1995,7 @@ function creditFinish(s, userId, localDate) {
   const mgs = new Set();
   for (const n of exNames) {
     const lib = EX_LIB.find(x => x.name === n);
-    if (lib) lib.muscle_groups.forEach(m => mgs.add(m));
+    if (lib) exMuscles(lib).forEach(m => mgs.add(m));
   }
   const date = isValidLocalDateStr(localDate) ? localDate : new Date().toISOString().slice(0, 10);
   s.history.push({ userId, date, muscleGroups: [...mgs], exercises: exNames });
@@ -2792,6 +2792,12 @@ const MUSCLE_ORDER = Object.keys(MUSCLE_TARGETS);
 // whenever they logged something they themselves created; the global fallback below only still
 // matters for a custom exercise someone ELSE created that ended up on a shared session (there is
 // no owner link carried onto a session's exercise list to fully disambiguate that rarer case).
+// Every muscle a lift works: the primary movers (muscle_groups -- what the library tiles file it
+// under) plus the helpers (secondary -- a bench press's triceps). Volume and finish history credit
+// both alike; only the tiles care about the split. See the _note in exercise-library.json.
+function exMuscles(lib) {
+  return ((lib && lib.muscle_groups) || []).concat((lib && lib.secondary) || []);
+}
 function findExLibEntry(name, userId) {
   const hit = EX_LIB.find(x => x.name === name);
   if (hit) return hit;
@@ -2832,7 +2838,7 @@ function volumeFor(userId, weeks = 1) {
       if (!isWorkingSet(l)) continue;
       const lib = findExLibEntry(logExerciseName(s, l, userId), userId);
       if (!lib) continue;
-      for (const m of (lib.muscle_groups || [])) if (sets.hasOwnProperty(m)) sets[m]++;
+      for (const m of exMuscles(lib)) if (sets.hasOwnProperty(m)) sets[m]++;
     }
   }
   const div = Math.max(1, weeks);
@@ -2877,7 +2883,7 @@ function volumeTrendFor(userId, weeks) {
       if (!isWorkingSet(l)) continue;
       const lib = findExLibEntry(logExerciseName(s, l, userId), userId);
       if (!lib) continue;
-      for (const m of (lib.muscle_groups || [])) if (bucket.sets.hasOwnProperty(m)) bucket.sets[m]++;
+      for (const m of exMuscles(lib)) if (bucket.sets.hasOwnProperty(m)) bucket.sets[m]++;
     }
   }
   return {

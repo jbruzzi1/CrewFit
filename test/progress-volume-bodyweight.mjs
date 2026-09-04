@@ -97,6 +97,20 @@ console.log('weekly volume: multi-muscle attribution, warm-ups excluded, past we
   ok(byGroup.biceps && byGroup.biceps.sets === 0, `biceps: 0 -- last week's curls do not bleed into this week (got ${byGroup.biceps && byGroup.biceps.sets})`);
   ok(byGroup.quads.target > 0, `quads has a nonzero default target (got ${byGroup.quads.target})`);
   ok(!('cardio' in byGroup), 'cardio is excluded from the volume meter (not a sets-against-a-target thing)');
+
+  // v311: the library now splits primary movers (muscle_groups -- the tiles) from helpers
+  // (secondary). Jeff chose to leave the meter's full-credit rule alone, so a bench press still
+  // credits triceps and shoulders in full even though it is no longer FILED under them.
+  const s3 = await post('/api/sessions', {
+    name: 'Push', scheduledAt: new Date().toISOString(),
+    exercises: [{ name: 'Flat Barbell Bench Press' }], visibility: 'private',
+  }, u.token);
+  for (let i = 0; i < 2; i++) await post(`/api/sessions/${s3.id}/log`, { exerciseId: s3.exercises[0].id, weight: 135, reps: 8, setType: 'normal' }, u.token);
+  const prog2 = await get('/api/progress', u.token);
+  const by2 = {}; (prog2.volume.groups || []).forEach(g => by2[g.group] = g);
+  ok(by2.chest && by2.chest.sets === 2, `chest: 2 sets from the bench press (got ${by2.chest && by2.chest.sets})`);
+  ok(by2.triceps && by2.triceps.sets === 2 && by2.shoulders && by2.shoulders.sets === 2,
+    `triceps and shoulders still get full credit as the bench press's helpers (got triceps ${by2.triceps && by2.triceps.sets}, shoulders ${by2.shoulders && by2.shoulders.sets})`);
 }
 
 console.log('weekly volume: a custom exercise (not in EX_LIB) still gets credited');

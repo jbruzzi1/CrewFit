@@ -1,5 +1,5 @@
 {
-  "_note": "Comprehensive exercise library for any well-stocked commercial gym. pattern = movement category (push/pull/legs/core/cardio). muscle_groups drive conflict detection (Phase 3) and muscle-group filtering (a set credits EVERY listed group in the weekly-volume meter, so list only real movers). equipment drives equipment-aware reorder (Phase 3) and filtering. is_compound + level added for smart filtering. Source: standard lifts across Hevy/Strong/Fitbod/Gravl, expanded to full commercial-gym coverage. loadType marks exercises where the entered weight is ambiguous: pair = two implements, number is per hand; single = one implement, number is the whole load; added = bodyweight movement, number is added weight only. Absent = unambiguous (barbell, cable stack, machine, landmine). Naming (Sep 2026 audit): implement first when siblings exist (Barbell Shrug / Dumbbell Shrug / Cable Shrug), bench pressing says Bench Press (Flat Dumbbell Bench Press), no parenthetical qualifiers, singular names. Tags follow the load: 'dumbbells' when loadType is pair, 'dumbbell' when it is one. Renaming or merging an entry? Add the old name to EXERCISE_RENAMES in server.js so every user's logged history follows it.",
+  "_note": "Comprehensive exercise library for any well-stocked commercial gym. pattern = movement category (push/pull/legs/core/cardio). muscle_groups = the PRIMARY movers -- the muscle tiles list an exercise under each of them, so only groups the lift is genuinely FOR (a sled push is legs AND cardio; a bench press is chest, not triceps). secondary = helper muscles that get worked along the way -- shown in the row subtitle and detail sheet, searchable, and credited in the weekly-volume meter exactly like a primary, but never a tile the exercise is filed under. equipment drives equipment-aware reorder (Phase 3) and filtering. is_compound + level added for smart filtering. Source: standard lifts across Hevy/Strong/Fitbod/Gravl, expanded to full commercial-gym coverage. loadType marks exercises where the entered weight is ambiguous: pair = two implements, number is per hand; single = one implement, number is the whole load; added = bodyweight movement, number is added weight only. Absent = unambiguous (barbell, cable stack, machine, landmine). Naming (Sep 2026 audit): implement first when siblings exist (Barbell Shrug / Dumbbell Shrug / Cable Shrug), bench pressing says Bench Press (Flat Dumbbell Bench Press), no parenthetical qualifiers, singular names. Tags follow the load: 'dumbbells' when loadType is pair, 'dumbbell' when it is one. Renaming or merging an entry? Add the old name to EXERCISE_RENAMES in server.js so every user's logged history follows it.",
   "exercises": [
     {
       "name": "Barbell Back Squat",
@@ -156,7 +156,9 @@
       "category": "legs",
       "muscle_groups": [
         "hamstrings",
-        "glutes",
+        "glutes"
+      ],
+      "secondary": [
         "lats",
         "traps"
       ],
@@ -173,7 +175,9 @@
       "muscle_groups": [
         "hamstrings",
         "glutes",
-        "quads",
+        "quads"
+      ],
+      "secondary": [
         "traps"
       ],
       "equipment": [
@@ -189,7 +193,9 @@
       "muscle_groups": [
         "quads",
         "hamstrings",
-        "glutes",
+        "glutes"
+      ],
+      "secondary": [
         "traps"
       ],
       "equipment": [
@@ -457,7 +463,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps",
         "shoulders"
       ],
@@ -473,7 +481,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "shoulders",
         "triceps"
       ],
@@ -489,7 +499,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -504,7 +516,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps",
         "shoulders"
       ],
@@ -521,7 +535,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "shoulders",
         "triceps"
       ],
@@ -538,7 +554,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -554,7 +572,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -568,7 +588,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "shoulders",
         "triceps"
       ],
@@ -609,7 +631,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "shoulders"
       ],
       "equipment": [
@@ -639,7 +663,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "shoulders"
       ],
       "equipment": [
@@ -655,7 +681,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -670,7 +698,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps",
         "shoulders"
       ],
@@ -685,7 +715,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps",
         "shoulders"
       ],
@@ -702,7 +734,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "shoulders",
         "triceps"
       ],
@@ -733,7 +767,9 @@
       "category": "push",
       "muscle_groups": [
         "shoulders",
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -747,7 +783,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -761,7 +799,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -777,7 +817,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -791,7 +833,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -806,7 +850,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -821,7 +867,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -836,7 +884,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -850,7 +900,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -866,7 +918,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps",
         "quads"
       ],
@@ -881,7 +935,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -1006,7 +1062,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -1020,7 +1078,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "triceps",
+        "triceps"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
@@ -1035,7 +1095,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "triceps",
+        "triceps"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
@@ -1158,7 +1220,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "triceps",
+        "triceps"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
@@ -1174,7 +1238,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1189,7 +1255,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1204,7 +1272,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1219,7 +1289,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1234,7 +1306,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1249,7 +1323,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1264,7 +1340,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1278,7 +1356,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1292,7 +1372,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1307,7 +1389,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1323,7 +1407,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1338,7 +1424,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1352,7 +1440,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1366,7 +1456,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1382,7 +1474,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1396,7 +1490,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1411,7 +1507,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1427,8 +1525,10 @@
       "category": "pull",
       "muscle_groups": [
         "lats",
-        "biceps",
         "abdominals"
+      ],
+      "secondary": [
+        "biceps"
       ],
       "equipment": [
         "dumbbells"
@@ -1442,7 +1542,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -1485,7 +1587,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "biceps",
+        "biceps"
+      ],
+      "secondary": [
         "forearms"
       ],
       "equipment": [
@@ -1909,7 +2013,9 @@
       "pattern": "cardio",
       "category": "cardio",
       "muscle_groups": [
-        "cardio",
+        "cardio"
+      ],
+      "secondary": [
         "lats"
       ],
       "equipment": [
@@ -1949,7 +2055,9 @@
       "pattern": "cardio",
       "category": "cardio",
       "muscle_groups": [
-        "cardio",
+        "cardio"
+      ],
+      "secondary": [
         "glutes"
       ],
       "equipment": [
@@ -1976,7 +2084,9 @@
       "pattern": "cardio",
       "category": "cardio",
       "muscle_groups": [
-        "cardio",
+        "cardio"
+      ],
+      "secondary": [
         "lats"
       ],
       "equipment": [
@@ -2003,7 +2113,9 @@
       "pattern": "cardio",
       "category": "cardio",
       "muscle_groups": [
-        "cardio",
+        "cardio"
+      ],
+      "secondary": [
         "calves"
       ],
       "equipment": [
@@ -2017,7 +2129,9 @@
       "pattern": "cardio",
       "category": "cardio",
       "muscle_groups": [
-        "cardio",
+        "cardio"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
@@ -2061,8 +2175,10 @@
       "category": "cardio",
       "muscle_groups": [
         "cardio",
-        "lats",
         "hamstrings"
+      ],
+      "secondary": [
+        "lats"
       ],
       "equipment": [
         "sled"
@@ -2342,7 +2458,9 @@
       "pattern": "pull",
       "category": "lats",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -2358,7 +2476,9 @@
       "category": "hamstrings",
       "muscle_groups": [
         "hamstrings",
-        "glutes",
+        "glutes"
+      ],
+      "secondary": [
         "lats",
         "traps"
       ],
@@ -2561,7 +2681,9 @@
       "pattern": "legs",
       "category": "glutes",
       "muscle_groups": [
-        "glutes",
+        "glutes"
+      ],
+      "secondary": [
         "hamstrings"
       ],
       "equipment": [
@@ -2575,7 +2697,9 @@
       "pattern": "push",
       "category": "chest",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -2590,7 +2714,9 @@
       "pattern": "push",
       "category": "chest",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -2618,7 +2744,9 @@
       "pattern": "push",
       "category": "shoulders",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -2729,7 +2857,9 @@
       "pattern": "pull",
       "category": "biceps",
       "muscle_groups": [
-        "biceps",
+        "biceps"
+      ],
+      "secondary": [
         "forearms"
       ],
       "equipment": [
@@ -2799,7 +2929,9 @@
       "pattern": "push",
       "category": "triceps",
       "muscle_groups": [
-        "triceps",
+        "triceps"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
@@ -2813,7 +2945,9 @@
       "pattern": "push",
       "category": "triceps",
       "muscle_groups": [
-        "triceps",
+        "triceps"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
@@ -3153,7 +3287,9 @@
       "muscle_groups": [
         "quads",
         "hamstrings",
-        "glutes",
+        "glutes"
+      ],
+      "secondary": [
         "traps"
       ],
       "equipment": [
@@ -3169,7 +3305,9 @@
       "muscle_groups": [
         "quads",
         "hamstrings",
-        "glutes",
+        "glutes"
+      ],
+      "secondary": [
         "traps"
       ],
       "equipment": [
@@ -3263,7 +3401,9 @@
       "pattern": "push",
       "category": "chest",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "shoulders",
         "triceps"
       ],
@@ -3279,7 +3419,9 @@
       "pattern": "push",
       "category": "push",
       "muscle_groups": [
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "shoulders",
         "triceps"
       ],
@@ -3334,7 +3476,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -3348,7 +3492,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -3362,7 +3508,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -3376,7 +3524,9 @@
       "pattern": "pull",
       "category": "pull",
       "muscle_groups": [
-        "lats",
+        "lats"
+      ],
+      "secondary": [
         "biceps"
       ],
       "equipment": [
@@ -3403,7 +3553,9 @@
       "pattern": "push",
       "category": "shoulders",
       "muscle_groups": [
-        "shoulders",
+        "shoulders"
+      ],
+      "secondary": [
         "traps"
       ],
       "equipment": [
@@ -3418,7 +3570,9 @@
       "category": "shoulders",
       "muscle_groups": [
         "shoulders",
-        "chest",
+        "chest"
+      ],
+      "secondary": [
         "triceps"
       ],
       "equipment": [
@@ -3473,7 +3627,9 @@
       "pattern": "pull",
       "category": "biceps",
       "muscle_groups": [
-        "biceps",
+        "biceps"
+      ],
+      "secondary": [
         "forearms"
       ],
       "equipment": [
@@ -3502,7 +3658,9 @@
       "pattern": "push",
       "category": "triceps",
       "muscle_groups": [
-        "triceps",
+        "triceps"
+      ],
+      "secondary": [
         "chest"
       ],
       "equipment": [
@@ -3671,7 +3829,9 @@
       "category": "cardio",
       "muscle_groups": [
         "cardio",
-        "abdominals",
+        "abdominals"
+      ],
+      "secondary": [
         "shoulders"
       ],
       "equipment": [
@@ -3686,7 +3846,9 @@
       "category": "cardio",
       "muscle_groups": [
         "cardio",
-        "quads",
+        "quads"
+      ],
+      "secondary": [
         "shoulders"
       ],
       "equipment": [
@@ -3701,7 +3863,9 @@
       "category": "cardio",
       "muscle_groups": [
         "cardio",
-        "abdominals",
+        "abdominals"
+      ],
+      "secondary": [
         "shoulders"
       ],
       "equipment": [

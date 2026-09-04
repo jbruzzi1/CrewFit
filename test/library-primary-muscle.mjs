@@ -1,9 +1,10 @@
 // v311 (Jeff, Sep 4): "if an exercise only SLIGHTLY uses triceps and is MAINLY used for chest, we
-// shouldn't have it as a tricep exercise." The library's muscle tiles list an exercise under its
-// MAIN muscle (muscle_groups[0]) only. The secondary groups stay on the entry for the row
-// subtitle, the detail sheet, All-muscles search and the volume meter -- Jeff chose to leave the
-// meter's full-credit rule alone. Drives the real renderLibExercises()/renderLibGroups() from
-// app.js in node:vm with a tiny fake library, same technique as test/favorite-exercises.mjs.
+// shouldn't have it as a tricep exercise ... if it is genuinely used in multiple muscle groups
+// that's fine -- a sled for legs and not just cardio should be in each." The library carries the
+// split: muscle_groups = primary movers (a tile per entry), secondary = helpers (row subtitle,
+// detail sheet, search, volume meter -- Jeff chose to leave the meter's full-credit rule alone).
+// Drives the real renderLibExercises()/renderLibGroups() from app.js in node:vm with a tiny fake
+// library, same technique as test/favorite-exercises.mjs.
 import { readFileSync } from 'node:fs';
 
 let fails = 0;
@@ -38,15 +39,16 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx, { filename: 'public/app.js' });
 
 const LIB = [
-  { name: 'Flat Barbell Bench Press', muscle_groups: ['chest', 'triceps', 'shoulders'], equipment: ['barbell', 'bench'], level: 'beginner', is_compound: true },
+  { name: 'Flat Barbell Bench Press', muscle_groups: ['chest'], secondary: ['triceps', 'shoulders'], equipment: ['barbell', 'bench'], level: 'beginner', is_compound: true },
   { name: 'Rope Pushdown', muscle_groups: ['triceps'], equipment: ['cable'], level: 'beginner', is_compound: false },
-  { name: 'Close-Grip Bench Press', muscle_groups: ['triceps', 'chest'], equipment: ['barbell', 'bench'], level: 'intermediate', is_compound: true },
-  { name: 'Barbell Overhead Press', muscle_groups: ['shoulders', 'triceps'], equipment: ['barbell'], level: 'intermediate', is_compound: true },
+  { name: 'Close-Grip Bench Press', muscle_groups: ['triceps'], secondary: ['chest'], equipment: ['barbell', 'bench'], level: 'intermediate', is_compound: true },
+  { name: 'Barbell Overhead Press', muscle_groups: ['shoulders'], secondary: ['triceps'], equipment: ['barbell'], level: 'intermediate', is_compound: true },
+  { name: 'Sled Push', muscle_groups: ['cardio', 'quads', 'glutes'], equipment: ['sled'], level: 'intermediate', is_compound: true },
 ];
 ctx._LIB2 = LIB;
 vm.runInContext('FAVORITES = new Set()', ctx);
 
-console.log('a muscle tile lists an exercise under its MAIN muscle only');
+console.log('a muscle tile lists an exercise under each PRIMARY muscle, never a helper');
 {
   vm.runInContext(`LIB_STATE.view='muscle'; LIB_STATE.muscle='triceps'; LIB_STATE.eq=''; LIB_STATE.q=''; LIB_STATE.fav=false; renderLibExercises()`, ctx);
   const html = sink.lib2 || '';
@@ -57,6 +59,11 @@ console.log('a muscle tile lists an exercise under its MAIN muscle only');
   vm.runInContext(`LIB_STATE.muscle='chest'; renderLibExercises()`, ctx);
   const chest = [...(sink.lib2 || '').matchAll(/exDetail\('([^']+)'\)/g)].map(m => m[1]);
   ok(JSON.stringify(chest) === JSON.stringify(['Flat Barbell Bench Press']), `Chest holds the bench press and not the close-grip variant (got ${JSON.stringify(chest)})`);
+  for (const m of ['cardio', 'quads', 'glutes']) {
+    vm.runInContext(`LIB_STATE.muscle='${m}'; renderLibExercises()`, ctx);
+    const rows = [...(sink.lib2 || '').matchAll(/exDetail\('([^']+)'\)/g)].map(x => x[1]);
+    ok(rows.includes('Sled Push'), `a lift that is genuinely several things (Sled Push) is filed under ${m} too (got ${JSON.stringify(rows)})`);
+  }
 }
 
 console.log('\nthe tile counts on the All-muscles screen match that rule');
@@ -66,12 +73,14 @@ console.log('\nthe tile counts on the All-muscles screen match that rule');
   const count = (m) => (html.match(new RegExp(`<div class="mg-card-name">${m}</div><div class="mg-card-count">(\\d+) exercises`)) || [])[1];
   ok(count('triceps') === '2', `Triceps counts 2, not 4 (got ${count('triceps')})`);
   ok(count('chest') === '1' && count('shoulders') === '1', `Chest 1, Shoulders 1 (got chest ${count('chest')}, shoulders ${count('shoulders')})`);
+  ok(count('quads') === '1' && count('glutes') === '1' && count('cardio') === '1', `Sled Push counts once in each of Quads, Glutes and Cardio (got ${count('quads')}/${count('glutes')}/${count('cardio')})`);
 }
 
-console.log('\nsecondary muscles are still on the row and still searchable from All muscles');
+console.log('\nhelper muscles are still on the row, in the detail sheet, and searchable from All muscles');
 {
   const row = vm.runInContext(`exRowHtml(window._LIB2[0])`, ctx);
   ok(/chest · triceps/.test(row), `the bench press row subtitle still reads "chest · triceps" (got ${row.match(/ex-mg">([^<]*)/)?.[1]})`);
+  ok(vm.runInContext(`exMuscles(window._LIB2[0]).join(' · ')`, ctx) === 'chest · triceps · shoulders', 'the detail sheet lists primaries then helpers');
   vm.runInContext(`LIB_STATE.view='groups'; LIB_STATE.q='triceps'; renderLibGroups()`, ctx);
   const hits = [...(sink.lib2 || '').matchAll(/exDetail\('([^']+)'\)/g)].map(m => m[1]);
   ok(hits.includes('Flat Barbell Bench Press'), `searching "triceps" from All muscles still finds the bench press (got ${JSON.stringify(hits)})`);
