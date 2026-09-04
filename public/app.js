@@ -292,6 +292,7 @@ function renderNavState(st){
   else if(st.t==='library') library({fromHistory:true});
   else if(st.t==='seeds') seedSetupScreen({fromHistory:true});
   else if(st.t==='settings') openSettings({fromHistory:true});
+  else if(st.t==='notifications') renderNotifications({fromHistory:true});
   else if(st.t==='routines') templatesPage({fromHistory:true});
   else if(st.t==='routineView') tplView(st.id, {fromHistory:true});
   else renderTabState('home');   // an old/unrecognized entry (e.g. a stray 'sheet' marker) -- never strand the user on nothing
@@ -350,6 +351,16 @@ const ICON_CAL = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><r
 const ICON_PEOPLE = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M8 6a3 3 0 1 1 6 0 3 3 0 0 1-6 0Zm-5 13c0-3 3.5-5 8-5" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/><circle cx="17" cy="8" r="2.4" stroke="#9ca3af" stroke-width="1.6"/><path d="M14 19c0-2.2 2-3.6 4.4-3.6" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
 const ICON_FEED = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M4 18V8l8-4 8 4v10" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 18v-6h6v6" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
 const ICON_LIST = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><rect x="4" y="3.5" width="16" height="17" rx="3" stroke="#9ca3af" stroke-width="1.6"/><path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4.5" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+const ICON_BELL = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M6 8a6 6 0 0 1 12 0c0 4 1.5 5.5 2 6.5H4c.5-1 2-2.5 2-6.5Z" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 19a2 2 0 0 0 4 0" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+// Sep 4: the Home/Profile bell button's icon -- same inline-SVG-string convention as gearSvg()
+// below (stroke="currentColor" so it inherits the button's own color, no separate light/dark rule
+// needed). count>0 renders a small corner badge; the badge's blue matches the existing pending-
+// count precedent (.h1-row .badge on the Friends tab), not a new color meaning.
+function bellSvg(){ return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 4 1.5 5.5 2 6.5H4c.5-1 2-2.5 2-6.5Z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>'; }
+function notifBellHtml(cls, count){
+  const badge = count>0 ? `<span class="notif-dot">${count>9?'9+':count}</span>` : '';
+  return `<button class="${cls}" title="Notifications" aria-label="Notifications${count?`, ${count} new`:''}" onclick="renderNotifications()">${bellSvg()}${badge}</button>`;
+}
 
 // ---- Home / sessions (Option B: split sections) ----
 async function home(opts){
@@ -361,9 +372,10 @@ async function home(opts){
   const silent = !!(opts && opts.silent);
   // weeks=26, not 4: streakWeeks is computed inside the requested window, so a 4-week request
   // silently caps the streak stat at "4 week streak" — false for anyone on a longer run.
-  const [sessions, feed, _fr, prog] = await Promise.all([
-    H.get('/api/sessions'), H.get('/api/feed'), H.get('/api/friends'), H.get('/api/progress?weeks=26&localToday='+localDateStr())
+  const [sessions, feed, _fr, prog, notif] = await Promise.all([
+    H.get('/api/sessions'), H.get('/api/feed'), H.get('/api/friends'), H.get('/api/progress?weeks=26&localToday='+localDateStr()), H.get('/api/notifications')
   ]);
+  const notifCount = (notif && notif.count) || 0;
   const myFriends = (_fr && _fr.friends) ? _fr.friends : (Array.isArray(_fr) ? _fr : []);
   const friendName = async (id)=> myFriends.find(f=>f.id===id)?.displayName || 'A friend';   // reads as a phrase, not as someone's name
   const initial = ((ME&&(ME.displayName||ME.username))||'?')[0]||'?';
@@ -438,7 +450,7 @@ async function home(opts){
         <div class="home-greet">${greet}, ${esc(first)}</div>
         ${lastDone ? `<div class="home-sub">Last workout: ${esc(fmtLastDay(lastDone.when))} · ${esc((lastDone.s.name || '').trim() || 'Workout')}</div>` : ''}
       </div>
-      ${homeAvatarHtml}
+      <div class="home-right">${notifBellHtml('home-bell', notifCount)}${homeAvatarHtml}</div>
     </div>
     ${stats.length ? `<div class="home-stats">${stats.map(st =>
       `<div class="hstat"><div class="num">${esc(String(st.num))}</div><div class="lbl">${esc(st.lbl)}</div></div>`).join('')}</div>` : ''}`;
@@ -5309,6 +5321,101 @@ function openSettings(opts){
   const st = { t:'settings' };
   fromHistory ? landOn(st) : navigated(st);
 }
+// Sep 4 (Jeff): "a notifications widget... this will lead you to the notifications page (where
+// invites, follower requests, etc will be housed)." A single inbox for the three things elsewhere
+// in the app that ask you to respond -- workout invites (previously only a Home banner), follow
+// requests (previously only inside the Friends tab), and requests to join a workout you created
+// (previously visible one at a time, only inside that session's own screen -- no aggregate view
+// existed for these at all). This ADDS a consolidated page; it deliberately does not remove the
+// Home banner or the Friends-tab section, which stay exactly as they were.
+// Same sub-page shape as openSettings() just above: .pp-head title+Back row, GET-then-render,
+// navigated()/landOn() at the end. opts.silent is the same shape as profileView's -- the six
+// accept/decline/approve/reject handlers below re-render this same screen in place after their
+// action, and must not push a second history entry or re-scroll to do it.
+async function renderNotifications(opts){
+  const silent = !!(opts && opts.silent);
+  const fromHistory = !!(opts && opts.fromHistory);
+  if(!silent) UI_EPOCH++;
+  const data = await H.get('/api/notifications');
+  const invites = (data && data.invites) || [];
+  const followRequests = (data && data.followRequests) || [];
+  const joinRequests = (data && data.joinRequests) || [];
+  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Notifications</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
+  // Same .inv-banner/.inv-card markup as the Home banner (see home() above) -- same feature,
+  // same look, just reachable from a second place now.
+  const invitesHtml = invites.length ? `<h2>Workout invites</h2><div class="inv-banner">` + invites.map(iv => `
+      <div class="inv-card" onclick="openSession('${iv.sessionId}')">
+        <div class="inv-info"><b>${esc(iv.from.displayName||iv.from.username)}</b> invited you<div class="tag">${esc(iv.sessionName)} · ${plur(iv.exerciseCount,'exercise')}</div>
+          <div class="inv-open">See the workout →</div></div>
+        <div class="row inv-actions" onclick="event.stopPropagation()">
+          <button class="sm blue" onclick="notifAcceptInvite('${iv.sessionId}')">Accept</button>
+          <button class="sm gray" onclick="notifDeclineInvite('${iv.sessionId}')">Decline</button>
+        </div>
+      </div>`).join('') + `</div>` : '';
+  // Same .req row shape as the Friends-tab follow-request rows and the in-session join-request
+  // rows (openSession, above) -- reusing both rather than inventing a third look for the same kind
+  // of "approve/reject someone" row.
+  const followHtml = followRequests.length ? `<h2>Follow requests</h2><div class="card" style="padding:6px 12px">` + followRequests.map(fr => `
+      <div class="req">
+        ${avatarHtml(fr.from,'av')}
+        <div class="rc"><b>${esc(fr.from.displayName||fr.from.username)}</b> wants to follow you</div>
+        <div class="ra">
+          <button class="sm ok" onclick="notifAcceptFollow('${fr.from.id}')">Approve</button>
+          <button class="sm no" onclick="notifRejectFollow('${fr.from.id}')">Reject</button>
+        </div>
+      </div>`).join('') + `</div>` : '';
+  const joinHtml = joinRequests.length ? `<h2>Join requests</h2><div class="card" style="padding:6px 12px">` + joinRequests.map(jr => `
+      <div class="req">
+        ${avatarHtml(jr.from,'av')}
+        <div class="rc"><b>${esc(jr.from.displayName||jr.from.username)}</b> wants to join <i>${esc(jr.sessionName)}</i>${jr.note?` — "${esc(jr.note)}"`:''}</div>
+        <div class="ra">
+          <button class="sm ok" onclick="notifApproveJoin('${jr.sessionId}','${jr.reqId}')">Approve</button>
+          <button class="sm no" onclick="notifRejectJoin('${jr.sessionId}','${jr.reqId}')">Reject</button>
+        </div>
+      </div>`).join('') + `</div>` : '';
+  // Discoverability rule (CLAUDE.md): never hide an empty state -- render it open, not a blank page.
+  const empty = (!invites.length && !followRequests.length && !joinRequests.length)
+    ? homeEmpty(ICON_BELL, "You're all caught up", 'Invites and requests will show up here.') : '';
+  $('app').innerHTML = `<div class="wrap">${head}${invitesHtml}${followHtml}${joinHtml}${empty}</div>`;
+  if(!silent){ const st = { t:'notifications' }; fromHistory ? landOn(st) : navigated(st); }
+}
+// Exact same accept/decline pipeline as acceptInvite/declineInvite above (same server routes),
+// just refreshing THIS screen afterward instead of home() -- kept as separate functions rather
+// than threading a "where do I refresh" parameter through the originals, so neither side has to
+// know the other exists.
+async function notifAcceptInvite(id){
+  const epoch=UI_EPOCH;
+  await H.post(`/api/sessions/${id}/accept`,{});
+  if(nothingNavigatedSince(epoch)) openSession(id);
+}
+async function notifDeclineInvite(id){
+  confirmSheet('Decline invite?', 'The workout comes off your Home.', 'Decline invite',
+    async () => { const epoch=UI_EPOCH; await H.post(`/api/sessions/${id}/decline`,{}); if(nothingNavigatedSince(epoch)) renderNotifications({silent:true}); }, false);
+}
+// Exact same pipeline as acceptFollow/rejectFollow (Friends tab, above) -- refreshes this screen
+// instead of friends().
+async function notifAcceptFollow(id){
+  const epoch=UI_EPOCH;
+  const r = await H.post('/api/follow-requests/'+id+'/accept',{});
+  if(r && r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
+}
+async function notifRejectFollow(id){
+  const epoch=UI_EPOCH;
+  const r = await H.post('/api/follow-requests/'+id+'/reject',{});
+  if(r && r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
+}
+// Exact same pipeline as approveJoin/rejectJoin (openSession, above) -- refreshes this screen
+// instead of the session detail screen.
+async function notifApproveJoin(id, reqId){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/join/${reqId}/approve`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
+}
+async function notifRejectJoin(id, reqId){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/join/${reqId}/reject`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
+}
 // Task #64, Jeff Aug 21: "Can you delete all of my workouts and history to let me start over?"
 // Irreversible and account-wide, so this gets its own explaining sheet rather than a bare
 // browser confirm() — the same severity Delete/Leave get, just spelled out further since this
@@ -5373,8 +5480,12 @@ async function profileView(id, opts){
   const silent = !!(opts && opts.silent);
   const fromHistory = !!(opts && opts.fromHistory);
   if(!silent) UI_EPOCH++;
-  const p = await H.get('/api/profile/'+id);
   const isMe = id===ME.id;
+  // notifications is fetched alongside the profile itself (not after) so this stays one round
+  // trip's worth of latency, not two -- only ever needed on your OWN profile, where the bell
+  // (mirroring the settings gear beside it) shows.
+  const [p, notif] = await Promise.all([H.get('/api/profile/'+id), isMe ? H.get('/api/notifications') : Promise.resolve(null)]);
+  const notifCount = (notif && notif.count) || 0;
   const avatar = p.avatar
     ? `<img class="pavatar" src="${esc(p.avatar)}" alt="">`
     : `<div class="pavatar" style="background:${avatarColor(p.username)};color:#fff">${esc((p.displayName||p.username||'?')[0]||'?')}</div>`;
@@ -5394,6 +5505,10 @@ async function profileView(id, opts){
        </label>`
     : avatar;
   const settingsBtn = isMe ? `<button class="profile-set" title="Settings" onclick="openSettings()">${gearSvg()}</button>` : '';
+  // Sep 4 (Jeff): "notifications widget... to the right of the settings widget" -- same round
+  // transparent .profile-set button, positioned further out (see the CSS comment on .profile-set
+  // in index.html for why the gear had to move to make room).
+  const notifBtn = isMe ? notifBellHtml('profile-set profile-notif', notifCount) : '';
   const FOLLOW_LABEL = { none: ['Follow','blue'], requested: ['Requested','sec'], following: ['Following','sec'] };
   const [flabel, fcls] = FOLLOW_LABEL[p.youFollow] || FOLLOW_LABEL.none;
   const action = (isMe || p.youFollow === 'self') ? ''
@@ -5470,7 +5585,7 @@ async function profileView(id, opts){
         <div class="muted">@${esc(p.username)}</div>
         ${p.streak>=2?`<div class="streak-pill" style="margin-top:6px">${flameSvg()}${p.streak} day streak</div>`:''}
       </div>
-      ${settingsBtn}
+      ${notifBtn}${settingsBtn}
     </div>
     ${stats}
     ${actHtml}
