@@ -1108,6 +1108,33 @@ app.get('/api/friends', auth, async (req, res) => {
   });
 });
 
+// ---- Notifications (aggregated inbox) ----
+// Sep 4 (Jeff): a bell icon on Home + Profile leading to one inbox for "things needing your
+// response" -- workout invites, follow requests, and requests to join a workout you created.
+// Deliberately no new persisted collection: this reads the same three pending-state fields the
+// app already tracks (sessions[].invited, users[].followReqs, sessions[].joinRequests) and
+// assembles them on read, same shape as GET /api/friends' followRequests just above. `count` is
+// what the bell's badge renders -- computed here so Home/Profile don't each re-derive it from
+// three different fetches.
+app.get('/api/notifications', auth, async (req, res) => {
+  const me = DB.users[req.userId]; ensureFollowArrays(me);
+  const invites = Object.values(DB.sessions)
+    .filter(s => Array.isArray(s.invited) && s.invited.includes(req.userId) && DB.users[s.creatorId])
+    .map(s => ({ type: 'invite', sessionId: s.id, sessionName: s.name || 'Workout', exerciseCount: (s.exercises || []).length, from: publicUser(s.creatorId) }));
+  const followRequests = (me.followReqs || [])
+    .filter(id => DB.users[id])
+    .map(id => ({ type: 'follow', from: publicUser(id) }));
+  const joinRequests = [];
+  for (const s of Object.values(DB.sessions)) {
+    if (s.creatorId !== req.userId) continue;
+    for (const j of (s.joinRequests || [])) {
+      if (j.status !== 'pending' || !DB.users[j.userId]) continue;
+      joinRequests.push({ type: 'join', sessionId: s.id, reqId: j.id, sessionName: s.name || 'Workout', note: j.note || '', from: publicUser(j.userId) });
+    }
+  }
+  res.json({ invites, followRequests, joinRequests, count: invites.length + followRequests.length + joinRequests.length });
+});
+
 // ---- Activity feed (Friend's Activity) ----
 // Shows friends' COMPLETED activity: PRs they hit + workouts they finished this week + current streak.
 // Invites live in their own "Invites Awaiting" section on Home, not here.
