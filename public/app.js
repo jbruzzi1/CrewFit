@@ -1886,7 +1886,6 @@ const SET_TYPES = [
   { key:'drop', label:'Drop' },
   { key:'failure', label:'Failure' }
 ];
-const TYPE_CLASS = { normal:'t-normal', warmup:'t-warm', drop:'t-drop', failure:'t-fail' };
 const TYPE_LABEL = { normal:'Normal', warmup:'Warm up', drop:'Drop', failure:'Failure' };
 // v312: every exercise card on the active-workout screen is its own logger (see exLogBlockHtml).
 // The card is `.ex-log[data-ex=<exercise id>]`, with data-sid / data-load (library loadType) /
@@ -1950,11 +1949,8 @@ function exLogBlockHtml(s, e, o){
   return `<div class="ex-head"><div class="ex-main"><div class="ex-name">${o.name}</div>${target}${o.statusTag||''}${o.crewLine||''}</div></div>
     <div class="pp-sets ex-log-sets" data-f="sets">${exSetRowsHtml(s.id, e.id, o.exLogs, loadType)}</div>
     <div data-f="rec"></div>
-    <div class="type-picker">
-      <button type="button" class="type-pill t-normal" data-f="typePill" onclick="toggleTypeSeg('${e.id}')" aria-label="Set type: Normal. Tap to change.">${TYPE_LABEL.normal} <svg width="9" height="9" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-      <div class="seg hidden" data-f="typeSeg">
-        ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" data-t="${t.key}" onclick="logSetType('${e.id}','${t.key}')">${t.label}</div>`).join('')}
-      </div>
+    <div class="seg type-seg" data-f="typeSeg" role="radiogroup" aria-label="Set type">
+      ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" role="radio" aria-checked="${i===0}" data-t="${t.key}" onclick="logSetType('${e.id}','${t.key}')">${t.label}</div>`).join('')}
     </div>
     <div class="add-row">
       <button type="button" class="icon-btn ql-mic-icon" data-f="mic" aria-label="Hold to speak a set" onpointerdown="qlMicDown(event,'${e.id}')" onpointerup="qlMicUp()" onpointercancel="qlMicUp()"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
@@ -2106,34 +2102,15 @@ function useSuggested(exId, w){
   el.value=w; updateLoadHint(exId);
   const box=lf(exId,'rec'); if(box) box.classList.add('used');
 }
-// Jeff, Aug 31: "do we think this is the best way for us to log? ... a simpler way, a cleaner
-// way?" -- the 4-chip Normal/Warm up/Drop/Failure row used to sit permanently expanded above the
-// add-row, full width, on every single set even though the overwhelming majority are Normal. It's
-// now a small collapsed pill (below) that shows the current type and expands into the same 4
-// chips only on tap; picking one (here) collapses it straight back. The pill's color is loud on
-// purpose when NOT Normal -- reusing the same t-warm/t-drop/t-fail language already used for
-// logged-set badges in the list below -- so a leftover Warm up/Drop/Failure selection from a
-// previous set stays visibly obvious even collapsed. It must never be possible to silently log a
-// real working set as a warm-up because the picker quietly stayed open (or closed) on an old
-// choice from a few sets ago.
+// v313 (Jeff, Sep 4): "remove the menu for selecting what type of set it is and have them all
+// listed." The four types (Normal / Warm up / Drop / Failure) sit in one always-visible row on
+// every card, smaller than the old chips so they fit cleanly; the collapsed "Normal ▾" pill from
+// v259 is gone. The selection persists from set to set on that card (a warm-up run stays on
+// Warm up until you tap Normal) -- with the whole row on screen the current pick is never hidden,
+// which was the only reason the pill needed its loud non-Normal colors.
 function logSetType(exId, key){
   const seg=lf(exId,'typeSeg'); if(!seg) return;
-  seg.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on', c.getAttribute('data-t')===key));
-  const pill=lf(exId,'typePill');
-  if(pill){
-    pill.className = `type-pill ${TYPE_CLASS[key]||'t-normal'}`;
-    pill.setAttribute('aria-label', `Set type: ${TYPE_LABEL[key]||'Normal'}. Tap to change.`);
-    pill.innerHTML = `${TYPE_LABEL[key]||'Normal'} <svg width="9" height="9" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-  }
-  seg.classList.add('hidden');
-}
-// Tapping the pill reveals the same 4 chips it always had; tapping ANY chip (including the one
-// already selected) re-collapses via logSetType above -- so tapping the current type is a
-// no-op "never mind" close, with no separate cancel button needed.
-function toggleTypeSeg(exId){
-  const seg=lf(exId,'typeSeg'); const pill=lf(exId,'typePill');
-  if(!seg||!pill) return;
-  seg.classList.remove('hidden'); pill.classList.add('hidden');
+  seg.querySelectorAll('.chip').forEach(c=>{ const on = c.getAttribute('data-t')===key; c.classList.toggle('on', on); c.setAttribute('aria-checked', on ? 'true' : 'false'); });
 }
 // RIR (task #62) stays hidden by default, same reasoning as it resetting every set (see
 // addLogSet below): it's an occasional, deliberate read on effort, not something that should
