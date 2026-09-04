@@ -5014,13 +5014,17 @@ async function friends(opts){
       </div>
     </div>`).join('')
     : homeEmpty(ICON_PEOPLE, 'No connections yet', 'Search above to find people to train with.');
+  // Sep 4 (Jeff, same ask generalized to the follow-requests list too): same
+  // onclick="profileView(id)" + cursor:pointer + stopPropagation-on-the-buttons pattern as the
+  // search results above -- clicking the person's name/row here now opens their profile; Approve/
+  // Reject still work without also triggering that navigation.
   const followReqRows = freq.length ? freq.map(x=>`
-    <div class="req">
+    <div class="req" onclick="profileView('${jsq(x.id)}')" style="cursor:pointer">
       ${avatarHtml(x,'av')}
       <div class="rc"><b>${esc(x.displayName||x.username)}</b> wants to follow you</div>
-      <div class="ra">
-        <button class="sm ok" onclick="acceptFollow('${x.id}')">Approve</button>
-        <button class="sm no" onclick="rejectFollow('${x.id}')">Reject</button>
+      <div class="ra" onclick="event.stopPropagation()">
+        <button class="sm ok" onclick="acceptFollow('${jsq(x.id)}')">Approve</button>
+        <button class="sm no" onclick="rejectFollow('${jsq(x.id)}')">Reject</button>
       </div>
     </div>`).join('') : '';
   const pending = freq.length;
