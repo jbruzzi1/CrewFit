@@ -66,7 +66,8 @@ async function log({ H }, name, date, weight, reps, lo = 8, hi = 10, setType) {
 const ask = ({ H }, n) => fetch(B + '/api/progress/exercise/' + encodeURIComponent(n), { headers: H }).then(x => x.json());
 const progress = ({ H }) => fetch(B + '/api/progress?weeks=13', { headers: H }).then(x => x.json());
 
-// Mirrors the branch order in openLogSheet() in public/app.js. If that order changes, change
+// Mirrors the branch order in refreshLogRec() in public/app.js (the "when to add weight" box on
+// each exercise card). If that order changes, change
 // this — the point is to assert what the USER SEES, not what the endpoint happens to return.
 function shown(r) {
   if (r.ready) return 'READY';
