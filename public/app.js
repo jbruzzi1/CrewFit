@@ -5014,13 +5014,17 @@ async function friends(opts){
       </div>
     </div>`).join('')
     : homeEmpty(ICON_PEOPLE, 'No connections yet', 'Search above to find people to train with.');
+  // Sep 4 (Jeff, same ask generalized to the follow-requests list too): same
+  // onclick="profileView(id)" + cursor:pointer + stopPropagation-on-the-buttons pattern as the
+  // search results above -- clicking the person's name/row here now opens their profile; Approve/
+  // Reject still work without also triggering that navigation.
   const followReqRows = freq.length ? freq.map(x=>`
-    <div class="req">
+    <div class="req" onclick="profileView('${jsq(x.id)}')" style="cursor:pointer">
       ${avatarHtml(x,'av')}
       <div class="rc"><b>${esc(x.displayName||x.username)}</b> wants to follow you</div>
-      <div class="ra">
-        <button class="sm ok" onclick="acceptFollow('${x.id}')">Approve</button>
-        <button class="sm no" onclick="rejectFollow('${x.id}')">Reject</button>
+      <div class="ra" onclick="event.stopPropagation()">
+        <button class="sm ok" onclick="acceptFollow('${jsq(x.id)}')">Approve</button>
+        <button class="sm no" onclick="rejectFollow('${jsq(x.id)}')">Reject</button>
       </div>
     </div>`).join('') : '';
   const pending = freq.length;
@@ -5057,16 +5061,21 @@ async function friendSearch(){
       // requested/accepted or the target's profile is public) / 'requested' (pending, awaiting
       // their approval) / 'none'. sendRequest below now calls /api/follow/:id -- the button needs
       // the id, not just the username, so it's threaded through here too.
+      // Sep 4 (Jeff: "I want to be able to click on that user's name as im searching and it
+      // bring me to their profile") -- the Follow button has to keep working without also
+      // firing the new row-level navigation, so its click stops the bubble before doing its
+      // own thing (same stopPropagation approach as the notifications invite-actions row).
       const btn = x.requestStatus==='following' ? `<button class="sm" disabled style="background:var(--line);border-color:transparent;color:var(--muted)">Following</button>`
         : x.requestStatus==='requested' ? `<button class="sm" disabled style="background:var(--line);border-color:transparent;color:var(--muted)">Requested</button>`
-        : `<button class="sm sec" onclick="sendRequest('${jsq(x.id)}', this)">Follow</button>`;
+        : `<button class="sm sec" onclick="event.stopPropagation(); sendRequest('${jsq(x.id)}', this)">Follow</button>`;
       // Jeff, Aug 27: "the add button or showing if your friends or not is directly under the
       // name" -- this row used a "user-row" class that had no CSS rule anywhere, so the avatar,
       // name/handle, and button just stacked as plain block boxes instead of sitting in a row.
       // .friend-row (used two lines down for the real Friends list) is exactly this same
       // avatar + growing name/handle + trailing control layout, already correct -- reusing it
-      // here instead of inventing new CSS.
-      return `<div class="friend-row">${avatarHtml(x,'avatar')}<div class="meta"><div class="name">${esc(x.displayName||x.username)}</div><div class="handle">@${esc(x.username)}</div></div>${btn}</div>`;
+      // here instead of inventing new CSS. Now also clickable to the profile, same
+      // onclick="profileView(id)" + cursor:pointer pattern as the real Friends list rows below.
+      return `<div class="friend-row" onclick="profileView('${jsq(x.id)}')" style="cursor:pointer">${avatarHtml(x,'avatar')}<div class="meta"><div class="name">${esc(x.displayName||x.username)}</div><div class="handle">@${esc(x.username)}</div></div>${btn}</div>`;
     }).join('');
   } catch(e){ if(box) box.innerHTML=''; }
 }
