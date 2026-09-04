@@ -4914,15 +4914,32 @@ function exDetail(name){
   const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>${esc(e.name)}</h2>${favBtnHtml(e)}<button class="sec sm" onclick="closeSheet()">✕</button></div>
-      <div class="sheet-thumb">${exThumb(e)}<span class="sheet-thumb-cap">${esc((e.muscle_groups||[])[0]||'abdominals')}</span></div>
+      <div class="sheet-thumb"><div class="mg-ico">${exThumb(e)}</div><span class="sheet-thumb-cap">${esc((e.muscle_groups||[])[0]||'abdominals')}</span></div>
       <div class="sheet-mg">${esc(exMuscles(e).join(' · '))}</div>
       <div class="ex-badges" style="margin:8px 0">${exBadges(e)}</div>
       <div class="sheet-row"><span>Equipment</span><b>${eqs}</b></div>
       <div class="sheet-row"><span>Pattern</span><b>${esc(e.pattern||'—')}</b></div>
       <div class="sheet-row"><span>Suggested</span><b>${sets} × ${reps}</b></div>
+      <div class="sheet-row"><span>Personal best</span><b data-f="pr" class="muted">…</b></div>
     </div>`;
   sheet.onclick=(e)=>{ if(e.target===sheet) closeSheet(); }; document.body.appendChild(sheet);
   requestAnimationFrame(()=>sheet.classList.add('show'));
+  // Sep 5 (Jeff: "add in what the users personal best is for that exercise"): the sheet opens
+  // instantly off window._LIB2 with no network round trip, same as always -- this fills the PR
+  // row in place once the cheap per-exercise endpoint answers, same fetch-after-render pattern
+  // as refreshLogRec's live recommendation box (the sheet may already be closed by then, so it
+  // re-checks document.body.contains(sheet) before touching anything).
+  H.get('/api/progress/exercise/'+encodeURIComponent(name)).then(r=>{
+    if(!document.body.contains(sheet)) return;
+    const box = sheet.querySelector('[data-f="pr"]');
+    // Same bail-out as refreshLogRec on a failed/expired fetch: leave the row alone rather than
+    // claim "Not logged yet" when we actually just don't know -- a network hiccup or expired
+    // session must never read as "you have no PR here" (CLAUDE.md: never state something about
+    // the user's history that isn't actually true).
+    if(!box || !r || r.error) return;
+    if(r.pr){ box.textContent = prLabel(r.pr); box.classList.remove('muted'); }
+    else box.textContent = 'Not logged yet';
+  });
 }
 // v247: used to be document.querySelector('.sheet-back') — the FIRST .sheet-back in document
 // order, i.e. the OLDEST open sheet. Almost every call site only ever has one sheet open, so this

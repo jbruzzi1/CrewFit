@@ -607,20 +607,26 @@
     .sheet label.muted { display:block; margin:10px 0 4px; font-size:12px; }
     .sheet select, .sheet input { width:100%; margin:0; }
     /* v309 (Jeff, Sep 3): "click in on an exercise... background is still black... needs the
-       white background" -- then, clarifying: "I just want the image background white, not
-       everything white." The muscle-diagram images (public/muscle-icons) are transparent PNGs of
-       a light-gray/white body model -- great on a white card, but on the dark-theme .sheet they
-       read as a washed-out figure floating in near-black space. Only exDetail()'s diagram (and
-       its "Triceps"-style caption, which sits on the same plate) gets a white background here;
-       the title, badges, equipment rows and buttons all stay exactly as theme-aware as every
-       other sheet in the app -- unconditional literal colors (not themed var()s) specifically
-       because the plate needs to stay white in dark theme too, which a var() redefinition can't
-       do without touching everything else in scope along with it. */
-    .sheet-thumb { display:flex; align-items:center; gap:12px; margin:6px 0 4px; background:#fff; border-radius:14px; padding:10px 12px; }
+       white background" -- gave the whole thumbnail ROW a white plate so the muscle-diagram PNG
+       (public/muscle-icons, transparent, light-gray body model) wasn't a washed-out figure
+       floating in near-black space.
+       Revised Sep 5: once the image itself shrank to a 54x54 icon (Jeff: "decrease the size of
+       that image"), that same edge-to-edge white plate behind a small icon read as a stray white
+       bar across the sheet -- Jeff flagged it on sight. The fix was already sitting one screen
+       over: renderLibGroups()'s muscle-tile icons solve the identical "PNG needs a light
+       backdrop" problem by putting the white background on the icon CHIP only (.mg-ico -- both
+       here and there get bumped to solid white in dark theme via the shared
+       :where(html.theme-dark) .mg-ico rule further down), never on the row around it.
+       .sheet-thumb is back to a plain transparent flex row like every other row in the sheet, and
+       the caption reverts to the normal themed --muted color now that it isn't sitting on white.
+       Sized at 84px, not the library tile's 54px (.mg-card .mg-ico, a more specific selector that
+       still wins there) -- Jeff's first pass at 54px read as "too small now" once he saw it live.
+       84px matches .pavatar, this app's own existing size for "a real picture, not an icon." */
+    .sheet-thumb { display:flex; align-items:center; gap:12px; margin:6px 0 4px; }
     .mg-ico { width:54px; height:54px; flex:0 0 auto; color:var(--green); background:#f7f8fa; border-radius:14px; padding:0; overflow:hidden; }
+    .sheet-thumb .mg-ico { width:84px; height:84px; border-radius:18px; }
     .sheet-thumb .mg-img { width:100%; height:100%; object-fit:contain; display:block; }
     .sheet-thumb-cap { font-size:13px; font-weight:600; color:var(--muted); text-transform:capitalize; }
-    .sheet-thumb .sheet-thumb-cap { color:#6b7280; }  /* v309: the dark-theme --muted is too light to read on the plate's white */
     .stepper { display:inline-flex; align-items:center; gap:12px; }
     .stepper .stp { width:34px; height:34px; border-radius:10px; background:var(--card); color:var(--fg); border:1px solid var(--line); font-size:20px; font-weight:600; display:flex; align-items:center; justify-content:center; cursor:pointer; }
     .stepper b { min-width:28px; text-align:center; font-size:17px; }
@@ -1218,6 +1224,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=324"></script>
+  <script src="app.js?v=325"></script>
 </body>
 </html>

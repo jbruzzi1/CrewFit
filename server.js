@@ -3249,6 +3249,12 @@ app.get('/api/progress/exercise/:name', auth, async (req, res) => {
   // advise yet — otherwise the one feature that tells you what to do next is only ever explained
   // on a tab a new user has no reason to open. Both come out of the pass already done above
   // rather than a second scan of every session in the database.
+  // Sep 5 (Jeff, exercise-detail sheet): "add in what the users personal best is for that
+  // exercise." A direct DB.prs[userId][name] lookup, not recordsFor() -- recordsFor() also
+  // walks every seeded lift to build the full Progress-tab list, which is real work this
+  // single-exercise sheet has no reason to pay for. This is the one earned record for this
+  // exercise, in whatever unit they're on now, or null if they haven't logged it yet.
+  const earnedPr = (DB.prs && DB.prs[req.userId] && DB.prs[req.userId][name]) || null;
   res.json({
     unit: r.unit,
     sessions: r.counts[name] || 0,
@@ -3259,7 +3265,10 @@ app.get('/api/progress/exercise/:name', auth, async (req, res) => {
       : null,
     ready: r.ready.find(x => x.exercise === name) || null,
     hold:  r.holds.find(x => x.exercise === name) || null,
-    soon:  r.soon.find(x => x.exercise === name) || null
+    soon:  r.soon.find(x => x.exercise === name) || null,
+    pr: earnedPr
+      ? { weight: inUnit(earnedPr.weight, earnedPr.unit, r.unit), reps: earnedPr.reps, unit: r.unit, at: earnedPr.at }
+      : null
   });
 });
 
