@@ -533,13 +533,22 @@ async function home(opts){
   // workout the creator has not finished yet (creatorFinished, from sessionView) stays here past
   // its original date, same as it would still be open for them. Missing creatorFinished (an older
   // session shape) fails OPEN — shown, not silently hidden.
+  // Sep 5 (Jeff: "A friend completed a workout earlier and it's still showing up in the friends
+  // sessions - that should clear out"). The gate USED TO be `dayDiff(s.scheduledAt) >= 0 ||
+  // !s.creatorFinished` -- an OR that, for anything dated today or later, was true no matter what
+  // creatorFinished said, since dayDiff>=0 alone already satisfied it. So a friend's workout
+  // scheduled for today stayed listed as "joinable" for the rest of the day even the moment they
+  // finished and logged it. creatorFinished alone is already date-independent by construction (see
+  // the comment above and the past-dated case it exists for) -- there was never a reason for the
+  // date to ALSO be able to override it. test/friends-workouts.mjs only ever exercised this with
+  // past-dated fixtures, where dayDiff<0 made the OR's first arm false and the bug invisible.
   const friendIds = new Set(myFriends.map(f=>f.id));
   const joinable = sessions.filter(s => s.name
     && s.visibility === 'public'
     && friendIds.has(s.creatorId)
     && !(s.participants||[]).includes(ME.id)
     && !(Array.isArray(s.invited) && s.invited.includes(ME.id))
-    && (dayDiff(s.scheduledAt) >= 0 || !s.creatorFinished));
+    && !s.creatorFinished);
   html += `<h2 class="light">Friends' Workouts</h2>`;
   if(joinable.length){
     html += `<div class="card">`;

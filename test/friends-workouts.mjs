@@ -6,6 +6,17 @@
 // (server.js's sessionView exposes that one fact as `creatorFinished`, stripped of everything
 // else in `history`). This runs the REAL public/app.js home() against realistic session shapes,
 // the same vm-harness pattern as test/session-missed.mjs.
+//
+// Sep 5, 2026 (Jeff: "A friend completed a workout earlier and it's still showing up in the
+// friends sessions - that should clear out"): the fix above was originally written as
+// `dayDiff(s.scheduledAt) >= 0 || !s.creatorFinished` -- an OR whose first arm is true for
+// anything dated today or later regardless of creatorFinished, so a friend's TODAY-dated workout
+// stayed listed as joinable all day even the instant they finished and logged it. Every fixture
+// in the block below was past-dated, where dayDiff<0 made that first arm false and let
+// creatorFinished actually decide -- which is exactly why this bug shipped invisibly under this
+// same test file. The fix is `!s.creatorFinished` alone (already date-independent by
+// construction), and the new assertions below are today/future-dated specifically so this
+// exact shape of bug cannot silently come back.
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
@@ -46,6 +57,7 @@ vm.runInContext(SRC, ctx, { filename: 'public/app.js' });
 
 const daysAgo = n => new Date(Date.now() - n * 86400000).toISOString();
 const daysAhead = n => new Date(Date.now() + n * 86400000).toISOString();
+const rightNow = () => new Date().toISOString();
 
 vm.runInContext(`ME = { id: 'me1', displayName: 'Me' };`, ctx);
 const FRIEND = { id: 'friend1', displayName: 'Priya' };
@@ -88,6 +100,26 @@ console.log("\nFriends' Workouts — a friend's joinable session, by date and fi
      'a past-dated one the creator has NOT finished still shows — the actual fix');
   ok(rowFor('Past Finished Bench') === '',
      'a past-dated one the creator HAS finished is gone — it does not sit here forever');
+}
+
+console.log("\nthe actual bug: a TODAY (or future) -dated workout must also clear out once finished");
+{
+  // This is the exact case Jeff hit: a friend's workout scheduled for today, finished and logged
+  // earlier the same day. dayDiff(scheduledAt) is 0 (>= 0) for all three of these -- under the old
+  // `dayDiff >= 0 || !creatorFinished` rule that alone was enough to keep every one of them listed
+  // regardless of creatorFinished, which is precisely how this bug shipped unnoticed.
+  const todayFinished = base({ name: 'Today Finished Squat', scheduledAt: rightNow(), creatorFinished: true });
+  const todayOpen = base({ name: 'Today Still Open', scheduledAt: rightNow(), creatorFinished: false });
+  const futureFinished = base({ name: 'Future Finished Row', scheduledAt: daysAhead(1), creatorFinished: true });
+  const html = await renderJoinable([todayFinished, todayOpen, futureFinished]);
+  const rows = html.split('lib-item').slice(1);
+  const rowFor = name => rows.find(r => r.includes(name)) || '';
+
+  ok(rowFor('Today Finished Squat') === '',
+     'a friend\'s workout scheduled for TODAY clears out the moment they finish and log it, not at end of day');
+  ok(rowFor('Today Still Open') !== '', 'a today-dated one they have not finished yet still shows');
+  ok(rowFor('Future Finished Row') === '',
+     'even an oddly-already-finished future-dated one is gone -- creatorFinished decides, never the date');
 }
 
 console.log('\nregression: everything the filter already required still applies');
