@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS crews (
   id text PRIMARY KEY,
   data jsonb NOT NULL
 );
+CREATE TABLE IF NOT EXISTS notifications (
+  id text PRIMARY KEY,
+  data jsonb NOT NULL
+);
 CREATE TABLE IF NOT EXISTS app_state (
   key text PRIMARY KEY,
   value jsonb NOT NULL
@@ -87,7 +91,7 @@ async function ensureSchema() {
   }
 }
 
-const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, customExercises: {}, prs: {}, crews: {} });
+const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, customExercises: {}, prs: {}, crews: {}, notifications: {} });
 
 // Reassembles the exact in-memory shape server.js has always used, from Postgres rows.
 async function load() {
@@ -122,6 +126,12 @@ async function load() {
 
   const crews = await c.query('SELECT id, data FROM crews');
   for (const row of crews.rows) { d.crews[row.id] = JSON.parse(row.data); }
+
+  // Sep 5 2026: passive, read-only notification history (see the comment above notify() and
+  // GET /api/notifications in server.js) -- one row per notification, unlike everything above it
+  // is not itself app "state" a user edits, just an append-and-eventually-pruned log.
+  const notifications = await c.query('SELECT id, data FROM notifications');
+  for (const row of notifications.rows) { d.notifications[row.id] = JSON.parse(row.data); }
 
   // Small singleton bookkeeping fields server.js reads/writes directly on DB (not per-entity
   // data) — followApprovalV1 is a boot migration's "did this already run" marker (see
@@ -185,6 +195,8 @@ async function doSave(d) {
       'INSERT INTO prs (user_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data');
     await syncTable(c, 'crews', 'id', d.crews, (id, v) => [id, JSON.stringify(v)],
       'INSERT INTO crews (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data');
+    await syncTable(c, 'notifications', 'id', d.notifications, (id, v) => [id, JSON.stringify(v)],
+      'INSERT INTO notifications (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data');
     for (const key of SINGLETON_FIELDS) {
       if (d[key] === undefined) continue;
       await c.query('INSERT INTO app_state (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value', [key, JSON.stringify(d[key])]);

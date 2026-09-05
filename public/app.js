@@ -5720,6 +5720,16 @@ async function renderNotifications(opts){
   const invites = (data && data.invites) || [];
   const followRequests = (data && data.followRequests) || [];
   const joinRequests = (data && data.joinRequests) || [];
+  const history = (data && data.history) || [];
+  // Sep 5 (Jeff: a push for something that already happened -- someone followed you, a reaction,
+  // an accepted invite -- showed nothing here, and he asked for past notifications to show for a
+  // while too). Marks this visit as "seen" server-side so the bell badge stops counting these once
+  // you've actually looked; deliberately NOT part of the H.get above (Home reads that same
+  // endpoint just to size the badge, on every Home load -- doing it there would clear the badge
+  // before anyone had a chance to see it). Fire-and-forget, and only on an actual navigation onto
+  // this page, not the silent in-place refreshes the accept/decline handlers below trigger after
+  // their own action -- those are the same visit, already covered by this call.
+  if(!silent) H.post('/api/notifications/seen', {}).catch(()=>{});
   const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Notifications</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
   // Same .inv-banner/.inv-card markup as the Home banner (see home() above) -- same feature,
   // same look, just reachable from a second place now.
@@ -5753,10 +5763,22 @@ async function renderNotifications(opts){
           <button class="sm no" onclick="notifRejectJoin('${jr.sessionId}','${jr.reqId}')">Reject</button>
         </div>
       </div>`).join('') + `</div>` : '';
+  // Past notifications -- read-only, no action row (unlike the three sections above, there's
+  // nothing left to accept/decline/approve here, just a record that it happened). Same
+  // .feed-item/.feed-lead shape as Home's "Friends' Activity" strip, reused rather than inventing
+  // a fourth row style for what's still just "an icon, a line of text, and when." fmtWhen already
+  // gives Today/Yesterday/a short date -- exactly right for something that could be hours or
+  // weeks old (history covers the last 7 days; see NOTIFICATION_HISTORY_DAYS in server.js).
+  // Muted stroke color, same #9ca3af as ICON_BELL's empty-state bell -- informational, not a CTA
+  // or an earned achievement (CLAUDE.md's color language), so it stays visually quiet like the
+  // crew-row challenge hint does for the same reason.
+  const historyLead = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 4 1.5 5.5 2 6.5H4c.5-1 2-2.5 2-6.5Z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>`;
+  const historyHtml = history.length ? `<h2 class="light">Past notifications</h2><div class="card feed-strip">` + history.map(n => `
+      <div class="feed-item"><span class="feed-lead">${historyLead}</span><span>${esc(n.body || n.title || '')}<div class="tag">${fmtWhen(n.at)}</div></span></div>`).join('') + `</div>` : '';
   // Discoverability rule (CLAUDE.md): never hide an empty state -- render it open, not a blank page.
-  const empty = (!invites.length && !followRequests.length && !joinRequests.length)
+  const empty = (!invites.length && !followRequests.length && !joinRequests.length && !history.length)
     ? homeEmpty(ICON_BELL, "You're all caught up", 'Invites and requests will show up here.') : '';
-  $('app').innerHTML = `<div class="wrap">${head}${invitesHtml}${followHtml}${joinHtml}${empty}</div>`;
+  $('app').innerHTML = `<div class="wrap">${head}${invitesHtml}${followHtml}${joinHtml}${historyHtml}${empty}</div>`;
   if(!silent){ const st = { t:'notifications' }; fromHistory ? landOn(st) : navigated(st); }
 }
 // Exact same accept/decline pipeline as acceptInvite/declineInvite above (same server routes),
