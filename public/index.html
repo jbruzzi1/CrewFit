@@ -151,7 +151,15 @@
     .home-empty svg { opacity:.5; margin-bottom:8px; }
     .home-empty .he-title { font-weight:600; font-size:13.5px; color:var(--fg); margin:0 0 3px; }
     .home-empty .he-sub { font-size:12.5px; color:var(--muted); margin:0; }
-    .home-empty .he-cta { display:inline-block; margin-top:8px; font-size:13px; font-weight:600; color:var(--blue); cursor:pointer; }
+    /* Not scoped to .home-empty (unlike he-title/he-sub) -- the crews section header row reuses
+       this exact "small blue CTA link" look for its "+ New crew" action even though a crew
+       already exists there and it isn't inside a .home-empty block (Jeff, Sep 5: caught it
+       rendering as plain white text -- the .home-empty-scoped rule below simply never matched). */
+    .he-cta { display:inline-block; margin-top:8px; font-size:13px; font-weight:600; color:var(--blue); cursor:pointer; }
+    /* he-cta's margin-top:8px is for stacking below the he-sub line in an empty state -- inside
+       the crews header's flex row (.h1-row) it would just nudge the text a few px off-center
+       against the h2 next to it. */
+    .h1-row .he-cta { margin-top:0; }
     /* v221: the "window" — a sky wash at the very top of Home only, fading to the page
        background by ~380px down. Painted on .home-head itself (the wrap spans the whole app
        column, and body is already a 480px column), so it needs no body class, no JS toggling,
@@ -1238,6 +1246,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=327"></script>
+  <script src="app.js?v=328"></script>
 </body>
 </html>
