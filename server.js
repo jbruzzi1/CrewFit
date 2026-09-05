@@ -950,7 +950,10 @@ app.post('/api/follow/:id', auth, async (req, res) => {
   if (!target.followReqs.includes(req.userId)) {
     target.followReqs.push(req.userId);
     await save(DB);
-    notify(target.id, { title: 'New follow request', body: `${DB.users[req.userId].displayName} wants to follow you` });
+    // history:false -- this is the live, still-pending "wants to follow you" ask, already shown
+    // as an actionable row in GET /api/notifications' followRequests while it's pending; the
+    // accepted/rejected outcome (line ~995 below) gets its own history entry instead.
+    notify(target.id, { title: 'New follow request', body: `${DB.users[req.userId].displayName} wants to follow you` }, { history: false });
   }
   res.json({ status: 'requested' });
 });
@@ -1244,7 +1247,12 @@ app.post('/api/crews/:id/messages', auth, async (req, res) => {
   const m = { id: 'cm_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
   c.messages.push(m);
   await save(DB);
-  for (const pid of c.memberIds) if (pid !== req.userId) notify(pid, { title: c.name, body: `${DB.users[req.userId].displayName}: ${text.slice(0, 40)}` });
+  // history:false -- a live group chat is exactly the kind of high-frequency notify() call the
+  // history feature was never meant to absorb (cold-review catch, Sep 5): a chatty crew could
+  // blow past the history list's cap in hours, pushing out the one-shot life events (a follow, a
+  // reaction, an accepted invite) it exists to surface. The chat thread itself is already a
+  // durable, viewable place to catch up on messages -- history doesn't need to duplicate it.
+  for (const pid of c.memberIds) if (pid !== req.userId) notify(pid, { title: c.name, body: `${DB.users[req.userId].displayName}: ${text.slice(0, 40)}` }, { history: false });
   res.json(m);
 });
 
@@ -1397,11 +1405,19 @@ app.post('/api/crews/:id/challenge', auth, async (req, res) => {
 // ---- Notifications (aggregated inbox) ----
 // Sep 4 (Jeff): a bell icon on Home + Profile leading to one inbox for "things needing your
 // response" -- workout invites, follow requests, and requests to join a workout you created.
-// Deliberately no new persisted collection: this reads the same three pending-state fields the
-// app already tracks (sessions[].invited, users[].followReqs, sessions[].joinRequests) and
-// assembles them on read, same shape as GET /api/friends' followRequests just above. `count` is
-// what the bell's badge renders -- computed here so Home/Profile don't each re-derive it from
-// three different fetches.
+// Deliberately no new persisted collection for these three: they read the same pending-state
+// fields the app already tracks (sessions[].invited, users[].followReqs, sessions[].joinRequests)
+// and assemble on read, same shape as GET /api/friends' followRequests just above.
+//
+// Sep 5 (Jeff, see the long comment above notify()): that was the whole inbox, and it only ever
+// covered things still AWAITING a response -- a completed, one-shot notification (someone
+// followed you, a reaction, an accepted invite) had nowhere to live once its moment passed, even
+// though a push for it had already gone out. `history` below is that missing piece: notify()'s
+// own persisted log, filtered to the last NOTIFICATION_HISTORY_DAYS. `count` (the bell's badge)
+// now also counts unseen history entries -- "unseen" tracked as a single per-user timestamp
+// (notificationsSeenAt, stamped by POST /api/notifications/seen when the notifications PAGE is
+// actually opened, not by this endpoint itself, since Home also calls this just to read the
+// badge count and must not clear it before the page is ever opened).
 app.get('/api/notifications', auth, async (req, res) => {
   const me = DB.users[req.userId]; ensureFollowArrays(me);
   const invites = Object.values(DB.sessions)
@@ -1418,7 +1434,24 @@ app.get('/api/notifications', auth, async (req, res) => {
       joinRequests.push({ type: 'join', sessionId: s.id, reqId: j.id, sessionName: s.name || 'Workout', note: j.note || '', from: publicUser(j.userId) });
     }
   }
-  res.json({ invites, followRequests, joinRequests, count: invites.length + followRequests.length + joinRequests.length });
+  const cutoff = Date.now() - NOTIFICATION_HISTORY_DAYS * 86400000;
+  const history = Object.values(DB.notifications)
+    .filter(n => n.userId === req.userId && new Date(n.createdAt).getTime() >= cutoff)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .slice(0, 50)
+    .map(n => ({ type: 'history', id: n.id, title: n.title, body: n.body, at: n.createdAt }));
+  const seenAt = me.notificationsSeenAt ? new Date(me.notificationsSeenAt).getTime() : 0;
+  const unseenHistory = history.filter(n => new Date(n.at).getTime() > seenAt).length;
+  res.json({ invites, followRequests, joinRequests, history, count: invites.length + followRequests.length + joinRequests.length + unseenHistory });
+});
+// Stamps "I have now looked at the notifications page" -- called by renderNotifications() in
+// app.js when it actually lands on the page, deliberately NOT by GET /api/notifications itself
+// (Home fetches that just to size the bell badge, on every Home load; if reading it cleared the
+// badge, a push notification would go stale before anyone had a chance to see the badge at all).
+app.post('/api/notifications/seen', auth, async (req, res) => {
+  DB.users[req.userId].notificationsSeenAt = new Date().toISOString();
+  await save(DB);
+  res.json({ ok: true });
 });
 
 // ---- Activity feed (Friend's Activity) ----
@@ -1776,7 +1809,10 @@ app.post('/api/sessions/:id/comments', auth, async (req, res) => {
   if (!s.comments) s.comments = [];
   s.comments.push(c);
   await save(DB);
-  for (const pid of s.participants) if (pid !== req.userId) notify(pid, { title: 'New message', body: `${DB.users[req.userId].displayName}: ${text.slice(0,40)}` });
+  // history:false -- same reasoning as crew chat above: a live in-workout chat thread is already
+  // its own durable, viewable place to catch up, and can be chatty enough to crowd out one-shot
+  // history entries if it wrote one per message too.
+  for (const pid of s.participants) if (pid !== req.userId) notify(pid, { title: 'New message', body: `${DB.users[req.userId].displayName}: ${text.slice(0,40)}` }, { history: false });
   res.json(sessionView(s, req.userId));
 });
 
@@ -1830,7 +1866,42 @@ app.post('/api/push/subscribe', auth, async (req, res) => {
   await save(DB);
   res.json({ ok: true });
 });
-function notify(userId, payload) {
+// Sep 5 2026 (Jeff: "I got a push saying someone followed me but the bell / notifications page
+// showed nothing... it should also show past notifications for a specific amount of time"). Two
+// separate bugs in one report: (1) GET /api/notifications (below) was built entirely from
+// still-PENDING state (an unaccepted invite, an unapproved follow/join request) -- a public-
+// profile follow completes instantly with no pending state left to read back, so it was never
+// going to show up there no matter how long you waited; (2) even for things that DO have a
+// one-shot moment, nothing was kept in-app past that moment -- there was no history at all, only
+// "things needing a response right now."
+// Fixed by making notify() -- already the ONE place every push in this app is sent from -- also
+// append a durable, read-only history record, independent of whether the push itself succeeds
+// (a user with push permission off, or the payload's target off this device entirely, should
+// still see it in-app; the old `if (!sub) return` was strictly a push-delivery gate, not a
+// "this happened" gate). Callers pass `{ history: false }` for two different reasons: the three
+// notify() calls for a still-pending invite/follow-request/join-request duplicate a type already
+// shown live elsewhere (logging those too would show the exact same ask twice, once as a live
+// actionable row and once as an inert history line); and the two live-chat notify() calls (crew
+// messages, in-workout chat) are high-frequency and already have their own durable thread to
+// catch up on -- a chatty crew would otherwise crowd real one-shot events out of the history
+// list's cap within hours (cold-review catch). Everything else -- new follower, an
+// accepted/declined invite or join, a reaction, a comment on a POSTED recap, a challenge event --
+// has no other durable trace once the moment passes, so it's exactly what "past notifications"
+// needs to mean. Retention is NOTIFICATION_HISTORY_DAYS (pruneOldNotifications, below) -- an
+// in-app inbox is not meant to become a permanent activity log.
+const NOTIFICATION_HISTORY_DAYS = 7;
+function notify(userId, payload, opts) {
+  if (!opts || opts.history !== false) {
+    const id = 'ntf_' + uid();
+    DB.notifications[id] = { id, userId, title: capStr(payload.title, 120), body: capStr(payload.body, 300), createdAt: new Date().toISOString() };
+    // Deliberately its own save(), not left to whatever save(DB) the calling route happens to run
+    // -- several callers already `await save(DB)` BEFORE calling notify() (the mutation they're
+    // persisting is unrelated to the notification), which would otherwise silently drop this
+    // record until the next unrelated write. Fire-and-forget, same pattern as the dead-
+    // subscription cleanup below; save() is internally queued, so this is safe to call from a
+    // tight loop (e.g. notifying every crew member) without racing itself.
+    save(DB).catch(e => console.error('notify: failed to persist notification history:', e && e.message));
+  }
   const sub = DB.pushSubs[userId];
   if (!sub) return;
   webpush.sendNotification(sub, JSON.stringify(payload)).catch(err => {
@@ -1847,6 +1918,18 @@ function notify(userId, payload) {
       save(DB).catch(e => console.error('notify: failed to persist dead-subscription cleanup:', e.message));
     }
   });
+}
+// Keeps DB.notifications from growing forever -- GET /api/notifications above already filters to
+// the last NOTIFICATION_HISTORY_DAYS on read, so this is pure storage hygiene, not correctness;
+// called once at boot and every few hours by a timer alongside the streak/workout reminder ones
+// (see the boot section at the bottom of this file).
+function pruneOldNotifications() {
+  const cutoff = Date.now() - NOTIFICATION_HISTORY_DAYS * 86400000;
+  let removed = 0;
+  for (const id of Object.keys(DB.notifications)) {
+    if (new Date(DB.notifications[id].createdAt).getTime() < cutoff) { delete DB.notifications[id]; removed++; }
+  }
+  return removed;
 }
 
 // ---- Sessions ----
@@ -1917,7 +2000,9 @@ app.post('/api/sessions', auth, async (req, res) => {
   DB.sessions[id] = session;
   await save(DB);
   // notify invited friends
-  for (const fid of invites) notify(fid, { title: 'Workout invite', body: `${DB.users[req.userId].displayName} invited you to a workout` });
+  // history:false -- already shown live as an actionable "Workout invites" row in GET
+  // /api/notifications while it's unanswered; accept/decline (elsewhere) gets its own notify().
+  for (const fid of invites) notify(fid, { title: 'Workout invite', body: `${DB.users[req.userId].displayName} invited you to a workout` }, { history: false });
   // Jeff, Aug 31: lock-screen nudge naming the exercise you're about to walk up to, sent to the
   // CREATOR themselves the moment their own "starting now" session was created (see
   // notify-helpers.js for the original full reasoning and the START_WINDOW_MS scoping).
@@ -2750,7 +2835,9 @@ app.post('/api/sessions/:id/join', auth, async (req, res) => {
   if (jr) { jr.status = 'pending'; jr.note = note; }
   else { jr = { id: 'jr_' + uid(), userId: req.userId, note, status: 'pending' }; s.joinRequests.push(jr); }
   await save(DB);
-  notify(s.creatorId, { title: 'Join request', body: `${DB.users[req.userId].displayName} wants to join your workout` });
+  // history:false -- already shown live as an actionable "Join requests" row in GET
+  // /api/notifications while it's pending; the approved/declined outcome (below) notifies too.
+  notify(s.creatorId, { title: 'Join request', body: `${DB.users[req.userId].displayName} wants to join your workout` }, { history: false });
   res.json({ ok: true, requested: true });     // the answer to "may I join" is not the workout
 });
 
@@ -4424,6 +4511,7 @@ app.use((err, req, res, next) => {
   migrateExerciseRenames();   // after the stamp above (it walks exerciseName), before the PR regroup
   rebuildAllPrs();
   migrateLoadTypes();
+  pruneOldNotifications();    // storage hygiene, not a schema migration -- see its own comment
   await save(DB);
   server = app.listen(PORT, () => console.log('CrewFit on', PORT));
   module.exports.server = server;
@@ -4479,6 +4567,15 @@ app.use((err, req, res, next) => {
       if (sent) await save(DB);
     } catch (e) { console.error('workout reminder check failed:', e && e.message); }
   }, 30 * 60 * 1000);
+
+  // Sep 5 2026: notification-history storage hygiene (see pruneOldNotifications, and the boot-
+  // time call to it above) -- every few hours is plenty for a 7-day retention window; this is
+  // cleanup, not a user-facing feature, so it doesn't need the same tight cadence as the
+  // reminder timers above.
+  setInterval(async () => {
+    try { if (pruneOldNotifications()) await save(DB); }
+    catch (e) { console.error('notification history prune failed:', e && e.message); }
+  }, 6 * 60 * 60 * 1000);
 })().catch(e => {
   console.error('FATAL during boot:', e && e.stack || e);
   process.exit(1);
