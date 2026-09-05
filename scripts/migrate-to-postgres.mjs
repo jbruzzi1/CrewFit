@@ -86,6 +86,7 @@ const d = {
   pushSubs: raw.pushSubs || {},
   customExercises: raw.customExercises || {},
   prs: raw.prs || {},
+  crews: raw.crews || {},
 };
 // Singleton bookkeeping field — only carried over if actually present in the source file, so a
 // migration never invents a value db.js's save() would otherwise have left untouched.
@@ -98,9 +99,10 @@ const counts = {
   pushSubs: Object.keys(d.pushSubs).length,
   customExercises: Object.keys(d.customExercises).length,
   prs: Object.keys(d.prs).length,
+  crews: Object.keys(d.crews).length,
 };
 console.log(`Migrating ${file} -> ${process.env.DATABASE_URL.replace(/:[^:@]*@/, ':***@')}`);
-console.log(`  users=${counts.users} sessions=${counts.sessions} templates=${counts.templates} pushSubs=${counts.pushSubs} customExercises=${counts.customExercises} prs=${counts.prs}`);
+console.log(`  users=${counts.users} sessions=${counts.sessions} templates=${counts.templates} pushSubs=${counts.pushSubs} customExercises=${counts.customExercises} prs=${counts.prs} crews=${counts.crews}`);
 
 const db = (await import('../db.js')).default;
 await db.ensureSchema();

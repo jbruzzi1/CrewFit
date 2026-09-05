@@ -3107,7 +3107,8 @@ async function createFlow(){
   if(!DRAFT.exercises) DRAFT.exercises=[];
   if(!DRAFT.inviteUsernames) DRAFT.inviteUsernames=[];
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
-  const friends = await H.get('/api/friends');
+  const [friends, crews] = await Promise.all([H.get('/api/friends'), H.get('/api/crews')]);
+  CREW_PICKER = Array.isArray(crews) ? crews : [];
   const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
   const invRows = friendList.length ? friendList.map(f=>{
     const ini = (f.displayName||f.username||'?')[0]||'?';
@@ -3143,7 +3144,7 @@ async function createFlow(){
     <button class="sec" onclick="templatesPage()">Routines</button>
     <button class="sec" onclick="tplQuickSaveSheet()">Save as routine</button>
     </div>
-    <h2>Invite friends</h2><div id="invList" class="card">${invRows}</div>
+    <h2>Invite friends</h2>${crewQuickInviteHtml()}<div id="invList" class="card">${invRows}</div>
     ${EDITING_SESSION ? '<button class="blue" onclick="submitSession()">Save changes</button>' : '<button class="blue" onclick="submitSession()">Create workout</button>'}</div>`;
   window.scrollTo(0,0);
   renderDraft();
@@ -3583,7 +3584,8 @@ async function templateExercises(){
   // matching how createFlow() itself already treats its own Invite friends section (and how this
   // same screen already treats Exercises). Gives the screen the same three-beat rhythm as New
   // Workout: Details fields, then a clearly separate Invite friends card, then Exercises.
-  const friends = await H.get('/api/friends');
+  const [friends, crews] = await Promise.all([H.get('/api/friends'), H.get('/api/crews')]);
+  CREW_PICKER = Array.isArray(crews) ? crews : [];
   const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
   const invNames = DRAFT.inviteUsernames || [];
   const invRows = friendList.length ? friendList.map(f=>{
@@ -3613,7 +3615,7 @@ async function templateExercises(){
       <option value="private"${(DRAFT.visibility||'private')==='private'?' selected':''}>Private (invite only)</option>
       <option value="public"${DRAFT.visibility==='public'?' selected':''}>Public (joinable)</option>
     </select>
-    <h2>Invite friends</h2><div id="invList" class="card">${invRows}</div>
+    <h2>Invite friends</h2>${crewQuickInviteHtml()}<div id="invList" class="card">${invRows}</div>
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button></div>`;
   window.scrollTo(0,0);
@@ -5081,8 +5083,9 @@ async function friends(opts){
   // people manage who they train with) but now only ever shows follow requests + your connections
   // -- the old separate "friend request" approve/reject step is gone.
   const silent = !!(opts && opts.silent);
-  const data = await H.get('/api/friends');
+  const [data, crews] = await Promise.all([H.get('/api/friends'), H.get('/api/crews')]);
   const f = data.friends||[]; const freq = data.followRequests||[];
+  CREW_PICKER = Array.isArray(crews) ? crews : [];
   const flame = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>';
   const friendRows = f.length ? f.map(x=>`
     <div class="friend-row" onclick="profileView('${x.id}')" style="cursor:pointer">
@@ -5109,6 +5112,19 @@ async function friends(opts){
     </div>`).join('') : '';
   const pending = freq.length;
   const badge = pending ? `<span class="badge">${pending}</span>` : '';
+  // Sep 2026 (Jeff: "make the collaboration side stronger"): a Crew is the one standing group
+  // this app never had -- everything else here is either 1:1 (a connection) or scoped to a single
+  // workout's participant list. Lives in the Friends tab rather than a new nav tab of its own,
+  // same "don't add nav real estate for one more list" call homeEmpty's CTAs already make --
+  // Friends is already "who you train with," a Crew is just a saved group of them.
+  const crewRows = crews.length ? crews.map(c=>{
+    const avs = c.members.slice(0,4).map(m=>avatarHtml(m,'crew-av')).join('');
+    const more = c.members.length>4 ? `<div class="crew-av crew-av-more">+${c.members.length-4}</div>` : '';
+    return `<div class="crew-row" onclick="openCrew('${jsq(c.id)}')" style="cursor:pointer">
+      <div class="crew-avs">${avs}${more}</div>
+      <div class="meta"><div class="name">${esc(c.name)}</div><div class="handle">${c.members.length} member${c.members.length===1?'':'s'}</div></div>
+    </div>`;
+  }).join('') : '';
   $('app').innerHTML = `<div class="wrap">
     <div class="h1-row"><h1>Friends</h1>${badge}</div>
     <div class="card">
@@ -5123,10 +5139,157 @@ async function friends(opts){
       <div id="fresults"></div>
     </div>
     ${freq.length?`<h2>Follow requests</h2><div class="card" style="padding:6px 12px">${followReqRows}</div>`:''}
+    <div class="h1-row"><h2 style="margin:0">Your Crews</h2><span class="he-cta" onclick="newCrewSheet()">+ New crew</span></div>
+    ${crews.length ? `<div class="card" style="padding:6px 12px">${crewRows}</div>`
+      : homeEmpty(ICON_PEOPLE, 'No crews yet', 'Save a group of training partners to invite and chat with as one.', `<span class="he-cta" onclick="newCrewSheet()">Create a crew →</span>`)}
     <h2>Friends</h2>
     ${f.length ? `<div class="card" style="padding:6px 12px">${friendRows}</div>` : friendRows}
   </div>`;
   if(!silent) window.scrollTo(0,0);
+}
+
+// ---- Crews ----
+// Sep 2026 (Jeff: "make the collaboration side stronger"). A crew is a named, saved group built
+// only from existing connections (server enforces this -- see validCrewMemberIds in server.js),
+// with a standing chat thread that outlives any single workout (unlike s.comments, deliberately
+// scoped to "while this workout is open" -- see its own comment in server.js) and a one-tap way
+// to invite the whole group to a new one (inviteCrewToDraft below).
+let CREW_PICKER = [];          // last-fetched crews -- feeds the "Invite a crew" quick-picker in createFlow()/templateExercises()
+let CREW_SHEET_MEMBERS = [];   // usernames checked in the currently-open create/edit-crew sheet
+function crewMemberRowHtml(f, checked){
+  const ini = (f.displayName||f.username||'?')[0]||'?';
+  const av = f.avatar ? `<img class="inv-av" src="${esc(f.avatar)}" alt="">` : `<div class="inv-av" style="background:${avatarColor(f.username)};color:#fff">${esc(ini)}</div>`;
+  return `<label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap">${av}</div><div class="inv-text"><div class="name">${esc(f.displayName||f.username)}</div><div class="handle">@${esc(f.username)}</div></div></div><span class="check"><input type="checkbox" value="${esc(f.id)}" ${checked?'checked':''} onchange="toggleCrewMember(this)"><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`;
+}
+function toggleCrewMember(cb){ const id=cb.value; if(cb.checked){ if(!CREW_SHEET_MEMBERS.includes(id)) CREW_SHEET_MEMBERS.push(id);} else { CREW_SHEET_MEMBERS=CREW_SHEET_MEMBERS.filter(x=>x!==id);} }
+// One sheet, two modes: creating (editingCrew is null) and renaming/editing membership (editingCrew
+// is the crew object) -- same fields either way, matching how the app already reuses one screen for
+// "new workout" and "edit workout" (createFlow) rather than forking a second near-duplicate.
+async function newCrewSheet(editCrewId){
+  // Takes an id and re-fetches, same convention as openCrew/profileView/etc. elsewhere in the
+  // app -- passing a whole crew object through an inline onclick="" attribute would mean
+  // JSON-stringifying it into HTML markup, fragile the moment a name contains a quote or an
+  // emoji, and a pattern nothing else in this codebase actually uses.
+  const [friends, editingCrew] = await Promise.all([
+    H.get('/api/friends'),
+    editCrewId ? H.get('/api/crews/'+editCrewId) : Promise.resolve(null)
+  ]);
+  if(editingCrew && editingCrew.error){ alert(editingCrew.error); return; }
+  const friendList = (friends && friends.friends) ? friends.friends : [];
+  CREW_SHEET_MEMBERS = editingCrew ? editingCrew.members.filter(m=>m.id!==editingCrew.ownerId).map(m=>m.id) : [];
+  const rows = friendList.length ? friendList.map(f=>crewMemberRowHtml(f, CREW_SHEET_MEMBERS.includes(f.id))).join('')
+    : '<div class="muted" style="padding:8px 2px">Add some connections in Friends first.</div>';
+  const sheet = openSheetHtml(`
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="sheet-head"><h2>${editingCrew?'Edit crew':'New crew'}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <label class="muted">Crew name</label>
+      <input id="crewNameInput" placeholder="e.g. Tuesday Legs" value="${esc(editingCrew?editingCrew.name:'')}" autocomplete="off">
+      <h2 style="margin-top:14px">Members</h2>
+      <div class="card" id="crewMemberList" style="padding:6px 12px;max-height:40vh;overflow-y:auto">${rows}</div>
+      <button class="blue" style="margin-top:14px" onclick="saveCrewSheet(${editingCrew?`'${jsq(editingCrew.id)}'`:'null'})">${editingCrew?'Save changes':'Create crew'}</button>
+      ${editingCrew ? `<button class="sec" style="margin-top:8px" onclick="deleteCrewConfirm('${jsq(editingCrew.id)}')">Delete crew</button>` : ''}
+    </div>`);
+}
+async function saveCrewSheet(crewId){
+  const name = ($('crewNameInput').value||'').trim();
+  if(!name){ alert('Give the crew a name.'); return; }
+  const body = { name, memberIds: CREW_SHEET_MEMBERS };
+  const r = crewId ? await H.put('/api/crews/'+crewId, body) : await H.post('/api/crews', body);
+  if(r && r.error){ alert(r.error); return; }
+  // v247-style stacking guard (see closeAllSheets' own comment): editing opens this sheet ON TOP
+  // OF the still-open crew-detail sheet, so a plain closeSheet() + reopen would leave the stale
+  // pre-edit detail sheet sitting underneath as a zombie. closeAllSheets() collapses both, then
+  // openCrew() opens exactly one fresh sheet with the saved name/membership.
+  closeAllSheets();
+  if(crewId) openCrew(crewId, {silent:true}); else friends({silent:true});
+}
+// runConfirmCb() already dismisses the confirm sheet itself before calling this -- closeAllSheets()
+// here is only for the crew-DETAIL sheet still open underneath it (deleteCrewConfirm/
+// leaveCrewConfirm are only ever reached from inside that sheet's own buttons).
+async function deleteCrewConfirmed(crewId){
+  const r = await H.delete('/api/crews/'+crewId);
+  closeAllSheets();
+  if(r && r.error){ alert(r.error); return; }
+  friends({silent:true});
+}
+function deleteCrewConfirm(crewId){
+  confirmSheet('Delete this crew?', 'The group and its chat are removed for everyone in it. This can\'t be undone.', 'Delete', () => deleteCrewConfirmed(crewId));
+}
+async function leaveCrewConfirmed(crewId){
+  const r = await H.post('/api/crews/'+crewId+'/leave', {});
+  closeAllSheets();
+  if(r && r.error){ alert(r.error); return; }
+  friends({silent:true});
+}
+function leaveCrewConfirm(crewId){
+  confirmSheet('Leave this crew?', 'You\'ll stop seeing its chat and won\'t be invited as part of the group anymore.', 'Leave', () => leaveCrewConfirmed(crewId));
+}
+async function openCrew(crewId, opts){
+  const [c, messages] = await Promise.all([H.get('/api/crews/'+crewId), H.get('/api/crews/'+crewId+'/messages')]);
+  if(c && c.error){ alert(c.error); return; }
+  if(!(opts&&opts.silent)) history.pushState({t:'sheet'}, '', location.href);
+  const flame = flameSvg();
+  const memberRows = c.members.map(m=>`<div class="friend-row" onclick="closeSheet();profileView('${jsq(m.id)}')" style="cursor:pointer;padding:8px 4px">
+    ${avatarHtml(m,'avatar')}
+    <div class="meta"><div class="name">${esc(m.displayName||m.username)}${m.id===c.ownerId?' <span class="muted" style="font-weight:400">· owner</span>':''}</div>
+    ${m.streak>1?`<div class="streak-pill">${flame}${m.streak} day streak</div>`:''}</div>
+  </div>`).join('');
+  // Falls back to UNKNOWN_NAME ("Someone"), the same convention every other unresolvable-person
+  // spot in this file uses (see nameOf/personOf above, and the workout-feed "who logged" lines) --
+  // c.members is the CURRENT roster, so a message from someone who has since left (or was dropped
+  // in an edit) would otherwise render as a bare, alarming-looking blank.
+  const msgRows = messages.length ? messages.map(m=>{
+    const from = c.members.find(x=>x.id===m.userId);
+    return `<div class="crew-msg"><b>${esc(from?(from.displayName||from.username):UNKNOWN_NAME)}</b> ${esc(m.text)}</div>`;
+  }).join('') : '<div class="muted" style="padding:8px 2px">No messages yet — say hey.</div>';
+  // crewMsgs/crewChatInput are scoped by crew id (not plain ids) -- the same bug class the
+  // cold-review for comments already caught once (see cmtReact-'+ck's own comment): opening crew
+  // A, sending a message, then closing and opening crew B before the response lands would
+  // otherwise let sendCrewMsg's plain $('crewMsgs') land the reply in whichever sheet is open now.
+  const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="sheet-head"><h2>${esc(c.name)}</h2>${c.isOwner?`<button class="sec sm" onclick="newCrewSheet('${jsq(c.id)}')">Edit</button>`:''}<button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <div class="card" style="padding:6px 12px;margin-bottom:12px">${memberRows}</div>
+      <div class="card" id="crewMsgs-${esc(c.id)}" style="padding:10px 12px;max-height:34vh;overflow-y:auto">${msgRows}</div>
+      <div class="row chat-row" style="margin-top:10px"><input id="crewChatInput-${esc(c.id)}" class="chat-input" placeholder="Message the crew"><button class="sm chat-send" onclick="sendCrewMsg('${jsq(c.id)}')">Send</button></div>
+      ${!c.isOwner ? `<button class="sec" style="margin-top:10px" onclick="leaveCrewConfirm('${jsq(c.id)}')">Leave crew</button>` : ''}
+    </div>`;
+  sheet.onclick=(e)=>{ if(e.target===sheet) closeSheet(); }; document.body.appendChild(sheet);
+  requestAnimationFrame(()=>sheet.classList.add('show'));
+}
+async function sendCrewMsg(crewId){
+  const inp = $('crewChatInput-'+crewId); if(!inp) return;
+  const text=(inp.value||'').trim(); if(!text) return;
+  inp.value='';
+  const r = await H.post('/api/crews/'+crewId+'/messages', {text});
+  if(r && r.error){ alert(r.error); return; }
+  const box = $('crewMsgs-'+crewId); if(!box) return;
+  const empty = box.querySelector('.muted'); if(empty) empty.remove();
+  const row = document.createElement('div'); row.className='crew-msg';
+  row.innerHTML = `<b>${esc(ME.displayName||ME.username)}</b> ${esc(text)}`;
+  box.appendChild(row); box.scrollTop = box.scrollHeight;
+}
+// Invite-picker integration (createFlow/templateExercises): one tap pre-checks every member of a
+// saved crew instead of hand-picking each connection again. Reads CREW_PICKER (set by friends()
+// on its last load) rather than re-fetching, and mutates DRAFT.inviteUsernames directly the same
+// way toggleInvite() does, so accept/decline/join-request all keep working completely unchanged.
+// `btn` (the tapped chip) is optional so the function still works if ever called without one --
+// it just skips the visual feedback -- but every real call site passes it (see crewQuickInviteHtml
+// below): without this, tapping the chip silently pre-checked boxes further down the page with
+// nothing to show for the tap itself.
+function inviteCrewToDraft(crewId, btn){
+  const c = CREW_PICKER.find(x=>x.id===crewId); if(!c) return;
+  // Excludes yourself: you're always a member of your own crew, but you're never a row in your
+  // own invite list, so leaving your own username in here was harmless dead state.
+  const usernames = c.members.map(m=>m.username).filter(u=>u && u!==ME.username);
+  usernames.forEach(u=>{ if(!DRAFT.inviteUsernames.includes(u)) DRAFT.inviteUsernames.push(u); });
+  document.querySelectorAll('#invList input[type=checkbox]').forEach(cb=>{ if(usernames.includes(cb.value)) cb.checked=true; });
+  if(btn) btn.classList.add('on');
+}
+function crewQuickInviteHtml(){
+  if(!CREW_PICKER.length) return '';
+  return `<div class="muted" style="font-size:12px;margin:2px 0 6px">Tap a crew to invite everyone in it</div>
+    <div class="crew-quickinv">${CREW_PICKER.map(c=>`<button type="button" class="chip" onclick="inviteCrewToDraft('${jsq(c.id)}',this)">👥 ${esc(c.name)}</button>`).join('')}</div>`;
 }
 async function friendSearch(){
   const q = ($('fu').value||'').trim();
