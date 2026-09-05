@@ -5120,9 +5120,24 @@ async function friends(opts){
   const crewRows = crews.length ? crews.map(c=>{
     const avs = c.members.slice(0,4).map(m=>avatarHtml(m,'crew-av')).join('');
     const more = c.members.length>4 ? `<div class="crew-av crew-av-more">+${c.members.length-4}</div>` : '';
+    // Sep 5 (Jeff: "a small little text blurb that tells others about the challenges they can
+    // have within -- like [the log-rec hint boxes]"). First pass showed live numbers here
+    // ("0/2 workouts this week") -- Jeff said no to that specifically. What he wants instead is
+    // the log-rec pattern itself: a short line that TEACHES the feature/what-to-do-next, not one
+    // that reports a stat. So this reads more like copy than a readout, and it changes only
+    // between "nothing running, here's what you could do" and "something's running, go look" --
+    // never a number, which is exactly the distinction he drew.
+    const ch = c.challenge;
+    // A crew can be just the owner (no minimum membership) -- "who's leading" / "compete
+    // together" implies other people in the race, which reads oddly with nobody else to compete
+    // against (cold-review catch). Solo gets its own copy, same two states, no competition framing.
+    const solo = c.members.length <= 1;
+    const challengeHint = (ch && !ch.completed && !ch.expired)
+      ? `<div class="crew-chal-hint">${flame} A challenge is running — tap in to ${solo ? 'check your progress' : "see who's leading"}</div>`
+      : `<div class="crew-chal-hint">${flame} Set a weekly goal ${solo ? 'for yourself' : 'and compete together'}</div>`;
     return `<div class="crew-row" onclick="openCrew('${jsq(c.id)}')" style="cursor:pointer">
       <div class="crew-avs">${avs}${more}</div>
-      <div class="meta"><div class="name">${esc(c.name)}</div><div class="handle">${c.members.length} member${c.members.length===1?'':'s'}</div></div>
+      <div class="meta"><div class="name">${esc(c.name)}</div><div class="handle">${c.members.length} member${c.members.length===1?'':'s'}</div>${challengeHint}</div>
     </div>`;
   }).join('') : '';
   $('app').innerHTML = `<div class="wrap">
@@ -5141,7 +5156,12 @@ async function friends(opts){
     ${freq.length?`<h2>Follow requests</h2><div class="card" style="padding:6px 12px">${followReqRows}</div>`:''}
     <div class="h1-row"><h2 style="margin:0">Your Crews</h2><span class="he-cta" onclick="newCrewSheet()">+ New crew</span></div>
     ${crews.length ? `<div class="card" style="padding:6px 12px">${crewRows}</div>`
-      : homeEmpty(ICON_PEOPLE, 'No crews yet', 'Save a group of training partners to invite and chat with as one.', `<span class="he-cta" onclick="newCrewSheet()">Create a crew →</span>`)}
+      // Sep 5 (Jeff, following up on the crew-row hint above): a brand-new user with zero crews
+      // never sees a crew row at all, so the row hint above can't teach them anything -- this empty
+      // state IS their only chance to learn challenges exist before they've made a crew to see it
+      // in. Folded into the same sentence rather than a second line, matching how this empty state
+      // already introduces chat ("invite and chat") in one breath.
+      : homeEmpty(ICON_PEOPLE, 'No crews yet', 'Save a group of training partners to invite, chat, and run weekly challenges with.', `<span class="he-cta" onclick="newCrewSheet()">Create a crew →</span>`)}
     <h2>Friends</h2>
     ${f.length ? `<div class="card" style="padding:6px 12px">${friendRows}</div>` : friendRows}
   </div>`;

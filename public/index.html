@@ -466,6 +466,19 @@
     .crew-row .meta { flex:1 1 auto; min-width:0; }
     .crew-row .name { font-weight:600; font-size:15px; line-height:1.2; }
     .crew-row .handle { color:var(--muted); font-size:12px; }
+    /* Sep 5 (Jeff: "a small little text blurb that tells others about the challenges they can
+       have within" -- explicitly NOT a live number readout, first pass showed "0/2 workouts this
+       week" and he said no to that). Teaches the feature the same way the log-rec hint boxes
+       teach progression -- short copy, not a stat -- so it stays true forever rather than risking
+       a stale claim about the crew's actual progress. Muted like the member-count line above it,
+       not blue/green -- informational, not a CTA or an earned achievement (CLAUDE.md's color
+       language), so it stays visually quiet until you tap in. */
+    .crew-row .crew-chal-hint { display:flex; align-items:center; gap:3px; color:var(--muted); font-size:12px; margin-top:1px; }
+    /* The flame SVG here (same markup as .streak-pill's) has no intrinsic size of its own beyond
+       its viewBox -- .streak-pill constrains it via its own `svg` rule, but this is a plain flex
+       row with none, so without this the icon fills the row's available box at full scale (caught
+       in the visual verification screenshot: it blew out to fill the whole card). */
+    .crew-row .crew-chal-hint svg { width:13px; height:13px; flex:0 0 auto; }
     .crew-avs { display:flex; flex:0 0 auto; }
     .crew-av { width:32px; height:32px; border-radius:50%; background:var(--avatar); color:#fff; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:12px; object-fit:cover; overflow:hidden; border:2px solid var(--card); margin-left:-10px; }
     .crew-av:first-child { margin-left:0; }
@@ -1259,6 +1272,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=332"></script>
+  <script src="app.js?v=337"></script>
 </body>
 </html>
