@@ -1111,6 +1111,136 @@ app.get('/api/friends', auth, async (req, res) => {
   });
 });
 
+// ---- Crews (Sep 2026, Jeff: "make the collaboration side stronger") ----
+// Everything above is either 1:1 (a connection) or scoped to one workout (invited/participants).
+// A crew is the missing standing group: name it once, and from then on invite the whole thing to
+// a workout in one tap (client-side only -- see createFlow()/templateExercises() in app.js, which
+// just pre-check every member's existing invite checkbox, so accept/decline/join-request all keep
+// working exactly as they already do) and talk in one thread that outlives any single workout,
+// unlike s.comments above (deliberately scoped to "while this workout is open," see its own
+// comment). ownerId is always also a member of memberIds -- there is no separate "owner list" to
+// keep in sync, the owner is just a member with rename/edit-membership/delete rights. No boot
+// migration: crews is a brand-new collection, EMPTY_DB() already defaults it to {}, so there is no
+// legacy shape to heal.
+const CREW_NAME_MAX = 40;
+const CREW_MAX_MEMBERS = 20;      // a "crew," not a broadcast list
+const CREW_MSG_MAX = 2000;        // same cap as session/post comments above
+
+function ensureCrewShape(c) {
+  if (!Array.isArray(c.memberIds)) c.memberIds = [];
+  if (!c.memberIds.includes(c.ownerId)) c.memberIds.push(c.ownerId);
+  if (!Array.isArray(c.messages)) c.messages = [];
+}
+function isCrewMember(c, userId) { return Array.isArray(c.memberIds) && c.memberIds.includes(userId); }
+function crewsFor(userId) {
+  return Object.values(DB.crews || {}).filter(c => isCrewMember(c, userId))
+    .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+}
+function publicCrew(c, viewerId) {
+  return {
+    id: c.id, name: c.name, ownerId: c.ownerId, isOwner: c.ownerId === viewerId,
+    createdAt: c.createdAt,
+    members: c.memberIds.filter(id => DB.users[id]).map(id => ({ ...publicUser(id), streak: currentStreak(id) }))
+  };
+}
+// A crew can only ever be built from people you're already connected to -- same trust boundary
+// invite eligibility already uses (connectionsOf), so this can't become a way to add a stranger
+// to a group thread. Silently drops any id that isn't (a real connection and) a real user, rather
+// than erroring, so a stale id in the client's picker state can't block create/rename.
+function validCrewMemberIds(ownerId, requested) {
+  const allowed = new Set(connectionsOf(ownerId));
+  return [...new Set((Array.isArray(requested) ? requested : []).filter(id => allowed.has(id)))].slice(0, CREW_MAX_MEMBERS - 1);
+}
+
+app.get('/api/crews', auth, async (req, res) => {
+  res.json(crewsFor(req.userId).map(c => publicCrew(c, req.userId)));
+});
+app.post('/api/crews', auth, async (req, res) => {
+  const name = capStr((req.body || {}).name, CREW_NAME_MAX).trim();
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const memberIds = validCrewMemberIds(req.userId, (req.body || {}).memberIds);
+  const c = { id: 'crew_' + uid(), name, ownerId: req.userId, memberIds: [req.userId, ...memberIds], messages: [], createdAt: new Date().toISOString() };
+  DB.crews[c.id] = c;
+  await save(DB);
+  // Every other "you were just put into something" flow in this app notifies (workout invite,
+  // follow accepted, new follower) -- being silently dropped into a standing group chat with no
+  // signal until you happen to open the Friends tab would be the odd one out (cold-review catch).
+  for (const mid of memberIds) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} added you to the crew` });
+  res.json(publicCrew(c, req.userId));
+});
+app.get('/api/crews/:id', auth, async (req, res) => {
+  const c = DB.crews[req.params.id];
+  if (!c) return res.status(404).json({ error: 'not found' });
+  ensureCrewShape(c);
+  if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  res.json(publicCrew(c, req.userId));
+});
+// Rename and/or replace the member list in one call -- matches the client's picker, which always
+// re-submits the full checked set rather than tracking individual adds/removes.
+app.put('/api/crews/:id', auth, async (req, res) => {
+  const c = DB.crews[req.params.id];
+  if (!c) return res.status(404).json({ error: 'not found' });
+  ensureCrewShape(c);
+  if (c.ownerId !== req.userId) return res.status(403).json({ error: 'only the owner can edit this crew' });
+  const body = req.body || {};
+  if (body.name !== undefined) {
+    const name = capStr(body.name, CREW_NAME_MAX).trim();
+    if (!name) return res.status(400).json({ error: 'name required' });
+    c.name = name;
+  }
+  if (body.memberIds !== undefined) {
+    const before = new Set(c.memberIds);
+    c.memberIds = [req.userId, ...validCrewMemberIds(req.userId, body.memberIds)];
+    // Only the newly-added members, not everyone -- an edit that touches just the name (or
+    // re-submits the same roster, which the client always does alongside a name change) must not
+    // re-notify people who were already in the crew, only whoever is actually new to it.
+    for (const mid of c.memberIds) if (!before.has(mid)) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} added you to the crew` });
+  }
+  await save(DB);
+  res.json(publicCrew(c, req.userId));
+});
+// The owner can't "leave" -- a crew with no owner has nobody who can rename it or edit who's in
+// it, so ownership would need somewhere to go. Simplest and clearest for v1: the owner deletes
+// the crew (below) instead of leaving it orphaned.
+app.post('/api/crews/:id/leave', auth, async (req, res) => {
+  const c = DB.crews[req.params.id];
+  if (!c) return res.status(404).json({ error: 'not found' });
+  ensureCrewShape(c);
+  if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  if (c.ownerId === req.userId) return res.status(400).json({ error: 'the owner can\'t leave -- delete the crew instead' });
+  c.memberIds = c.memberIds.filter(id => id !== req.userId);
+  await save(DB);
+  res.json({ ok: true });
+});
+app.delete('/api/crews/:id', auth, async (req, res) => {
+  const c = DB.crews[req.params.id];
+  if (!c) return res.status(404).json({ error: 'not found' });
+  if (c.ownerId !== req.userId) return res.status(403).json({ error: 'only the owner can delete this crew' });
+  delete DB.crews[req.params.id];
+  await save(DB);
+  res.json({ ok: true });
+});
+app.get('/api/crews/:id/messages', auth, async (req, res) => {
+  const c = DB.crews[req.params.id];
+  if (!c) return res.status(404).json({ error: 'not found' });
+  ensureCrewShape(c);
+  if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  res.json(c.messages);
+});
+app.post('/api/crews/:id/messages', auth, async (req, res) => {
+  const c = DB.crews[req.params.id];
+  if (!c) return res.status(404).json({ error: 'not found' });
+  ensureCrewShape(c);
+  if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  const text = capStr((req.body || {}).text, CREW_MSG_MAX);
+  if (!text.trim()) return res.status(400).json({ error: 'empty' });
+  const m = { id: 'cm_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
+  c.messages.push(m);
+  await save(DB);
+  for (const pid of c.memberIds) if (pid !== req.userId) notify(pid, { title: c.name, body: `${DB.users[req.userId].displayName}: ${text.slice(0, 40)}` });
+  res.json(m);
+});
+
 // ---- Notifications (aggregated inbox) ----
 // Sep 4 (Jeff): a bell icon on Home + Profile leading to one inbox for "things needing your
 // response" -- workout invites, follow requests, and requests to join a workout you created.

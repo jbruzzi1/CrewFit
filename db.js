@@ -23,6 +23,10 @@
 // than carried forward. Everything else server.js actually references at the top level of DB —
 // users, sessions, templates, pushSubs, customExercises, prs, followApprovalV1 — is carried
 // forward exactly.
+//
+// Sep 2026: `crews` added (Jeff: "make the collaboration side stronger" -> a saved, named group
+// of training partners, not just one-off per-workout invite lists). Same shape as templates/
+// sessions above — one row per crew, whole object as JSONB — no new design pattern needed.
 
 const { PgConnection, parseConnString } = require('./pgmini');
 
@@ -52,6 +56,10 @@ CREATE TABLE IF NOT EXISTS prs (
   user_id text PRIMARY KEY,
   data jsonb NOT NULL
 );
+CREATE TABLE IF NOT EXISTS crews (
+  id text PRIMARY KEY,
+  data jsonb NOT NULL
+);
 CREATE TABLE IF NOT EXISTS app_state (
   key text PRIMARY KEY,
   value jsonb NOT NULL
@@ -79,7 +87,7 @@ async function ensureSchema() {
   }
 }
 
-const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, customExercises: {}, prs: {} });
+const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, customExercises: {}, prs: {}, crews: {} });
 
 // Reassembles the exact in-memory shape server.js has always used, from Postgres rows.
 async function load() {
@@ -111,6 +119,9 @@ async function load() {
 
   const prs = await c.query('SELECT user_id, data FROM prs');
   for (const row of prs.rows) { d.prs[row.user_id] = JSON.parse(row.data); }
+
+  const crews = await c.query('SELECT id, data FROM crews');
+  for (const row of crews.rows) { d.crews[row.id] = JSON.parse(row.data); }
 
   // Small singleton bookkeeping fields server.js reads/writes directly on DB (not per-entity
   // data) — followApprovalV1 is a boot migration's "did this already run" marker (see
@@ -172,6 +183,8 @@ async function doSave(d) {
       'INSERT INTO custom_exercises (owner_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (owner_id) DO UPDATE SET data = EXCLUDED.data');
     await syncTable(c, 'prs', 'user_id', d.prs, (id, v) => [id, JSON.stringify(v)],
       'INSERT INTO prs (user_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data');
+    await syncTable(c, 'crews', 'id', d.crews, (id, v) => [id, JSON.stringify(v)],
+      'INSERT INTO crews (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data');
     for (const key of SINGLETON_FIELDS) {
       if (d[key] === undefined) continue;
       await c.query('INSERT INTO app_state (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value', [key, JSON.stringify(d[key])]);
@@ -186,8 +199,17 @@ async function doSave(d) {
 // Upserts every entry currently in `obj`, and deletes any DB row whose key is no longer
 // present in `obj` — keeps Postgres from accumulating rows for entities that were removed
 // from the in-memory DB (e.g. a deleted session) since the last save().
+//
+// Sep 2026: a caller passing a DB-shaped object that predates a newer collection (found via the
+// `crews` addition — scripts/migrate-to-postgres.mjs builds its object from a fixed field list,
+// and an old export naturally has no `crews` key at all) used to throw `Object.keys(undefined)`
+// here and abort the WHOLE save, not just skip that one collection. `obj || {}` treats "this
+// collection doesn't exist in what I was handed" the same as "it's empty" — exactly the same
+// forgiving instinct scripts/migrate-to-postgres.mjs already applies at its own call site
+// (`raw.crews || {}`), just applied here too so every OTHER future save()-adjacent caller gets
+// the same protection automatically instead of needing to remember it.
 async function syncTable(c, table, keyCol, obj, toParams, upsertSql) {
-  const keys = Object.keys(obj);
+  const keys = Object.keys(obj || {});
   for (const k of keys) {
     await c.query(upsertSql, toParams(k, obj[k]));
   }

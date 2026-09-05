@@ -451,6 +451,20 @@
     .friend-row .meta { flex:1 1 auto; min-width:0; }
     .friend-row .name { font-weight:600; font-size:15px; line-height:1.2; }
     .friend-row .handle { color:var(--muted); font-size:12px; }
+    /* Crews (Sep 2026, Jeff: "make the collaboration side stronger") — Friends-tab crew rows
+       (overlapping avatar stack, like a group-chat header) and the crew chat thread. */
+    .crew-row { display:flex; align-items:center; gap:12px; padding:12px 4px; border-bottom:1px solid var(--line); }
+    .crew-row:last-child { border-bottom:none; }
+    .crew-row .meta { flex:1 1 auto; min-width:0; }
+    .crew-row .name { font-weight:600; font-size:15px; line-height:1.2; }
+    .crew-row .handle { color:var(--muted); font-size:12px; }
+    .crew-avs { display:flex; flex:0 0 auto; }
+    .crew-av { width:32px; height:32px; border-radius:50%; background:var(--avatar); color:#fff; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:12px; object-fit:cover; overflow:hidden; border:2px solid var(--card); margin-left:-10px; }
+    .crew-av:first-child { margin-left:0; }
+    .crew-av-more { background:var(--line); color:var(--muted); font-size:11px; }
+    .crew-quickinv { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 10px; }
+    .crew-msg { padding:6px 2px; font-size:13.5px; line-height:1.4; }
+    .crew-msg b { margin-right:5px; }
     /* Invite friends list (New Workout) — compact iOS-style rows w/ checkmark */
     .inv-row { display:flex; align-items:center; gap:12px; padding:10px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
     .inv-row:last-child { border-bottom:none; }
@@ -1224,6 +1238,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=326"></script>
+  <script src="app.js?v=327"></script>
 </body>
 </html>
