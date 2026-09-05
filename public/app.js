@@ -5234,11 +5234,14 @@ async function openCrew(crewId, opts){
     <div class="meta"><div class="name">${esc(m.displayName||m.username)}${m.id===c.ownerId?' <span class="muted" style="font-weight:400">· owner</span>':''}</div>
     ${m.streak>1?`<div class="streak-pill">${flame}${m.streak} day streak</div>`:''}</div>
   </div>`).join('');
-  // Falls back to UNKNOWN_NAME ("Someone"), the same convention every other unresolvable-person
-  // spot in this file uses (see nameOf/personOf above, and the workout-feed "who logged" lines) --
+  // A system row (the crew hitting a challenge target -- see checkCrewChallenges in server.js)
+  // renders as its own centered celebration line, never attributed to anyone -- distinct from the
+  // UNKNOWN_NAME ("Someone") fallback just below, which is specifically for a REAL person's old
+  // message after they've since left the crew. Those two blanks mean different things.
   // c.members is the CURRENT roster, so a message from someone who has since left (or was dropped
-  // in an edit) would otherwise render as a bare, alarming-looking blank.
+  // in an edit) falls back to UNKNOWN_NAME rather than rendering a bare, alarming-looking blank.
   const msgRows = messages.length ? messages.map(m=>{
+    if(m.system) return `<div class="crew-msg crew-msg-sys">${esc(m.text)}</div>`;
     const from = c.members.find(x=>x.id===m.userId);
     return `<div class="crew-msg"><b>${esc(from?(from.displayName||from.username):UNKNOWN_NAME)}</b> ${esc(m.text)}</div>`;
   }).join('') : '<div class="muted" style="padding:8px 2px">No messages yet — say hey.</div>';
@@ -5250,6 +5253,7 @@ async function openCrew(crewId, opts){
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>${esc(c.name)}</h2>${c.isOwner?`<button class="sec sm" onclick="newCrewSheet('${jsq(c.id)}')">Edit</button>`:''}<button class="sec sm" onclick="closeSheet()">✕</button></div>
       <div class="card" style="padding:6px 12px;margin-bottom:12px">${memberRows}</div>
+      ${crewChallengeHtml(c)}
       <div class="card" id="crewMsgs-${esc(c.id)}" style="padding:10px 12px;max-height:34vh;overflow-y:auto">${msgRows}</div>
       <div class="row chat-row" style="margin-top:10px"><input id="crewChatInput-${esc(c.id)}" class="chat-input" placeholder="Message the crew"><button class="sm chat-send" onclick="sendCrewMsg('${jsq(c.id)}')">Send</button></div>
       ${!c.isOwner ? `<button class="sec" style="margin-top:10px" onclick="leaveCrewConfirm('${jsq(c.id)}')">Leave crew</button>` : ''}
@@ -5268,6 +5272,101 @@ async function sendCrewMsg(crewId){
   const row = document.createElement('div'); row.className='crew-msg';
   row.innerHTML = `<b>${esc(ME.displayName||ME.username)}</b> ${esc(text)}`;
   box.appendChild(row); box.scrollTop = box.scrollHeight;
+}
+// ---- Crew Challenges (Sep 2026, Jeff: "make it more fun -- both collaborative AND competitive")
+// Renders the challenge section of openCrew's sheet: a shared progress meter (same .mv-row/.mv-
+// track/.mv-fill markup the Progress page's weekly-volume meters already use -- one visual
+// language for "a number climbing toward a target" everywhere in this app) plus a mini leaderboard
+// underneath, so it reads as one team goal AND individual credit at the same time. c.challenge is
+// null when nothing's running -- owner gets a start CTA, everyone else a quiet one-liner.
+function crewChallengeHtml(c){
+  const pastLine = c.challengesCompleted ? `<div class="muted" style="font-size:11.5px;margin-top:8px">🏆 ${c.challengesCompleted} challenge${c.challengesCompleted===1?'':'s'} completed</div>` : '';
+  const ch = c.challenge;
+  // A challenge that ran its full 7 days without hitting the target (server: publicChallenge's
+  // `expired`) reads as "no challenge running" too, same as ch===null -- runningChallenge() on the
+  // server has already let the owner start a fresh one, so the UI has to offer that door back in
+  // rather than sitting frozen on a stale, sub-100% bar forever (cold-review catch: this used to be
+  // a permanent dead end since `c.challenge` itself never goes back to null on its own).
+  if(!ch || (ch.expired && !ch.completed)){
+    const sub = ch
+      ? `Last week fell short — ${ch.total}/${ch.target} ${ch.type}. Go again?`
+      : 'Set a shared goal and take it on together.';
+    return `<div class="card" style="padding:12px;margin-bottom:12px">
+      <div class="row" style="align-items:flex-start;justify-content:space-between">
+        <div><div style="font-weight:700;font-size:13.5px">No challenge running</div>
+        <div class="muted" style="font-size:12px;margin-top:2px">${esc(sub)}</div></div>
+        ${c.isOwner ? `<span class="he-cta" style="margin:0;white-space:nowrap" onclick="newChallengeSheet('${jsq(c.id)}')">Start →</span>` : ''}
+      </div>
+      ${pastLine}
+    </div>`;
+  }
+  const pct = Math.min(100, Math.round(100*ch.total/ch.target));
+  // Top contributor gets a flame the same way a member row's own streak does (flameSvg, already
+  // used elsewhere in this sheet) -- one consistent "you're on fire" mark, not a second icon
+  // vocabulary invented just for this. Only shown once someone's actually contributed -- an
+  // all-zero board flaming the first name in the list would be a lie the moment the challenge starts.
+  const leaderRows = ch.leaderboard.filter(m=>m.count>0).slice(0,5).map((m,i)=>
+    `<div class="row" style="justify-content:space-between;padding:3px 0;font-size:13px">
+       <span>${i===0?flameSvg()+' ':''}${esc(m.displayName||m.username)}</span><b>${m.count}</b>
+     </div>`).join('');
+  return `<div class="card" style="padding:12px;margin-bottom:12px">
+    ${ch.completed ? `<div class="rc-pr rc-pr-now" style="margin-bottom:10px"><div class="rc-pr-ic">🎉</div><div>
+        <div class="rc-pr-t">Challenge complete!</div>
+        <div class="rc-pr-s">${ch.total} ${ch.type} as a crew — nice work.</div></div></div>` : ''}
+    <div class="mv-row" style="padding:0 0 8px;border:none">
+      <div class="mv-top"><span class="mv-name">${ch.target} ${ch.type} this week</span>
+        <span class="mv-n">${ch.total}<span class="mv-of"> / ${ch.target}</span></span></div>
+      <div class="mv-track"><div class="mv-fill${ch.completed?' mv-met':''}" style="width:${pct}%"></div></div>
+    </div>
+    ${!ch.completed ? `<div class="muted" style="font-size:11px;margin-bottom:6px">${ch.daysLeft} day${ch.daysLeft===1?'':'s'} left</div>` : ''}
+    ${leaderRows || '<div class="muted" style="font-size:12px">No one\'s logged yet — be first.</div>'}
+    ${pastLine}
+    ${ch.completed && c.isOwner ? `<div class="he-cta" style="margin-top:10px" onclick="newChallengeSheet('${jsq(c.id)}')">Start a new challenge →</div>` : ''}
+  </div>`;
+}
+let CHAL_TYPE = 'workouts';   // which segment is picked in the currently-open "start a challenge" sheet
+function setChalType(t){
+  CHAL_TYPE = t;
+  document.querySelectorAll('#chalTypeSeg button').forEach(b=>b.classList.toggle('on', b.dataset.t===t));
+  // A fresh default for the newly-picked type, not whatever number was showing for the other one --
+  // 20 workouts and 20 sets are wildly different asks, so leaving the old number would either be a
+  // trivial gimme or an unreachable stretch depending on which way someone switched.
+  const n = Number($('chalMemberCount').dataset.n||1);
+  $('chalTargetVal').textContent = t==='sets' ? n*15 : n*3;
+}
+function stepChalTarget(d){
+  const el = $('chalTargetVal');
+  el.textContent = Math.max(1, Math.min(500, (parseInt(el.textContent,10)||0) + d));
+}
+async function newChallengeSheet(crewId){
+  const c = await H.get('/api/crews/'+crewId);
+  if(c && c.error){ alert(c.error); return; }
+  CHAL_TYPE = 'workouts';
+  const n = c.members.length;
+  openSheetHtml(`
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="sheet-head"><h2>Start a challenge</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <label class="muted">Goal type</label>
+      <div class="seg" id="chalTypeSeg">
+        <button class="on" type="button" data-t="workouts" onclick="setChalType('workouts')">Workouts</button>
+        <button type="button" data-t="sets" onclick="setChalType('sets')">Sets</button>
+      </div>
+      <label class="muted">Target for the whole crew, this week</label>
+      <div class="stepper" id="chalMemberCount" data-n="${n}" style="margin:8px 0 4px">
+        <button class="stp" onclick="stepChalTarget(-1)">−</button>
+        <b id="chalTargetVal">${n*3}</b>
+        <button class="stp" onclick="stepChalTarget(1)">+</button>
+      </div>
+      <div class="muted" style="font-size:12px;margin:2px 0 16px">Runs for 7 days starting now. Every logged workout from anyone in the crew counts toward it.</div>
+      <button class="blue" onclick="startChallenge('${jsq(crewId)}')">Start challenge</button>
+    </div>`);
+}
+async function startChallenge(crewId){
+  const target = parseInt(($('chalTargetVal')&&$('chalTargetVal').textContent)||'0', 10);
+  const r = await H.post('/api/crews/'+crewId+'/challenge', { type: CHAL_TYPE, target });
+  if(r && r.error){ alert(r.error); return; }
+  closeAllSheets();
+  openCrew(crewId, {silent:true});
 }
 // Invite-picker integration (createFlow/templateExercises): one tap pre-checks every member of a
 // saved crew instead of hand-picking each connection again. Reads CREW_PICKER (set by friends()

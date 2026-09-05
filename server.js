@@ -1130,6 +1130,7 @@ function ensureCrewShape(c) {
   if (!Array.isArray(c.memberIds)) c.memberIds = [];
   if (!c.memberIds.includes(c.ownerId)) c.memberIds.push(c.ownerId);
   if (!Array.isArray(c.messages)) c.messages = [];
+  if (!Array.isArray(c.challenges)) c.challenges = [];
 }
 function isCrewMember(c, userId) { return Array.isArray(c.memberIds) && c.memberIds.includes(userId); }
 function crewsFor(userId) {
@@ -1140,7 +1141,9 @@ function publicCrew(c, viewerId) {
   return {
     id: c.id, name: c.name, ownerId: c.ownerId, isOwner: c.ownerId === viewerId,
     createdAt: c.createdAt,
-    members: c.memberIds.filter(id => DB.users[id]).map(id => ({ ...publicUser(id), streak: currentStreak(id) }))
+    members: c.memberIds.filter(id => DB.users[id]).map(id => ({ ...publicUser(id), streak: currentStreak(id) })),
+    challenge: publicChallenge(c, lastChallenge(c)),
+    challengesCompleted: (c.challenges || []).filter(ch => ch.completedAt).length
   };
 }
 // A crew can only ever be built from people you're already connected to -- same trust boundary
@@ -1195,6 +1198,10 @@ app.put('/api/crews/:id', auth, async (req, res) => {
     // re-submits the same roster, which the client always does alongside a name change) must not
     // re-notify people who were already in the crew, only whoever is actually new to it.
     for (const mid of c.memberIds) if (!before.has(mid)) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} added you to the crew` });
+    // A newly-added member can already have logging that falls inside a running challenge's
+    // window (see checkChallengeCompletion's comment) -- check right here, not just on the next
+    // workout finish, so the crew isn't left staring at a stalled 100%+ bar with no celebration.
+    checkChallengeCompletion(c);
   }
   await save(DB);
   res.json(publicCrew(c, req.userId));
@@ -1239,6 +1246,152 @@ app.post('/api/crews/:id/messages', auth, async (req, res) => {
   await save(DB);
   for (const pid of c.memberIds) if (pid !== req.userId) notify(pid, { title: c.name, body: `${DB.users[req.userId].displayName}: ${text.slice(0, 40)}` });
   res.json(m);
+});
+
+// ---- Crew Challenges (Sep 2026, Jeff: "make it more fun -- both collaborative AND competitive")
+// One shared, week-long goal the whole crew works toward together (every member's finished
+// workouts feed one running total) PLUS a contribution leaderboard, so it reads as a team effort
+// with visible individual credit, not an anonymous shared number. Progress is DERIVED at read time
+// from s.history/s.logs, the same "never store a counter" rule currentStreak/weeksFor/volumeFor
+// above already follow -- there is nothing to keep in sync if a session is later unlocked, edited,
+// or left. Lives inline on the crew object (c.challenges), same as c.messages -- no new table.
+const CHALLENGE_MIN_TARGET = 1;
+const CHALLENGE_MAX_TARGET = 500;   // sanity cap; a real crew will never approach this
+const CHALLENGE_DURATION_DAYS = 7;  // v1: one length, matches the app's existing week-anchored streak/volume language
+
+// The most recent challenge, whatever state it's in -- what the client always DISPLAYS (a just-won
+// challenge should still show its final numbers and the celebration banner, not vanish back to
+// "no challenge running" the instant it's complete). Only ever superseded by starting a new one.
+function lastChallenge(c) {
+  if (!Array.isArray(c.challenges) || !c.challenges.length) return null;
+  return c.challenges[c.challenges.length - 1];
+}
+// The challenge currently in progress, if any -- narrower than lastChallenge above, and used only
+// to gate two things: whether the owner may start a new challenge, and whether checkCrewChallenges
+// has anything left to check. "In progress" means started, not yet completed, and not yet past its
+// own end date. A challenge that's completed (target hit) or expired (past endDate) is deliberately
+// NOT "in progress" even if calendar days remain in its window -- either way the outcome is already
+// decided, so the owner is free to start a fresh one immediately (chaining challenges) rather than
+// waiting out a dead week, while lastChallenge above keeps showing the finished one until they do.
+function runningChallenge(c) {
+  const last = lastChallenge(c);
+  if (!last) return null;
+  const today = new Date().toISOString().slice(0, 10);
+  return (!last.completedAt && today < last.endDate) ? last : null;
+}
+// Per-member contribution + the shared total, recomputed from scratch every time (see the header
+// comment above). Only CURRENT crew members are counted or shown on the leaderboard -- a member who
+// has since left drops their contribution from the shared total along with themselves, the same
+// "current membership only" rule crew chat access already applies. Documented tradeoff, not a bug:
+// this is a fun bonus number, not a permanent ledger, and there is no historical-membership
+// snapshot to attribute a departed member's share to even if we wanted to.
+//
+// Gated on each SET's own precise `at` timestamp against the challenge's precise createdAt, not
+// s.history's day-only date string -- caught by test/crews.mjs chaining two challenges on the same
+// real day (finish challenge #1, start #2 immediately): with only a day to compare, everything
+// logged earlier that same day toward #1 was ALSO landing inside #2's freshly-started window,
+// so a brand new challenge could open already partway (or, worse, instantly) complete. For the
+// 'workouts' type, a finish with zero logged sets has no set timestamp to check -- creditFinish
+// stamps `h.at` on every history row for exactly this case, so that's the fallback. The day-string
+// range is a last resort only for history rows written before `h.at` existed; a bare day-string
+// compare re-admits the exact same-day double-count bug the timestamp gating fixed, so it's used
+// only when there's truly nothing more precise on the row.
+function challengeProgress(c, ch) {
+  const perMember = {};
+  for (const mid of c.memberIds) perMember[mid] = 0;
+  const endInstant = ch.endDate + 'T00:00:00.000Z';
+  const inRange = at => typeof at === 'string' && at >= ch.createdAt && at < endInstant;
+  for (const s of Object.values(DB.sessions)) {
+    for (const h of (s.history || [])) {
+      if (!perMember.hasOwnProperty(h.userId)) continue;
+      const logs = (s.logs && s.logs[h.userId]) || [];
+      if (ch.type === 'sets') {
+        perMember[h.userId] += logs.filter(l => isWorkingSet(l) && inRange(l.at)).length;
+      } else {
+        const counts = logs.length ? logs.some(l => inRange(l.at))
+          : typeof h.at === 'string' ? inRange(h.at)
+          : (h.date >= ch.startDate && h.date < ch.endDate);
+        if (counts) perMember[h.userId] += 1;   // one finished workout = 1, regardless of how much was logged
+      }
+    }
+  }
+  const total = Object.values(perMember).reduce((a, b) => a + b, 0);
+  return { total, perMember };
+}
+function publicChallenge(c, ch) {
+  if (!ch) return null;
+  const { total, perMember } = challengeProgress(c, ch);
+  const leaderboard = c.memberIds.filter(id => DB.users[id])
+    .map(id => ({ ...publicUser(id), count: perMember[id] || 0 }))
+    .sort((a, b) => b.count - a.count);
+  const completed = !!ch.completedAt;
+  // Ran its full 7 days without hitting the target. lastChallenge() keeps showing this one (so the
+  // "displayed" challenge is never just null the moment it goes stale) but runningChallenge() has
+  // already stopped treating it as in-progress, which is what actually lets the owner start a new
+  // one server-side -- without surfacing that split to the client, `challenge` here stayed
+  // permanently non-null and the UI's "no challenge, show the Start CTA" branch never matched again
+  // (cold-review catch: a missed week was a dead end with no way back in).
+  const expired = !completed && new Date().toISOString().slice(0, 10) >= ch.endDate;
+  return {
+    id: ch.id, type: ch.type, target: ch.target, startDate: ch.startDate, endDate: ch.endDate,
+    createdBy: ch.createdBy, total, leaderboard, completed, expired,
+    daysLeft: Math.max(0, Math.ceil((new Date(ch.endDate + 'T00:00:00Z') - new Date()) / 86400000))
+  };
+}
+// One crew's worth of the check below -- pulled out on its own because completion isn't only
+// triggered by someone finishing a workout. Editing a crew's roster (PUT /api/crews/:id) can ALSO
+// tip a challenge over its target with no new workout at all: adding a member whose own logging
+// already falls inside the challenge's window (they trained on their own, then got added) raises
+// `total` the instant they join, and without this call sitting on that path too, the challenge
+// would sit frozen at >=target with completedAt still null until someone happened to log something
+// else later (cold-review catch). Returns whether it just completed, so callers than don't already
+// unconditionally save() can decide to.
+function checkChallengeCompletion(c) {
+  const ch = runningChallenge(c);
+  if (!ch) return false;
+  const { total } = challengeProgress(c, ch);
+  if (total < ch.target) return false;
+  ch.completedAt = new Date().toISOString();
+  // A system message (userId: null) so the client renders it as a celebration banner in the
+  // thread, not attributed to "Someone" the way a departed member's old message is (see
+  // openCrew's own comment on that fallback) -- those two blanks mean different things.
+  c.messages.push({ id: 'cm_' + uid(), userId: null, system: true, at: ch.completedAt,
+    text: `🎉 Challenge complete! ${total} ${ch.type} as a crew.` });
+  for (const mid of c.memberIds) notify(mid, { title: c.name, body: `Challenge complete: ${ch.target} ${ch.type} this week! 🎉` });
+  return true;
+}
+// Called right after a workout gets credited (session lock, and a keep-leave -- see creditFinish's
+// two call sites) so a challenge notices the moment it's actually won, not on the next unrelated
+// read. Cheap in practice: most users belong to zero or one crew, and this is a no-op unless that
+// crew has a challenge running that isn't already marked complete.
+function checkCrewChallenges(userId) {
+  for (const c of Object.values(DB.crews || {})) {
+    if (!isCrewMember(c, userId)) continue;
+    ensureCrewShape(c);
+    checkChallengeCompletion(c);
+  }
+}
+app.post('/api/crews/:id/challenge', auth, async (req, res) => {
+  const c = DB.crews[req.params.id];
+  if (!c) return res.status(404).json({ error: 'not found' });
+  ensureCrewShape(c);
+  if (c.ownerId !== req.userId) return res.status(403).json({ error: 'only the owner can start a challenge' });
+  if (runningChallenge(c)) return res.status(400).json({ error: 'a challenge is already running' });
+  const body = req.body || {};
+  const type = body.type === 'sets' ? 'sets' : 'workouts';
+  const target = Math.round(Number(body.target));
+  if (!Number.isFinite(target) || target < CHALLENGE_MIN_TARGET) return res.status(400).json({ error: 'pick a target' });
+  const startDate = new Date().toISOString().slice(0, 10);
+  const ch = {
+    id: 'chal_' + uid(), type, target: Math.min(CHALLENGE_MAX_TARGET, target),
+    startDate, endDate: shiftDateStr(startDate, CHALLENGE_DURATION_DAYS),
+    createdBy: req.userId, createdAt: new Date().toISOString(), completedAt: null
+  };
+  c.challenges.push(ch);
+  await save(DB);
+  for (const mid of c.memberIds) if (mid !== req.userId)
+    notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} started a challenge: ${ch.target} ${type} this week` });
+  res.json(publicCrew(c, req.userId));
 });
 
 // ---- Notifications (aggregated inbox) ----
@@ -2170,7 +2323,11 @@ function creditFinish(s, userId, localDate) {
     if (lib) exMuscles(lib).forEach(m => mgs.add(m));
   }
   const date = isValidLocalDateStr(localDate) ? localDate : new Date().toISOString().slice(0, 10);
-  s.history.push({ userId, date, muscleGroups: [...mgs], exercises: exNames });
+  // `at` (real timestamp, independent of `date` which is a local YYYY-MM-DD string picked for
+  // streak purposes) exists so challengeProgress below can gate on a precise instant even for a
+  // workout finished with zero logged sets -- see the comment on that fallback branch for why a
+  // day-string-only comparison there was a real double-counting bug.
+  s.history.push({ userId, date, muscleGroups: [...mgs], exercises: exNames, at: new Date().toISOString() });
   return true;
 }
 
@@ -2232,7 +2389,10 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // button and Delete's canLeave fallback) always route through the Save/Discard sheet and send
   // an explicit true or false — the default here only fires for a direct API caller.
   const discard = !!(req.body && req.body.keep === false);
-  if (!discard) creditFinish(s, me, req.body && req.body.localDate);
+  // A keep-leave credits a finished workout exactly like /lock does (see creditFinish's own
+  // comment), so it can just as easily push a crew challenge over its target -- checked the same
+  // way here as there.
+  if (!discard) { creditFinish(s, me, req.body && req.body.localDate); checkCrewChallenges(me); }
 
   // v242 (Jeff's list): your logged sets now SURVIVE a keep-leave. They used to be deleted
   // unconditionally here, and since PRs, the strength trend, progression recommendations and
@@ -4022,7 +4182,10 @@ app.post('/api/sessions/:id/lock', auth, async (req, res) => {
   // creditFinish is idempotent per user — tapping "Log & Finish" twice must not push a second
   // history row for THIS person, inflating their own workout count, streak and weekly volume.
   // localDate: the client's own today (YYYY-MM-DD) — see the comment on creditFinish for why.
-  if (creditFinish(s, req.userId, req.body && req.body.localDate)) await save(DB);
+  // This is the one true "just finished a workout" moment, so it's also where a crew challenge
+  // this user belongs to notices it's been won -- checked only on an actual new credit, not a
+  // repeat /lock ping, same reasoning as the save() just below.
+  if (creditFinish(s, req.userId, req.body && req.body.localDate)) { checkCrewChallenges(req.userId); await save(DB); }
   res.json(sessionView(s, req.userId));
 });
 
