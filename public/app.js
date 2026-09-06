@@ -1117,7 +1117,7 @@ async function openSession(id, opts){
 // actually wanted lives here instead, all scoped to "my own," all reachable regardless of who
 // created the session:
 //   - photos: addPostPhoto/deletePhoto above, gated on isAuthor.
-//   - notes: editPostNotes below, gated on isAuthor.
+//   - notes: the tap-in #wkNotes box in viewPost (Sep 6; was editPostNotes), gated on isAuthor.
 //   - logged sets: editPostedSet/savePostedSet/deletePostedSet below, in setRows() -- gated on
 //     pid===ME.id per set-row (never someone else's sets, even on your own shared workout), using
 //     PUT/DELETE /api/sessions/:id/log/:logId, which is already scoped to your own s.logs entry
@@ -1197,7 +1197,7 @@ async function viewPost(id, authorId, opts){
   // the same PUT/DELETE /api/sessions/:id/log/:logId already used by the live in-workout
   // "Edit set" sheet (editLogSet et al above) -- that route is keyed off req.userId's own
   // s.logs entry server-side, so this needed no server change, just this entry point.
-  const setRows = (ls, mine) => `<div class="pp-sets">${ls.map(l=>`<div class="pp-set${mine?' pp-set-mine':''}"${mine?` onclick="editPostedSet('${id}','${authorId}','${l.id}')"`:''}>${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr">PR</span>':''}${mine?'<span class="pp-set-edit muted" style="font-size:11px">Edit</span>':''}</div>`).join('')}</div>`;
+  const setRows = (ls, mine) => `<div class="pp-sets">${ls.map(l=>`<div class="pp-set${mine?' pp-set-mine':''}"${mine?` onclick="editPostedSet('${id}','${authorId}','${l.id}')"`:''}>${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr">PR</span>':''}</div>`).join('')}</div>`;
   // An approved swap replaces the exercise for the session, and openSession already titles the
   // card with the swapped-in name. This screen said the original, so the two disagreed about what
   // the lift even was. Same resolution here, so they agree.
@@ -1249,10 +1249,16 @@ async function viewPost(id, authorId, opts){
   const photoStrip = media.length ? `<div class="pp-photos">${media.map((m,i)=>`<div class="pp-photo">${m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`}${isAuthor?`<button class="pp-photo-x" onclick="deletePhoto('${id}','${authorId}',${i})" aria-label="Delete photo">✕</button>`:''}</div>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
   const photos = (media.length || addPhotoRow) ? `<h2>Photos</h2>${photoStrip}${addPhotoRow}` : '';
   const notes = post.notes ? esc(post.notes) : '<span class="muted">How\'d it go?</span>';
+  // Sep 6: your own recap's notes are the same tap-in, self-saving box the live workout has
+  // (notesTyped/notesFlush -> saveWorkoutNotes, which routes to /post once a recap exists).
+  const notesBlock = isAuthor
+    ? `<h2>Notes<span id="wkNotesState" class="muted" style="font-size:11.5px;font-weight:500;text-transform:none;letter-spacing:0;margin-left:8px"></span></h2>
+       <textarea id="wkNotes" class="notes-box" rows="1" placeholder="How'd it go?" data-sid="${esc(id)}" data-saved="${esc(post.notes||'')}" oninput="notesTyped('${jsq(id)}')" onblur="notesFlush('${jsq(id)}')">${esc(post.notes||'')}</textarea>`
+    : `<h2>Notes</h2><div class="notes-box">${notes}</div>`;
   // Jeff, Aug 28: "...my own notes on the workout" -- edit your own notes right here, same
   // idempotent fetch-post-mutate-repost pattern as addPostPhoto/deletePhoto above, so this can
   // never be reached for anyone else's recap.
-  const notesHeader = isAuthor ? `<h2 style="display:flex;align-items:center;justify-content:space-between">Notes<button class="sec sm" onclick="editPostNotes('${id}','${authorId}')">Edit</button></h2>` : `<h2>Notes</h2>`;
+
   // Task #157: a lightweight reaction on the recap -- one tap, toggled on/off, no picker. The
   // post object already carries `reactions` (an array of userIds) straight from GET /api/sessions/
   // :id, so this needs no extra fetch the way comments does. See toggleReaction below for the tap
@@ -1325,8 +1331,9 @@ async function viewPost(id, authorId, opts){
   // wherever you actually tapped in from. history.back() replays the same real browser-history
   // pop the hardware/gesture Back button already uses, landing on whatever screen pushed the
   // entry below this one (see viewPost's own navigated()/landOn() call just below this template).
-  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}\n    ${notesHeader}<div class="notes-box">${notes}</div>\n    <h2>Comments</h2><div class="card">${likedRow}<div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
+  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}${((s.logs&&s.logs[ME.id])||[]).length ? '<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap one of your sets to edit it.</div>' : ''}\n    ${notesBlock}\n    <h2>Comments</h2><div class="card">${likedRow}<div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
   $('app').innerHTML = html;
+  notesAutosize();
   if(!silent){ const st={t:'post', id, authorId}; fromHistory ? landOn(st) : navigated(st); }
   if(media.length>1){
     const strip=document.querySelector('.pp-photos');
@@ -1565,23 +1572,6 @@ async function addPostPhoto(id, authorId, input){
   const r = await H.post(`/api/sessions/${id}/post`, { notes: post.notes||'', media, visibility: post.visibility||'private' });
   if(r && r.error){ alert(r.error); return; }
   if(nothingNavigatedSince(epoch)) viewPost(id, authorId, {silent:true});
-}
-// Jeff, Aug 28: "...and my own notes on the workout." Same fetch-current-post -> mutate ->
-// re-POST /post pattern as addPostPhoto/deletePhoto just above, so media/visibility already on
-// the recap are preserved untouched -- this only ever changes the notes field.
-function editPostNotes(id, authorId){
-  H.get('/api/sessions/'+id).then(s => {
-    const post = (s && s.posts && s.posts[authorId]) || {};
-    textEntrySheet({
-      title:'Edit notes', label:'Notes', value: post.notes||'', placeholder:"How'd it go?", multiline:true, confirmLabel:'Save',
-      onConfirm: async v => {
-        const epoch=UI_EPOCH;
-        const r = await H.post(`/api/sessions/${id}/post`, { notes: v||'', media: post.media||[], visibility: post.visibility||'private' });
-        if(r && r.error){ alert(r.error); return; }
-        if(nothingNavigatedSince(epoch)) viewPost(id, authorId, {silent:true});
-      }
-    });
-  });
 }
 // Sep 6 (Jeff: "the notes section requires you to click an edit button rather than being able
 // to just click into the box to type"). The Notes box on openSession is a plain textarea that
@@ -2139,7 +2129,6 @@ function exSetRowsHtml(sid, exId, exLogs, loadType, justLoggedId){
       <span class="pp-set-n ${b.c}">${b.t}</span>
       <span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)}${suffixFor(l)} × ${Number(l.reps)||0} reps${rirFor(l)}</span>
       ${l.isPr?`<span class="pp-pr${l.id===justLoggedId?' pr-pop':''}">PR</span>`:''}
-      <span class="pp-set-edit muted">Edit</span>
     </div>`; }).join('');
 }
 // Re-render one card's set rows from a fresh session object, in place -- nothing else on the
@@ -2581,7 +2570,7 @@ async function editLogSet(sid, exId, logId){
       <label class="muted" style="font-size:12px">RIR (optional)</label>
       <input id="edRir" type="number" inputmode="tel" pattern="[0-9]*" value="${(l.rir!==undefined&&l.rir!==null)?l.rir:''}">
       <label class="muted" style="font-size:12px">Type</label>
-      <select id="edT">${SET_TYPES.map(t=>`<option value="${t.key}"${t.key===l.setType?' selected':''}>${t.label}</option>`).join('')}</select>
+      <div class="seg type-seg" id="edT" data-t="${l.setType||'normal'}" style="margin:6px 0 14px">${SET_TYPES.map(t=>`<div class="chip${t.key===(l.setType||'normal')?' on':''}" data-t="${t.key}" onclick="pickEditType(this)">${t.label}</div>`).join('')}</div>
       <button class="blue" onclick="saveLogSet('${sid}','${exId}','${logId}')">Save</button>
       <button class="danger-text" onclick="delLogSet('${sid}','${exId}','${logId}')">Delete set</button>
     </div>`;
@@ -2589,8 +2578,12 @@ async function editLogSet(sid, exId, logId){
   document.body.appendChild(sheet);
   requestAnimationFrame(()=>sheet.classList.add('show'));
 }
+// Sep 6: the Edit-set sheet's Type is the same Normal/Warm up/Drop/Failure track the card
+// underneath uses (audit: it was the last native dropdown on the log sheet). The picked key
+// lives on #edT's data-t so saveLogSet reads one place.
+function pickEditType(chip){ const seg=chip.closest('#edT'); if(!seg) return; seg.dataset.t=chip.dataset.t; seg.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on', c===chip)); }
 async function saveLogSet(sid, exId, logId){
-  const w=document.getElementById('edW').value, r=document.getElementById('edR').value, t=document.getElementById('edT').value;
+  const w=document.getElementById('edW').value, r=document.getElementById('edR').value, t=document.getElementById('edT').dataset.t||'normal';
   const rirEl=document.getElementById('edRir'), rir=rirEl?rirEl.value:'';
   const s=await H.put(`/api/sessions/${sid}/log/${logId}`,{weight:w,reps:r,setType:t,rir});
   if(s.error){ alert(s.error); return; }
@@ -2842,6 +2835,18 @@ async function showSavePage(id){
     t.appendChild(d);
   });
 }
+// Sep 6: the create/edit forms' Visibility control is the app's segmented track, not a native
+// <select> (audit: the last dropdowns in the app). A hidden #vis input keeps `.value`, so every
+// reader ($('vis').value in submitSession/openAddExercises/saveWorkoutEdit...) is untouched.
+function visSegHtml(v){
+  const cur = v==='public' ? 'public' : 'private';
+  return `<input type="hidden" id="vis" value="${cur}">
+    <div class="seg wk-seg" id="visSeg" style="margin:6px 0 4px">
+      <button type="button" class="${cur==='private'?'on':''}" onclick="setDraftVis(this,'private')">Private · invite only</button>
+      <button type="button" class="${cur==='public'?'on':''}" onclick="setDraftVis(this,'public')">Public · joinable</button>
+    </div>`;
+}
+function setDraftVis(btn,v){ const h=$('vis'); if(h) h.value=v; document.querySelectorAll('#visSeg button').forEach(b=>b.classList.toggle('on', b===btn)); }
 function setSaveVis(btn,v){ window.__saveVis=v; document.querySelectorAll('#vis button').forEach(b=>b.classList.remove('on')); btn.classList.add('on');
   document.getElementById('visHint').textContent = v==='public' ? 'Anyone who can see your profile can see this.' : 'Only you and the others in this workout can see this.'; }
 function addWorkoutMedia(input){
@@ -3238,10 +3243,7 @@ async function createFlow(){
     <label class="muted">Visibility</label>
     <!-- selected= matters: without it this box always opened on Private, so saving an edit
          silently made a Public workout private and dropped it out of your followers' reach -->
-    <select id="vis">
-      <option value="private"${(DRAFT.visibility||'private')==='private'?' selected':''}>Private (invite only)</option>
-      <option value="public"${DRAFT.visibility==='public'?' selected':''}>Public (joinable)</option>
-    </select>
+    ${visSegHtml(DRAFT.visibility)}
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="openAddExercises()">+ Add exercise</button>
     <div class="tpl-actions">
@@ -3715,10 +3717,7 @@ async function templateExercises(){
     <label class="muted">Location</label><input id="loc" placeholder="e.g. Gold's Gym" value="${esc(DRAFT.location||'')}">
     <label class="muted">Note to friends</label><input id="note" placeholder="let's hit legs hard" value="${esc(DRAFT.creatorNote||'')}">
     <label class="muted">Visibility</label>
-    <select id="vis">
-      <option value="private"${(DRAFT.visibility||'private')==='private'?' selected':''}>Private (invite only)</option>
-      <option value="public"${DRAFT.visibility==='public'?' selected':''}>Public (joinable)</option>
-    </select>
+    ${visSegHtml(DRAFT.visibility)}
     <h2>Invite friends</h2>${crewQuickInviteHtml()}<div id="invList" class="card">${invRows}</div>
     <h2>Exercises</h2><div id="draftList" class="card"></div>
     <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button></div>`;
@@ -4332,8 +4331,7 @@ function volTrendChart(d){
     ? `<div style="text-align:right;margin-top:8px"><button class="txt-btn" onclick="toggleVolExpanded()">${VOL_EXPANDED?'Show fewer':'Show all '+volGroups.length}</button></div>`
     : '';
   return `<h2>Volume trend</h2><div class="card">${volHtml}${volShowAllLink}${volModeSeg}
-    ${volAny?`<div class="rulenote"><b>How it works:</b> ${rangeInfo.note} General guideline,
-      not a personal prescription.</div>`:''}
+    ${volAny?howItWorks('Volume trend', `${rangeInfo.note} General guideline, not a personal prescription.`):''}
   </div>`;
 }
 
@@ -4532,9 +4530,7 @@ async function progressScreen(opts){
         <div class="rp-main"><div class="rp-name">${esc(p.exercise)}</div>
           <div class="rp-why">${p.sessions} sessions over ${pw} weeks, most recently ${p.reps} reps at ${WL(p.weight)} — no increase in estimated strength</div></div>
       </div>`).join('')}</div>
-      <div class="rulenote"><b>How it works:</b> trained ${PLATEAU_MIN_SESSIONS}+ times in the last
-        ${pw} weeks with no real gain in weight, reps, or estimated one-rep max — worth trying a rep-range
-        change, a deload, or a different exercise for the same muscles.</div>
+      ${howItWorks('Plateaus', `Trained ${PLATEAU_MIN_SESSIONS}+ times in the last ${pw} weeks with no real gain in weight, reps, or estimated one-rep max — worth trying a rep-range change, a deload, or a different exercise for the same muscles.`)}
     </div>`;
   }
 
@@ -4590,9 +4586,7 @@ async function progressScreen(opts){
 
     <h2>Add weight next time</h2>
     <div class="card">${readyHtml}${soonHtml}${holdHtml}
-      ${(d.ready.length||(d.soon||[]).length||d.holds.length)?`<div class="rulenote"><b>How it works:</b>
-        reach the top of your rep range two sessions in a row <b>at the same weight</b> and the weight
-        goes up. Warm-ups and drop sets don\'t count.</div>`:''}
+      ${(d.ready.length||(d.soon||[]).length||d.holds.length)?howItWorks('Add weight next time', `Reach the top of your rep range two sessions in a row <b>at the same weight</b> and the weight goes up. Warm-ups and drop sets don't count.`):''}
     </div>
 
     ${plateauHtml}
@@ -4648,9 +4642,7 @@ async function progressScreen(opts){
       <div class="seg wk-seg">
         ${PROG_RANGES.map(r=>`<button class="${PROG_WEEKS===r.weeks?'on':''}" onclick="setProgWeeks(${r.weeks})">${r.label}</button>`).join('')}
       </div>
-      ${d.weeks.some(w=>w.days)?`<div class="rulenote"><b>How it works:</b> each bar is one week —
-        its height (and the number on top) is how many days you trained that week. The current
-        week is outlined.</div>`:''}
+      ${d.weeks.some(w=>w.days)?howItWorks('Consistency', 'Each bar is one week — its height (and the number on top) is how many days you trained that week. The current week is outlined.'):''}
     </div>
 
     ${trendChart(d,U)}
@@ -5015,6 +5007,19 @@ async function submitCreateEx(){
   const r = await H.post('/api/exercises/custom', payload);
   if(r.error) alert(r.error); else { closeSheet(); if(LIB_STATE.view==='muscle') libOpenMuscle(LIB_STATE.muscle, {silent:true}); else library({silent:true}); }
 }
+// Sep 6 (audit: three 4-line "How it works" paragraphs on Progress). One blue line that opens
+// the explanation in a sheet -- the page reads at a glance, the rule is one tap away. `body` is
+// trusted markup written here in app.js, never user text.
+function howItWorks(title, body){
+  HOW_IT_WORKS[title] = body;
+  return `<div class="rulenote"><span class="how-link" onclick="showHowItWorks('${jsq(title)}')">How it works ›</span></div>`;
+}
+const HOW_IT_WORKS = {};
+function showHowItWorks(title){
+  const body = HOW_IT_WORKS[title]; if(!body) return;
+  openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>${esc(title)}</h2><button class="icon-btn" onclick="closeSheet()" aria-label="Close">✕</button></div>
+    <div style="font-size:14px;line-height:1.55;padding:2px 2px 14px">${body}</div></div>`);
+}
 function exDetail(name){
   const e = window._LIB2.find(x=>x.name===name); if(!e) return;
   const sets = e.defaultSets||3, reps=e.defaultReps||10;
@@ -5022,10 +5027,9 @@ function exDetail(name){
   history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
-      <div class="sheet-head"><h2>${esc(e.name)}</h2>${favBtnHtml(e)}<button class="sec sm" onclick="closeSheet()">✕</button></div>
-      <div class="sheet-thumb"><div class="mg-ico">${exThumb(e)}</div><span class="sheet-thumb-cap">${esc((e.muscle_groups||[])[0]||'abdominals')}</span></div>
-      <div class="sheet-mg">${esc(exMuscles(e).join(' · '))}</div>
-      <div class="ex-badges" style="margin:8px 0">${exBadges(e)}</div>
+      <div class="sheet-head"><h2>${esc(e.name)}</h2>${favBtnHtml(e)}<button class="icon-btn" onclick="closeSheet()" aria-label="Close">✕</button></div>
+      <div class="sheet-thumb"><div class="mg-ico">${exThumb(e)}</div>
+        <div class="sheet-thumb-meta"><span class="sheet-thumb-cap">${esc(exMuscles(e).join(' · '))}</span><div class="ex-badges sheet-badges">${exBadges(e)}</div></div></div>
       <div class="sheet-row"><span>Equipment</span><b>${eqs}</b></div>
       <div class="sheet-row"><span>Pattern</span><b>${esc(e.pattern||'—')}</b></div>
       <div class="sheet-row"><span>Suggested</span><b>${sets} × ${reps}</b></div>
