@@ -244,7 +244,8 @@ console.log('volume trend: This week/Month/3 months range picker -- pinned row s
   ok(html.includes('Chest') && html.includes('Back') && html.includes('Shoulders') && html.includes('Traps') && html.includes('Biceps'),
     'the 5 zero-ratio-this-week groups are shown (got: ' + html.slice(html.indexOf('Volume trend'), html.indexOf('Volume trend') + 400) + ')');
   ok(!trendSection(html).includes('Quads') && !trendSection(html).includes('Glutes'), 'well-trained-this-week groups stay excluded');
-  ok(html.includes('working sets logged this week'), 'rulenote uses the weekly wording');
+  const howVol = () => vm.runInContext('HOW_IT_WORKS["Volume trend"] || ""', ctx);   // Sep 6: the explanation sits behind a "How it works ›" link, not inline
+  ok(html.includes('How it works ›') && howVol().includes('working sets logged this week'), 'rulenote uses the weekly wording');
 
   setVolMode('month');
   await new Promise(r => setTimeout(r, 0));
@@ -261,7 +262,7 @@ console.log('volume trend: This week/Month/3 months range picker -- pinned row s
   let chestBlock = html.slice(html.indexOf('Chest'), html.indexOf('Chest') + 260);
   ok(chestBlock.includes('/ 12 sets/wk'), `chest shows the Month number with "/wk" suffix, not the week number (got ${chestBlock.slice(0, 200)})`);
   ok(chestBlock.includes('mv-met'), 'chest is now "met" using its Month value (12/12), proving the NUMBER did update even though the row stayed');
-  ok(html.includes('average working sets per week over the trailing month'), 'rulenote switches to the Month wording');
+  ok(howVol().includes('average working sets per week over the trailing month'), 'rulenote switches to the Month wording');
 
   setVolMode('3mo');
   await new Promise(r => setTimeout(r, 0));
@@ -274,7 +275,7 @@ console.log('volume trend: This week/Month/3 months range picker -- pinned row s
   chestBlock = html.slice(html.indexOf('Chest'), html.indexOf('Chest') + 260);
   ok(chestBlock.includes('3<span class="mv-of"> / 12 sets/wk'), `chest shows the 3-month number with "/wk" suffix (got ${chestBlock.slice(0, 200)})`);
   ok(!chestBlock.includes('mv-met'), 'chest is NOT "met" at its lower 3-month average (3/12) -- proves this is really a different number from Month, not a stale re-render');
-  ok(html.includes('average working sets per week over the trailing 3 months'), 'rulenote switches to the 3-month wording');
+  ok(howVol().includes('average working sets per week over the trailing 3 months'), 'rulenote switches to the 3-month wording');
 
   setVolMode('week'); // reset for later blocks
   await new Promise(r => setTimeout(r, 0));
@@ -384,8 +385,9 @@ console.log('Consistency: streak leads the card (round Sep 2, replacing the aver
   ok(section.includes('2.8 days/week average'), 'the average is demoted to the caption line, not the headline, when a streak exists');
   ok(!/style="[^"]*color:var\(--green\)/.test(section), 'the streak hero is NOT colored green (rejected -- green stays reserved for earned/celebratory moments)');
   ok(!section.includes('class="streak"'), 'the old small streak badge is gone, folded into the hero instead');
-  ok(section.includes('<b>How it works:</b>') && section.includes('each bar is one week'),
-    `a "How it works" line explains the bars, matching Add weight/Volume trend's own pattern (got ${section.includes('How it works') ? 'present but wrong text' : 'missing entirely'})`);
+  // Sep 6: the explanation sits behind a "How it works ›" link (HOW_IT_WORKS map), not inline
+  ok(section.includes('How it works ›') && /each bar is one week/i.test(vm.runInContext('HOW_IT_WORKS["Consistency"] || ""', ctx)),
+    `a "How it works" link explains the bars, matching Add weight/Volume trend's own pattern (got ${section.includes('How it works') ? 'present but wrong text' : 'missing entirely'})`);
 }
 
 console.log('Consistency: no active streak falls back to the plain average as the hero (unchanged from before)');
@@ -406,7 +408,7 @@ console.log('Consistency: "How it works" line is absent on the true empty state 
   PROGRESS_FIXTURE = baseProgress(); // default weeks: all zero, streakWeeks: 0
   await progressScreen({ silent: true });
   const section = consistencySection(appEl.innerHTML);
-  ok(!section.includes('<b>How it works:</b>'), `no rulenote when there is no chart to explain yet (got ${section.slice(0, 400)})`);
+  ok(!section.includes('how-link'), `no rulenote when there is no chart to explain yet (got ${section.slice(0, 400)})`);
   ok(section.includes('No workouts logged yet'), 'shows the true empty state instead (got no match)');
 }
 

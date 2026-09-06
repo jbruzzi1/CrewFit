@@ -292,7 +292,6 @@
     /* Jeff, Aug 28: tap-to-edit affordance on your own logged sets on a posted workout (never
        another participant's -- setRows() in app.js only sets this class when mine===true). */
     .pp-set-mine { cursor:pointer; }
-    .pp-set-edit { margin-left:auto; flex:0 0 auto; }
     .pp-set-n { width:22px; height:22px; border-radius:6px; background:#eef1f5; color:var(--muted); font-size:11px; font-weight:700; display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; }
     .pp-set-n.warm { background:#fff3e0; color:#b26a00; }
     .pp-set-n.drop { background:#ffe8e0; color:#c2410c; }
@@ -535,7 +534,7 @@
        here too — without this line Log out rendered as a solid red bar with red-on-red invisible
        text. */
     .sheet-row.red { color:var(--red); font-weight:600; background:transparent; }
-    .row-val { float:right; color:var(--muted); font-weight:600; text-transform:uppercase; font-size:13px; }
+    .row-val { float:right; color:var(--muted); font-weight:600; font-size:13px; }   /* Sep 6: 'Not set' / 'Public', not NOT SET */
     .pavatar-wrap { position:relative; display:inline-block; cursor:pointer; }
     .pavatar { width:84px; height:84px; border-radius:50%; object-fit:cover; background:#e6e8ec; display:flex; align-items:center; justify-content:center; font-size:30px; font-weight:700; overflow:hidden; cursor:pointer; }
     /* Avatar cropper modal (Hevy-style: top bar + centered circle) */
@@ -590,7 +589,7 @@
     .ex-badge .dot { width:6px; height:6px; border-radius:50%; flex:0 0 auto; }
     .ex-badge.ex-type { text-transform:uppercase; letter-spacing:.7px; font-size:9.5px; color:#9aa3b2; }
     .ex-badge.lv-beginner { color:#1f8a4c; } .ex-badge.lv-beginner .dot { background:#1f8a4c; }
-    .ex-badge.lv-intermediate { color:#9a6700; } .ex-badge.lv-intermediate .dot { background:#9a6700; }
+    .ex-badge.lv-intermediate { color:var(--muted); } .ex-badge.lv-intermediate .dot { background:var(--muted); }   /* Sep 6: was amber -- gold/orange is reserved for Live now */
     .ex-badge.lv-advanced { color:#b42318; } .ex-badge.lv-advanced .dot { background:#b42318; }
     .mg-card { display:flex; align-items:center; gap:16px; padding:15px 2px; border-bottom:1px solid var(--line); cursor:pointer; background:transparent; }
     .mg-card:active { background:#f1f3f6; }
@@ -623,7 +622,7 @@
     .sheet { width:100%; max-width:480px; margin:0 auto; background:var(--card); border-radius:16px 16px 0 0; padding:18px 18px calc(18px + env(safe-area-inset-bottom)); transform:translateY(100%); transition:transform .2s; max-height:86vh; overflow-y:auto; box-sizing:border-box; }
     .sheet-back.show .sheet { transform:translateY(0); }
     .sheet-head { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
-    .sheet-head h2 { margin:0; flex:1; font-size:18px; }
+    .sheet-head h2 { margin:0; flex:1; font-size:18px; text-transform:none; letter-spacing:0; color:var(--fg); font-weight:700; }   /* Sep 6: a sheet title is a title, not a shouting section label */
     .sheet-mg { font-size:13px; color:var(--muted); margin-bottom:12px; }
     .sheet-row { display:flex; justify-content:space-between; padding:10px 0; border-top:1px solid var(--line); font-size:15px; }
     .sheet-row span { color:var(--muted); }
@@ -673,7 +672,12 @@
     .mg-ico { width:54px; height:54px; flex:0 0 auto; color:var(--green); background:#f7f8fa; border-radius:14px; padding:0; overflow:hidden; }
     .sheet-thumb .mg-ico { width:84px; height:84px; border-radius:18px; }
     .sheet-thumb .mg-img { width:100%; height:100%; object-fit:contain; display:block; }
-    .sheet-thumb-cap { font-size:13px; font-weight:600; color:var(--muted); text-transform:capitalize; }
+    .sheet-thumb-cap { font-size:13.5px; font-weight:600; color:var(--fg); text-transform:capitalize; }
+    /* Sep 6 (audit): muscles + level/type sit beside the picture, one column, instead of a lone
+       caption, a repeated muscle line below and a badge floating mid-sheet. */
+    .sheet-thumb-meta { display:flex; flex-direction:column; gap:6px; min-width:0; }
+    .sheet-thumb .ex-badges.sheet-badges { flex-direction:row; align-items:center; justify-content:flex-start; max-width:none; gap:8px; margin:0; }
+    .sheet-thumb { margin:6px 0 12px; }
     .stepper { display:inline-flex; align-items:center; gap:12px; }
     .stepper .stp { width:34px; height:34px; border-radius:10px; background:var(--card); color:var(--fg); border:1px solid var(--line); font-size:20px; font-weight:600; display:flex; align-items:center; justify-content:center; cursor:pointer; }
     .stepper b { min-width:28px; text-align:center; font-size:17px; }
@@ -810,7 +814,6 @@
     .ex-log .ex-log-sets { margin:6px 0 4px; }
     .ex-log .pp-set { font-size:14px; padding:6px 0; gap:10px; }
     .ex-log .pp-set-n { width:26px; height:26px; border-radius:7px; font-size:12px; }
-    .ex-log .pp-set-edit { font-size:12px; }
     .ex-log .ex-log-empty { font-size:12.5px; padding:6px 0 4px; }
     .ex-log .log-rec { margin:4px 0 8px; }
     /* v313: the four set types are always on show, one row per card (Jeff: "have them all listed
@@ -1017,12 +1020,15 @@
     .wsocial-item { display:inline-flex; align-items:center; gap:4px; font-size:13px; color:var(--muted); font-weight:600; }
     .wsocial-item svg { flex:0 0 auto; }
     .tcollab { display:inline-block; margin-top:3px; font-size:10px; font-weight:700; color:var(--blue); background:var(--blue-bg); border-radius:999px; padding:1px 7px; }
-    .view-toggle { display:inline-flex; gap:6px; margin-left:auto; }
+    /* Sep 6 (audit): the List/Grid toggle is the app's segmented track, sitting on the heading's
+       own line, instead of two loose pills (one solid blue) floating above it. */
+    .view-toggle { display:inline-flex; gap:0; margin-left:auto; background:#eef1f5; border-radius:10px; padding:3px; }
     /* inline-flex + nowrap + line-height:1 keeps the icon beside the label on ONE line,
        so both buttons share a baseline and match in size (they wrapped differently before). */
-    .view-toggle button { display:inline-flex; align-items:center; justify-content:center; gap:5px; white-space:nowrap; min-width:68px; height:32px; padding:0 12px; line-height:1; border:1px solid var(--line); background:#fff; color:var(--muted); font-size:12px; font-weight:600; border-radius:9px; cursor:pointer; margin:0; width:auto; }
-    .view-toggle button.on { background:var(--blue); color:#fff; border-color:var(--blue); }
-    .sec-head { display:flex; align-items:center; }
+    .view-toggle button { display:inline-flex; align-items:center; justify-content:center; gap:5px; white-space:nowrap; min-width:64px; height:28px; padding:0 12px; line-height:1; border:none; background:transparent; color:var(--muted); font-size:12px; font-weight:600; border-radius:8px; cursor:pointer; margin:0; width:auto; }
+    .view-toggle button.on { background:#fff; color:var(--blue); box-shadow:0 1px 2px rgba(0,0,0,.08); }
+    .sec-head { display:flex; align-items:center; margin:28px 0 12px; }
+    .sec-head h2 { margin:0; }
     /* ---- Progress tab ---- */
     .grp + .grp { margin-top:4px; padding-top:10px; border-top:1px solid var(--line); }
     .grp-h { font-size:10.5px; font-weight:700; letter-spacing:.7px; text-transform:uppercase; color:var(--muted); padding:2px 2px 4px; }
@@ -1048,7 +1054,12 @@
     .hold-ic { flex:0 0 auto; width:27px; height:27px; border-radius:8px; background:#eef1f5; color:var(--muted); display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:800; }
     /* "Almost" is a positive state and must not read as the negative one directly below it. */
     .hold-ic.almost-ic { background:rgba(6,122,6,.12); color:#067a06; }
-    .rulenote { font-size:11.5px; color:var(--muted); line-height:1.55; padding:11px 2px 0; border-top:1px solid var(--line); margin-top:8px; }
+    .rulenote { font-size:12px; color:var(--muted); line-height:1.55; padding:11px 2px 0; border-top:1px solid var(--line); margin-top:8px; }
+    .rulenote .how-link { color:var(--blue); font-weight:600; cursor:pointer; }
+    /* Sep 6: the Edit-set sheet's Type picker is the same track the log-sheet cards use */
+    .sheet .type-seg { background:#eef1f5; border-radius:10px; padding:3px; gap:0; display:flex; }
+    .sheet .type-seg .chip { flex:1; border:none; background:transparent; border-radius:8px; padding:7px 4px; font-size:11.5px; font-weight:600; color:var(--muted); text-align:center; white-space:nowrap; cursor:pointer; }
+    .sheet .type-seg .chip.on { background:#fff; color:var(--blue); box-shadow:0 1px 2px rgba(0,0,0,.08); font-weight:700; }
     .rulenote b { color:var(--fg); font-weight:700; }
     /* Weekly volume meter rows (Progress page) — a track (var(--line)) with a fill that turns
        green only once the week's target is actually met, matching the app-wide rule that green
@@ -1165,7 +1176,7 @@
         --s1:#2b3a5c; --s2:#3a5488; --s3:#4a71b8; --s4:#5a8bff;
       }
       /* -- surfaces & fills (light grays -> raised charcoal) -- */
-      :where(html.theme-dark) .pp-dots:active, :where(html.theme-dark) .pp-menu button:active, :where(html.theme-dark) .lib-item:active, :where(html.theme-dark) .ex-card.log-row:active, :where(html.theme-dark) .lib-item.log-row:active, :where(html.theme-dark) .profile-set:active, :where(html.theme-dark) .mg-card:active, :where(html.theme-dark) .ex-row:active, :where(html.theme-dark) .ex-fav-btn:active, :where(html.theme-dark) .set-row:active, :where(html.theme-dark) .rc-chip, :where(html.theme-dark) .rest, :where(html.theme-dark) .load-chip, :where(html.theme-dark) .hold-ic, :where(html.theme-dark) .self-tag, :where(html.theme-dark) .empty-ic, :where(html.theme-dark) .streak, :where(html.theme-dark) .pill, :where(html.theme-dark) .chip, :where(html.theme-dark) .fav, :where(html.theme-dark) .ex-add, :where(html.theme-dark) .ex-idx, :where(html.theme-dark) .t-normal, :where(html.theme-dark) .pp-set-n, :where(html.theme-dark) .seg .chip, :where(html.theme-dark) .seg button, :where(html.theme-dark) #vis.seg, :where(html.theme-dark) .seg.wk-seg, :where(html.theme-dark) .ex-log .type-seg, :where(html.theme-dark) .log-rec.soon .lr-ic, :where(html.theme-dark) .log-rec.hold .lr-ic { background:#262930; }
+      :where(html.theme-dark) .pp-dots:active, :where(html.theme-dark) .pp-menu button:active, :where(html.theme-dark) .lib-item:active, :where(html.theme-dark) .ex-card.log-row:active, :where(html.theme-dark) .lib-item.log-row:active, :where(html.theme-dark) .profile-set:active, :where(html.theme-dark) .mg-card:active, :where(html.theme-dark) .ex-row:active, :where(html.theme-dark) .ex-fav-btn:active, :where(html.theme-dark) .set-row:active, :where(html.theme-dark) .rc-chip, :where(html.theme-dark) .rest, :where(html.theme-dark) .load-chip, :where(html.theme-dark) .hold-ic, :where(html.theme-dark) .self-tag, :where(html.theme-dark) .empty-ic, :where(html.theme-dark) .streak, :where(html.theme-dark) .pill, :where(html.theme-dark) .chip, :where(html.theme-dark) .fav, :where(html.theme-dark) .ex-add, :where(html.theme-dark) .ex-idx, :where(html.theme-dark) .t-normal, :where(html.theme-dark) .pp-set-n, :where(html.theme-dark) .seg .chip, :where(html.theme-dark) .seg button, :where(html.theme-dark) #vis.seg, :where(html.theme-dark) .seg.wk-seg, :where(html.theme-dark) .ex-log .type-seg, :where(html.theme-dark) .sheet .type-seg, :where(html.theme-dark) .view-toggle, :where(html.theme-dark) .log-rec.soon .lr-ic, :where(html.theme-dark) .log-rec.hold .lr-ic { background:#262930; }
       :where(html.theme-dark) .missed-badge, :where(html.theme-dark) .upcoming-badge { background:#2f3238; color:#a2a7b0; }
       :where(html.theme-dark) .log-rec.hold { background:#1f2126; }
       /* Muscle diagrams are drawn on/for white - on a dark tile the gray figure dissolves
@@ -1189,7 +1200,7 @@
       :where(html.theme-dark) .drag-handle::before { background:linear-gradient(#6f747d,#6f747d) left top/16px 2px no-repeat, linear-gradient(#6f747d,#6f747d) left center/16px 2px no-repeat, linear-gradient(#6f747d,#6f747d) left bottom/16px 2px no-repeat; }
       :where(html.theme-dark) .log-rec.soon { border-color:#3a3e46; }
       /* segmented controls: the "on" chip was solid white */
-      :where(html.theme-dark) #vis.seg button.on, :where(html.theme-dark) .seg.wk-seg button.on, :where(html.theme-dark) .ex-log .type-seg .chip.on { background:#3a3e46; color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.4); }
+      :where(html.theme-dark) #vis.seg button.on, :where(html.theme-dark) .seg.wk-seg button.on, :where(html.theme-dark) .ex-log .type-seg .chip.on, :where(html.theme-dark) .sheet .type-seg .chip.on, :where(html.theme-dark) .view-toggle button.on { background:#3a3e46; color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.4); }
       :where(html.theme-dark) .seg .chip.on, :where(html.theme-dark) .seg button.on { background:rgba(90,139,255,.16); }
       /* -- blue tints -- */
       :where(html.theme-dark) .inv-banner { background:#1b2540; border-color:#2c3c63; }
@@ -1245,8 +1256,8 @@
       :where(html.theme-dark) .pp-menu button.danger { color:#f3766a; }
       :where(html.theme-dark) .ex-badge.lv-advanced { color:#f3766a; }
       :where(html.theme-dark) .ex-badge.lv-advanced .dot { background:#f3766a; }
-      :where(html.theme-dark) .ex-badge.lv-intermediate { color:#d7a04a; }
-      :where(html.theme-dark) .ex-badge.lv-intermediate .dot { background:#d7a04a; }
+      :where(html.theme-dark) .ex-badge.lv-intermediate { color:var(--muted); }
+      :where(html.theme-dark) .ex-badge.lv-intermediate .dot { background:var(--muted); }
       :where(html.theme-dark) .ex-badge.lv-beginner { color:var(--green); }
       :where(html.theme-dark) .ex-badge.lv-beginner .dot { background:var(--green); }
       :where(html.theme-dark) .ex-badge.ex-type { color:#8a8f98; }
@@ -1267,7 +1278,7 @@
       :where(html.theme-dark) .draft-ex.dragging { box-shadow:0 10px 24px rgba(0,0,0,.5); }
       :where(html.theme-dark) .home-avatar { box-shadow:0 2px 8px rgba(0,0,0,.5); }
       :where(html.theme-dark) .ex-card { box-shadow:0 1px 2px rgba(0,0,0,.3); }
-      :where(html.theme-dark) .view-toggle button { background:#262930; }
+      :where(html.theme-dark) .view-toggle button { background:transparent; }
       :where(html.theme-dark) .add-media .am-plus { border-color:var(--card); }
       /* 2+3: --green/--blue are brightened for TEXT on charcoal, which makes white text on
          SOLID fills fail contrast. Solid fills use deeper steps of the same hues instead
@@ -1276,7 +1287,7 @@
       :where(html.theme-dark) button { background:#1f8a4c; }
       :where(html.theme-dark) .ex-row.ex-on .ex-add { background:#1f8a4c; }
       :where(html.theme-dark) .check input:checked + .box { background:#1f8a4c; border-color:#1f8a4c; }
-      :where(html.theme-dark) button.blue, :where(html.theme-dark) .btn-primary, :where(html.theme-dark) .btn-answer, :where(html.theme-dark) .chip.on, :where(html.theme-dark) .badge, :where(html.theme-dark) .view-toggle button.on, :where(html.theme-dark) .sess-actions .sm.blue, :where(html.theme-dark) .btn-new { background:#3b6de8; }
+      :where(html.theme-dark) button.blue, :where(html.theme-dark) .btn-primary, :where(html.theme-dark) .btn-answer, :where(html.theme-dark) .chip.on, :where(html.theme-dark) .badge, :where(html.theme-dark) .sess-actions .sm.blue, :where(html.theme-dark) .btn-new { background:#3b6de8; }
       :where(html.theme-dark) .sess-actions .sm.blue { border-color:#3b6de8; }
       :where(html.theme-dark) .btn-new { border-color:#3b6de8; }
       :where(html.theme-dark) .wk-dot { background:#3a3e46; }
@@ -1292,6 +1303,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=350"></script>
+  <script src="app.js?v=351"></script>
 </body>
 </html>

@@ -52,7 +52,9 @@ console.log('renderExSets() paints one card, in place, and leaves the others alo
   ok(/pp-set-n warm">W</.test(html), 'a warm-up set shows the W badge instead of a number');
   ok(html.includes('99 lb each × 12 reps') && html.includes('143 lb each × 15 reps · RIR 1'), 'rows read "99 lb each × 12 reps" (per-dumbbell suffix from the stamped loadType) and carry RIR when tracked');
   ok(/pp-pr pr-pop">PR</.test(html) && (html.match(/pp-pr/g) || []).length === 1, 'the PR pill sits on the record set only, and pops because it was just logged');
-  ok((html.match(/pp-set-edit/g) || []).length === 3 && html.includes(`editLogSet('s1','exA','l2')`), 'every row has Edit wired to the small Edit-set sheet for that set');
+  // Sep 6: the "Edit" word on every row is gone (the row itself is the tap target and the tip
+  // under the cards says so) -- the wiring to the Edit-set sheet is what matters.
+  ok((html.match(/editLogSet\('s1','exA','l\d'\)/g) || []).length === 3 && html.includes(`editLogSet('s1','exA','l2')`) && !html.includes('pp-set-edit'), 'every row is wired to the small Edit-set sheet for that set, with no "Edit" label');
 }
 
 console.log('\nan exercise with nothing logged reads "No sets yet"; a card that is not on screen is a no-op');

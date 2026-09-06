@@ -2,7 +2,7 @@
 // back to private." Traced to openAddExercises(): tapping "+ Add exercise" mid-create
 // stashed DRAFT.location/lengthMin/creatorNote/name before navigating to the exercise
 // library, but NOT DRAFT.visibility or the scheduled date/time (DRAFT._dt). Returning via
-// libDone() -> createFlow() fully re-renders the form, including a fresh <select id="vis">
+// libDone() -> createFlow() fully re-renders the form, including a fresh #vis (hidden input + track)
 // whose `selected` state is computed from that stale, never-updated DRAFT.visibility --
 // silently reverting Friends-only back to Private. Since adding an exercise is essentially
 // mandatory when creating a workout, this reproduced every time.
@@ -74,7 +74,7 @@ console.log('"+ Add exercise" mid-create must not revert the form on return');
   await page.evaluate(() => window.createFlow());
   await page.waitForTimeout(200);
   await page.fill('#wname', 'Leg Day');
-  await page.selectOption('#vis', 'public');
+  await page.click('#visSeg button:has-text("Public")');   // Sep 6: segmented track, hidden #vis keeps .value
   await page.click('button:has-text("+ Add exercise")');
   await page.waitForTimeout(300);
   await page.evaluate(() => window.libDone());
@@ -92,7 +92,7 @@ console.log('\n"Routines" mid-create must not revert the form on return');
   await page.evaluate(() => window.createFlow());
   await page.waitForTimeout(200);
   await page.fill('#wname', 'Push Day');
-  await page.selectOption('#vis', 'public');
+  await page.click('#visSeg button:has-text("Public")');   // Sep 6: segmented track, hidden #vis keeps .value
   await page.click('.tpl-actions button:has-text("Routines")');
   await page.waitForTimeout(300);
   // No routines exist yet, so just navigate straight back the way createFlow() would be
