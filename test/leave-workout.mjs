@@ -138,10 +138,12 @@ console.log('\nv187: an invited participant gets their OWN Log & Finish AND thei
   ok(!sink.html.includes('Delete session'), 'and NOT "Delete session" (still creator-only)');
   ok(!sink.html.includes('Edit session'), 'and NOT the plan "Edit session" button (still creator-only)');
   // Sep 4 (Jeff: notes should be editable while the workout is active, not just after): every
-  // participant gets their OWN bare "Edit" button now, next to the Notes heading -- this is a
-  // different control from the plan-edit one just checked above (own notes, not the shared
-  // exercise list), so it's fine, and expected, for a non-creator to see it here.
-  ok(sink.html.includes('>Edit<'), 'the participant DOES see the Notes "Edit" button (their own notes, unrelated to the plan)');
+  // participant gets their OWN notes editor -- a different control from the plan-edit one just
+  // checked above (own notes, not the shared exercise list), so it's fine, and expected, for a
+  // non-creator to have it here. Sep 6: that editor is the tap-in #wkNotes textarea itself (Jeff:
+  // "requires you to click an edit button rather than being able to just click into the box"),
+  // so there is no bare Edit button to look for any more.
+  ok(sink.html.includes('id="wkNotes"') && !sink.html.includes('>Edit<'), 'the participant DOES get their own tap-in Notes box (their own notes, unrelated to the plan), and no Edit button');
 
   console.log('\nJeff, Aug 20: tapping Leave before finishing now ASKS first — it does not silently assume Keep');
   sink.html = '';
