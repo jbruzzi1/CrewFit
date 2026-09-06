@@ -803,8 +803,14 @@
     /* v313: the four set types are always on show, one row per card (Jeff: "have them all listed
        ... decrease the font size ... to fit cleaner"). Smaller type than the generic .seg chip
        so Normal / Warm up / Drop / Failure sit on one line with room to breathe at 390px. */
-    .ex-log .type-seg { margin:8px 0 8px; gap:5px; }
-    .ex-log .type-seg .chip { font-size:11px; padding:7px 0; letter-spacing:.1px; white-space:nowrap; }
+    /* Sep 6, 2026: restyled as the .wk-seg segmented track (Jeff, after rejecting the loose pill
+       row on the Start-a-challenge page for the same reason: "text hits all the inner edges of
+       the boxes"). One control language everywhere a segment is picked; measured >=16px of room
+       beside every label at 390px. Selected segment stays the neutral raised step, not a blue
+       fill, so it does not compete with the blue + Add right under it. */
+    .ex-log .type-seg { background:#eef1f5; border-radius:10px; padding:3px; gap:0; margin:8px 0 8px; }
+    .ex-log .type-seg .chip { flex:1; border:none; background:transparent; border-radius:8px; padding:7px 4px; font-size:11.5px; font-weight:600; color:var(--muted); white-space:nowrap; }
+    .ex-log .type-seg .chip.on { background:#fff; color:var(--blue); box-shadow:0 1px 2px rgba(0,0,0,.08); font-weight:700; }
     .ex-log .load-note { margin-top:8px; }
     .ex-log .rest { margin-top:10px; }
     .ex-log .pp-pr.pr-pop { animation:prPop .5s cubic-bezier(.34,1.56,.64,1) both; }
@@ -1146,7 +1152,7 @@
         --s1:#2b3a5c; --s2:#3a5488; --s3:#4a71b8; --s4:#5a8bff;
       }
       /* -- surfaces & fills (light grays -> raised charcoal) -- */
-      :where(html.theme-dark) .pp-dots:active, :where(html.theme-dark) .pp-menu button:active, :where(html.theme-dark) .lib-item:active, :where(html.theme-dark) .ex-card.log-row:active, :where(html.theme-dark) .lib-item.log-row:active, :where(html.theme-dark) .profile-set:active, :where(html.theme-dark) .mg-card:active, :where(html.theme-dark) .ex-row:active, :where(html.theme-dark) .ex-fav-btn:active, :where(html.theme-dark) .set-row:active, :where(html.theme-dark) .rc-chip, :where(html.theme-dark) .rest, :where(html.theme-dark) .load-chip, :where(html.theme-dark) .hold-ic, :where(html.theme-dark) .self-tag, :where(html.theme-dark) .empty-ic, :where(html.theme-dark) .streak, :where(html.theme-dark) .pill, :where(html.theme-dark) .chip, :where(html.theme-dark) .fav, :where(html.theme-dark) .ex-add, :where(html.theme-dark) .ex-idx, :where(html.theme-dark) .t-normal, :where(html.theme-dark) .pp-set-n, :where(html.theme-dark) .seg .chip, :where(html.theme-dark) .seg button, :where(html.theme-dark) #vis.seg, :where(html.theme-dark) .seg.wk-seg, :where(html.theme-dark) .log-rec.soon .lr-ic, :where(html.theme-dark) .log-rec.hold .lr-ic { background:#262930; }
+      :where(html.theme-dark) .pp-dots:active, :where(html.theme-dark) .pp-menu button:active, :where(html.theme-dark) .lib-item:active, :where(html.theme-dark) .ex-card.log-row:active, :where(html.theme-dark) .lib-item.log-row:active, :where(html.theme-dark) .profile-set:active, :where(html.theme-dark) .mg-card:active, :where(html.theme-dark) .ex-row:active, :where(html.theme-dark) .ex-fav-btn:active, :where(html.theme-dark) .set-row:active, :where(html.theme-dark) .rc-chip, :where(html.theme-dark) .rest, :where(html.theme-dark) .load-chip, :where(html.theme-dark) .hold-ic, :where(html.theme-dark) .self-tag, :where(html.theme-dark) .empty-ic, :where(html.theme-dark) .streak, :where(html.theme-dark) .pill, :where(html.theme-dark) .chip, :where(html.theme-dark) .fav, :where(html.theme-dark) .ex-add, :where(html.theme-dark) .ex-idx, :where(html.theme-dark) .t-normal, :where(html.theme-dark) .pp-set-n, :where(html.theme-dark) .seg .chip, :where(html.theme-dark) .seg button, :where(html.theme-dark) #vis.seg, :where(html.theme-dark) .seg.wk-seg, :where(html.theme-dark) .ex-log .type-seg, :where(html.theme-dark) .log-rec.soon .lr-ic, :where(html.theme-dark) .log-rec.hold .lr-ic { background:#262930; }
       :where(html.theme-dark) .missed-badge, :where(html.theme-dark) .upcoming-badge { background:#2f3238; color:#a2a7b0; }
       :where(html.theme-dark) .log-rec.hold { background:#1f2126; }
       /* Muscle diagrams are drawn on/for white - on a dark tile the gray figure dissolves
@@ -1170,7 +1176,7 @@
       :where(html.theme-dark) .drag-handle::before { background:linear-gradient(#6f747d,#6f747d) left top/16px 2px no-repeat, linear-gradient(#6f747d,#6f747d) left center/16px 2px no-repeat, linear-gradient(#6f747d,#6f747d) left bottom/16px 2px no-repeat; }
       :where(html.theme-dark) .log-rec.soon { border-color:#3a3e46; }
       /* segmented controls: the "on" chip was solid white */
-      :where(html.theme-dark) #vis.seg button.on, :where(html.theme-dark) .seg.wk-seg button.on { background:#3a3e46; color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.4); }
+      :where(html.theme-dark) #vis.seg button.on, :where(html.theme-dark) .seg.wk-seg button.on, :where(html.theme-dark) .ex-log .type-seg .chip.on { background:#3a3e46; color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.4); }
       :where(html.theme-dark) .seg .chip.on, :where(html.theme-dark) .seg button.on { background:rgba(90,139,255,.16); }
       /* -- blue tints -- */
       :where(html.theme-dark) .inv-banner { background:#1b2540; border-color:#2c3c63; }
@@ -1272,6 +1278,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=343"></script>
+  <script src="app.js?v=345"></script>
 </body>
 </html>
