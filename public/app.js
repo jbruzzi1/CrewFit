@@ -897,7 +897,12 @@ async function openSession(id, opts){
     </div></div>`;
   } else {
     html += myEx;
-    if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">${qlExample()} · tap a set to edit or delete it. Set # auto-fills. Hit the top of your rep range two sessions in a row at the same weight and the card tells you your next working weight.</div>`;
+    // Sep 6 (Jeff: "do we need the tip under the logging of the sets to be as long as it is") --
+    // cut from three lines to one. What stays is the only non-obvious thing (you can say a set to
+    // the mic) plus "tap a set to edit"; set numbers auto-filling is visible the first time you
+    // add one, and the add-weight rule explains itself in the card's own "One more like that"
+    // box the moment it applies.
+    if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">${qlExample()} · tap a set to edit it.</div>`;
     else if(canSuggest) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Not feeling one of these? Tap it to propose a replacement — ${esc(isUnknownName(nameCache[s.creatorId])?'the host':String(nameCache[s.creatorId]).split(' ')[0])} approves it.</div>`;
   }
   if(edits) html += `<h2 class="pt">Suggested changes</h2>${edits}`;
