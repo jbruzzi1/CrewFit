@@ -295,6 +295,9 @@ function renderNavState(st){
   else if(st.t==='notifications') renderNotifications({fromHistory:true});
   else if(st.t==='routines') templatesPage({fromHistory:true});
   else if(st.t==='routineView') tplView(st.id, {fromHistory:true});
+  else if(st.t==='crew') crewView(st.id, {fromHistory:true});
+  else if(st.t==='challenge') challengeView(st.crewId, st.challengeId, {fromHistory:true});
+  else if(st.t==='newChallenge') newChallengeView(st.crewId, {fromHistory:true});
   else renderTabState('home');   // an old/unrecognized entry (e.g. a stray 'sheet' marker) -- never strand the user on nothing
 }
 // A tab-state landing needs its own landOn() call (nothing inside home()/library()/etc. does it,
@@ -5144,7 +5147,7 @@ async function friends(opts){
     const challengeHint = (ch && !ch.completed && !ch.expired)
       ? `<div class="crew-chal-hint">${flame} A challenge is running — tap in to ${solo ? 'check your progress' : "see who's leading"}</div>`
       : `<div class="crew-chal-hint">${flame} Set a weekly goal ${solo ? 'for yourself' : 'and compete together'}</div>`;
-    return `<div class="crew-row" onclick="openCrew('${jsq(c.id)}')" style="cursor:pointer">
+    return `<div class="crew-row" onclick="crewView('${jsq(c.id)}')" style="cursor:pointer">
       <div class="crew-avs">${avs}${more}</div>
       <div class="meta"><div class="name">${esc(c.name)}</div><div class="handle">${c.members.length} member${c.members.length===1?'':'s'}</div>${challengeHint}</div>
     </div>`;
@@ -5195,7 +5198,7 @@ function toggleCrewMember(cb){ const id=cb.value; if(cb.checked){ if(!CREW_SHEET
 // is the crew object) -- same fields either way, matching how the app already reuses one screen for
 // "new workout" and "edit workout" (createFlow) rather than forking a second near-duplicate.
 async function newCrewSheet(editCrewId){
-  // Takes an id and re-fetches, same convention as openCrew/profileView/etc. elsewhere in the
+  // Takes an id and re-fetches, same convention as crewView/profileView/etc. elsewhere in the
   // app -- passing a whole crew object through an inline onclick="" attribute would mean
   // JSON-stringifying it into HTML markup, fragile the moment a name contains a quote or an
   // emoji, and a pattern nothing else in this codebase actually uses.
@@ -5228,18 +5231,25 @@ async function saveCrewSheet(crewId){
   // v247-style stacking guard (see closeAllSheets' own comment): editing opens this sheet ON TOP
   // OF the still-open crew-detail sheet, so a plain closeSheet() + reopen would leave the stale
   // pre-edit detail sheet sitting underneath as a zombie. closeAllSheets() collapses both, then
-  // openCrew() opens exactly one fresh sheet with the saved name/membership.
+  // crewView() re-renders the full page in place with the saved name/membership.
   closeAllSheets();
-  if(crewId) openCrew(crewId, {silent:true}); else friends({silent:true});
+  if(crewId) crewView(crewId, {silent:true}); else friends({silent:true});
 }
 // runConfirmCb() already dismisses the confirm sheet itself before calling this -- closeAllSheets()
-// here is only for the crew-DETAIL sheet still open underneath it (deleteCrewConfirm/
-// leaveCrewConfirm are only ever reached from inside that sheet's own buttons).
+// here is only for the confirm sheet itself (deleteCrewConfirm/leaveCrewConfirm are only ever
+// reached from a button on the crew's own full page, crewView, not a sheet).
+// Sep 6 (cold-review catch, crew-full-page conversion): back when crewView was a bottom sheet,
+// "return to Friends" just meant closing the sheet -- the Friends tab underneath already held the
+// real history entry. Now that crewView pushes its OWN real {t:'crew'} entry, a silent friends()
+// here would leave that stale entry sitting in the Back stack pointing at a crew that's just been
+// deleted/left -- pressing Back far enough later would re-fetch it, hit a 404/403, and alert a raw
+// error string. showTab('friends') (not a silent friends()) pushes a fresh {t:'tab',tab:'friends'}
+// entry that supersedes it, the same "really landing somewhere new" case showTab already exists for.
 async function deleteCrewConfirmed(crewId){
   const r = await H.delete('/api/crews/'+crewId);
   closeAllSheets();
   if(r && r.error){ alert(r.error); return; }
-  friends({silent:true});
+  showTab('friends');
 }
 function deleteCrewConfirm(crewId){
   confirmSheet('Delete this crew?', 'The group and its chat are removed for everyone in it. This can\'t be undone.', 'Delete', () => deleteCrewConfirmed(crewId));
@@ -5248,17 +5258,27 @@ async function leaveCrewConfirmed(crewId){
   const r = await H.post('/api/crews/'+crewId+'/leave', {});
   closeAllSheets();
   if(r && r.error){ alert(r.error); return; }
-  friends({silent:true});
+  showTab('friends');
 }
 function leaveCrewConfirm(crewId){
   confirmSheet('Leave this crew?', 'You\'ll stop seeing its chat and won\'t be invited as part of the group anymore.', 'Leave', () => leaveCrewConfirmed(crewId));
 }
-async function openCrew(crewId, opts){
+// Sep 6 (Jeff, w/ screenshot: "fix this page... it seems poor and quickly done... make it a full
+// page for each group when clicked in"). Was a bottom `.sheet-back` built by hand; now a real
+// screen through the same navigated()/landOn() + .pp-head/history.back() pattern every other
+// full-page view here uses (profileView, renderNotifications, openSettings), so it gets a real
+// history entry, survives the hardware/gesture Back button correctly, and has room to not feel
+// cramped. Sheets opened ON TOP of it (Edit crew, Start a challenge, Leave/Delete confirms) are
+// untouched -- they're still real .sheet-back overlays, and the generic popstate handler above
+// already closes those on Back without touching the screen underneath.
+async function crewView(crewId, opts){
+  const silent = !!(opts && opts.silent);
+  const fromHistory = !!(opts && opts.fromHistory);
+  if(!silent) UI_EPOCH++;
   const [c, messages] = await Promise.all([H.get('/api/crews/'+crewId), H.get('/api/crews/'+crewId+'/messages')]);
   if(c && c.error){ alert(c.error); return; }
-  if(!(opts&&opts.silent)) history.pushState({t:'sheet'}, '', location.href);
   const flame = flameSvg();
-  const memberRows = c.members.map(m=>`<div class="friend-row" onclick="closeSheet();profileView('${jsq(m.id)}')" style="cursor:pointer;padding:8px 4px">
+  const memberRows = c.members.map(m=>`<div class="friend-row" onclick="profileView('${jsq(m.id)}')" style="cursor:pointer;padding:8px 4px">
     ${avatarHtml(m,'avatar')}
     <div class="meta"><div class="name">${esc(m.displayName||m.username)}${m.id===c.ownerId?' <span class="muted" style="font-weight:400">· owner</span>':''}</div>
     ${m.streak>1?`<div class="streak-pill">${flame}${m.streak} day streak</div>`:''}</div>
@@ -5274,21 +5294,20 @@ async function openCrew(crewId, opts){
     const from = c.members.find(x=>x.id===m.userId);
     return `<div class="crew-msg"><b>${esc(from?(from.displayName||from.username):UNKNOWN_NAME)}</b> ${esc(m.text)}</div>`;
   }).join('') : '<div class="muted" style="padding:8px 2px">No messages yet — say hey.</div>';
+  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">${esc(c.name)}</h1>${c.isOwner?`<button class="sec sm" onclick="newCrewSheet('${jsq(c.id)}')">Edit</button>`:''}<button class="sec sm" onclick="history.back()">← Back</button></div>`;
   // crewMsgs/crewChatInput are scoped by crew id (not plain ids) -- the same bug class the
   // cold-review for comments already caught once (see cmtReact-'+ck's own comment): opening crew
-  // A, sending a message, then closing and opening crew B before the response lands would
-  // otherwise let sendCrewMsg's plain $('crewMsgs') land the reply in whichever sheet is open now.
-  const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
-    <div class="sheet" onclick="event.stopPropagation()">
-      <div class="sheet-head"><h2>${esc(c.name)}</h2>${c.isOwner?`<button class="sec sm" onclick="newCrewSheet('${jsq(c.id)}')">Edit</button>`:''}<button class="sec sm" onclick="closeSheet()">✕</button></div>
-      <div class="card" style="padding:6px 12px;margin-bottom:12px">${memberRows}</div>
-      ${crewChallengeHtml(c)}
-      <div class="card" id="crewMsgs-${esc(c.id)}" style="padding:10px 12px;max-height:34vh;overflow-y:auto">${msgRows}</div>
-      <div class="row chat-row" style="margin-top:10px"><input id="crewChatInput-${esc(c.id)}" class="chat-input" placeholder="Message the crew"><button class="sm chat-send" onclick="sendCrewMsg('${jsq(c.id)}')">Send</button></div>
-      ${!c.isOwner ? `<button class="sec" style="margin-top:10px" onclick="leaveCrewConfirm('${jsq(c.id)}')">Leave crew</button>` : ''}
-    </div>`;
-  sheet.onclick=(e)=>{ if(e.target===sheet) closeSheet(); }; document.body.appendChild(sheet);
-  requestAnimationFrame(()=>sheet.classList.add('show'));
+  // A, sending a message, then navigating to crew B before the response lands would otherwise let
+  // sendCrewMsg's plain $('crewMsgs') land the reply on whichever crew page is open now.
+  $('app').innerHTML = `<div class="wrap">
+    ${head}
+    <div class="card" style="padding:6px 12px;margin:14px 0 12px">${memberRows}</div>
+    ${crewChallengeHtml(c)}
+    <div class="card" id="crewMsgs-${esc(c.id)}" style="padding:10px 12px;max-height:34vh;overflow-y:auto">${msgRows}</div>
+    <div class="row chat-row" style="margin-top:10px"><input id="crewChatInput-${esc(c.id)}" class="chat-input" placeholder="Message the crew"><button class="sm chat-send" onclick="sendCrewMsg('${jsq(c.id)}')">Send</button></div>
+    ${!c.isOwner ? `<button class="sec" style="margin-top:14px" onclick="leaveCrewConfirm('${jsq(c.id)}')">Leave crew</button>` : ''}
+  </div>`;
+  if(!silent){ const st = {t:'crew', id: crewId}; fromHistory ? landOn(st) : navigated(st); }
 }
 async function sendCrewMsg(crewId){
   const inp = $('crewChatInput-'+crewId); if(!inp) return;
@@ -5303,7 +5322,7 @@ async function sendCrewMsg(crewId){
   box.appendChild(row); box.scrollTop = box.scrollHeight;
 }
 // ---- Crew Challenges (Sep 2026, Jeff: "make it more fun -- both collaborative AND competitive")
-// Renders the challenge section of openCrew's sheet: a shared progress meter (same .mv-row/.mv-
+// Renders the challenge section of crewView's page: a shared progress meter (same .mv-row/.mv-
 // track/.mv-fill markup the Progress page's weekly-volume meters already use -- one visual
 // language for "a number climbing toward a target" everywhere in this app) plus a mini leaderboard
 // underneath, so it reads as one team goal AND individual credit at the same time. c.challenge is
@@ -5320,11 +5339,19 @@ function crewChallengeHtml(c){
     const sub = ch
       ? `Last week fell short — ${ch.total}/${ch.target} ${ch.type}. Go again?`
       : 'Set a shared goal and take it on together.';
+    // Sep 6: a fell-short week still has a real result worth looking back at (final leaderboard,
+    // who carried it) even though runningChallenge() has already let the owner start a fresh one --
+    // "See what happened" opens the same full details page a live/completed challenge does below,
+    // just reached from this quieter sub-line instead of the whole card (there's no live progress
+    // to make the whole card feel tappable here the way there is once a challenge exists and is on
+    // screen in full).
     return `<div class="card" style="padding:12px;margin-bottom:12px">
       <div class="row" style="align-items:flex-start;justify-content:space-between">
         <div><div style="font-weight:700;font-size:13.5px">No challenge running</div>
-        <div class="muted" style="font-size:12px;margin-top:2px">${esc(sub)}</div></div>
-        ${c.isOwner ? `<span class="he-cta" style="margin:0;white-space:nowrap" onclick="newChallengeSheet('${jsq(c.id)}')">Start →</span>` : ''}
+        <div class="muted" style="font-size:12px;margin-top:2px">${esc(sub)}</div>
+        ${ch ? `<span class="he-cta" style="margin-top:6px;display:inline-block" onclick="challengeView('${jsq(c.id)}','${jsq(ch.id)}')">See what happened →</span>` : ''}
+        </div>
+        ${c.isOwner ? `<span class="he-cta" style="margin:0;white-space:nowrap" onclick="newChallengeView('${jsq(c.id)}')">Start →</span>` : ''}
       </div>
       ${pastLine}
     </div>`;
@@ -5338,7 +5365,16 @@ function crewChallengeHtml(c){
     `<div class="row" style="justify-content:space-between;padding:3px 0;font-size:13px">
        <span>${i===0?flameSvg()+' ':''}${esc(m.displayName||m.username)}</span><b>${m.count}</b>
      </div>`).join('');
-  return `<div class="card" style="padding:12px;margin-bottom:12px">
+  // Sep 6 (Jeff: "it seems like it will be difficult to track -- I want to be able to click onto
+  // that and be brought to all of the details for that challenge"). The whole card is now a door to
+  // challengeView() -- a full page with the complete (not top-5) leaderboard and the crew's past
+  // challenges -- whenever a real challenge is on screen. A .mg-chev makes that discoverable the
+  // same way it already does on a muscle-group card; the "Start a new challenge" link inside stops
+  // its own tap from bubbling into that navigation (same pattern as the notifications invite row's
+  // Accept/Decline buttons).
+  return `<div class="card" style="padding:12px;margin-bottom:12px;cursor:pointer;position:relative" onclick="challengeView('${jsq(c.id)}','${jsq(ch.id)}')">
+    <div class="mg-chev" style="position:absolute;top:12px;right:12px">›</div>
+    <div style="padding-right:14px">
     ${ch.completed ? `<div class="rc-pr rc-pr-now" style="margin-bottom:10px"><div class="rc-pr-ic">🎉</div><div>
         <div class="rc-pr-t">Challenge complete!</div>
         <div class="rc-pr-s">${ch.total} ${ch.type} as a crew — nice work.</div></div></div>` : ''}
@@ -5350,8 +5386,80 @@ function crewChallengeHtml(c){
     ${!ch.completed ? `<div class="muted" style="font-size:11px;margin-bottom:6px">${ch.daysLeft} day${ch.daysLeft===1?'':'s'} left</div>` : ''}
     ${leaderRows || '<div class="muted" style="font-size:12px">No one\'s logged yet — be first.</div>'}
     ${pastLine}
-    ${ch.completed && c.isOwner ? `<div class="he-cta" style="margin-top:10px" onclick="newChallengeSheet('${jsq(c.id)}')">Start a new challenge →</div>` : ''}
+    ${ch.completed && c.isOwner ? `<div class="he-cta" style="margin-top:10px" onclick="event.stopPropagation();newChallengeView('${jsq(c.id)}')">Start a new challenge →</div>` : ''}
+    </div>
   </div>`;
+}
+// Full-page challenge details (Sep 6, see the comment above crewChallengeHtml). Re-fetches the
+// whole crew rather than taking a challenge object through the call site, same convention as
+// crewView/profileView/etc. -- and the one thing that actually needs: publicCrew's pastChallenges
+// is only ever computed alongside the crew, not per-challenge. challengeId is looked up in either
+// c.challenge (the current one, whatever state it's in) or c.pastChallenges, so this same page
+// renders a still-running challenge, a just-finished one, or any earlier week in the crew's
+// history identically -- one screen, not three.
+async function challengeView(crewId, challengeId, opts){
+  const silent = !!(opts && opts.silent);
+  const fromHistory = !!(opts && opts.fromHistory);
+  if(!silent) UI_EPOCH++;
+  const c = await H.get('/api/crews/'+crewId);
+  if(c && c.error){ alert(c.error); return; }
+  const all = [c.challenge, ...(c.pastChallenges||[])].filter(Boolean);
+  const ch = all.find(x=>x.id===challengeId) || c.challenge;
+  // Nothing to show (a stale link, or the crew's challenge history is somehow empty) -- land back
+  // on the crew page rather than render a blank screen with no way forward.
+  if(!ch){ crewView(crewId, {silent:true}); return; }
+  const isRunning = !ch.completed && !ch.expired;
+  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">${esc(c.name)} challenge</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
+  const banner = ch.completed
+    ? `<div class="rc-pr rc-pr-now" style="margin-bottom:12px"><div class="rc-pr-ic">🎉</div><div>
+        <div class="rc-pr-t">Challenge complete!</div>
+        <div class="rc-pr-s">${ch.total} ${ch.type} as a crew — nice work.</div></div></div>`
+    : (ch.expired ? `<div class="card" style="padding:12px;margin-bottom:12px">
+        <div style="font-weight:700;font-size:13.5px">Fell short</div>
+        <div class="muted" style="font-size:12px;margin-top:2px">Finished at ${ch.total} of ${ch.target} ${ch.type}.</div>
+      </div>` : '');
+  const pct = Math.min(100, Math.round(100*ch.total/ch.target));
+  // Sep 6 (cold-review catch): "this week" is only ever true for the one CURRENTLY running
+  // challenge -- the mini card on crewView only ever shows that one, so it's always accurate
+  // there, but this page also renders a past challenge (via the Past-challenges list), where a
+  // flat "this week" next to that week's actual Sep 6 – Sep 13 date range would be a visible,
+  // self-contradicting claim about history (CLAUDE.md: never state something you can't stand
+  // behind). Dropped entirely once the challenge isn't running -- the date range line right below
+  // already says when it was.
+  const meter = `<div class="card" style="padding:12px;margin-bottom:14px">
+    <div class="mv-row" style="padding:0;border:none">
+      <div class="mv-top"><span class="mv-name">${ch.target} ${ch.type}${isRunning ? ' this week' : ''}</span>
+        <span class="mv-n">${ch.total}<span class="mv-of"> / ${ch.target}</span></span></div>
+      <div class="mv-track"><div class="mv-fill${ch.completed?' mv-met':''}" style="width:${pct}%"></div></div>
+    </div>
+    <div class="muted" style="font-size:11.5px;margin-top:8px">${isRunning ? `${ch.daysLeft} day${ch.daysLeft===1?'':'s'} left` : `${shortDate(ch.startDate)} – ${shortDate(ch.endDate)}`}</div>
+  </div>`;
+  // Full roster, not the mini card's top-5-with-a-count-above-zero cut -- this page exists
+  // specifically so "who's actually carrying this" is fully visible, not just glanceable.
+  const flame = flameSvg();
+  const lbRows = ch.leaderboard.map((m,i)=>`
+    <div class="friend-row">
+      <span style="width:18px;flex:0 0 auto;text-align:center;font-weight:700;color:var(--muted);font-size:12.5px">${i+1}</span>
+      ${avatarHtml(m,'avatar')}
+      <div class="meta"><div class="name">${i===0 && m.count>0 ? flame+' ' : ''}${esc(m.displayName||m.username)}</div></div>
+      <b style="flex:0 0 auto">${m.count}</b>
+    </div>`).join('');
+  const leaderboard = `<h2>Leaderboard</h2><div class="card" style="padding:0 12px">${lbRows}</div>`;
+  // Every other challenge this crew has run, newest first, excluding whichever one is on screen --
+  // tapping one re-opens this same page for that week (challengeView is idempotent per challengeId),
+  // so browsing the crew's whole track record is just tapping down the list.
+  const past = (c.pastChallenges||[]).filter(p=>p.id!==ch.id);
+  const pastHtml = past.length ? `<h2 class="light">Past challenges</h2><div class="card" style="padding:0 12px">` +
+    past.map(p=>`
+      <div class="friend-row" style="cursor:pointer" onclick="challengeView('${jsq(crewId)}','${jsq(p.id)}')">
+        <div class="meta"><div class="name">${p.target} ${p.type}</div><div class="handle">${shortDate(p.startDate)} – ${shortDate(p.endDate)}</div></div>
+        <div style="text-align:right;flex:0 0 auto">
+          <div style="font-weight:700;font-size:12.5px;color:${p.completed?'var(--green)':'var(--muted)'}">${p.completed?'✓ Complete':'Fell short'}</div>
+          <div class="muted" style="font-size:11px">${p.total}/${p.target}</div>
+        </div>
+      </div>`).join('') + `</div>` : '';
+  $('app').innerHTML = `<div class="wrap">${head}${banner}${meter}${leaderboard}${pastHtml}</div>`;
+  if(!silent){ const st = {t:'challenge', crewId, challengeId: ch.id}; fromHistory ? landOn(st) : navigated(st); }
 }
 let CHAL_TYPE = 'workouts';   // which segment is picked in the currently-open "start a challenge" sheet
 function setChalType(t){
@@ -5367,35 +5475,51 @@ function stepChalTarget(d){
   const el = $('chalTargetVal');
   el.textContent = Math.max(1, Math.min(500, (parseInt(el.textContent,10)||0) + d));
 }
-async function newChallengeSheet(crewId){
+// Sep 6 (Jeff, follow-up to the crew/challenge full-page redesign above -- asked to "update how
+// we create challenges" but with no specific preference when asked what that meant): promoted
+// from a bottom sheet to a full page for the same reason crewView/challengeView were -- one
+// consistent level of polish across the whole feature, not a nicer details page bolted onto a
+// still-quick-and-small creation step. Deliberately NOT changed: still exactly 7 days, still
+// workouts-or-sets, same stepper/defaults -- Jeff didn't ask for the actual rules to change, just
+// for it to not feel like an afterthought.
+async function newChallengeView(crewId, opts){
+  const silent = !!(opts && opts.silent);
+  const fromHistory = !!(opts && opts.fromHistory);
+  if(!silent) UI_EPOCH++;
   const c = await H.get('/api/crews/'+crewId);
   if(c && c.error){ alert(c.error); return; }
   CHAL_TYPE = 'workouts';
   const n = c.members.length;
-  openSheetHtml(`
-    <div class="sheet" onclick="event.stopPropagation()">
-      <div class="sheet-head"><h2>Start a challenge</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Start a challenge</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
+  $('app').innerHTML = `<div class="wrap">
+    ${head}
+    <div class="card" style="padding:14px;margin-top:14px">
       <label class="muted">Goal type</label>
-      <div class="seg" id="chalTypeSeg">
+      <div class="seg" id="chalTypeSeg" style="margin-top:6px">
         <button class="on" type="button" data-t="workouts" onclick="setChalType('workouts')">Workouts</button>
         <button type="button" data-t="sets" onclick="setChalType('sets')">Sets</button>
       </div>
-      <label class="muted">Target for the whole crew, this week</label>
+      <label class="muted" style="display:block;margin-top:16px">Target for the whole crew, this week</label>
       <div class="stepper" id="chalMemberCount" data-n="${n}" style="margin:8px 0 4px">
         <button class="stp" onclick="stepChalTarget(-1)">−</button>
         <b id="chalTargetVal">${n*3}</b>
         <button class="stp" onclick="stepChalTarget(1)">+</button>
       </div>
-      <div class="muted" style="font-size:12px;margin:2px 0 16px">Runs for 7 days starting now. Every logged workout from anyone in the crew counts toward it.</div>
-      <button class="blue" onclick="startChallenge('${jsq(crewId)}')">Start challenge</button>
-    </div>`);
+      <div class="muted" style="font-size:12px;margin:10px 0 0">Runs for 7 days starting now. Every logged workout from anyone in the crew counts toward it.</div>
+    </div>
+    <button class="blue" style="margin-top:16px" onclick="startChallenge('${jsq(crewId)}')">Start challenge</button>
+  </div>`;
+  if(!silent){ const st = {t:'newChallenge', crewId}; fromHistory ? landOn(st) : navigated(st); }
 }
 async function startChallenge(crewId){
   const target = parseInt(($('chalTargetVal')&&$('chalTargetVal').textContent)||'0', 10);
   const r = await H.post('/api/crews/'+crewId+'/challenge', { type: CHAL_TYPE, target });
   if(r && r.error){ alert(r.error); return; }
-  closeAllSheets();
-  openCrew(crewId, {silent:true});
+  // Popping back to the crew page (rather than re-rendering crewView in place) re-enters it via
+  // renderNavState -> crewView(id,{fromHistory:true}), which always re-fetches fresh -- so the
+  // just-started challenge shows up correctly without also leaving a stale {t:'newChallenge'}
+  // entry sitting in the Back stack (the same class of bug fixed on deleteCrewConfirmed above).
+  history.back();
 }
 // Invite-picker integration (createFlow/templateExercises): one tap pre-checks every member of a
 // saved crew instead of hand-picking each connection again. Reads CREW_PICKER (set by friends()

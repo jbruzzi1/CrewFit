@@ -1141,12 +1141,19 @@ function crewsFor(userId) {
     .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
 }
 function publicCrew(c, viewerId) {
+  const challenges = Array.isArray(c.challenges) ? c.challenges : [];
   return {
     id: c.id, name: c.name, ownerId: c.ownerId, isOwner: c.ownerId === viewerId,
     createdAt: c.createdAt,
     members: c.memberIds.filter(id => DB.users[id]).map(id => ({ ...publicUser(id), streak: currentStreak(id) })),
     challenge: publicChallenge(c, lastChallenge(c)),
-    challengesCompleted: (c.challenges || []).filter(ch => ch.completedAt).length
+    // Everything before the most-recent challenge, newest first -- the crew's track record. Added
+    // Sep 6 (Jeff: the crew page "seemed poor and quickly done... difficult to track" -- wants to
+    // tap into a challenge for full details). Reuses publicChallenge for each past entry so a
+    // finished/expired week shows the exact same shape (leaderboard, total, dates) the current one
+    // does on the new challenge-details page, not a stripped-down summary.
+    pastChallenges: challenges.slice(0, -1).reverse().map(ch => publicChallenge(c, ch)),
+    challengesCompleted: challenges.filter(ch => ch.completedAt).length
   };
 }
 // A crew can only ever be built from people you're already connected to -- same trust boundary
@@ -1362,7 +1369,7 @@ function checkChallengeCompletion(c) {
   ch.completedAt = new Date().toISOString();
   // A system message (userId: null) so the client renders it as a celebration banner in the
   // thread, not attributed to "Someone" the way a departed member's old message is (see
-  // openCrew's own comment on that fallback) -- those two blanks mean different things.
+  // crewView's own comment on that fallback) -- those two blanks mean different things.
   c.messages.push({ id: 'cm_' + uid(), userId: null, system: true, at: ch.completedAt,
     text: `🎉 Challenge complete! ${total} ${ch.type} as a crew.` });
   for (const mid of c.memberIds) notify(mid, { title: c.name, body: `Challenge complete: ${ch.target} ${ch.type} this week! 🎉` });

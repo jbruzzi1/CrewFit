@@ -45,6 +45,7 @@ because you wrote it.
 - **Lead, don't just execute.** Make the aesthetic calls yourself and say what you picked — Jeff delegates those and trusts the recommendation.
 - **Concise bullet summaries.** He forwards them to Brian. No long prose. Be token-conscious.
 - **Narrate progress** on long builds so he knows you haven't stalled.
+- **Always send the `git push`/PR-link step inline in the chat, in a bare fenced code block, every single time** — not only when Jeff asks for it (Sep 5, 2026: "by rule ALWAYS send the git push link within this chat to open inline"). Same for the `fly deploy` command. Never describe the step in prose only, or point him back to an earlier message — paste it fresh, ready to tap/copy, whenever a push, PR, or deploy is the next thing he needs to do.
 
 ## Design constants
 
