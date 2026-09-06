@@ -5611,13 +5611,13 @@ async function newChallengeView(crewId, opts){
   $('app').innerHTML = `<div class="wrap">
     ${head}
     <div class="muted" style="font-size:12.5px;margin:8px 0 16px">Set a shared goal for the crew — everyone's own logging counts toward it, all week.</div>
-    <div class="seg" id="chalModeSeg">
+    <div class="seg wk-seg" id="chalModeSeg" style="margin:0 0 14px">
       <button class="on" type="button" data-m="auto" onclick="setChalMode('auto')">Auto-tracked</button>
       <button type="button" data-m="custom" onclick="setChalMode('custom')">Custom goal</button>
     </div>
     <div class="card" style="padding:14px" id="chalAutoBlock">
       <label class="muted">Goal type</label>
-      <div class="seg" id="chalTypeSeg" style="margin-top:6px">
+      <div class="seg wk-seg" id="chalTypeSeg" style="margin:8px 0 0">
         <button class="on" type="button" data-t="workouts" onclick="setChalType('workouts')">Workouts</button>
         <button type="button" data-t="sets" onclick="setChalType('sets')">Sets</button>
         <button type="button" data-t="volume" onclick="setChalType('volume')">Volume</button>

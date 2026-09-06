@@ -38,6 +38,19 @@ because you wrote it.
   or session state.
 - **Say what you did NOT verify.** If something could not be tested, name it plainly
   rather than letting silence imply it passed.
+- **Double-check the visuals every time — actually look at the screenshot as a designer would,
+  not just as a "did it render" check.** (Jeff, Sep 6, 2026, with a phone screenshot of the
+  Start-a-challenge page: "I don't like the visual of this. The pill boxes and size of texts just
+  looks poor. Text hits all the inner edges of the boxes etc. Double check your work on visuals
+  every-time.") The Playwright render showed the same problem and it shipped anyway because
+  "the tests passed." Before showing Jeff any screen, go control by control and ask: does the text
+  have room inside its box, is every font size a deliberate choice, do paired controls match?
+  Measure it — for every pill/segment/chip/button on the screen, `Range.getBoundingClientRect()`
+  of the label vs. the button's rect, and require ≥8px of room on each side (see
+  `test/_measure_chal_page.mjs` for the pattern). Known trap: the bare `.seg button` rule has
+  `padding:9px 0` (zero horizontal) and `font:inherit` AFTER `font-size:12px`, so its labels
+  render at body size and touch the edges — use the `.seg.wk-seg` segmented track instead, which
+  is the polished control (it is what Progress and the save page use).
 
 ## How Jeff works
 
