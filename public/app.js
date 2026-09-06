@@ -5571,11 +5571,29 @@ function setChalType(t){
   const info = CHAL_TYPE_INFO[t];
   $('chalTargetVal').textContent = info.default(n);
   $('chalTargetUnit').textContent = info.unit;
+  updateChalHint();
 }
 function stepChalTarget(d){
   const el = $('chalTargetVal');
   const info = CHAL_TYPE_INFO[CHAL_TYPE];
   el.textContent = Math.max(1, Math.min(info.max, (parseInt(el.textContent,10)||0) + d*info.step));
+  updateChalHint();
+}
+// Sep 6 (Jeff: "the start a challenge page looks poorly designed"). The number on its own ("6
+// workouts") reads as an arbitrary quota; splitting it across the crew turns it into something
+// each person can picture doing themselves. Skipped for a solo (owner-only) crew -- "2 each across
+// 1 member" is just the total again, not a new piece of information.
+function updateChalHint(){
+  const hint = $('chalTargetHint'); if(!hint) return;
+  const n = Number($('chalMemberCount').dataset.n||1);
+  if(n<=1){ hint.textContent = ''; return; }
+  const target = parseInt(($('chalTargetVal')&&$('chalTargetVal').textContent)||'0', 10);
+  const per = Math.round(target/n);
+  // Fewer than one each (6 PRs across 8 people) has no honest per-person number -- say nothing
+  // rather than round up to a claim that adds to more than the target (cold-review catch).
+  if(per < 1){ hint.textContent = ''; return; }
+  const noun = per===1 ? ({workouts:'workout', sets:'set', prs:'PR'}[CHAL_TYPE] || chalNoun(CHAL_TYPE)) : chalNoun(CHAL_TYPE);
+  hint.textContent = `≈${per} ${noun} each, split across ${n} crew members`;
 }
 // Promoted from a bottom sheet to a full page (Sep 6) for the same reason crewView/challengeView
 // were -- one consistent level of polish across the whole feature, not a nicer details page bolted
@@ -5592,7 +5610,8 @@ async function newChallengeView(crewId, opts){
   const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Start a challenge</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
   $('app').innerHTML = `<div class="wrap">
     ${head}
-    <div class="seg" id="chalModeSeg" style="margin-top:14px">
+    <div class="muted" style="font-size:12.5px;margin:8px 0 16px">Set a shared goal for the crew — everyone's own logging counts toward it, all week.</div>
+    <div class="seg" id="chalModeSeg">
       <button class="on" type="button" data-m="auto" onclick="setChalMode('auto')">Auto-tracked</button>
       <button type="button" data-m="custom" onclick="setChalMode('custom')">Custom goal</button>
     </div>
@@ -5604,21 +5623,23 @@ async function newChallengeView(crewId, opts){
         <button type="button" data-t="volume" onclick="setChalType('volume')">Volume</button>
         <button type="button" data-t="prs" onclick="setChalType('prs')">PRs</button>
       </div>
-      <label class="muted" style="display:block;margin-top:16px">Target for the whole crew, this week</label>
-      <div class="stepper" id="chalMemberCount" data-n="${n}" style="margin:8px 0 4px">
-        <button class="stp" onclick="stepChalTarget(-1)">−</button>
-        <b id="chalTargetVal">${n*3}</b><span id="chalTargetUnit" class="muted"></span>
-        <button class="stp" onclick="stepChalTarget(1)">+</button>
+      <div class="muted" style="text-align:center;font-size:12px;margin-top:20px">Target for the whole crew, this week</div>
+      <div class="stepper" id="chalMemberCount" data-n="${n}" style="display:flex;align-items:center;justify-content:center;gap:20px;margin:10px 0 2px">
+        <button class="stp" style="width:40px;height:40px;border-radius:50%;font-size:22px" onclick="stepChalTarget(-1)">−</button>
+        <div style="min-width:64px;text-align:center"><b id="chalTargetVal" style="font-size:34px;font-weight:800;letter-spacing:-0.02em;font-variant-numeric:tabular-nums">${n*3}</b><span id="chalTargetUnit" class="muted" style="font-size:15px"></span></div>
+        <button class="stp" style="width:40px;height:40px;border-radius:50%;font-size:22px" onclick="stepChalTarget(1)">+</button>
       </div>
-      <div class="muted" style="font-size:12px;margin:10px 0 0">Runs for 7 days starting now. Everyone in the crew's own logging counts toward it.</div>
+      <div class="muted" id="chalTargetHint" style="text-align:center;font-size:12px;min-height:15px"></div>
+      <div class="muted" style="font-size:12px;margin:14px 0 0;text-align:center">Runs for 7 days starting now.</div>
     </div>
     <div class="card" style="padding:14px" id="chalCustomBlock" hidden>
-      <label class="muted">What's the challenge?</label>
-      <input id="chalCustomTitle" placeholder="e.g. No skipping leg day" maxlength="80" style="margin-top:6px">
-      <div class="muted" style="font-size:12px;margin:10px 0 0">Runs for 7 days starting now. There's no auto-tracking for this one — the crew calls it based on what everyone actually posts that week.</div>
+      <label class="muted" style="display:block;text-align:center">What's the challenge?</label>
+      <input id="chalCustomTitle" placeholder="e.g. No skipping leg day" maxlength="80" style="margin-top:10px;text-align:center">
+      <div class="muted" style="font-size:12px;margin:14px 0 0;text-align:center">Runs for 7 days starting now. There's no auto-tracking for this one — the crew calls it based on what everyone actually posts that week.</div>
     </div>
     <button class="blue" style="margin-top:16px" onclick="startChallenge('${jsq(crewId)}')">Start challenge</button>
   </div>`;
+  updateChalHint();
   if(!silent){ const st = {t:'newChallenge', crewId}; fromHistory ? landOn(st) : navigated(st); }
 }
 async function startChallenge(crewId){
