@@ -441,7 +441,9 @@ async function home(opts){
   // "days trained", not "workouts" — thisWeek counts distinct days with working sets (same
   // signal the Progress tab labels days/week), and two sessions in one day would make
   // "workouts" a false claim.
-  if(thisWeek >= 1) statPool.push({ num: thisWeek, lbl: thisWeek === 1 ? 'day trained this week' : 'days trained this week' });
+  // Sep 6: "days this week" -- "days trained this week" wrapped to two lines and put the three
+  // stat columns on different baselines.
+  if(thisWeek >= 1) statPool.push({ num: thisWeek, lbl: thisWeek === 1 ? 'day this week' : 'days this week' });
   if(prsThisWeek >= 1) statPool.push({ num: prsThisWeek, lbl: prsThisWeek === 1 ? 'PR this week' : 'PRs this week' });
   if(mine.length >= 1) statPool.push({ num: mine.length, lbl: mine.length === 1 ? 'workout logged' : 'workouts logged' });
   if(best) statPool.push({ num: `${best.weight} ${unitOf(best)}`, lbl: 'best ' + best.exercise });
@@ -482,9 +484,11 @@ async function home(opts){
       </div>`;
     }
     html += `</div>`;
-  } else {
-    html += `<div class="inv-empty">No invites yet — friends you train with will show up here.</div>`;
   }
+  // Sep 6: the "No invites yet" line renders UNDER the action buttons (see below) as a quiet
+  // footnote, not as a stray sentence between the stats and the buttons -- greeting, stats and
+  // the two ways to start read as one block. Real pending invites still sit above the buttons.
+  const invEmptyLine = pending.length ? '' : `<div class="inv-empty">No invites yet — friends you train with will show up here.</div>`;
 
   // Primary action (compact), plus a zero-friction start for "I'm at the gym right now" — no
   // name, no schedule, no invite step, just a live session you add lifts to as you go. Jeff, Aug
@@ -498,7 +502,7 @@ async function home(opts){
   html += `<div class="home-actions">
     <button class="blue btn-new" onclick="newWorkout()">+ New workout</button>
     <button class="btn-quick" onclick="workoutNow()">+ Quick Workout</button>
-  </div>`;
+  </div>${invEmptyLine}`;
 
   // Your Sessions (prime spot) — only sessions you've accepted/joined (exclude pending invites),
   // and only ones still open FOR YOU. Once YOU have finished (hasFinishedSession — Log & Finish
