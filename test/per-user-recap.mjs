@@ -121,6 +121,18 @@ console.log('two participants each post their own recap on the SAME session — 
     ok(brow && brow.post && brow.post.notes.includes('great session'), "bob's own profile shows HIS notes, not alice's");
   }
 
+  console.log('\nSep 6: editing an already-posted recap keeps its original post time (`at`)');
+  {
+    const before = await get(B, `/api/sessions/${session.id}`, bob.token);
+    const at0 = before.posts.bob ? before.posts.bob.at : (before.posts[bob.user.id] || {}).at;
+    ok(typeof at0 === 'string', `bob's recap has a post time (got ${at0})`);
+    await new Promise(r => setTimeout(r, 30));
+    const edited = await post(B, `/api/sessions/${session.id}/post`, { notes: 'great session -- edited later', media: [], visibility: 'private' }, bob.token);
+    const p = edited.posts[bob.user.id];
+    ok(p && p.notes === 'great session -- edited later', 'the notes edit landed');
+    ok(p && p.at === at0, `...and the post time did NOT move (was ${at0}, now ${p && p.at}) -- an edit must not re-bump the recap in the feed or drag it into a newer challenge window`);
+  }
+
   console.log('\nviewPost(id, authorId) renders the RIGHT person\'s recap for each');
   {
     const SRC = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');

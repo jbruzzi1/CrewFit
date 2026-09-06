@@ -942,8 +942,13 @@ async function openSession(id, opts){
   // i.e. after you'd already posted) -- shown to anyone who's actually in the workout, whether or
   // not they've finished. Reads myPost.notes once you've posted for real, s.myDraftNotes (a
   // separate, own-eyes-only field -- see the server comment above /draft-notes for why it isn't
-  // just an early write into s.posts) before that. Same notes-box look either way; Edit opens the
-  // same sheet, editWorkoutNotes decides which endpoint to save to.
+  // just an early write into s.posts) before that.
+  // Sep 6 (Jeff: "the notes section requires you to click an edit button rather than being able
+  // to just click into the box to type"): the box IS the editor now -- a textarea you tap into,
+  // auto-grows, auto-saves (debounced while typing, and on blur) through saveWorkoutNotes, which
+  // picks draft-notes vs /post the same way the old Edit sheet did. No Edit button, no Save
+  // button; a small Saving…/Saved word in the heading is the only feedback. What's typed
+  // survives this screen's own re-renders via captureLogState/restoreLogState.
   // Empty-state copy branches on myPost (Jeff, Sep 4, same day: "How'd it go? is past tense and we
   // will now be adding notes DURING the workout") -- "How'd it go?" only makes sense once the
   // workout is actually done and this is really the recap; while it's still active/no post yet,
@@ -951,7 +956,8 @@ async function openSession(id, opts){
   if(isCreator || isParticipant){
     const myNotes = myPost ? (myPost.notes||'') : (s.myDraftNotes||'');
     const notesPrompt = myPost ? "How'd it go?" : "How's it going?";
-    html += `<h2>Notes<button class="sec sm" onclick="editWorkoutNotes('${s.id}')">Edit</button></h2><div class="notes-box">${myNotes ? esc(myNotes) : `<span class="muted">${notesPrompt}</span>`}</div>`;
+    html += `<h2>Notes<span id="wkNotesState" class="muted" style="font-size:11.5px;font-weight:500;text-transform:none;letter-spacing:0;margin-left:8px"></span></h2>
+      <textarea id="wkNotes" class="notes-box" rows="1" placeholder="${notesPrompt}" data-sid="${esc(s.id)}" data-saved="${esc(myNotes)}" oninput="notesTyped('${s.id}')" onblur="notesFlush('${s.id}')">${esc(myNotes)}</textarea>`;
   }
   const isPosted = !!myPost;
   // Accept/Decline is for an actual INVITE — someone was asked. Before Home's Friends' Workouts
@@ -1068,6 +1074,7 @@ async function openSession(id, opts){
   const kept = captureLogState();
   $('app').innerHTML = html;
   restoreLogState(kept);
+  notesAutosize();
   // v312: every inline logger's "when to add weight" box loads after the page is on screen, so
   // it never delays the render -- same as the old sheet did for its one exercise.
   if(canEdit) for(const e of s.exercises) refreshLogRec(e.id);
@@ -1562,32 +1569,64 @@ function editPostNotes(id, authorId){
     });
   });
 }
-// Sep 4 (Jeff: "Can we add the notes section that we fill after the workout - also within the
-// workout while its active"). Reached from openSession, always your own notes (no authorId param
-// -- unlike editPostNotes above, this is never someone else's). Before you've posted a real
-// recap, saves go to POST /:id/draft-notes (own-eyes-only scratch, does NOT mark the workout
-// "completed" anywhere -- see that route's server comment for why /post specifically had to be
-// avoided here); once myPost exists, switches to the same /post endpoint editPostNotes already
-// uses, carrying over its existing media/visibility untouched. Either way re-renders openSession,
-// not viewPost -- this is the active-screen editor, not the recap-detail one.
-function editWorkoutNotes(id){
-  H.get('/api/sessions/'+id).then(s => {
-    const myPost = s && s.posts && s.posts[ME.id];
-    const value = myPost ? (myPost.notes||'') : ((s && s.myDraftNotes) || '');
-    // Same past/present branch as the notes-box empty state in openSession above (Jeff, Sep 4:
-    // "How'd it go? is past tense and we will now be adding notes DURING the workout").
-    textEntrySheet({
-      title:'Edit notes', label:'Notes', value, placeholder: myPost ? "How'd it go?" : "How's it going?", multiline:true, confirmLabel:'Save',
-      onConfirm: async v => {
-        const epoch=UI_EPOCH;
-        const r = myPost
-          ? await H.post(`/api/sessions/${id}/post`, { notes: v||'', media: myPost.media||[], visibility: myPost.visibility||'private' })
-          : await H.post(`/api/sessions/${id}/draft-notes`, { notes: v||'' });
-        if(r && r.error){ alert(r.error); return; }
-        if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
-      }
-    });
-  });
+// Sep 6 (Jeff: "the notes section requires you to click an edit button rather than being able
+// to just click into the box to type"). The Notes box on openSession is a plain textarea that
+// saves itself: notesTyped() debounces while typing, notesFlush() saves at once on blur, and
+// both funnel into saveWorkoutNotes(), which -- exactly as the old Edit sheet did -- writes to
+// POST /:id/draft-notes before you've posted a real recap (own-eyes-only scratch that does NOT
+// mark the workout completed; see that route's server comment) and to /post afterwards,
+// carrying the existing media/visibility across untouched. Nothing re-renders on save: the box
+// you're typing in is already the truth, and a re-render mid-sentence would drop the cursor.
+// data-saved on the textarea is the last value known to be on the server, so a blur with nothing
+// new never fires a request and captureLogState can tell "dirty" from "clean".
+let NOTES_TIMER = null;
+let NOTES_SEQ = 0;            // bumps per flush; a response from an older flush is ignored
+let NOTES_INFLIGHT = null;    // the flush currently saving, so a second one waits its turn
+function notesAutosize(){
+  const el = $('wkNotes'); if(!el || !el.style) return;
+  el.style.height = 'auto';
+  // typeof guard: the stub DOM in test/leave-workout.mjs hands back a self-returning object for
+  // scrollHeight, and coercing that throws -- which took openSession down with it (npm test).
+  const h = typeof el.scrollHeight === 'number' ? el.scrollHeight : 0;
+  el.style.height = Math.max(60, h) + 'px';
+}
+function notesTyped(id){
+  notesAutosize();
+  clearTimeout(NOTES_TIMER);
+  NOTES_TIMER = setTimeout(()=>notesFlush(id), 900);
+}
+// Serialized and sequenced (cold-review catch): two overlapping flushes each do a GET then a
+// POST, so without this an older "abc" could land after a newer "abcd" and the box would sit
+// on a stale data-saved. One save in flight at a time; a flush that arrives meanwhile waits for
+// it, then re-reads the box, so the LAST thing typed is always the last thing saved.
+async function notesFlush(id){
+  clearTimeout(NOTES_TIMER); NOTES_TIMER = null;
+  if(NOTES_INFLIGHT){ await NOTES_INFLIGHT; }
+  const el = $('wkNotes');
+  // The box on screen must belong to THIS session -- a timer from workout A firing after the
+  // person has opened workout B must not save B's box into A (or stamp A's save onto B).
+  if(!el || el.dataset.sid !== id) return;
+  const v = el.value;
+  if(v === el.dataset.saved) return;
+  const seq = ++NOTES_SEQ;
+  const st = $('wkNotesState'); if(st) st.textContent = 'Saving…';
+  NOTES_INFLIGHT = saveWorkoutNotes(id, v);
+  const ok = await NOTES_INFLIGHT;
+  NOTES_INFLIGHT = null;
+  if(seq !== NOTES_SEQ) return;       // a newer flush already took over the status line
+  const now = $('wkNotes');           // the box may have been re-rendered while the request was out
+  if(ok && now && now.dataset.sid === id) now.dataset.saved = v;
+  const st2 = $('wkNotesState');
+  if(st2){ st2.textContent = ok ? 'Saved' : 'Not saved'; if(ok) setTimeout(()=>{ if(st2.textContent==='Saved' && seq === NOTES_SEQ) st2.textContent=''; }, 1500); }
+}
+async function saveWorkoutNotes(id, v){
+  const s = await H.get('/api/sessions/'+id);
+  if(!s || s.error) return false;
+  const myPost = s.posts && s.posts[ME.id];
+  const r = myPost
+    ? await H.post(`/api/sessions/${id}/post`, { notes: v||'', media: myPost.media||[], visibility: myPost.visibility||'private' })
+    : await H.post(`/api/sessions/${id}/draft-notes`, { notes: v||'' });
+  return !(r && r.error);
 }
 // Jeff, Aug 28: "edit my own sets (I don't want to change the exercises - just my logged sets)."
 // Same sheet shape as the live in-workout "Edit set" (editLogSet/saveLogSet/delLogSet above),
@@ -2075,6 +2114,9 @@ function renderExSets(exId, s, justLoggedId){
 // still counting down (REST_UNTIL, see startRest).
 function captureLogState(){
   const out = {};
+  // The inline Notes box (Sep 6): carry unsaved typing across, same reason as the loggers below.
+  const n = $('wkNotes');
+  if(n && n.value !== n.dataset.saved) out.__notes = { sid: n.dataset.sid, value: n.value };
   document.querySelectorAll('.ex-log').forEach(b=>{
     const g = k => b.querySelector(`[data-f="${k}"]`);
     const on = b.querySelector('[data-f="typeSeg"] .chip.on');
@@ -2084,7 +2126,13 @@ function captureLogState(){
   return out;
 }
 function restoreLogState(kept){
+  // Only back into the SAME session's box (cold-review catch): openSession(B) straight from A's
+  // screen (Back/forward between two workouts, a deep link) captures A's unsaved text and must not
+  // paste it into B.
+  const nb = $('wkNotes');
+  if(kept && kept.__notes && nb && nb.dataset.sid === kept.__notes.sid) nb.value = kept.__notes.value;
   for(const exId of Object.keys(kept||{})){
+    if(exId === '__notes') continue;
     const k = kept[exId]; if(!logBlock(exId)) continue;
     const w = lf(exId,'w'), r = lf(exId,'r'), rir = lf(exId,'rir');
     if(w && k.w) { w.value = k.w; updateLoadHint(exId); }

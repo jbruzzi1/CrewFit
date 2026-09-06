@@ -253,6 +253,7 @@
        and every other tab now matches (border = wall, shadow = light). */
     .sheet .card { border:1px solid var(--line); box-shadow:none; }  /* white-on-white: hairline, not shadow */
     .card { background:var(--card); border:none; border-radius:18px; padding:8px 14px; margin:12px 0; box-shadow:0 1px 2px rgba(20,24,31,.04), 0 8px 20px -10px rgba(20,24,31,.14); }
+    #wkNotes:focus { outline:none; border-color:var(--blue); }   /* Sep 6: the tap-in Notes box -- a thin blue edge, not the browser's default ring */
     .notes-box { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:9px 11px; margin:10px 0; font-family:inherit; font-size:13px; line-height:1.45; color:var(--fg); min-height:60px; box-sizing:border-box; }
     /* Posted-workout (read-only post) view */
     .pp-head { display:flex; align-items:center; justify-content:space-between; gap:10px; position:relative; }
@@ -1284,6 +1285,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=346"></script>
+  <script src="app.js?v=347"></script>
 </body>
 </html>

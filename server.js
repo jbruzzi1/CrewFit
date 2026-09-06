@@ -4450,8 +4450,15 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   // must not wipe out reactions people already left on it (Task #157).
   const existingReactions = (s.posts[req.userId] && Array.isArray(s.posts[req.userId].reactions))
     ? s.posts[req.userId].reactions : [];
+  // Sep 6: editing an already-posted recap (notes autosave on the active screen, editPostNotes,
+  // adding a photo) keeps the ORIGINAL post time. `at` is what the feed sorts by, what the profile
+  // dates the workout with, and what a crew challenge's window checks -- re-stamping it on every
+  // edit bumped an old recap to the top of everyone's feed each time a sentence was tweaked
+  // (cold-review catch, once notes started saving themselves while typing) and could drag a
+  // last-month workout into this week's challenge. A recap is posted once; edits are edits.
+  const existingAt = s.posts[req.userId] && typeof s.posts[req.userId].at === 'string' ? s.posts[req.userId].at : null;
   s.posts[req.userId] = {
-    at: new Date().toISOString(),
+    at: existingAt || new Date().toISOString(),
     notes: String(notes || '').slice(0, 2000),
     media: cleanMedia,
     visibility: vis,
