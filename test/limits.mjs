@@ -80,10 +80,15 @@ console.log('\nstored strings are length-capped');
   ok(n.status !== 500, `a non-string comment does not 500 (got ${n.status})`);
   ok((await db()).sessions[sess.id].comments.slice(-1)[0].text === '12345', 'it is coerced to a string');
 
-  await post(`/api/sessions/${sess.id}/suggest`, { exerciseId: 'x'.repeat(100000), swapTo: 'z'.repeat(100000) }, alice.token);
+  // Sep 6: /suggest now refuses a swap against an exercise that isn't on the plan (approving one
+  // renames the shared exercise, so a bogus target must not get as far as a pending edit), so the
+  // 100k-char exerciseId is rejected outright rather than stored capped; the swapTo cap is checked
+  // against the real exercise.
+  const bogusEx = await post(`/api/sessions/${sess.id}/suggest`, { exerciseId: 'x'.repeat(100000), swapTo: 'Front Squat' }, alice.token);
+  ok(bogusEx.status === 404, `a 100k-char (nonexistent) exerciseId is refused, not stored (got ${bogusEx.status})`);
+  await post(`/api/sessions/${sess.id}/suggest`, { exerciseId: sess.exercises[0].id, swapTo: 'z'.repeat(100000) }, alice.token);
   const e = (await db()).sessions[sess.id].suggestedEdits.slice(-1)[0];
   ok(e && e.swapTo.length === 80, `a 100k-char swapTo is capped at 80 (stored ${e && e.swapTo.length})`);
-  ok(e && e.exerciseId.length === 64, `a 100k-char exerciseId is capped at 64 (stored ${e && e.exerciseId.length})`);
 
   await post(`/api/sessions/${sess.id}/join`, { note: 'y'.repeat(100000) }, bob.token);
   const jr = (await db()).sessions[sess.id].joinRequests.slice(-1)[0];

@@ -230,6 +230,8 @@
     .muted { color:var(--muted); font-size:12px; }
     .sm-text { font-size:11px; }
     .swap-note { font-size:11px; color:var(--muted); font-weight:400; }
+    .swap-note.swap-undo { cursor:pointer; text-decoration:underline dotted; text-underline-offset:2px; }   /* Sep 6: tap to undo a personal swap */
+    .ex-card .log-hint.swap-link { cursor:pointer; }
     button { font:inherit; border:none; border-radius:12px; padding:11px; background:var(--green); color:#fff; font-weight:600; width:100%; margin:6px 0; cursor:pointer; font-size:14px; }
     button.sec { background:var(--card); color:var(--fg); border:1px solid var(--line); }
     button.blue { background:var(--blue); color:#fff; }
@@ -1290,6 +1292,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=349"></script>
+  <script src="app.js?v=350"></script>
 </body>
 </html>

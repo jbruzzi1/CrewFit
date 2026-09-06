@@ -207,7 +207,6 @@ const declineInvite = vm.runInContext('declineInvite', ctx);
 const requestJoin = vm.runInContext('requestJoin', ctx);
 const sendChat = vm.runInContext('sendChat', ctx);
 const swapPick = vm.runInContext('swapPick', ctx);
-const suggest = vm.runInContext('suggest', ctx);
 const approve = vm.runInContext('approve', ctx);
 const reject = vm.runInContext('reject', ctx);
 const approveJoin = vm.runInContext('approveJoin', ctx);
@@ -646,9 +645,6 @@ vm.runInContext(`SWAP_SESSION='sess1'; SWAP_FROM='ex1'; SWAP_MODE=true;`, ctx);
 await checkNavGuard('swapPick', () => { vm.runInContext(`SWAP_SESSION='sess1'; SWAP_FROM='ex1'; SWAP_MODE=true;`, ctx); return swapPick('Incline Press'); }, '/api/sessions/sess1/suggest', 'historyGo');
 await checkFastPath('swapPick', () => { vm.runInContext(`SWAP_SESSION='sess1'; SWAP_FROM='ex1'; SWAP_MODE=true;`, ctx); return swapPick('Incline Press'); }, '/api/sessions/sess1/suggest', 'historyGo');
 
-console.log('\nsuggest');
-await checkNavGuard('suggest', () => suggest('sess1'), '/api/sessions/sess1/suggest', 'openSession');
-await checkFastPath('suggest', () => suggest('sess1'), '/api/sessions/sess1/suggest', 'openSession');
 
 console.log('\napprove / reject (suggested-edit) / approveJoin / rejectJoin');
 await checkNavGuard('approve', () => approve('sess1', 'e1'), '/api/sessions/sess1/suggest/e1/approve', 'openSession');

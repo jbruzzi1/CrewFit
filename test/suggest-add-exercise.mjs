@@ -168,7 +168,9 @@ console.log('\nan ordinary swap suggestion (no type field, exactly what every pr
   ok(edit && edit.exerciseId === s.exercises[0].id, 'the swap edit still carries its target exerciseId');
   const approved = await post('/api/sessions/' + s.id + '/suggest/' + edit.id + '/approve', {}, host.token);
   ok(approved.exercises.length === 1, `approving a swap does NOT append a new exercise (got ${approved.exercises.length})`);
-  ok(approved.variations[s.exercises[0].id] && approved.variations[s.exercises[0].id][bob.user.id].swapTo === 'Glute Bridge', 'the swap still records a variation exactly as before');
+  // Sep 6: an approved swap renames the shared exercise for everyone (see the approve handler and
+  // test/swap-for-me-and-everyone.mjs); it no longer files as the proposer's private variation.
+  ok(approved.exercises[0].id === s.exercises[0].id && approved.exercises[0].name === 'Glute Bridge', `the swap renames the exercise in place, same id (got ${approved.exercises[0].name})`);
 }
 
 try { srv && srv.kill(); } catch {}
