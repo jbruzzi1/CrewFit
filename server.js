@@ -1146,13 +1146,13 @@ function publicCrew(c, viewerId) {
     id: c.id, name: c.name, ownerId: c.ownerId, isOwner: c.ownerId === viewerId,
     createdAt: c.createdAt,
     members: c.memberIds.filter(id => DB.users[id]).map(id => ({ ...publicUser(id), streak: currentStreak(id) })),
-    challenge: publicChallenge(c, lastChallenge(c)),
+    challenge: publicChallenge(c, lastChallenge(c), viewerId),
     // Everything before the most-recent challenge, newest first -- the crew's track record. Added
     // Sep 6 (Jeff: the crew page "seemed poor and quickly done... difficult to track" -- wants to
     // tap into a challenge for full details). Reuses publicChallenge for each past entry so a
     // finished/expired week shows the exact same shape (leaderboard, total, dates) the current one
     // does on the new challenge-details page, not a stripped-down summary.
-    pastChallenges: challenges.slice(0, -1).reverse().map(ch => publicChallenge(c, ch)),
+    pastChallenges: challenges.slice(0, -1).reverse().map(ch => publicChallenge(c, ch, viewerId)),
     challengesCompleted: challenges.filter(ch => ch.completedAt).length
   };
 }
@@ -1271,8 +1271,24 @@ app.post('/api/crews/:id/messages', auth, async (req, res) => {
 // above already follow -- there is nothing to keep in sync if a session is later unlocked, edited,
 // or left. Lives inline on the crew object (c.challenges), same as c.messages -- no new table.
 const CHALLENGE_MIN_TARGET = 1;
-const CHALLENGE_MAX_TARGET = 500;   // sanity cap; a real crew will never approach this
+const CHALLENGE_MAX_TARGET = 500;   // sanity cap for workouts/sets/PRs; volume has its own, higher cap below
+const CHALLENGE_VOLUME_MAX_TARGET = 500000;   // lb -- volume targets run much bigger than a rep/set count
+const CHALLENGE_CUSTOM_TITLE_MAX = 80;        // same order of size as a crew name (CREW_NAME_MAX)
 const CHALLENGE_DURATION_DAYS = 7;  // v1: one length, matches the app's existing week-anchored streak/volume language
+// Sep 6 (Jeff: "seems to only be who can do the most workouts or sets... I want to be able to
+// customize this"). Two kinds of challenge now exist under one `type` field:
+// - Auto-tracked ('workouts' | 'sets' | 'volume' | 'prs'): a number, derived at read time exactly
+//   like the original two, just from more of what's already logged -- total weight lifted (in lb,
+//   normalized via toLb so a mixed lb/kg crew still adds up correctly) and PR count (real, earned
+//   records only -- see the !firstLog filter below, same one the feed's "hit a new PR" celebration
+//   already uses, so a brand-new exercise's very first log never counts as "hitting a PR").
+// - 'custom' (Jeff: "I don't mind the honor system. We still be able to see it by posted workouts
+//   etc"): a free-text goal with no computable number at all -- there is nothing to sum, so
+//   completedAt is never set for one (checkChallengeCompletion's `total < ch.target` compares
+//   against an undefined target and always stays false, which is exactly "never auto-completes",
+//   not a bug to special-case there). What the crew gets instead is the actual posted workouts
+//   from everyone in that window (see publicChallenge's 'custom' branch) so the crew can judge it
+//   for themselves the same way they'd notice it happening in person.
 
 // The most recent challenge, whatever state it's in -- what the client always DISPLAYS (a just-won
 // challenge should still show its final numbers and the celebration banner, not vanish back to
@@ -1314,27 +1330,75 @@ function runningChallenge(c) {
 function challengeProgress(c, ch) {
   const perMember = {};
   for (const mid of c.memberIds) perMember[mid] = 0;
+  // A custom goal has nothing to sum -- see the header comment above. Short-circuit before touching
+  // DB.sessions at all; there is no number here for any caller to compare against.
+  if (ch.type === 'custom') return { total: 0, perMember };
   const endInstant = ch.endDate + 'T00:00:00.000Z';
   const inRange = at => typeof at === 'string' && at >= ch.createdAt && at < endInstant;
-  for (const s of Object.values(DB.sessions)) {
-    for (const h of (s.history || [])) {
-      if (!perMember.hasOwnProperty(h.userId)) continue;
-      const logs = (s.logs && s.logs[h.userId]) || [];
-      if (ch.type === 'sets') {
-        perMember[h.userId] += logs.filter(l => isWorkingSet(l) && inRange(l.at)).length;
-      } else {
-        const counts = logs.length ? logs.some(l => inRange(l.at))
-          : typeof h.at === 'string' ? inRange(h.at)
-          : (h.date >= ch.startDate && h.date < ch.endDate);
-        if (counts) perMember[h.userId] += 1;   // one finished workout = 1, regardless of how much was logged
+  if (ch.type === 'prs') {
+    // Only the CURRENT record per (member, exercise) is ever stored (DB.prs is a snapshot, not a
+    // log of every PR ever broken -- see rebuildAllPrs), so breaking the same lift's PR twice in
+    // one challenge window only ever counts once here. Same documented tradeoff challengeProgress's
+    // own header comment already accepts for membership -- a fun bonus number, not a perfect ledger.
+    // !firstLog excludes a brand-new exercise's very first-ever log, same filter groupPrsForFeed
+    // uses for the "hit a new PR" feed celebration -- a first attempt at something never beat a
+    // prior best, so it isn't earning a PR for challenge purposes either.
+    for (const mid of c.memberIds) {
+      const byExercise = (DB.prs && DB.prs[mid]) || {};
+      for (const p of Object.values(byExercise)) {
+        if (p && !p.firstLog && inRange(p.at)) perMember[mid] += 1;
       }
     }
+  } else {
+    for (const s of Object.values(DB.sessions)) {
+      for (const h of (s.history || [])) {
+        if (!perMember.hasOwnProperty(h.userId)) continue;
+        const logs = (s.logs && s.logs[h.userId]) || [];
+        if (ch.type === 'sets') {
+          perMember[h.userId] += logs.filter(l => isWorkingSet(l) && inRange(l.at)).length;
+        } else if (ch.type === 'volume') {
+          // lb regardless of what unit any individual set was logged in -- toLb is the same
+          // normalizer rebuildAllPrs uses to compare a kg lift against an lb one fairly.
+          for (const l of logs) if (isWorkingSet(l) && inRange(l.at)) perMember[h.userId] += toLb(l.weight, l.unit) * (Number(l.reps) || 0);
+        } else {
+          const counts = logs.length ? logs.some(l => inRange(l.at))
+            : typeof h.at === 'string' ? inRange(h.at)
+            : (h.date >= ch.startDate && h.date < ch.endDate);
+          if (counts) perMember[h.userId] += 1;   // one finished workout = 1, regardless of how much was logged
+        }
+      }
+    }
+    if (ch.type === 'volume') for (const mid of c.memberIds) perMember[mid] = Math.round(perMember[mid]);
   }
   const total = Object.values(perMember).reduce((a, b) => a + b, 0);
   return { total, perMember };
 }
-function publicChallenge(c, ch) {
+function publicChallenge(c, ch, viewerId) {
   if (!ch) return null;
+  if (ch.type === 'custom') {
+    const expired = new Date().toISOString().slice(0, 10) >= ch.endDate;
+    const endInstant = ch.endDate + 'T00:00:00.000Z';
+    // No auto-tracked number, so the clearest signal the crew actually has is each other's real
+    // posted workouts from that week (Jeff: "we still be able to see it by posted workouts etc").
+    // Same visibility rule as everywhere else a recap is shown (canSeePostAuthor) -- being in the
+    // same crew doesn't unlock a private post you're not otherwise allowed to see.
+    const posts = [];
+    for (const s of Object.values(DB.sessions)) {
+      for (const mid of c.memberIds) {
+        const p = s.posts && s.posts[mid];
+        if (!p || !DB.users[mid]) continue;
+        if (!(p.at >= ch.createdAt && p.at < endInstant)) continue;
+        if (!canSeePostAuthor(p, mid, viewerId, s)) continue;
+        posts.push({ sessionId: s.id, authorId: mid, author: publicUser(mid), at: p.at, name: s.name || 'Workout' });
+      }
+    }
+    posts.sort((a, b) => new Date(b.at) - new Date(a.at));
+    return {
+      id: ch.id, type: 'custom', title: ch.title, startDate: ch.startDate, endDate: ch.endDate,
+      createdBy: ch.createdBy, completed: false, expired, posts,
+      daysLeft: Math.max(0, Math.ceil((new Date(ch.endDate + 'T00:00:00Z') - new Date()) / 86400000))
+    };
+  }
   const { total, perMember } = challengeProgress(c, ch);
   const leaderboard = c.memberIds.filter(id => DB.users[id])
     .map(id => ({ ...publicUser(id), count: perMember[id] || 0 }))
@@ -1364,15 +1428,19 @@ function publicChallenge(c, ch) {
 function checkChallengeCompletion(c) {
   const ch = runningChallenge(c);
   if (!ch) return false;
+  // A custom goal's target is undefined, so `total < ch.target` (total is always 0 for one -- see
+  // challengeProgress's own short-circuit) compares against undefined and is always false here --
+  // that IS "never auto-completes," not a case this function needs to special-case separately.
   const { total } = challengeProgress(c, ch);
   if (total < ch.target) return false;
   ch.completedAt = new Date().toISOString();
+  const unit = ch.type === 'volume' ? ' lb' : '';
   // A system message (userId: null) so the client renders it as a celebration banner in the
   // thread, not attributed to "Someone" the way a departed member's old message is (see
   // crewView's own comment on that fallback) -- those two blanks mean different things.
   c.messages.push({ id: 'cm_' + uid(), userId: null, system: true, at: ch.completedAt,
-    text: `🎉 Challenge complete! ${total} ${ch.type} as a crew.` });
-  for (const mid of c.memberIds) notify(mid, { title: c.name, body: `Challenge complete: ${ch.target} ${ch.type} this week! 🎉` });
+    text: `🎉 Challenge complete! ${total}${unit} ${ch.type} as a crew.` });
+  for (const mid of c.memberIds) notify(mid, { title: c.name, body: `Challenge complete: ${ch.target}${unit} ${ch.type} this week! 🎉` });
   return true;
 }
 // Called right after a workout gets credited (session lock, and a keep-leave -- see creditFinish's
@@ -1393,19 +1461,28 @@ app.post('/api/crews/:id/challenge', auth, async (req, res) => {
   if (c.ownerId !== req.userId) return res.status(403).json({ error: 'only the owner can start a challenge' });
   if (runningChallenge(c)) return res.status(400).json({ error: 'a challenge is already running' });
   const body = req.body || {};
-  const type = body.type === 'sets' ? 'sets' : 'workouts';
-  const target = Math.round(Number(body.target));
-  if (!Number.isFinite(target) || target < CHALLENGE_MIN_TARGET) return res.status(400).json({ error: 'pick a target' });
+  const CHALLENGE_TYPES = ['workouts', 'sets', 'volume', 'prs', 'custom'];
+  const type = CHALLENGE_TYPES.includes(body.type) ? body.type : 'workouts';
   const startDate = new Date().toISOString().slice(0, 10);
-  const ch = {
-    id: 'chal_' + uid(), type, target: Math.min(CHALLENGE_MAX_TARGET, target),
-    startDate, endDate: shiftDateStr(startDate, CHALLENGE_DURATION_DAYS),
-    createdBy: req.userId, createdAt: new Date().toISOString(), completedAt: null
-  };
+  const base = { id: 'chal_' + uid(), type, startDate, endDate: shiftDateStr(startDate, CHALLENGE_DURATION_DAYS),
+    createdBy: req.userId, createdAt: new Date().toISOString(), completedAt: null };
+  let ch, notifyBody;
+  if (type === 'custom') {
+    const title = capStr(body.title, CHALLENGE_CUSTOM_TITLE_MAX).trim();
+    if (!title) return res.status(400).json({ error: 'describe the challenge' });
+    ch = { ...base, title };
+    notifyBody = `${DB.users[req.userId].displayName} started a challenge: ${title}`;
+  } else {
+    const target = Math.round(Number(body.target));
+    if (!Number.isFinite(target) || target < CHALLENGE_MIN_TARGET) return res.status(400).json({ error: 'pick a target' });
+    const max = type === 'volume' ? CHALLENGE_VOLUME_MAX_TARGET : CHALLENGE_MAX_TARGET;
+    ch = { ...base, target: Math.min(max, target) };
+    const unit = type === 'volume' ? ' lb' : '';
+    notifyBody = `${DB.users[req.userId].displayName} started a challenge: ${ch.target}${unit} ${type} this week`;
+  }
   c.challenges.push(ch);
   await save(DB);
-  for (const mid of c.memberIds) if (mid !== req.userId)
-    notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} started a challenge: ${ch.target} ${type} this week` });
+  for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: notifyBody });
   res.json(publicCrew(c, req.userId));
 });
 
