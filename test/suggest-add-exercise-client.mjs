@@ -185,13 +185,16 @@ console.log('\n=== "Suggest a change" card: swap sub-section only when there\'s 
   SESSION_DB.sess1 = baseSession({ exercises: [{ id: 'ex1', name: 'Bench Press', defaultSets: 3, defaultReps: 8 }] });
   await openSession('sess1');
   ok(/Suggest a change/.test(appEl.innerHTML), `card is headed "Suggest a change" (got: ${/Suggest[^<]*/.exec(appEl.innerHTML)})`);
-  ok(/Pick replacement from Workouts/.test(appEl.innerHTML), 'swap sub-section shows when there IS an exercise to swap');
+  // Sep 6: the swap half of this card is gone -- swapping starts from the exercise card's own
+  // "Swap →" link (openSwapChoice: just me / everyone). The card is add-only now.
+  ok(!/Pick replacement from Workouts/.test(appEl.innerHTML) && !/id="swEx"/.test(appEl.innerHTML), 'no dropdown/"Pick replacement" swap sub-section any more');
+  ok(/openSwapChoice\('sess1','ex1',true\)/.test(appEl.innerHTML) && /Swap →/.test(appEl.innerHTML), 'the exercise card itself carries the "Swap →" door (just me / everyone) for a non-creator participant');
   ok(/Suggest adding an exercise/.test(appEl.innerHTML), 'and the add button is there too');
   ok(/openSuggestAddPicker\('sess1'\)/.test(appEl.innerHTML), 'add button wired to openSuggestAddPicker for this session');
 
   SESSION_DB.sess1 = baseSession({ exercises: [] }); // empty "Workout Now" a friend joined
   await openSession('sess1');
-  ok(!/Pick replacement from Workouts/.test(appEl.innerHTML), 'swap sub-section is HIDDEN on an empty workout -- nothing to replace');
+  ok(!/Swap →/.test(appEl.innerHTML), 'no Swap door on an empty workout -- nothing to replace');
   ok(/Suggest adding an exercise/.test(appEl.innerHTML), 'but the add button still shows -- exactly where it is most useful');
 
   vm.runInContext(`ME = {id:'host1', displayName:'Host'};`, ctx);

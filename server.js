@@ -2816,16 +2816,70 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
     edit = { id: 'se_' + uid(), type: 'add', exerciseId: null, proposedBy: req.userId, swapTo: name, status: 'pending' };
   } else {
     const exerciseId = capStr((req.body || {}).exerciseId, 64);
-    const swapTo = currentExerciseName(capStr((req.body || {}).swapTo, 80));   // stale client -- see EXERCISE_RENAMES
+    const swapTo = currentExerciseName(capStr((req.body || {}).swapTo, 80).trim());   // stale client -- see EXERCISE_RENAMES
+    // Sep 6 (cold-review catch): approving now renames the shared exercise to swapTo, so a blank
+    // one -- which used to yield a harmless empty variation -- would blank the exercise for everyone.
+    if (!swapTo) return res.status(400).json({ error: 'needs a name' });
+    if (!s.exercises.find(e => e.id === exerciseId)) return res.status(404).json({ error: 'exercise not found' });
     edit = { id: 'se_' + uid(), type: 'swap', exerciseId, proposedBy: req.userId, swapTo, status: 'pending' };
   }
   s.suggestedEdits.push(edit);
   await save(DB);
-  // notify creator
-  notify(s.creatorId, type === 'add'
-    ? { title: 'Exercise suggested', body: `${DB.users[req.userId].displayName} suggested adding ${edit.swapTo}` }
-    : { title: 'Swap suggested', body: `${DB.users[req.userId].displayName} suggested swapping to ${edit.swapTo}` });
+  // Sep 6 (Jeff: "everyone in the workout gets a notification that a swap has been requested"):
+  // a swap proposal is a change to the shared plan now (see approve below), so everyone it would
+  // affect hears about it -- the host as the one who decides, everyone else as an FYI naming who
+  // decides. An "add" stays host-only, as before.
+  const who = DB.users[req.userId].displayName;
+  const hostName = DB.users[s.creatorId] ? DB.users[s.creatorId].displayName : 'the host';
+  if (type === 'add') {
+    notify(s.creatorId, { title: 'Exercise suggested', body: `${who} suggested adding ${edit.swapTo}` });
+  } else {
+    const fromEx = s.exercises.find(e => e.id === edit.exerciseId);
+    const fromName = fromEx ? fromEx.name : 'an exercise';
+    const everyone = new Set([s.creatorId, ...s.participants]);
+    for (const uid_ of everyone) {
+      if (uid_ === req.userId || !DB.users[uid_]) continue;
+      notify(uid_, uid_ === s.creatorId
+        ? { title: 'Swap requested', body: `${who} wants to swap ${fromName} → ${edit.swapTo} for everyone. Your call.` }
+        : { title: 'Swap requested', body: `${who} wants to swap ${fromName} → ${edit.swapTo} for everyone — ${hostName} decides.` });
+    }
+  }
   res.json(sessionView(s, req.userId));
+});
+
+// Sep 6 (Jeff, on the swap flow: "if there is more than 2 people in the workout they can do 'swap
+// for just me'"). A personal swap: instant, no approval, touches nobody else's plan. Stored as
+// the same s.variations[exerciseId][userId] shape everything downstream already reads
+// (exerciseNameFor, /lock, rebuildAllPrs), with reason:'self' so it can be told apart from an
+// approved proposal in the data. swapTo '' clears it (undo). Same set-renaming rule as approve:
+// sets already logged on this card are yours and were the lift you actually did, so they follow
+// the swap (and follow it back on undo). Participants only -- someone still holding an invite
+// can't log yet, so "for me" has nothing to attach to; they propose instead.
+app.post('/api/sessions/:id/variation', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  const me = req.userId;
+  const isParticipant = s.participants.includes(me);
+  const approvedJoin = s.joinRequests.find(j => j.userId === me && j.status === 'approved');
+  if (!isParticipant && !approvedJoin) return res.status(403).json({ error: 'not a participant' });
+  const exerciseId = capStr((req.body || {}).exerciseId, 64);
+  const e = s.exercises.find(x => x.id === exerciseId);
+  if (!e) return res.status(404).json({ error: 'exercise not found' });
+  const swapTo = currentExerciseName(capStr((req.body || {}).swapTo, 80).trim());
+  s.variations[exerciseId] = s.variations[exerciseId] || {};
+  const target = swapTo && swapTo !== e.name ? swapTo : null;
+  if (target) s.variations[exerciseId][me] = { swapTo: target, reason: 'self' };
+  else delete s.variations[exerciseId][me];
+  const fileUnder = target || e.name;
+  let renamed = 0;
+  for (const l of ((s.logs && s.logs[me]) || [])) {
+    if (l.exerciseId !== exerciseId || l.exerciseName === fileUnder) continue;
+    l.exerciseName = fileUnder; renamed++;
+  }
+  if (renamed) rebuildAllPrs();
+  await save(DB);
+  res.json(sessionView(s, me));
 });
 
 app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => {
@@ -2853,12 +2907,33 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
     notify(edit.proposedBy, { title: 'Exercise added', body: `${DB.users[s.creatorId].displayName} added ${edit.swapTo} to the workout` });
     return res.json(sessionView(s, req.userId));
   }
-  s.variations[edit.exerciseId] = Object.assign({}, s.variations[edit.exerciseId], { [edit.proposedBy]: { swapTo: edit.swapTo, reason: 'swap' } });
-  // Sets now carry the exercise name frozen at log time, which is what stops an unrelated edit
-  // rewriting history. Approving a swap is not unrelated — it is a deliberate statement of what
-  // was actually performed — so it corrects the name on that person's already-logged sets for
-  // this exercise. Without this, logging first and approving the swap afterwards left the sets
-  // filed under the lift they did not do. Nobody else's sets are touched.
+  // Sep 6 (Jeff: "if brian suggests a swap and I approve it - that swaps the exercise for us both,
+  // correct?"). It does now. This used to record the swap only as the PROPOSER's own variation,
+  // while the client showed "X · swapped by Brian" to everyone -- so the host logged sets on a
+  // card that said Cable Row and had them filed as Barbell Row. An approved swap is a change to
+  // the shared plan: the exercise itself is renamed, for everyone, from here on. The proposer's
+  // now-redundant personal variation on it (if any) is dropped so their card doesn't read "(your
+  // swap)" on top of the shared change; anyone ELSE's personal swap on this card is theirs and
+  // stays. "For just me" lives at POST /variation above and never comes through here.
+  const ex = s.exercises.find(x => x.id === edit.exerciseId);
+  const fromName = ex ? ex.name : null;
+  if (!edit.swapTo || !edit.swapTo.trim()) return res.status(400).json({ error: 'needs a name' });   // a pre-Sep-6 blank proposal
+  if (ex) ex.name = edit.swapTo;
+  if (s.variations[edit.exerciseId]) {
+    delete s.variations[edit.exerciseId][edit.proposedBy];
+    // ...and anyone else's personal swap that now just restates the shared name (cold-review nit:
+    // it would read "(your swap · undo)" on a card whose base is already that lift).
+    for (const uid_ of Object.keys(s.variations[edit.exerciseId])) {
+      if (s.variations[edit.exerciseId][uid_] && s.variations[edit.exerciseId][uid_].swapTo === edit.swapTo) delete s.variations[edit.exerciseId][uid_];
+    }
+  }
+  // Sets carry the exercise name frozen at log time, which is what stops an unrelated edit
+  // rewriting history. Approving a swap is not unrelated for the PROPOSER — it is a deliberate
+  // statement of what they actually performed — so their already-logged sets on this card follow
+  // it (logging first and approving afterwards used to leave them filed under the lift not done).
+  // Everyone else's already-logged sets keep their frozen name: the host who did three sets of
+  // Barbell Row before approving really did Barbell Row. Only sets from here on file under the
+  // new name (exerciseNameFor reads the renamed exercise).
   const already = (s.logs && s.logs[edit.proposedBy]) || [];
   let renamed = 0;
   for (const l of already) {
@@ -2868,7 +2943,16 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
   }
   if (renamed) rebuildAllPrs();            // the records are grouped by that name
   await save(DB);
-  notify(edit.proposedBy, { title: 'Swap approved', body: `${DB.users[s.creatorId].displayName} approved your swap to ${edit.swapTo}` });
+  const hostName = DB.users[s.creatorId].displayName;
+  const proposerName = DB.users[edit.proposedBy] ? DB.users[edit.proposedBy].displayName : 'Someone';
+  // edit.proposedBy is added explicitly: /suggest lets someone still holding an invite propose
+  // ("I'll come if we swap Barbell Row"), and they aren't in s.participants yet (cold-review catch).
+  for (const uid_ of new Set([...s.participants, edit.proposedBy])) {
+    if (uid_ === s.creatorId || !DB.users[uid_]) continue;
+    notify(uid_, uid_ === edit.proposedBy
+      ? { title: 'Swap approved', body: `${hostName} approved your swap: ${fromName || 'the exercise'} → ${edit.swapTo}, for everyone` }
+      : { title: 'Workout changed', body: `${hostName} approved ${proposerName}'s swap: ${fromName || 'the exercise'} → ${edit.swapTo}` });
+  }
   res.json(sessionView(s, req.userId));
 });
 
@@ -2884,6 +2968,10 @@ app.post('/api/sessions/:id/suggest/:editId/reject', auth, async (req, res) => {
   if (edit.status !== 'pending') return res.status(400).json({ error: 'already decided' });
   edit.status = 'rejected';
   await save(DB);
+  if (edit.type !== 'add') {
+    const ex = s.exercises.find(x => x.id === edit.exerciseId);
+    notify(edit.proposedBy, { title: 'Swap not approved', body: `${DB.users[s.creatorId].displayName} kept ${ex ? ex.name : 'the exercise'}. You can still swap it for just you.` });
+  }
   res.json(sessionView(s, req.userId));
 });
 

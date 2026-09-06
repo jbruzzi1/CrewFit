@@ -281,9 +281,10 @@ console.log('\nswapping an exercise keeps its history');
   const editId = sug.suggestedEdits[sug.suggestedEdits.length - 1].id;
   await fetch(B + `/api/sessions/${s.id}/suggest/${editId}/approve`, { method: 'POST', headers: u.H });
   const after = await fetch(B + '/api/sessions/' + s.id, { headers: u.H }).then(x => x.json());
-  const v = after.variations && after.variations[s.exercises[0].id];
-  const swapTo = v && Object.values(v)[0] && Object.values(v)[0].swapTo;
-  ok(swapTo === 'Incline Barbell Bench Press', `the swap is recorded on the session (got ${swapTo})`);
+  // Sep 6: an approved swap renames the shared exercise itself (for everyone), no longer just the
+  // proposer's own variation -- see the approve handler in server.js.
+  const swapTo = after.exercises[0].name;
+  ok(swapTo === 'Incline Barbell Bench Press', `the swap is recorded on the session's exercise (got ${swapTo})`);
   const underSwap = await ask(u, 'Incline Barbell Bench Press');
   ok(underSwap.sessions === 1,
      `logged BEFORE approving the swap -> approving corrects the name (got ${underSwap.sessions})`);

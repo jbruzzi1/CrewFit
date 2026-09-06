@@ -693,12 +693,16 @@ async function openSession(id, opts){
     // find an approved swap for this exercise (option 1: exercise becomes swapTo + muted "swapped by X")
     const approved = (editByEx[e.id]||[]).find(ed=>ed.status==='approved');
     let name;
-    if(approved){
+    // Sep 6: an approved proposal renames the shared exercise itself (server approve handler), so
+    // e.name IS the swapped name for everyone -- the note just credits whose idea it was. A
+    // personal swap (v, reason 'self' or a pre-Sep-6 approved one) is yours alone; tapping its
+    // note offers to undo it.
+    if(v){
+      name = `${esc(v.swapTo)} <span class="swap-note swap-undo" onclick="event.stopPropagation();undoMySwap('${s.id}','${e.id}','${jsq(e.name)}')">(your swap · undo)</span>`;
+    } else if(approved && approved.swapTo === e.name){
       const byName = nameCache[approved.proposedBy] || approved.proposedBy;
       const disp = (byName||'?').split(' ')[0]; // first name only, muted context
-      name = `${esc(approved.swapTo)} <span class="swap-note">· swapped by ${esc(disp)}</span>`;
-    } else if(v){
-      name = `${esc(v.swapTo)} <span class="swap-note">(your swap)</span>`;
+      name = `${esc(e.name)} <span class="swap-note">· swapped by ${esc(disp)}</span>`;
     } else {
       name = esc(e.name);
     }
@@ -711,8 +715,11 @@ async function openSession(id, opts){
     const pendingSwap = (editByEx[e.id]||[]).find(ed=>ed.status==='pending');
     const offerSwap = canSuggest && !pendingSwap;
     // v312: a card you can log on is not a tap target any more -- it carries its own logger (below).
-    const tap = (!canEdit && offerSwap) ? ` onclick="openSwapPicker('${s.id}','${e.id}')"` : '';
+    // Sep 6: an invitee (can't log yet) still taps the card to propose; a non-creator who CAN log
+    // gets a "Swap →" link in the card head instead (see statusTag) that asks "just me / everyone".
+    const tap = (!canEdit && offerSwap) ? ` onclick="openSwapChoice('${s.id}','${e.id}',false)"` : '';
     const cls = (!canEdit && offerSwap) ? 'ex-card log-row' : 'ex-card';
+    const canSwapHere = canEdit && !isCreator && !myPost && !pendingSwap && !v;
     const swapBy = pendingSwap
       ? (() => { const n = nameCache[pendingSwap.proposedBy];
                  return n === 'You' ? 'you' : (isUnknownName(n) ? 'someone' : String(n).split(' ')[0]); })()
@@ -725,7 +732,8 @@ async function openSession(id, opts){
     const recExName = (v && v.swapTo) || e.name;
     // A pending swap outranks everything else this line could say. It is the state of the lift.
     const statusTag = pendingSwap ? `<span class="swap-pending">Swap suggested by ${esc(swapBy)}</span>`
-                     : (!canEdit && offerSwap) ? `<span class="log-hint">Suggest a swap →</span>` : '';
+                     : (!canEdit && offerSwap) ? `<span class="log-hint">Suggest a swap →</span>`
+                     : canSwapHere ? `<span class="log-hint swap-link" onclick="openSwapChoice('${s.id}','${e.id}',true)">Swap →</span>` : '';
     // Who ELSE has worked this lift. Without it a shared workout shows you nothing your partner
     // did — you invite someone, they train, and the screen looks the same as if you were alone.
     // Gated on inTheWorkout: GET /api/sessions/:id hands the FULL logs of every participant to any
@@ -738,7 +746,10 @@ async function openSession(id, opts){
         // each entry carries its own "set/sets" — "Brian 2 · Sam 3 sets" would read as though
         // the count applied to the pair of them
         const who = isUnknownName(nameCache[pid]) ? 'Someone' : String(nameCache[pid]).split(' ')[0];
-        return `${esc(who)} ${n} set${n===1?'':'s'}`;
+        // Sep 6: a partner's personal swap shows next to their count ("Brian 2 sets · Cable Row"),
+        // so their sets on this card aren't read as the lift you're doing.
+        const pv = s.variations && s.variations[e.id] && s.variations[e.id][pid];
+        return `${esc(who)} ${n} set${n===1?'':'s'}${pv ? ' · '+esc(pv.swapTo) : ''}`;
       });
     const crewLine = crew.length ? `<div class="ex-crew">${crew.join(' · ')}</div>` : '';
     // No "4 x 6-8" on the list at all — Jeff's call, twice. The workout list answers one question,
@@ -932,12 +943,10 @@ async function openSession(id, opts){
     // "Workout Now" a friend joined before you've added anything); adding a brand-new exercise
     // stays offered either way, since that's exactly the case where it's most useful.
     const hostFirst = esc(isUnknownName(nameCache[s.creatorId])?'the host':String(nameCache[s.creatorId]).split(' ')[0]);
+    // Sep 6: the swap half of this card (a native dropdown + "Pick replacement from Workouts")
+    // is gone -- swapping now starts from the exercise card itself ("Swap →", openSwapChoice).
+    // Only proposing a brand-new exercise is left here, since it has no card to hang off.
     html += `<h2 class="sep">Suggest a change</h2><div class="card">
-      ${s.exercises.length ? `
-      <div class="muted" style="font-size:12.5px;margin:2px 2px 8px">Not feeling one of these? Propose a replacement — ${hostFirst} approves it.</div>
-      <select id="swEx" style="margin-bottom:10px">${s.exercises.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
-      <button class="sec sm" style="background:var(--line); margin-bottom:10px" onclick="openSwapPicker('${s.id}')">Pick replacement from Workouts →</button>
-      ` : ''}
       <div class="muted" style="font-size:12.5px;margin:2px 2px 8px">Want to add something new? ${hostFirst} approves that too.</div>
       <button class="sec sm" style="background:var(--line)" onclick="openSuggestAddPicker('${s.id}')">Suggest adding an exercise →</button>
     </div>`;
@@ -1780,20 +1789,48 @@ function backToSessionAfterSwapPicker(){
   history.go(delta > 0 ? -delta : -1);
 }
 function swapCancel(){
-  SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null;
+  SWAP_MODE = false; SWAP_SESSION = null; SWAP_FROM = null; SWAP_KIND = 'all';
   backToSessionAfterSwapPicker();
 }
+// Sep 6 (Jeff): a swap is either yours alone or a proposal for the whole workout. SWAP_KIND is
+// set by the choice sheet (openSwapChoice) before the library picker opens, and decides which
+// endpoint the pick goes to: /variation (instant, just me) or /suggest (host approves, everyone).
+let SWAP_KIND = 'all';
 async function swapPick(name){
   const id = SWAP_SESSION;
   if(!id) return;
-  const fromId = SWAP_FROM;
+  const fromId = SWAP_FROM, kind = SWAP_KIND;
   SWAP_MODE = false;
-  SWAP_SESSION = null; SWAP_FROM = null;
+  SWAP_SESSION = null; SWAP_FROM = null; SWAP_KIND = 'all';
   const epoch=UI_EPOCH;
-  const r = await H.post(`/api/sessions/${id}/suggest`,{exerciseId:fromId, swapTo:name});
+  const r = kind === 'me'
+    ? await H.post(`/api/sessions/${id}/variation`,{exerciseId:fromId, swapTo:name})
+    : await H.post(`/api/sessions/${id}/suggest`,{exerciseId:fromId, swapTo:name});
   if(r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) backToSessionAfterSwapPicker();
 }
-async function suggest(id){ const epoch=UI_EPOCH; const r=await H.post(`/api/sessions/${id}/suggest`,{exerciseId:$('swEx').value,swapTo:$('swTo').value}); if(r.error)alert(r.error); else if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true}); }
+// The "just me / everyone" question, asked before the picker opens. canPersonal is false for
+// someone still holding an invite (they can't log yet, so there's nothing for a personal swap to
+// attach to) -- they go straight to proposing. Jeff, Sep 6: "if there is more than 2 people in the
+// workout they can do 'swap for just me'" -- offered at any size, since it's the person's own card
+// either way; a vote was considered and skipped (host-approves is the group's proxy).
+function openSwapChoice(id, exerciseId, canPersonal){
+  if(!canPersonal){ SWAP_KIND = 'all'; return openSwapPicker(id, exerciseId); }
+  const inner = `<div class="sheet"><div class="sheet-head"><h2>Swap this exercise</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="sheet-list">
+      <button class="sheet-row" onclick="closeSheet();SWAP_KIND='me';openSwapPicker('${jsq(id)}','${jsq(exerciseId)}')"><div><b>Swap for just me</b><div class="muted" style="font-size:12px;font-weight:400;margin-top:2px">Instant. Only your card changes.</div></div></button>
+      <button class="sheet-row" onclick="closeSheet();SWAP_KIND='all';openSwapPicker('${jsq(id)}','${jsq(exerciseId)}')"><div><b>Propose for everyone</b><div class="muted" style="font-size:12px;font-weight:400;margin-top:2px">The host approves it, then it changes for the whole workout.</div></div></button>
+    </div>
+  </div>`;
+  openSheetHtml(inner);
+}
+function undoMySwap(id, exerciseId, backTo){
+  confirmSheet('Undo your swap?', `This card goes back to ${esc(backTo)} for you. Sets you logged on it come with it.`, 'Undo swap', async () => {
+    const epoch=UI_EPOCH;
+    const r = await H.post(`/api/sessions/${id}/variation`,{exerciseId, swapTo:''});
+    if(r && r.error){ alert(r.error); return; }
+    if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
+  }, false);
+}
 
 // ---- The collaborate half: five buttons that called functions nobody ever wrote ----
 // Approve/Reject on a suggested swap, Approve/Reject on a join request, and the door into the
@@ -1830,8 +1867,7 @@ function openSwapPicker(id, exerciseId){
   // exerciseId is passed when you tap the exercise itself; otherwise fall back to the picker's
   // dropdown. Tapping the lift you want changed is the natural gesture — you do not want to swap
   // "a workout", you want to swap Barbell Row.
-  if(!exerciseId){ const sel = $('swEx'); exerciseId = sel ? sel.value : ''; }
-  if(!exerciseId) return alert('Add an exercise first, then pick which one to swap.');
+  if(!exerciseId) return alert('Tap the exercise you want to swap.');
   SWAP_MODE = true; SWAP_SESSION = id; SWAP_FROM = exerciseId;
   LIB_ADDMODE = false;   // exRowHtml tests SWAP_MODE first, so leaving this set makes "+ Add
                          // exercise" silently file swap suggestions against the old workout
