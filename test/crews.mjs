@@ -358,6 +358,96 @@ console.log('\ncrew challenges: a challenge that runs out its full week without 
   ok(restarted.status === 200, `starting a fresh challenge is allowed once the old one has expired (got ${restarted.status})`);
 }
 
+console.log('\ncrew challenges: the "volume" type normalizes kg into lb before summing (CLAUDE.md rule 6: units)');
+{
+  const owner = await reg('chalowner9'), pal = await reg('chalpal9');
+  await connect(owner, pal);
+  await post(pal, '/api/me/units', { units: 'kg' });
+  const c = await post(owner, '/api/crews', { name: 'Volume Types', memberIds: [pal.id] }).then(x => x.json());
+  await post(owner, `/api/crews/${c.id}/challenge`, { type: 'volume', target: 100000 });
+
+  await logWorkout(owner, 1);   // 135 lb x 8 reps, logged in owner's own unit (lb) = 1080 lb
+  await logWorkout(pal, 1);     // 135 x 8 reps, logged in pal's unit (kg) -> toLb(135,'kg')*8 rounds to 2381 lb
+
+  const view = await get(owner, `/api/crews/${c.id}`);
+  const board = view.challenge.leaderboard;
+  const ownerCount = board.find(m => m.id === owner.id).count;
+  const palCount = board.find(m => m.id === pal.id).count;
+  ok(ownerCount === 1080, `owner's lb-logged volume counts at face value (got ${ownerCount})`);
+  ok(palCount === 2381, `pal's kg-logged volume is converted to lb before summing, not counted as raw kg (got ${palCount})`);
+  ok(view.challenge.total === ownerCount + palCount, `shared total is the sum of both already-normalized contributions (got ${view.challenge.total})`);
+}
+
+console.log('\ncrew challenges: the "prs" type counts only genuinely-earned PRs, never a first-ever-logged baseline (CLAUDE.md rule 6: PRs)');
+{
+  const owner = await reg('chalowner10'), pal = await reg('chalpal10');
+  await connect(owner, pal);
+  const c = await post(owner, '/api/crews', { name: 'PR Types', memberIds: [pal.id] }).then(x => x.json());
+  await post(owner, `/api/crews/${c.id}/challenge`, { type: 'prs', target: 10 });
+
+  // owner: two logs on the SAME exercise -- the first is just a baseline (firstLog), the second,
+  // heavier one is a genuine improvement and should be the only thing counted.
+  const os = await post(owner, '/api/sessions', { name: 'Session', exercises: [{ name: 'Deadlift', defaultReps: 5 }], inviteUsernames: [], visibility: 'private' }).then(x => x.json());
+  await post(owner, `/api/sessions/${os.id}/log`, { exerciseId: os.exercises[0].id, weight: 225, reps: 5 });
+  await post(owner, `/api/sessions/${os.id}/log`, { exerciseId: os.exercises[0].id, weight: 275, reps: 5 });
+  await post(owner, `/api/sessions/${os.id}/lock`, {});
+
+  // pal: ONE log on a brand-new exercise -- a baseline only, never actually beat anything, so it
+  // must not count even though it's technically "their current PR" on their own profile.
+  const ps = await post(pal, '/api/sessions', { name: 'Session', exercises: [{ name: 'Overhead Press', defaultReps: 5 }], inviteUsernames: [], visibility: 'private' }).then(x => x.json());
+  await post(pal, `/api/sessions/${ps.id}/log`, { exerciseId: ps.exercises[0].id, weight: 95, reps: 5 });
+  await post(pal, `/api/sessions/${ps.id}/lock`, {});
+
+  const view = await get(owner, `/api/crews/${c.id}`);
+  const board = view.challenge.leaderboard;
+  ok(board.find(m => m.id === owner.id).count === 1, `owner's genuine improvement (225 -> 275) counts once (got ${board.find(m => m.id === owner.id).count})`);
+  ok(board.find(m => m.id === pal.id).count === 0, `pal's first-ever-logged baseline does not count as an earned PR (got ${board.find(m => m.id === pal.id).count})`);
+  ok(view.challenge.total === 1, `shared total reflects only the one genuinely-earned PR (got ${view.challenge.total})`);
+}
+
+console.log('\ncrew challenges: "custom" goals require a title, track no number, and only surface posts the viewer may see');
+{
+  const owner = await reg('chalowner11'), pal = await reg('chalpal11'), outsider = await reg('chaloutsider11');
+  await connect(owner, pal);
+  const c = await post(owner, '/api/crews', { name: 'Custom Types', memberIds: [pal.id] }).then(x => x.json());
+
+  const blankTitle = await post(owner, `/api/crews/${c.id}/challenge`, { type: 'custom', title: '  ' });
+  ok(blankTitle.status === 400, `a blank/whitespace-only custom title is rejected (got ${blankTitle.status})`);
+
+  const started = await post(owner, `/api/crews/${c.id}/challenge`, { type: 'custom', title: 'No skipping leg day' }).then(x => x.json());
+  ok(started.challenge && started.challenge.type === 'custom' && started.challenge.title === 'No skipping leg day', 'custom challenge started with the given title');
+  ok(started.challenge.target === undefined && started.challenge.total === undefined, 'a custom goal has no numeric target/total to track');
+  ok(Array.isArray(started.challenge.posts) && started.challenge.posts.length === 0, 'no posted workouts yet');
+
+  // owner posts a PRIVATE recap -- session participants see it, but pal (a crew member who was
+  // never in that session) is not a participant, so the crew's shared visibility rule must not
+  // leak it to them just because they're in the same crew (canSeePostAuthor, unchanged by this
+  // feature -- membership in the crew is not membership in the session).
+  const s1 = await post(owner, '/api/sessions', { name: 'Leg Day', exercises: [{ name: 'Back Squat', defaultReps: 8 }], inviteUsernames: [], visibility: 'private' }).then(x => x.json());
+  await post(owner, `/api/sessions/${s1.id}/log`, { exerciseId: s1.exercises[0].id, weight: 225, reps: 5 });
+  await post(owner, `/api/sessions/${s1.id}/lock`, {});
+  await post(owner, `/api/sessions/${s1.id}/post`, { notes: 'crushed it', visibility: 'private' });
+
+  const ownerView = await get(owner, `/api/crews/${c.id}`);
+  ok(ownerView.challenge.posts.some(p => p.sessionId === s1.id && p.authorId === owner.id), 'the author always sees their own posted workout in the feed');
+
+  const palView = await get(pal, `/api/crews/${c.id}`);
+  ok(!palView.challenge.posts.some(p => p.sessionId === s1.id), 'a crew member who is not a session participant does NOT see a private posted workout, just for sharing a crew');
+
+  const outsiderBlocked = await get(outsider, `/api/crews/${c.id}`);
+  ok(outsiderBlocked.error === 'forbidden', 'a non-crew-member cannot see any of this at all');
+
+  // Same recap, made PUBLIC -- now everyone who can see the crew's challenge should see it.
+  await post(owner, `/api/sessions/${s1.id}/post`, { notes: 'crushed it', visibility: 'public' });
+  const palViewAfterPublic = await get(pal, `/api/crews/${c.id}`);
+  ok(palViewAfterPublic.challenge.posts.some(p => p.sessionId === s1.id && p.authorId === owner.id), 'once the recap is made public, a fellow crew member sees it in the goal\'s posted-workouts feed');
+
+  // A custom goal never auto-completes (no target exists to hit) -- confirmed here rather than
+  // just trusted, since checkChallengeCompletion's short-circuit is exactly the kind of "nothing
+  // visibly breaks, it just silently never fires" logic that deserves its own assertion.
+  ok(palViewAfterPublic.challenge.completed === false, 'a custom goal never marks itself complete, no matter what gets posted');
+}
+
 } finally {
   await stop();
   await testDb.drop();

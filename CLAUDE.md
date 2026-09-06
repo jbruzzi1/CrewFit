@@ -45,7 +45,7 @@ because you wrote it.
 - **Lead, don't just execute.** Make the aesthetic calls yourself and say what you picked — Jeff delegates those and trusts the recommendation.
 - **Concise bullet summaries.** He forwards them to Brian. No long prose. Be token-conscious.
 - **Narrate progress** on long builds so he knows you haven't stalled.
-- **Always send the `git push`/PR-link step inline in the chat, in a bare fenced code block, every single time** — not only when Jeff asks for it (Sep 5, 2026: "by rule ALWAYS send the git push link within this chat to open inline"). Same for the `fly deploy` command. Never describe the step in prose only, or point him back to an earlier message — paste it fresh, ready to tap/copy, whenever a push, PR, or deploy is the next thing he needs to do.
+- **Push it yourself — don't hand Jeff a `git push` command.** (Sep 6, 2026: Jeff asked for "a live link I can click on to do the push WITHIN claude every time" — a link can't run a local command, but the device bridge can, so when his Mac is linked, run `git push` there directly instead of making him open Terminal.) What Jeff actually gets is the PR-compare link (a real clickable URL) plus title/body text, sent inline in the chat in a bare fenced code block, every single time — never described in prose only, never pointing back to an earlier message. He still creates the PR and merges it himself. Same "paste it fresh, inline, every time" rule for the `fly deploy` command, which stays his to run (hard rule #1). If the Mac isn't linked, fall back to handing him the `git push` command the same way.
 
 ## Design constants
 

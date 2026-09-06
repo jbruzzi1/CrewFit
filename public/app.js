@@ -355,6 +355,9 @@ const ICON_PEOPLE = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"
 const ICON_FEED = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M4 18V8l8-4 8 4v10" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 18v-6h6v6" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
 const ICON_LIST = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><rect x="4" y="3.5" width="16" height="17" rx="3" stroke="#9ca3af" stroke-width="1.6"/><path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4.5" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
 const ICON_BELL = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M6 8a6 6 0 0 1 12 0c0 4 1.5 5.5 2 6.5H4c.5-1 2-2.5 2-6.5Z" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 19a2 2 0 0 0 4 0" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+// Same speech-bubble outline the recap social row already uses for comment counts (woCard, below),
+// just scaled up to the other ICON_* constants' 30px open-empty-state size.
+const ICON_CHAT = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
 // Sep 4: the Home/Profile bell button's icon -- same inline-SVG-string convention as gearSvg()
 // below (stroke="currentColor" so it inherits the button's own color, no separate light/dark rule
 // needed). count>0 renders a small corner badge; the badge's blue matches the existing pending-
@@ -5289,12 +5292,25 @@ async function crewView(crewId, opts){
   // message after they've since left the crew. Those two blanks mean different things.
   // c.members is the CURRENT roster, so a message from someone who has since left (or was dropped
   // in an edit) falls back to UNKNOWN_NAME rather than rendering a bare, alarming-looking blank.
-  const msgRows = messages.length ? messages.map(m=>{
+  const hasMessages = messages.length > 0;
+  const msgRows = hasMessages ? messages.map(m=>{
     if(m.system) return `<div class="crew-msg crew-msg-sys">${esc(m.text)}</div>`;
     const from = c.members.find(x=>x.id===m.userId);
     return `<div class="crew-msg"><b>${esc(from?(from.displayName||from.username):UNKNOWN_NAME)}</b> ${esc(m.text)}</div>`;
-  }).join('') : '<div class="muted" style="padding:8px 2px">No messages yet — say hey.</div>';
+  }).join('') : '';
   const head = `<div class="pp-head"><h1 style="margin:0;flex:1">${esc(c.name)}</h1>${c.isOwner?`<button class="sec sm" onclick="newCrewSheet('${jsq(c.id)}')">Edit</button>`:''}<button class="sec sm" onclick="history.back()">← Back</button></div>`;
+  // Sep 6 (Jeff: the "No messages yet" box "seems poorly done... a box showing where potential
+  // chat would be"). A plain muted line boxed inside a bordered/shadowed card contradicts the
+  // app's own "no windows" rule -- a card only ever renders when it has content, an empty section
+  // shows its OPEN empty state instead (homeEmpty's icon+title+sub, no container). This is that
+  // same open state, just trimmed to sit directly above the message input rather than as a whole
+  // page section (homeEmpty's own 34px bottom margin is sized for that, not for here).
+  // crewMsgs-<id> keeps its id and renders either way (card+rows, or the open empty state) so
+  // sendCrewMsg's optimistic append below always has a real element to drop the first message
+  // into -- it swaps the empty state out for the card look at that point, same classes/styles.
+  const msgBox = hasMessages
+    ? `<div class="card" id="crewMsgs-${esc(c.id)}" style="padding:10px 12px;max-height:34vh;overflow-y:auto">${msgRows}</div>`
+    : `<div id="crewMsgs-${esc(c.id)}" class="home-empty" style="margin:4px 0 16px;padding:10px 16px 0">${ICON_CHAT}<div class="he-title">No messages yet</div><div class="he-sub">Say hey to get the conversation started.</div></div>`;
   // crewMsgs/crewChatInput are scoped by crew id (not plain ids) -- the same bug class the
   // cold-review for comments already caught once (see cmtReact-'+ck's own comment): opening crew
   // A, sending a message, then navigating to crew B before the response lands would otherwise let
@@ -5303,7 +5319,7 @@ async function crewView(crewId, opts){
     ${head}
     <div class="card" style="padding:6px 12px;margin:14px 0 12px">${memberRows}</div>
     ${crewChallengeHtml(c)}
-    <div class="card" id="crewMsgs-${esc(c.id)}" style="padding:10px 12px;max-height:34vh;overflow-y:auto">${msgRows}</div>
+    ${msgBox}
     <div class="row chat-row" style="margin-top:10px"><input id="crewChatInput-${esc(c.id)}" class="chat-input" placeholder="Message the crew"><button class="sm chat-send" onclick="sendCrewMsg('${jsq(c.id)}')">Send</button></div>
     ${!c.isOwner ? `<button class="sec" style="margin-top:14px" onclick="leaveCrewConfirm('${jsq(c.id)}')">Leave crew</button>` : ''}
   </div>`;
@@ -5316,7 +5332,14 @@ async function sendCrewMsg(crewId){
   const r = await H.post('/api/crews/'+crewId+'/messages', {text});
   if(r && r.error){ alert(r.error); return; }
   const box = $('crewMsgs-'+crewId); if(!box) return;
-  const empty = box.querySelector('.muted'); if(empty) empty.remove();
+  // First message in a previously-empty crew: swap the open empty-state placeholder (.home-empty,
+  // no box) for the actual scrollable message-list card -- same classes/styles crewView itself
+  // renders once there's real content, so this optimistic append matches a real refresh exactly.
+  if(box.classList.contains('home-empty')){
+    box.className = 'card'; box.removeAttribute('style');
+    box.style.padding = '10px 12px'; box.style.maxHeight = '34vh'; box.style.overflowY = 'auto';
+    box.innerHTML = '';
+  }
   const row = document.createElement('div'); row.className='crew-msg';
   row.innerHTML = `<b>${esc(ME.displayName||ME.username)}</b> ${esc(text)}`;
   box.appendChild(row); box.scrollTop = box.scrollHeight;
@@ -5327,6 +5350,9 @@ async function sendCrewMsg(crewId){
 // language for "a number climbing toward a target" everywhere in this app) plus a mini leaderboard
 // underneath, so it reads as one team goal AND individual credit at the same time. c.challenge is
 // null when nothing's running -- owner gets a start CTA, everyone else a quiet one-liner.
+// Display noun per auto-tracked type -- 'volume' and 'prs' read badly verbatim ("5000 volume",
+// "12 prs"); everything else already reads fine as its raw type string ("30 workouts this week").
+function chalNoun(type){ return type==='volume' ? 'lb' : type==='prs' ? 'PRs' : type; }
 function crewChallengeHtml(c){
   const pastLine = c.challengesCompleted ? `<div class="muted" style="font-size:11.5px;margin-top:8px">🏆 ${c.challengesCompleted} challenge${c.challengesCompleted===1?'':'s'} completed</div>` : '';
   const ch = c.challenge;
@@ -5336,8 +5362,12 @@ function crewChallengeHtml(c){
   // rather than sitting frozen on a stale, sub-100% bar forever (cold-review catch: this used to be
   // a permanent dead end since `c.challenge` itself never goes back to null on its own).
   if(!ch || (ch.expired && !ch.completed)){
+    // A custom goal never "completes" (challengeProgress short-circuits its total to 0, so it can
+    // never hit a target that doesn't exist -- see checkChallengeCompletion's comment) -- once it's
+    // past its end date it's just over, not "fell short," so the sub-line reads accordingly instead
+    // of printing a nonsensical "0/undefined".
     const sub = ch
-      ? `Last week fell short — ${ch.total}/${ch.target} ${ch.type}. Go again?`
+      ? (ch.type==='custom' ? `Last week's challenge: ${ch.title}. Go again?` : `Last week fell short — ${ch.total}/${ch.target} ${chalNoun(ch.type)}. Go again?`)
       : 'Set a shared goal and take it on together.';
     // Sep 6: a fell-short week still has a real result worth looking back at (final leaderboard,
     // who carried it) even though runningChallenge() has already let the owner start a fresh one --
@@ -5354,6 +5384,21 @@ function crewChallengeHtml(c){
         ${c.isOwner ? `<span class="he-cta" style="margin:0;white-space:nowrap" onclick="newChallengeView('${jsq(c.id)}')">Start →</span>` : ''}
       </div>
       ${pastLine}
+    </div>`;
+  }
+  // A custom goal has no number to track -- the card leads with the goal itself and how many
+  // posted workouts have come in against it so far, same "we can see it by posted workouts" promise
+  // Jeff asked for, still one tap into the full feed via challengeView.
+  if(ch.type==='custom'){
+    const n = ch.posts.length;
+    return `<div class="card" style="padding:12px;margin-bottom:12px;cursor:pointer;position:relative" onclick="challengeView('${jsq(c.id)}','${jsq(ch.id)}')">
+      <div class="mg-chev" style="position:absolute;top:12px;right:12px">›</div>
+      <div style="padding-right:14px">
+      <div style="font-weight:700;font-size:13.5px">${esc(ch.title)}</div>
+      <div class="muted" style="font-size:12px;margin-top:2px">${ch.daysLeft} day${ch.daysLeft===1?'':'s'} left</div>
+      <div class="muted" style="font-size:12px;margin-top:8px">${n ? `${n} workout${n===1?'':'s'} posted this week` : "No one's posted yet — be first."}</div>
+      ${pastLine}
+      </div>
     </div>`;
   }
   const pct = Math.min(100, Math.round(100*ch.total/ch.target));
@@ -5377,9 +5422,9 @@ function crewChallengeHtml(c){
     <div style="padding-right:14px">
     ${ch.completed ? `<div class="rc-pr rc-pr-now" style="margin-bottom:10px"><div class="rc-pr-ic">🎉</div><div>
         <div class="rc-pr-t">Challenge complete!</div>
-        <div class="rc-pr-s">${ch.total} ${ch.type} as a crew — nice work.</div></div></div>` : ''}
+        <div class="rc-pr-s">${ch.total} ${chalNoun(ch.type)} as a crew — nice work.</div></div></div>` : ''}
     <div class="mv-row" style="padding:0 0 8px;border:none">
-      <div class="mv-top"><span class="mv-name">${ch.target} ${ch.type} this week</span>
+      <div class="mv-top"><span class="mv-name">${ch.target} ${chalNoun(ch.type)} this week</span>
         <span class="mv-n">${ch.total}<span class="mv-of"> / ${ch.target}</span></span></div>
       <div class="mv-track"><div class="mv-fill${ch.completed?' mv-met':''}" style="width:${pct}%"></div></div>
     </div>
@@ -5408,17 +5453,40 @@ async function challengeView(crewId, challengeId, opts){
   // Nothing to show (a stale link, or the crew's challenge history is somehow empty) -- land back
   // on the crew page rather than render a blank screen with no way forward.
   if(!ch){ crewView(crewId, {silent:true}); return; }
+  const isCustom = ch.type==='custom';
   const isRunning = !ch.completed && !ch.expired;
   const head = `<div class="pp-head"><h1 style="margin:0;flex:1">${esc(c.name)} challenge</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
-  const banner = ch.completed
+  // A custom goal never completes (no target to hit -- see checkChallengeCompletion) so its only
+  // two states are "running" and "ended"; the numeric fell-short/complete banners don't apply.
+  const banner = isCustom
+    ? (!isRunning ? `<div class="card" style="padding:12px;margin-bottom:12px">
+        <div style="font-weight:700;font-size:13.5px">Challenge ended</div>
+        <div class="muted" style="font-size:12px;margin-top:2px">${shortDate(ch.startDate)} – ${shortDate(ch.endDate)}</div>
+      </div>` : '')
+    : ch.completed
     ? `<div class="rc-pr rc-pr-now" style="margin-bottom:12px"><div class="rc-pr-ic">🎉</div><div>
         <div class="rc-pr-t">Challenge complete!</div>
-        <div class="rc-pr-s">${ch.total} ${ch.type} as a crew — nice work.</div></div></div>`
+        <div class="rc-pr-s">${ch.total} ${chalNoun(ch.type)} as a crew — nice work.</div></div></div>`
     : (ch.expired ? `<div class="card" style="padding:12px;margin-bottom:12px">
         <div style="font-weight:700;font-size:13.5px">Fell short</div>
-        <div class="muted" style="font-size:12px;margin-top:2px">Finished at ${ch.total} of ${ch.target} ${ch.type}.</div>
+        <div class="muted" style="font-size:12px;margin-top:2px">Finished at ${ch.total} of ${ch.target} ${chalNoun(ch.type)}.</div>
       </div>` : '');
-  const pct = Math.min(100, Math.round(100*ch.total/ch.target));
+  // Sep 6: the goal itself, honor-system, with the crew's real posted workouts from that week as
+  // the only evidence (Jeff: "we still be able to see it by posted workouts etc") -- no meter, no
+  // leaderboard, because there's no number to track. Same canSeePostAuthor visibility the server
+  // already applied to `posts`, so a tap only ever opens something this viewer could already see.
+  const goalCard = isCustom ? `<div class="card" style="padding:12px;margin-bottom:14px">
+    <div style="font-weight:700;font-size:14.5px">${esc(ch.title)}</div>
+    <div class="muted" style="font-size:11.5px;margin-top:6px">${isRunning ? `${ch.daysLeft} day${ch.daysLeft===1?'':'s'} left` : `${shortDate(ch.startDate)} – ${shortDate(ch.endDate)}`}</div>
+  </div>` : '';
+  const postRows = isCustom ? ch.posts.map(p=>`
+    <div class="friend-row" style="cursor:pointer" onclick="viewPost('${jsq(p.sessionId)}','${jsq(p.authorId)}')">
+      ${avatarHtml(p.author,'avatar')}
+      <div class="meta"><div class="name">${esc(p.author.displayName||p.author.username)}</div><div class="handle">${esc(p.name)} · ${fmtWhen(p.at)}</div></div>
+    </div>`).join('') : '';
+  const postsHtml = isCustom ? `<h2>Posted workouts</h2><div class="card" style="padding:0 12px">${postRows ||
+    '<div class="muted" style="font-size:12px;padding:12px 0">No one\'s posted a workout yet this week.</div>'}</div>` : '';
+  const pct = isCustom ? 0 : Math.min(100, Math.round(100*ch.total/ch.target));
   // Sep 6 (cold-review catch): "this week" is only ever true for the one CURRENTLY running
   // challenge -- the mini card on crewView only ever shows that one, so it's always accurate
   // there, but this page also renders a past challenge (via the Past-challenges list), where a
@@ -5426,9 +5494,9 @@ async function challengeView(crewId, challengeId, opts){
   // self-contradicting claim about history (CLAUDE.md: never state something you can't stand
   // behind). Dropped entirely once the challenge isn't running -- the date range line right below
   // already says when it was.
-  const meter = `<div class="card" style="padding:12px;margin-bottom:14px">
+  const meter = isCustom ? '' : `<div class="card" style="padding:12px;margin-bottom:14px">
     <div class="mv-row" style="padding:0;border:none">
-      <div class="mv-top"><span class="mv-name">${ch.target} ${ch.type}${isRunning ? ' this week' : ''}</span>
+      <div class="mv-top"><span class="mv-name">${ch.target} ${chalNoun(ch.type)}${isRunning ? ' this week' : ''}</span>
         <span class="mv-n">${ch.total}<span class="mv-of"> / ${ch.target}</span></span></div>
       <div class="mv-track"><div class="mv-fill${ch.completed?' mv-met':''}" style="width:${pct}%"></div></div>
     </div>
@@ -5437,83 +5505,133 @@ async function challengeView(crewId, challengeId, opts){
   // Full roster, not the mini card's top-5-with-a-count-above-zero cut -- this page exists
   // specifically so "who's actually carrying this" is fully visible, not just glanceable.
   const flame = flameSvg();
-  const lbRows = ch.leaderboard.map((m,i)=>`
+  const lbRows = isCustom ? '' : ch.leaderboard.map((m,i)=>`
     <div class="friend-row">
       <span style="width:18px;flex:0 0 auto;text-align:center;font-weight:700;color:var(--muted);font-size:12.5px">${i+1}</span>
       ${avatarHtml(m,'avatar')}
       <div class="meta"><div class="name">${i===0 && m.count>0 ? flame+' ' : ''}${esc(m.displayName||m.username)}</div></div>
       <b style="flex:0 0 auto">${m.count}</b>
     </div>`).join('');
-  const leaderboard = `<h2>Leaderboard</h2><div class="card" style="padding:0 12px">${lbRows}</div>`;
+  const leaderboard = isCustom ? '' : `<h2>Leaderboard</h2><div class="card" style="padding:0 12px">${lbRows}</div>`;
   // Every other challenge this crew has run, newest first, excluding whichever one is on screen --
   // tapping one re-opens this same page for that week (challengeView is idempotent per challengeId),
   // so browsing the crew's whole track record is just tapping down the list.
   const past = (c.pastChallenges||[]).filter(p=>p.id!==ch.id);
   const pastHtml = past.length ? `<h2 class="light">Past challenges</h2><div class="card" style="padding:0 12px">` +
-    past.map(p=>`
-      <div class="friend-row" style="cursor:pointer" onclick="challengeView('${jsq(crewId)}','${jsq(p.id)}')">
-        <div class="meta"><div class="name">${p.target} ${p.type}</div><div class="handle">${shortDate(p.startDate)} – ${shortDate(p.endDate)}</div></div>
-        <div style="text-align:right;flex:0 0 auto">
+    past.map(p=>{
+      // A past custom goal has no target/total to grade -- honor-system, no auto-tracked
+      // pass/fail -- so its row shows the goal and how many workouts were posted against it
+      // instead of the numeric "✓ Complete"/"Fell short" line the auto-tracked types get.
+      const right = p.type==='custom'
+        ? `<div class="muted" style="font-size:11px">${p.posts.length} posted</div>`
+        : `<div style="text-align:right;flex:0 0 auto">
           <div style="font-weight:700;font-size:12.5px;color:${p.completed?'var(--green)':'var(--muted)'}">${p.completed?'✓ Complete':'Fell short'}</div>
           <div class="muted" style="font-size:11px">${p.total}/${p.target}</div>
-        </div>
-      </div>`).join('') + `</div>` : '';
-  $('app').innerHTML = `<div class="wrap">${head}${banner}${meter}${leaderboard}${pastHtml}</div>`;
+        </div>`;
+      return `
+      <div class="friend-row" style="cursor:pointer" onclick="challengeView('${jsq(crewId)}','${jsq(p.id)}')">
+        <div class="meta"><div class="name">${p.type==='custom' ? esc(p.title) : `${p.target} ${chalNoun(p.type)}`}</div><div class="handle">${shortDate(p.startDate)} – ${shortDate(p.endDate)}</div></div>
+        ${right}
+      </div>`;
+    }).join('') + `</div>` : '';
+  $('app').innerHTML = `<div class="wrap">${head}${banner}${goalCard}${meter}${leaderboard}${postsHtml}${pastHtml}</div>`;
   if(!silent){ const st = {t:'challenge', crewId, challengeId: ch.id}; fromHistory ? landOn(st) : navigated(st); }
 }
-let CHAL_TYPE = 'workouts';   // which segment is picked in the currently-open "start a challenge" sheet
+// Sep 6 (Jeff: "seems to only be who can do the most workouts or sets... I want to be able to
+// customize this... how can we make this work with the richer menu - but also more customization.
+// I don't mind the honor system"). Two auto-tracked types became four (workouts/sets/volume/prs,
+// each a real number derived server-side the same way the original two always were) plus a fifth,
+// 'custom' mode with no number at all -- a free-text goal the crew judges for itself off each
+// other's actual posted workouts (see challengeView's postsHtml). CHAL_MODE picks which half of
+// the form is showing; CHAL_TYPE only matters within the auto-tracked half.
+let CHAL_MODE = 'auto';       // 'auto' | 'custom' -- which half of the "start a challenge" form is showing
+let CHAL_TYPE = 'workouts';   // which auto-tracked segment is picked, only meaningful when CHAL_MODE==='auto'
+// Per-type stepper behavior: a 1-at-a-time stepper that made sense for "20 sets" would take forever
+// to reach a sane volume target (thousands of lb), and the reverse (stepping volume-sized jumps for
+// a PR count) would overshoot instantly -- each type gets its own step size and sane ceiling.
+const CHAL_TYPE_INFO = {
+  workouts: { step: 1,   max: 500,    unit: '',   default: n => n*3  },
+  sets:     { step: 1,   max: 500,    unit: '',   default: n => n*15 },
+  volume:   { step: 250, max: 500000, unit: ' lb', default: n => n*1000 },
+  prs:      { step: 1,   max: 500,    unit: '',   default: n => n     },
+};
+function setChalMode(m){
+  CHAL_MODE = m;
+  document.querySelectorAll('#chalModeSeg button').forEach(b=>b.classList.toggle('on', b.dataset.m===m));
+  $('chalAutoBlock').hidden = m!=='auto';
+  $('chalCustomBlock').hidden = m!=='custom';
+}
 function setChalType(t){
   CHAL_TYPE = t;
   document.querySelectorAll('#chalTypeSeg button').forEach(b=>b.classList.toggle('on', b.dataset.t===t));
   // A fresh default for the newly-picked type, not whatever number was showing for the other one --
-  // 20 workouts and 20 sets are wildly different asks, so leaving the old number would either be a
-  // trivial gimme or an unreachable stretch depending on which way someone switched.
+  // 20 workouts and 20,000 lb of volume are wildly different asks, so leaving the old number would
+  // either be a trivial gimme or an unreachable stretch depending on which way someone switched.
   const n = Number($('chalMemberCount').dataset.n||1);
-  $('chalTargetVal').textContent = t==='sets' ? n*15 : n*3;
+  const info = CHAL_TYPE_INFO[t];
+  $('chalTargetVal').textContent = info.default(n);
+  $('chalTargetUnit').textContent = info.unit;
 }
 function stepChalTarget(d){
   const el = $('chalTargetVal');
-  el.textContent = Math.max(1, Math.min(500, (parseInt(el.textContent,10)||0) + d));
+  const info = CHAL_TYPE_INFO[CHAL_TYPE];
+  el.textContent = Math.max(1, Math.min(info.max, (parseInt(el.textContent,10)||0) + d*info.step));
 }
-// Sep 6 (Jeff, follow-up to the crew/challenge full-page redesign above -- asked to "update how
-// we create challenges" but with no specific preference when asked what that meant): promoted
-// from a bottom sheet to a full page for the same reason crewView/challengeView were -- one
-// consistent level of polish across the whole feature, not a nicer details page bolted onto a
-// still-quick-and-small creation step. Deliberately NOT changed: still exactly 7 days, still
-// workouts-or-sets, same stepper/defaults -- Jeff didn't ask for the actual rules to change, just
-// for it to not feel like an afterthought.
+// Promoted from a bottom sheet to a full page (Sep 6) for the same reason crewView/challengeView
+// were -- one consistent level of polish across the whole feature, not a nicer details page bolted
+// onto a still-quick-and-small creation step. Duration is still fixed at 7 days either way -- Jeff
+// asked for more TYPES of goal, not a different length.
 async function newChallengeView(crewId, opts){
   const silent = !!(opts && opts.silent);
   const fromHistory = !!(opts && opts.fromHistory);
   if(!silent) UI_EPOCH++;
   const c = await H.get('/api/crews/'+crewId);
   if(c && c.error){ alert(c.error); return; }
-  CHAL_TYPE = 'workouts';
+  CHAL_MODE = 'auto'; CHAL_TYPE = 'workouts';
   const n = c.members.length;
   const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Start a challenge</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
   $('app').innerHTML = `<div class="wrap">
     ${head}
-    <div class="card" style="padding:14px;margin-top:14px">
+    <div class="seg" id="chalModeSeg" style="margin-top:14px">
+      <button class="on" type="button" data-m="auto" onclick="setChalMode('auto')">Auto-tracked</button>
+      <button type="button" data-m="custom" onclick="setChalMode('custom')">Custom goal</button>
+    </div>
+    <div class="card" style="padding:14px" id="chalAutoBlock">
       <label class="muted">Goal type</label>
       <div class="seg" id="chalTypeSeg" style="margin-top:6px">
         <button class="on" type="button" data-t="workouts" onclick="setChalType('workouts')">Workouts</button>
         <button type="button" data-t="sets" onclick="setChalType('sets')">Sets</button>
+        <button type="button" data-t="volume" onclick="setChalType('volume')">Volume</button>
+        <button type="button" data-t="prs" onclick="setChalType('prs')">PRs</button>
       </div>
       <label class="muted" style="display:block;margin-top:16px">Target for the whole crew, this week</label>
       <div class="stepper" id="chalMemberCount" data-n="${n}" style="margin:8px 0 4px">
         <button class="stp" onclick="stepChalTarget(-1)">−</button>
-        <b id="chalTargetVal">${n*3}</b>
+        <b id="chalTargetVal">${n*3}</b><span id="chalTargetUnit" class="muted"></span>
         <button class="stp" onclick="stepChalTarget(1)">+</button>
       </div>
-      <div class="muted" style="font-size:12px;margin:10px 0 0">Runs for 7 days starting now. Every logged workout from anyone in the crew counts toward it.</div>
+      <div class="muted" style="font-size:12px;margin:10px 0 0">Runs for 7 days starting now. Everyone in the crew's own logging counts toward it.</div>
+    </div>
+    <div class="card" style="padding:14px" id="chalCustomBlock" hidden>
+      <label class="muted">What's the challenge?</label>
+      <input id="chalCustomTitle" placeholder="e.g. No skipping leg day" maxlength="80" style="margin-top:6px">
+      <div class="muted" style="font-size:12px;margin:10px 0 0">Runs for 7 days starting now. There's no auto-tracking for this one — the crew calls it based on what everyone actually posts that week.</div>
     </div>
     <button class="blue" style="margin-top:16px" onclick="startChallenge('${jsq(crewId)}')">Start challenge</button>
   </div>`;
   if(!silent){ const st = {t:'newChallenge', crewId}; fromHistory ? landOn(st) : navigated(st); }
 }
 async function startChallenge(crewId){
-  const target = parseInt(($('chalTargetVal')&&$('chalTargetVal').textContent)||'0', 10);
-  const r = await H.post('/api/crews/'+crewId+'/challenge', { type: CHAL_TYPE, target });
+  let body;
+  if(CHAL_MODE==='custom'){
+    const title = ($('chalCustomTitle').value||'').trim();
+    if(!title){ alert("Describe the challenge first."); return; }
+    body = { type: 'custom', title };
+  } else {
+    const target = parseInt(($('chalTargetVal')&&$('chalTargetVal').textContent)||'0', 10);
+    body = { type: CHAL_TYPE, target };
+  }
+  const r = await H.post('/api/crews/'+crewId+'/challenge', body);
   if(r && r.error){ alert(r.error); return; }
   // Popping back to the crew page (rather than re-rendering crewView in place) re-enters it via
   // renderNavState -> crewView(id,{fromHistory:true}), which always re-fetches fresh -- so the
