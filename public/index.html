@@ -669,8 +669,18 @@
        to its own 12px label. */
     .danger-text { background:transparent; color:var(--red); border:none; font-size:14px; font-weight:600; width:100%; margin:14px 0 0; padding:10px; border-radius:10px; cursor:pointer; text-align:center; }
     .danger-text:active { opacity:.55; }
-    .tpl-page { padding-top:8px; }
     .lib-head { padding-bottom:6px; }
+    .tpl-h1 { margin:18px 0 12px; }
+    .tpl-list .tpl-row { padding:12px 6px; }
+    .tpl-name { font-weight:600; font-size:15px; }
+    .tpl-meta { font-size:12.5px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .pp-right { display:flex; align-items:center; gap:8px; }
+    .pp-head button.blue.sm, .create-head button.blue.sm, .pick-head button.blue.sm { border:1px solid transparent; }
+    .tpl-head { min-height:38px; }   /* the same height .pp-dots' margins give the detail header, so Back sits at the same y on list, detail and editor */
+    .pp-dots-wrap { position:relative; display:flex; }
+    .pp-dots-wrap .pp-dots { margin:0; }
+    .pp-dots-wrap .pp-menu { top:34px; }   /* same 8px drop below the dots the bare .pp-head layout gives */
+    .tpl-row .txt-btn { padding:6px 12px; }   /* Sep 7: button.sec carries a 1px border and button.blue none, so a Back/primary pair in the header was 30px vs 28px -- measured, not visible at a glance */
     /* Seed-your-lifts (starting weights) screen -- one .card per lift, echoing .sheet's own
        label-then-input rhythm (see openCreateEx) rather than inventing a new form layout. */
     .seed-row-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px; }
@@ -1339,6 +1349,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=358"></script>
+  <script src="app.js?v=360"></script>
 </body>
 </html>
