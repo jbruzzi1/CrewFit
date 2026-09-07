@@ -4662,10 +4662,16 @@ function setProgWeeks(w){ PROG_WEEKS=w; progressScreen({silent:true}); }
 
 // ---- Library (two views: muscle groups -> exercises) ----
 const LIB_MUSCLES = ['chest','lats','traps','biceps','triceps','forearms','shoulders','abdominals','quads','hamstrings','glutes','calves','cardio'];
+// Sep 6 (Jeff: "what can we do to the workouts page"): the muscle-group page is a two-across
+// grid of tiles now (see renderLibGroups / .mg-grid), so the sections are regrouped into even
+// fours -- the old 7/4/2 split left one tile orphaned on its own row. "Arms & Abs" is gym-speak
+// on purpose (Jeff asked for the honest name, not "Core"). Cardio isn't a muscle, so it stands
+// apart at the end as one wide tile with no heading.
 const LIB_CATS = [
-  { name:'Upper Body', muscles:['chest','lats','traps','biceps','triceps','forearms','shoulders'] },
+  { name:'Upper Body', muscles:['chest','shoulders','lats','traps'] },
+  { name:'Arms & Abs', muscles:['biceps','triceps','forearms','abdominals'] },
   { name:'Lower Body', muscles:['quads','hamstrings','glutes','calves'] },
-  { name:'Other', muscles:['abdominals','cardio'] },
+  { name:'', muscles:['cardio'] },
 ];
 // fav: whether the "★ Favorites" pill is active within the current muscle group's exercise list
 // (libOpenMuscle) -- see FAVORITES/toggleFavorite below. Mutually exclusive with eq, same
@@ -4831,14 +4837,16 @@ function renderLibGroups(){
   // per-muscle counts here and the filtered list in renderLibExercises below.
   const counts = {}; LIB_CATS.forEach(c=>c.muscles.forEach(m=>counts[m]=0));
   lib.forEach(e=>{ if(SEED_MODE && e.custom) return; (e.muscle_groups||[]).forEach(m=>{ if(m in counts) counts[m]++; }); });
+  // Tiles, two across (.mg-grid); a section with an odd count gets its last tile full-width
+  // (.mg-grid .mg-tile:last-child:nth-child(odd)) so nothing is ever orphaned beside a hole.
+  // No chevron on a tile -- the tile is obviously the tap target.
   const blocks = LIB_CATS.map(cat=>{
-    const rows = cat.muscles.map(m=>`
-      <div class="mg-card" onclick="libOpenMuscle('${m}')">
+    const tiles = cat.muscles.map(m=>`
+      <div class="mg-card mg-tile" onclick="libOpenMuscle('${m}')">
         <div class="mg-ico">${mgIcon(m)}</div>
         <div class="mg-card-body"><div class="mg-card-name">${esc(m)}</div><div class="mg-card-count">${counts[m]} exercises</div></div>
-        <div class="mg-chev">›</div>
       </div>`).join('');
-    return `<div class="lib-cat">${esc(cat.name)}</div><div class="card">${rows}</div>`;
+    return `${cat.name ? `<div class="lib-cat">${esc(cat.name)}</div>` : ''}<div class="mg-grid">${tiles}</div>`;
   }).join('');
   $('lib2').innerHTML = blocks;
 }
