@@ -4401,11 +4401,6 @@ const PLATEAU_MIN_SESSIONS = 3;
 const MUSCLE_LABEL = { chest:'Chest', lats:'Back', shoulders:'Shoulders', traps:'Traps',
   biceps:'Biceps', triceps:'Triceps', forearms:'Forearms', quads:'Quads', hamstrings:'Hamstrings',
   glutes:'Glutes', calves:'Calves', abdominals:'Abs' };
-// Last-fetched /api/progress payload — stashed so openBodyweightSheet (opened from a button on
-// this page, not passed any data of its own) can read the current unit and today's existing
-// entry without a second round trip.
-let PROG_LAST = null;
-
 // A bodyweight best has no weight — "0 × 10" reads as broken. Show the reps, which is what
 // you actually compare bodyweight sets on.
 // "2026-05-01" -> "May 1"
@@ -4496,7 +4491,11 @@ function trendChart(d, U){
     onclick="openTrendPicker()" title="Pick which lifts to show">Pick lifts</button></div>${chips}<div class="card">
     <div class="ch-head">${head}</div>
     <div class="ch-note">${isOverall
-      ? `Each lift compared with where it started, weighted by how heavy it is`
+      ? // Sep 7 (Jeff): a negative % here used to land as a flat, undecorated headline with nothing
+        // around it to soften it -- honest (the number's real, still shown as-is), but harsh with no
+        // context. One added clause when it's negative, same restrained tone as the rest of the app
+        // (no color change, no hiding the number -- just naming that a dip here isn't unusual).
+        `Each lift compared with where it started, weighted by how heavy it is${lastV<0 ? ' — a dip here is normal week to week, not a setback.' : ''}`
       : `${esc(lift.name)} · best working set per session`}</div>
     <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible">
       ${grid}<polyline points="${poly}" fill="none" style="stroke:var(--blue)" stroke-width="2"
@@ -4574,90 +4573,24 @@ function volTrendChart(d){
   // independent ranking. Pinning to This week keeps a neglected-today muscle flagged regardless of
   // how its longer-range number looks; only the displayed numbers change.
   const weekGroups = (d.volume && d.volume.groups) || [];
-  const volAny = volGroups.some(g=>g.sets>0);
   const volHasMore = volGroups.length > VOL_SHOW_N;
   const worstKeysThisWeek = weekGroups.slice().sort((a,b)=>(a.sets/a.target)-(b.sets/b.target)).map(g=>g.group);
   const volShown = VOL_EXPANDED ? volGroups : worstKeysThisWeek.slice(0, VOL_SHOW_N).map(k=>volByGroup[k]).filter(Boolean);
-  const volHtml = !volAny
-    ? `<div class="muted" style="padding:14px 2px 6px;line-height:1.5">Log some working sets this
-         week and each muscle group's volume fills in here.</div>`
-    : volShown.map(volRowHtml).join('');
+  // Sep 7 (Jeff): used to swap the whole row list for a generic "log some working sets" sentence
+  // whenever nothing had been logged in the selected range -- but the rows AT ZERO are the point
+  // of this report, not a failure state to hide. MUSCLE_ORDER always gives every group a row (see
+  // server.js) even at 0 sets, so volRowHtml already renders a real "0 / N sets" bar for an
+  // untrained muscle -- that's the "okay, I need to train legs" signal this section exists for.
+  // Every range (This week/Month/3 months) now always shows real rows, never a placeholder.
+  const volHtml = volShown.map(volRowHtml).join('');
   // Round 4: no header-button next to the h2 (same reasoning as round 2's "Pick a muscle" fix above)
   // -- "Show all" lives inside the card body, below the rows, instead.
-  const volShowAllLink = (volAny && volHasMore)
+  const volShowAllLink = volHasMore
     ? `<div style="text-align:right;margin-top:8px"><button class="txt-btn" onclick="toggleVolExpanded()">${VOL_EXPANDED?'Show fewer':'Show all '+volGroups.length}</button></div>`
     : '';
   return `<h2>Volume trend</h2><div class="card">${volHtml}${volShowAllLink}${volModeSeg}
-    ${volAny?howItWorks('Volume trend', `${rangeInfo.note} General guideline, not a personal prescription.`):''}
+    ${howItWorks('Volume trend', `${rangeInfo.note} General guideline, not a personal prescription.`)}
   </div>`;
-}
-
-// Body weight chart — same SVG-line-chart shape as trendChart above (viewBox, xs/ys scale
-// functions, polyline + dots, tap-for-exact-figure titles), just a single always-present series
-// with no lift picker. "Log weight" opens openBodyweightSheet(); see the section header below.
-function bodyweightChart(d, U){
-  const bw = (d.bodyweight && d.bodyweight.entries) || [];
-  const logBtn = `<button class="txt-btn" style="margin-left:auto" onclick="openBodyweightSheet()">+ Log weight</button>`;
-  // Sep 7 (audit): the app's open empty state, not a card with a box inside it.
-  if(!bw.length) return `<div class="sec-head"><h2>Body weight</h2></div>${homeEmpty(ICON_SCALE, 'Not tracked yet', 'Log your weight and it starts charting here.', `<span class="he-cta" onclick="openBodyweightSheet()">+ Log weight</span>`)}`;
-  if(bw.length<2){
-    const only = bw[0];
-    return `<div class="sec-head"><h2>Body weight</h2>${logBtn}</div><div class="card">
-      <div class="ch-head"><div><span class="ch-val">${only.weight}</span> <span class="ch-unit">${U}</span></div></div>
-      <div class="muted" style="padding:6px 4px 2px">Logged ${shortDate(only.date)}. One more entry starts the chart.</div>
-    </div>`;
-  }
-  const W=326,H=120,PL=34,PRr=12,PT=18,PB=22;
-  const vals=bw.map(p=>p.weight);
-  let lo=Math.min(...vals), hi=Math.max(...vals);
-  const pad=Math.max(2,(hi-lo)*0.2);
-  lo=Math.floor(lo-pad); hi=Math.ceil(hi+pad);
-  if(hi===lo) hi=lo+2;
-  const bwXs=i=>PL+i*(W-PL-PRr)/(bw.length-1);
-  const bwYs=v=>PT+(hi-v)*(H-PT-PB)/(hi-lo);
-  const step=Math.max(1,Math.round((hi-lo)/4));
-  let grid='',lbl='';
-  for(let g=Math.ceil(lo/step)*step; g<=hi; g+=step){
-    grid+=`<line x1="${PL}" y1="${bwYs(g)}" x2="${W-PRr}" y2="${bwYs(g)}" style="stroke:var(--line)" stroke-width="1"/>`;
-    lbl+=`<text x="${PL-7}" y="${bwYs(g)+3.5}" text-anchor="end" font-size="9.5" style="fill:var(--muted)">${g}</text>`;
-  }
-  const poly=bw.map((p,i)=>`${bwXs(i)},${bwYs(p.weight)}`).join(' ');
-  let dots='',hits='';
-  bw.forEach((p,i)=>{ const last=i===bw.length-1;
-    dots+=`<circle cx="${bwXs(i)}" cy="${bwYs(p.weight)}" r="${last?5.5:4.2}" style="fill:${last?'var(--blue)':'var(--card)'};stroke:var(--blue)" stroke-width="2"/>`;
-    hits+=`<circle cx="${bwXs(i)}" cy="${bwYs(p.weight)}" r="15" fill="transparent"><title>${shortDate(p.date)}: ${p.weight} ${U}</title></circle>`;});
-  let xl='';
-  [[0,'start'],[bw.length-1,'end']].forEach(([i,a])=>{
-    xl+=`<text x="${bwXs(i)}" y="${H-6}" text-anchor="${a}" font-size="9.5" style="fill:var(--muted)">${shortDate(bw[i].date)}</text>`;});
-  const lastV=bw[bw.length-1].weight, firstV=bw[0].weight, delta=Math.round((lastV-firstV)*10)/10;
-  // No color judgment on the delta -- unlike a strength trend, more or less bodyweight isn't
-  // inherently "up" (green is reserved for earned things elsewhere in this app), so this stays
-  // plain muted text regardless of direction.
-  return `<div class="sec-head"><h2>Body weight</h2>${logBtn}</div><div class="card">
-    <div class="ch-head"><div><span class="ch-val">${lastV}</span> <span class="ch-unit">${U}</span></div>
-      ${delta!==0?`<div class="ch-unit">${delta>0?'+':''}${delta} ${U} since ${shortDate(bw[0].date)}</div>`:''}</div>
-    <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible">
-      ${grid}<polyline points="${poly}" fill="none" style="stroke:var(--blue)" stroke-width="2"
-        stroke-linejoin="round" stroke-linecap="round"/>${dots}${lbl}${xl}${hits}</svg>
-  </div>`;
-}
-function openBodyweightSheet(){
-  const bw = PROG_LAST && PROG_LAST.bodyweight;
-  const U = (bw && bw.unit) || 'lb';
-  const today = localDateStr();
-  const existing = bw && bw.entries.find(e=>e.date===today);
-  textEntrySheet({
-    title:'Log body weight', label:`Weight (${U})`,
-    value: existing ? String(existing.weight) : '', placeholder:'185',
-    confirmLabel:'Save',
-    onConfirm: async (v)=>{
-      const w = Number(v);
-      if(!(w>0)){ alert('Enter your weight'); return; }
-      const r = await H.post('/api/me/bodyweight', { weight:w, unit:U, date:today });
-      if(r && r.error){ alert(r.error); return; }
-      progressScreen({silent:true});
-    }
-  });
 }
 
 // Jeff, Aug 19: "only select 5 workouts at a time... let the user pick which workouts they want
@@ -4711,7 +4644,6 @@ async function progressScreen(opts){
   const silent = !!(opts && opts.silent);
   const d = await H.get('/api/progress?weeks='+PROG_WEEKS+'&localToday='+localDateStr());
   if(!d || d.error){ $('app').innerHTML = `<div class="wrap"><h1>Progress</h1><div class="muted">Couldn\'t load progress.</div></div>`; if(!silent) pageScrollTop(); return; }
-  PROG_LAST = d;
   const U = d.unit || 'lb';
   // Bodyweight lifts store weight 0; "at 0 lb" reads as a bug on every one of these rows.
   const WL = w => (Number(w)>0 ? `${w} ${U}` : 'bodyweight');
@@ -4833,9 +4765,15 @@ async function progressScreen(opts){
       }).join('')
     : `<div class="muted" style="padding:8px 2px">Log a workout — your first set of any exercise is a record.</div>`;
 
+  // Sep 7 (Jeff): "0 days trained this week" was a demoralizing zero-stat sitting in the most
+  // prominent spot on the page -- the exact thing the app already has a standing rule against
+  // (the Home stat row never renders a zero; see CLAUDE.md). A returning user who just hasn't
+  // trained YET this week (nothingYet is false -- they have real history) now gets no subtitle
+  // line at all rather than a "0" callout; nothingYet's brand-new-account copy is unchanged.
+  const weekSub = nothingYet ? 'Log a workout and this fills in' : d.thisWeek>0 ? `${d.thisWeek} day${d.thisWeek===1?'':'s'} trained this week` : '';
   $('app').innerHTML = `<div class="wrap">
     <h1>Progress</h1>
-    <p class="sub">${nothingYet ? 'Log a workout and this fills in' : `${d.thisWeek} day${d.thisWeek===1?'':'s'} trained this week`}</p>
+    ${weekSub?`<p class="sub">${weekSub}</p>`:''}
     ${nothingYet?`<button class="blue btn-new" onclick="createFlow()">+ New workout</button>`:''}
 
     <h2>Add weight next time</h2>
@@ -4900,8 +4838,6 @@ async function progressScreen(opts){
     </div>
 
     ${trendChart(d,U)}
-
-    ${bodyweightChart(d,U)}
 
     <h2>Personal records</h2>
     <div class="card">${prHtml}</div>
