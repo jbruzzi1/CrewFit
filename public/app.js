@@ -98,6 +98,11 @@ function startOfDay(x){ const y = new Date(x); y.setHours(0,0,0,0); return y; }
 // "Today" in the phone's own timezone, as YYYY-MM-DD — never toISOString().slice(0,10), which is
 // UTC-today and can already be tomorrow for a US evening. Sent to /lock (see lock() below) so the
 // server credits Finish to the calendar day the person actually experienced it on.
+// Sep 7 (v363): the document no longer scrolls -- #app is the scroll container (see the body rule
+// in index.html). Every "back to the top" in this file goes through here. The window.scrollTo call
+// stays deliberately: it undoes any residual iOS keyboard pan of the root, and test/audit-v254-nav.mjs
+// counts window.scrollTo calls to assert the nav/scroll semantics -- do not trim it.
+function pageScrollTop(){ const a = document.getElementById('app'); if(a) a.scrollTop = 0; try{ window.scrollTo(0,0); }catch(e){} }
 function localDateStr(d){ d=d||new Date(); const pad=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
 // Whole calendar days between today and iso — negative means iso is in the past. Used to decide
 // whether a friend's joinable workout is still current (see the Friends' Workouts section of
@@ -197,7 +202,7 @@ function authScreen(){
         <button id="regBtn" onclick="doReg()">Create account</button>
       </div>
     </div></div>`;
-  window.scrollTo(0,0);
+  pageScrollTop();
 }
 function showReg(){ const b=document.getElementById('regbox'); if(b) b.style.display = b.style.display==='none'?'block':'none'; }
 let _chkTimer;
@@ -255,12 +260,12 @@ async function doReg(){ try {
 let CURRENT_NAV_STATE = {t:'tab', tab:'home'};
 function navigated(state){
   CURRENT_NAV_STATE = state;
-  window.scrollTo(0,0);
+  pageScrollTop();
   history.pushState(state, '', location.href);
 }
 function landOn(state){
   CURRENT_NAV_STATE = state;
-  window.scrollTo(0,0);
+  pageScrollTop();
 }
 // keepModes is passed ONLY by the two places that deliberately open the library in a mode:
 // openAddExercises (adding to a draft) and openSwapPicker (choosing a replacement). Every other
@@ -599,7 +604,7 @@ async function home(opts){
   }
   html += `</div>`;
   $('app').innerHTML = html;
-  if(!silent) window.scrollTo(0,0);
+  if(!silent) pageScrollTop();
 }
 
 // v312 (Jeff, Sep 4): "get rid of the logging page and have it all on the active workout page.
@@ -2028,7 +2033,7 @@ function renderSeedSetup(){
     <button class="sec" style="width:100%;margin:2px 0 18px" onclick="seedAddAnother()">+ Add another lift</button>
     <button class="blue" id="seedSaveBtn" style="width:100%" onclick="seedSaveAll()">Save</button>
   </div>`;
-  window.scrollTo(0,0);
+  pageScrollTop();
 }
 // ---------- Per-exercise set logger (Hevy/Strong style) ----------
 const SET_TYPES = [
@@ -2760,7 +2765,7 @@ async function showRecap(id){
   }
   h += `<div class="rc-cta"><button class="rc-prim" onclick="showTab('home')">Done</button></div></div>`;
   $('app').innerHTML = h;
-  window.scrollTo(0,0);
+  pageScrollTop();
 }
 async function showSavePage(id){
   const s = await H.get('/api/sessions/'+id);
@@ -2827,7 +2832,7 @@ async function showSavePage(id){
     <button class="btn-primary" onclick="saveWorkout('${id}')">Save</button>
     <a class="linkbtn" style="display:block;text-align:center;margin-top:10px" onclick="editSession('${id}')">Edit workout details</a>
   </div>`;
-  window.scrollTo(0,0);
+  pageScrollTop();
   window.__saveMedia = media.map(m=>({ type:m.type, src:m.src }));
   window.__saveVis = vis;
   // render existing media as thumbnails
@@ -3083,7 +3088,7 @@ function renderWorkoutEdit(s){
     <button class="sec" onclick="exitWorkoutEdit('${s.id}')">Cancel</button>
     <button class="btn-primary" onclick="saveWorkoutEdit('${s.id}')">Save changes</button>
   </div>`;
-  window.scrollTo(0,0);
+  pageScrollTop();
   renderInlineThumbs();
 }
 function addInex(){
@@ -3256,7 +3261,7 @@ async function createFlow(){
     </div>
     <h2>Invite friends</h2>${crewQuickInviteHtml()}<div id="invList" class="card">${invRows}</div>
     ${EDITING_SESSION ? '<button class="blue" onclick="submitSession()">Save changes</button>' : '<button class="blue" onclick="submitSession()">Create workout</button>'}</div>`;
-  window.scrollTo(0,0);
+  pageScrollTop();
   renderDraft();
 }
 // This function was written TWICE, at two places in this file. The second one silently replaced
@@ -3834,7 +3839,7 @@ async function templateExercises(){
     <label class="muted">Visibility</label>
     ${visSegHtml(DRAFT.visibility)}
     <h2>Invite friends</h2>${crewQuickInviteHtml()}<div id="invList" class="card">${invRows}</div></div>`;
-  window.scrollTo(0,0);
+  pageScrollTop();
   renderDraft();
 }
 // v253 (audit finding): this was `closeSheet();templatesPage()` inline -- every OTHER way out of
@@ -4567,7 +4572,7 @@ async function progressScreen(opts){
   // regression openSession's opts.silent already guards against.
   const silent = !!(opts && opts.silent);
   const d = await H.get('/api/progress?weeks='+PROG_WEEKS+'&localToday='+localDateStr());
-  if(!d || d.error){ $('app').innerHTML = `<div class="wrap"><h1>Progress</h1><div class="muted">Couldn\'t load progress.</div></div>`; if(!silent) window.scrollTo(0,0); return; }
+  if(!d || d.error){ $('app').innerHTML = `<div class="wrap"><h1>Progress</h1><div class="muted">Couldn\'t load progress.</div></div>`; if(!silent) pageScrollTop(); return; }
   PROG_LAST = d;
   const U = d.unit || 'lb';
   // Bodyweight lifts store weight 0; "at 0 lb" reads as a bug on every one of these rows.
@@ -4763,7 +4768,7 @@ async function progressScreen(opts){
     <h2>Personal records</h2>
     <div class="card">${prHtml}</div>
   </div>`;
-  if(!silent) window.scrollTo(0,0);
+  if(!silent) pageScrollTop();
 }
 function setProgWeeks(w){ PROG_WEEKS=w; progressScreen({silent:true}); }
 
@@ -5274,7 +5279,7 @@ async function templates(){
   if(!mine.length && !shared.length) html += `<div class="card muted">No routines created. Create a workout and choose "Save as routine".</div>`;
   html += `</div>`;
   $('app').innerHTML = html;
-  window.scrollTo(0,0);
+  pageScrollTop();
 }
 async function useTpl(id){
   const { mine, shared } = await H.get('/api/templates');
@@ -5388,7 +5393,7 @@ async function friends(opts){
     <h2>Friends</h2>
     ${f.length ? `<div class="card" style="padding:6px 12px">${friendRows}</div>` : friendRows}
   </div>`;
-  if(!silent) window.scrollTo(0,0);
+  if(!silent) pageScrollTop();
 }
 
 // ---- Crews ----
@@ -6114,6 +6119,46 @@ function walkStep(delta){
 //     out from under the user. Tightened to stillOnProfileWithNothingElseOpen()'s same precise
 //     check -- ME.avatar is still updated unconditionally either way, so the next real visit to
 //     profile always shows the new photo even when this skips the in-place re-render.
+// Sep 7, 2026: the bottom nav rides up the page while scrolling on Jeff's iPhone -- with a fixed
+// nav (v160-v360) AND with the sticky one (v361), which means the phone's idea of the viewport,
+// not the nav's positioning, is what's off. This overlay prints the live viewport numbers (layout
+// viewport, visual viewport, scroll, nav rect) on the phone so the cause can be read off a
+// screenshot instead of guessed at. Settings -> Help -> Screen diagnostics; off by default,
+// remembered in localStorage so it survives reloads; pointer-events:none so it never eats a tap.
+function toggleDiag(){
+  const on = localStorage.getItem('crewfit_diag') === '1';
+  localStorage.setItem('crewfit_diag', on ? '0' : '1');
+  const v = $('diagVal'); if(v) v.textContent = on ? 'Off' : 'On';
+  syncDiag();
+}
+function syncDiag(){
+  const want = localStorage.getItem('crewfit_diag') === '1';
+  let el = document.getElementById('diagBox');
+  if(!want){ if(el) el.remove(); return; }
+  if(!el){ el = document.createElement('pre'); el.id = 'diagBox'; document.body.appendChild(el);
+    const upd = () => renderDiag(el);
+    ['scroll','resize','orientationchange'].forEach(ev => window.addEventListener(ev, upd, {passive:true}));
+    const app = document.getElementById('app'); if(app) app.addEventListener('scroll', upd, {passive:true});
+    if(window.visualViewport){ window.visualViewport.addEventListener('scroll', upd); window.visualViewport.addEventListener('resize', upd); }
+    setInterval(upd, 500);
+  }
+  renderDiag(el);
+}
+function renderDiag(el){
+  const nav = document.getElementById('nav'); const nr = nav ? nav.getBoundingClientRect() : null; const ncs = nav ? getComputedStyle(nav) : null;
+  const vv = window.visualViewport; const de = document.documentElement; const r = n => Math.round(n*10)/10;
+  const ios = (navigator.userAgent.match(/OS (\d+_\d+)/) || [])[1] || '?';
+  const lines = [
+    `v${myAppVersion()||'?'}  iOS ${ios.replace('_','.')}  standalone:${navigator.standalone===true?'yes':'no'}`,
+    `inner ${innerWidth}x${innerHeight}  client ${de.clientWidth}x${de.clientHeight}  screen ${screen.width}x${screen.height}`,
+    vv ? `visual ${r(vv.width)}x${r(vv.height)}  scale ${r(vv.scale)}  offTop ${r(vv.offsetTop)}  pageTop ${r(vv.pageTop)}` : 'visualViewport: none',
+    `appTop ${r(($('app')||{}).scrollTop||0)}  appH ${r(($('app')||{}).clientHeight||0)}  appScrollH ${($('app')||{}).scrollHeight||0}  winY ${r(scrollY)}  docH ${de.scrollHeight}`,
+    nr ? `nav ${ncs.position} top ${r(nr.top)} bottom ${r(nr.bottom)} h ${r(nr.height)}  gap-to-inner ${r(innerHeight-nr.bottom)}` : 'nav: none',
+    nr ? `nav pad-b ${ncs.paddingBottom}  vis-gap ${vv?r(vv.offsetTop+vv.height-nr.bottom):'?'}` : '',
+    `html ovf ${getComputedStyle(de).overflow}  body ovf ${getComputedStyle(document.body).overflow}  sheet-open ${de.classList.contains('sheet-open')}  zoom ${r(outerWidth/innerWidth)}`,
+  ];
+  el.textContent = lines.join('\n');
+}
 function openSettings(opts){
   const fromHistory = !!(opts && opts.fromHistory);
   // Jeff (live, looking at the render): "the back button is almost covering the settings ... put
@@ -6150,6 +6195,7 @@ function openSettings(opts){
     <h2>Help</h2>
     <div class="sheet-list">
       <button class="sheet-row" onclick="openWalkthrough()">How CrewFit works</button>
+      <button class="sheet-row" onclick="toggleDiag()">Screen diagnostics <span class="row-val" id="diagVal">${localStorage.getItem('crewfit_diag')==='1'?'On':'Off'}</span></button>
     </div>
     <h2>Danger zone</h2>
     <div class="sheet-list">
@@ -6812,9 +6858,24 @@ function syncSheetsToViewport(){
     if(sheet) sheet.style.maxHeight = Math.max(160, Math.min(vv.height - 16, window.innerHeight*0.86)) + 'px';
   });
 }
+// v363 (cold-review catch): body is a fixed 100dvh frame now and #app the only scroller. iOS does
+// NOT shrink innerHeight/100dvh for the on-screen keyboard -- only visualViewport.height shrinks --
+// so with a keyboard up the bottom keyboard-height of #app (the Send button beside #chatInput, "Log
+// set" under the last card's inputs) would be unreachable by scrolling. While the keyboard is up,
+// size body to the visible area so #app can scroll everything above it; when it goes away, restore
+// and reset any residual pan iOS left on the root (the classic fixed-frame WebKit leftover).
+let FRAME_SHRUNK = false;
+function syncFrameToViewport(){
+  if(!window.visualViewport) return;
+  const vv = window.visualViewport;
+  const keyboardUp = vv.height < window.innerHeight - 100;
+  if(keyboardUp){ document.body.style.height = Math.round(vv.height) + 'px'; FRAME_SHRUNK = true; }
+  else if(FRAME_SHRUNK){ document.body.style.height = ''; FRAME_SHRUNK = false; try{ window.scrollTo(0,0); }catch(e){} }
+}
 if(window.visualViewport){
   window.visualViewport.addEventListener('resize', syncSheetsToViewport);
   window.visualViewport.addEventListener('scroll', syncSheetsToViewport);
+  window.visualViewport.addEventListener('resize', syncFrameToViewport);
 }
 // Also sync the instant a sheet is opened (not just on the next viewport change after) -- covers
 // a sheet opened while a keyboard is already up, e.g. editLogSet() stacking a second .sheet-back
@@ -6886,6 +6947,7 @@ async function tryBoot(){
   }
   if(TOKEN && ME && ME.id){
     $('nav').classList.remove('hidden');
+    syncDiag();
     // v254: establishes a sane baseline history entry on boot -- without this the very first
     // real navigation's navigated() call pushes ON TOP OF whatever entry the browser created for
     // the bare page load (no state object at all), so a single Back press from one screen in
@@ -6927,7 +6989,7 @@ function bootRetryScreen(){
     <div class="muted">Couldn't reach the server. Check your connection and try again.</div>
     <button class="blue" style="margin-top:20px" onclick="tryBoot()">Retry</button>
   </div>`;
-  window.scrollTo(0,0);
+  pageScrollTop();
 }
 // Jeff, Aug 31: the other half of the "starting a workout" notification's deep link -- when the
 // app is ALREADY open (in this tab or another), sw.js's notificationclick handler focuses it and
