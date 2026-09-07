@@ -385,8 +385,10 @@ async function home(opts){
   if(!silent) window.HOME_ALL_SESSIONS = false;   // v364: "See all" expansion lasts until you actually leave Home
   // weeks=26, not 4: streakWeeks is computed inside the requested window, so a 4-week request
   // silently caps the streak stat at "4 week streak" — false for anyone on a longer run.
-  const [sessions, feed, _fr, prog, notif] = await Promise.all([
-    H.get('/api/sessions'), H.get('/api/feed'), H.get('/api/friends'), H.get('/api/progress?weeks=26&localToday='+localDateStr()), H.get('/api/notifications')
+  // Sep 7: /api/feed moved out of Home's fetch -- Friends' Activity now lives on the Friends tab
+  // (friends() fetches it itself), so pulling it here on every Home render would be dead weight.
+  const [sessions, _fr, prog, notif] = await Promise.all([
+    H.get('/api/sessions'), H.get('/api/friends'), H.get('/api/progress?weeks=26&localToday='+localDateStr()), H.get('/api/notifications')
   ]);
   const notifCount = (notif && notif.count) || 0;
   const myFriends = (_fr && _fr.friends) ? _fr.friends : (Array.isArray(_fr) ? _fr : []);
@@ -441,16 +443,16 @@ async function home(opts){
   // per lift) this fix does not touch.
   const best = earnedPrs.filter(p => Number(p.weight) > 0).sort((a,b) => Number(b.weight) - Number(a.weight))[0] || null;
   const withFriends = mine.filter(s => (s.participants||[]).some(x => x && x !== ME.id)).length;
+  // Sep 7 (Jeff: "do we feel like they actually add value, or is it just cool design"): week
+  // streak and days-this-week are gone from this pool. Days-this-week went because the week strip
+  // right below now shows the exact same fact visually (a green check IS "1 day this week") --
+  // stating it twice, once as a number and once as a checkmark a few lines down, was decoration,
+  // not information. Streak went by the same test Jeff applied to the other two: it's a number
+  // you glance at, not one that changes what you do next, and unlike PRs it isn't tied to any
+  // actual performance -- it just counts weeks you opened the app. `prog.streakWeeks` itself is
+  // untouched (still drives the recap screen's streak line and the profile's streak hero, both
+  // unrelated call sites) -- only removed from Home's own pool.
   const statPool = [];
-  const streakW = (prog && prog.streakWeeks) || 0;
-  const thisWeek = (prog && prog.thisWeek) || 0;
-  if(streakW >= 2) statPool.push({ num: streakW, lbl: 'week streak' });
-  // "days trained", not "workouts" — thisWeek counts distinct days with working sets (same
-  // signal the Progress tab labels days/week), and two sessions in one day would make
-  // "workouts" a false claim.
-  // Sep 6: "days this week" -- "days trained this week" wrapped to two lines and put the three
-  // stat columns on different baselines.
-  if(thisWeek >= 1) statPool.push({ num: thisWeek, lbl: thisWeek === 1 ? 'day this week' : 'days this week' });
   if(prsThisWeek >= 1) statPool.push({ num: prsThisWeek, lbl: prsThisWeek === 1 ? 'PR this week' : 'PRs this week' });
   if(mine.length >= 1) statPool.push({ num: mine.length, lbl: mine.length === 1 ? 'workout logged' : 'workouts logged' });
   if(best) statPool.push({ num: `${best.weight} ${unitOf(best)}`, lbl: 'best ' + best.exercise });
@@ -599,33 +601,52 @@ async function home(opts){
       ${exLine}${whoLine}
       <div class="next-actions" onclick="event.stopPropagation()">${actions}</div>
     </div>`;
-  } else {
-    html += `<div class="solo-line nothing-line"><span class="nl-title">Nothing planned this week.</span> Plan one with <b onclick="newWorkout()">+ New workout</b>, or start a Quick Workout right now.</div>`;
   }
+  // Sep 7 (Jeff: reverting from "hide the section" back to "the section is always there, so
+  // there's no guessing where things show up"): a genuinely nothing-planned week used to get its
+  // own "Nothing planned this week" line right here, in place of the Next up card -- but that
+  // duplicated the "Your sessions" empty state just below it once that box came back. One place
+  // says it now: when there's no Next up card, this slot is simply skipped and "Your sessions"
+  // (below) carries the message, exactly like the pre-v364 layout did before the Next up card
+  // existed to pull anything out of that list in the first place.
 
   // Solo: one honest line, and (when there's a recap to show off) the one nudge that actually
-  // recruits. Both disappear the moment you have a friend.
+  // recruits. Both disappear the moment you have a friend. Kept even after restoring the
+  // always-on section headers below (Sep 7) -- "Friends' workouts" has no CTA of its own (never
+  // did, even pre-v364), so this is still the one place a zero-friend user is told to invite
+  // someone, not just shown a quiet box that says nothing will happen until they do.
   if(!myFriends.length){
     html += `<div class="solo-line">Training solo for now — <b onclick="showTab('friends')">invite a friend</b> and they'll see ${nextUp ? 'this workout' : 'your workouts'}.</div>`;
   }
 
-  // Your sessions: everything open that isn't the Next up card -- plain rows, capped at 3.
-  if(restRows.length){
+  // Your sessions: always visible (Jeff, Sep 7: "no guessing... where things would show"). The
+  // Next up card already took the one most-relevant session out of this list, so its own empty
+  // state has three levels depending on what's left: nothing to add beyond the card (a quiet
+  // line, not a whole box -- the card already answered "what's next"), or truly nothing at all
+  // (the full original box, doing the job "Nothing planned this week" used to do above).
+  {
     const showAll = !!window.HOME_ALL_SESSIONS;
     const rows = showAll ? restRows : restRows.slice(0, 3);
-    html += `<h2>Your sessions</h2><div class="card">`;
-    for(const s of rows){
-      const live = isSessionLiveNow(s);
-      const upcoming = !live && isSessionUpcoming(s);
-      const missed = !live && !upcoming && isSessionMissed(s, ME.id);
-      const badge = live ? '<div class="live-badge">● Live now</div>' : upcoming ? '<div class="upcoming-badge">Upcoming</div>' : missed ? '<div class="missed-badge">Missed</div>' : '';
-      const others = (s.participants||[]).filter(pid => pid !== ME.id);
-      const withWho = others.length ? ` · with ${esc((() => { const f = myFriends.find(x => x.id === others[0]); const n = f ? (f.displayName || f.username || 'a friend').split(' ')[0] : 'a friend'; return others.length > 1 ? `${n} +${others.length-1}` : n; })())}` : '';
-      html += `<div class="lib-item${live?' session-live':''}" onclick="openSession('${s.id}')">
-        <div>${badge}<b>${esc(s.name)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}${withWho}</div></div></div>`;
+    html += `<h2>Your sessions</h2>`;
+    if(restRows.length){
+      html += `<div class="card">`;
+      for(const s of rows){
+        const live = isSessionLiveNow(s);
+        const upcoming = !live && isSessionUpcoming(s);
+        const missed = !live && !upcoming && isSessionMissed(s, ME.id);
+        const badge = live ? '<div class="live-badge">● Live now</div>' : upcoming ? '<div class="upcoming-badge">Upcoming</div>' : missed ? '<div class="missed-badge">Missed</div>' : '';
+        const others = (s.participants||[]).filter(pid => pid !== ME.id);
+        const withWho = others.length ? ` · with ${esc((() => { const f = myFriends.find(x => x.id === others[0]); const n = f ? (f.displayName || f.username || 'a friend').split(' ')[0] : 'a friend'; return others.length > 1 ? `${n} +${others.length-1}` : n; })())}` : '';
+        html += `<div class="lib-item${live?' session-live':''}" onclick="openSession('${s.id}')">
+          <div>${badge}<b>${esc(s.name)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}${withWho}</div></div></div>`;
+      }
+      html += `</div>`;
+      if(restRows.length > 3 && !showAll) html += `<div style="text-align:right;margin-top:-4px"><button class="txt-btn" onclick="window.HOME_ALL_SESSIONS=true; home({silent:true})">See all ${restRows.length}</button></div>`;
+    } else if(nextUp){
+      html += `<div class="solo-line">That's everything on your plate right now.</div>`;
+    } else {
+      html += homeEmpty(ICON_CAL, 'No upcoming sessions', 'Plan one with + New workout, or start a Quick Workout right now.');
     }
-    html += `</div>`;
-    if(restRows.length > 3 && !showAll) html += `<div style="text-align:right;margin-top:-4px"><button class="txt-btn" onclick="window.HOME_ALL_SESSIONS=true; home({silent:true})">See all ${restRows.length}</button></div>`;
   }
   // Solo share nudge sits UNDER your sessions (Jeff, Sep 7: "shouldn't be above sessions") -- the
   // plan comes first, the recruiting move after.
@@ -657,38 +678,27 @@ async function home(opts){
     && !(s.participants||[]).includes(ME.id)
     && !(Array.isArray(s.invited) && s.invited.includes(ME.id))
     && !s.creatorFinished);
+  // Sep 7 (Jeff: reverting the "hide until there's content" call -- "no guessing... where things
+  // would show"): always visible again, same as pre-v364, with the exact original empty copy
+  // (never had a CTA of its own -- the solo-line above carries that for a zero-friend user).
+  html += `<h2 class="light">Friends' workouts</h2>`;
   if(joinable.length){
-    html += `<h2 class="light">Friends' workouts</h2><div class="card">`;
+    html += `<div class="card">`;
     for(const s of joinable){
       const creatorName = await friendName(s.creatorId);
       html += `<div class="lib-item" onclick="openSession('${s.id}')">
         <div><b>${esc(s.name)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${esc(creatorName)} · ${fmtWhen(s.scheduledAt)}</div></div></div>`;
     }
     html += `</div>`;
+  } else {
+    html += homeEmpty(ICON_PEOPLE, 'No joinable workouts right now', `When a friend starts one you can join, it'll show up here.`);
   }
-
-  // Friend's Activity (lighter strip, in an elevated card to match Your Sessions)
-  if(feed.length){
-    html += `<h2 class="light">Friends' activity</h2><div class="card feed-strip">`;
-    for(const f of feed){
-      const who = await friendName(f.by);
-      if(f.type==='recap' && f.sessionId){
-        // a posted recap is a THING to open, not just a fact - tap goes to the workout itself
-        const lead = f.thumb ? `<img class="feed-thumb" src="${esc(f.thumb)}" alt="">` : `<span class="act-chip done">✓</span>`;
-        // .feed-lead is a fixed 36px column (Jeff, Aug 28 2026): photo thumbs, check pills and PR
-        // pills are all different widths, so without it the NAME started at a different x on every
-        // row type and mixed feeds looked ragged. Every feed row's lead must sit inside one.
-        html += `<div class="feed-item feed-recap" onclick="viewPost('${f.sessionId}','${f.by}')" style="cursor:pointer"><span class="feed-lead">${lead}</span><span><b>${esc(who)}</b> ${esc(f.text)}</span></div>`;
-        continue;
-      }
-      const ic = f.type==='pr' ? `<span class="act-chip act-pr">PR</span>` : `<span class="act-chip done">✓</span>`;
-      html += `<div class="feed-item" onclick="profileView('${f.by}')" style="cursor:pointer"><span class="feed-lead">${ic}</span><span><b>${esc(who)}</b> ${esc(f.text)}</span></div>`;
-    }
-    html += `</div>`;
-  } else if(myFriends.length){
-    // You do have friends, they just haven't posted anything yet -- one open line, no box.
-    html += `<div class="solo-line">Nothing from your friends yet — their finished workouts will show up here.</div>`;
-  }
+  // Friends' Activity moved to the Friends tab (Jeff, Sep 7: "move friends activity to the
+  // friends page and allow for the original fields on the home page to come back") -- see
+  // friends() for the section that replaces this. Home keeps Your sessions + Friends' workouts,
+  // both always-visible again; the feed doesn't belong to either of those, it belongs to the page
+  // that's already about your friends, where someone goes looking for it on purpose instead of
+  // scrolling past it at the bottom of Home.
   html += `</div>`;
   $('app').innerHTML = html;
   if(!silent) pageScrollTop();
@@ -5428,8 +5438,38 @@ async function friends(opts){
   // people manage who they train with) but now only ever shows follow requests + your connections
   // -- the old separate "friend request" approve/reject step is gone.
   const silent = !!(opts && opts.silent);
-  const [data, crews] = await Promise.all([H.get('/api/friends'), H.get('/api/crews')]);
+  // Sep 7 (Jeff: "move friends activity to the friends page"): /api/feed used to be fetched by
+  // Home; now this tab fetches it instead, same call, just relocated with the section it feeds.
+  const [data, crews, feed] = await Promise.all([H.get('/api/friends'), H.get('/api/crews'), H.get('/api/feed')]);
   const f = data.friends||[]; const freq = data.followRequests||[];
+  // Named differently from home()'s own friendName() -- both are function-scoped and would never
+  // actually collide at runtime, but test/wiring.mjs's duplicate-definition check is a plain text
+  // scan, not scope-aware, so it flags same-named consts across functions as one dead definition
+  // silently winning. Distinct names sidestep the false positive instead of fighting the test.
+  const actorName = async (id) => f.find(x=>x.id===id)?.displayName || 'A friend';
+  // Same feed-item markup Home used to render (moved, not rewritten) -- .feed-lead is still a
+  // fixed 36px column so photo thumbs / check pills / PR pills all start the name at the same x.
+  let activityHtml = '';
+  if(feed.length){
+    activityHtml += `<div class="card feed-strip">`;
+    for(const ff of feed){
+      const who = await actorName(ff.by);
+      if(ff.type==='recap' && ff.sessionId){
+        const lead = ff.thumb ? `<img class="feed-thumb" src="${esc(ff.thumb)}" alt="">` : `<span class="act-chip done">✓</span>`;
+        activityHtml += `<div class="feed-item feed-recap" onclick="viewPost('${ff.sessionId}','${ff.by}')" style="cursor:pointer"><span class="feed-lead">${lead}</span><span><b>${esc(who)}</b> ${esc(ff.text)}</span></div>`;
+        continue;
+      }
+      const ic = ff.type==='pr' ? `<span class="act-chip act-pr">PR</span>` : `<span class="act-chip done">✓</span>`;
+      activityHtml += `<div class="feed-item" onclick="profileView('${ff.by}')" style="cursor:pointer"><span class="feed-lead">${ic}</span><span><b>${esc(who)}</b> ${esc(ff.text)}</span></div>`;
+    }
+    activityHtml += `</div>`;
+  } else {
+    // "crew" avoided here on purpose -- this section now sits on the same page as the literal
+    // "Your Crews" feature, so the app's other "Nothing from your crew yet" copy would read like
+    // it's talking about that instead. CTA focuses the search box right above rather than
+    // repeating showTab('friends') -- redundant on a page you're already on.
+    activityHtml += homeEmpty(ICON_FEED, 'Nothing from your friends yet', 'Their finished workouts will show up here.', `<span class="he-cta" onclick="document.getElementById('fu').focus()">Find people to follow →</span>`);
+  }
   CREW_PICKER = Array.isArray(crews) ? crews : [];
   const flame = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>';
   const friendRows = f.length ? f.map(x=>`
@@ -5499,6 +5539,7 @@ async function friends(opts){
       <div id="fresults"></div>
     </div>
     ${freq.length?`<h2>Follow requests</h2><div class="card" style="padding:6px 12px">${followReqRows}</div>`:''}
+    <h2 class="light">Activity</h2>${activityHtml}
     <div class="h1-row"><h2 style="margin:0">Your Crews</h2><span class="he-cta" style="margin:0 0 0 auto" onclick="newCrewSheet()">+ New crew</span></div>
     ${crews.length ? `<div class="card" style="padding:6px 12px">${crewRows}</div>`
       // Sep 5 (Jeff, following up on the crew-row hint above): a brand-new user with zero crews
