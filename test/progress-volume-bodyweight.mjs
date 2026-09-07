@@ -1,7 +1,6 @@
-// Progress page additions (Aug 31): weekly volume-per-muscle-group meter rows, and body weight
-// tracking. Both approved by Jeff ("Yes lets build these") after the gap analysis -- the page
-// tracked WHEN you trained and single-lift trend, but never WHAT muscle groups you'd actually
-// been training, and had no way to log bodyweight at all.
+// Progress page additions (Aug 31): weekly volume-per-muscle-group meter rows. Approved by Jeff
+// ("Yes lets build these") after the gap analysis -- the page tracked WHEN you trained and
+// single-lift trend, but never WHAT muscle groups you'd actually been training.
 //
 // volumeFor(): working sets logged THIS calendar week (Monday-Sunday UTC), attributed to every
 // muscle group the exercise targets, full credit each -- same "touch it, it counts" rule
@@ -11,9 +10,9 @@
 // bleed into this week's count, and a CUSTOM exercise (not in EX_LIB, only in DB.customExercises)
 // still gets credited via findExLibEntry's fallback lookup.
 //
-// bodyweightFor()/POST+DELETE /api/me/bodyweight: one entry per calendar day (same-day re-log
-// upserts rather than piling up), read back converted into whatever unit the user is on now
-// (same "typed unit frozen, read unit live" rule as logged sets), and deletable.
+// (Body weight tracking, also added Aug 31, was removed Sep 7 -- Jeff: "I feel that's not
+// needed." Its endpoints, bodyweightFor(), and this file's own tests for them are gone; see
+// server.js/app.js history for what used to be here.)
 //
 // volumeFor(userId, weeks)/volumeAvg (Aug 31, round 2): "should weekly volume show monthly?" led
 // to a trailing 4-week average alongside the existing this-week count rather than a separate
@@ -49,14 +48,12 @@ ok(!!srv, 'server boots');
 
 const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const get = (p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
-const del = (p, tok) => fetch(B + p, { method: 'DELETE', headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
 const reg = (username, pin, displayName) => post('/api/register', { username, pin, displayName });
 
 function isoDaysAgo(n) {
   const d = new Date(); d.setUTCDate(d.getUTCDate() - n);
   return d.toISOString();
 }
-function localToday() { return new Date().toISOString().slice(0, 10); }
 // Monday-anchored, same boundary volumeFor() itself uses -- weeksAgo=0 is THIS week's Monday,
 // weeksAgo=3 is 3 Mondays back. dayOffset nudges a day or two into the week so the timestamp
 // doesn't sit exactly on the boundary.
@@ -308,53 +305,6 @@ console.log('volume trend: a scheduledAt stored as epoch SECONDS still lands in 
   const totalAcrossAllBuckets = weeks.reduce((sum, w) => sum + ((w.groups.find(g => g.group === 'quads') || {}).sets || 0), 0);
   ok(quadsThisWeek === 6, `epoch-seconds scheduledAt lands in THIS week's bucket, same as an ISO string would (got ${quadsThisWeek})`);
   ok(totalAcrossAllBuckets === 6, `the 6 sets show up exactly once across all buckets, not dropped or duplicated (got ${totalAcrossAllBuckets})`);
-}
-
-console.log('body weight: log, upsert same day, unit conversion, delete');
-{
-  const u = await reg('bw_u1', 'pass1234', 'BW One');
-  const today = localToday();
-
-  const first = await post('/api/me/bodyweight', { weight: 180, unit: 'lb', date: today }, u.token);
-  ok(!first.error, `first log goes through (got ${first.error})`);
-  ok(first.entries.length === 1 && first.entries[0].weight === 180, `one entry at 180 (got ${JSON.stringify(first.entries)})`);
-
-  const again = await post('/api/me/bodyweight', { weight: 179, unit: 'lb', date: today }, u.token);
-  ok(again.entries.length === 1, `same-day re-log UPSERTS, not a second row (got ${again.entries.length} entries)`);
-  ok(again.entries[0].weight === 179, `upsert replaced the value (got ${again.entries[0].weight})`);
-
-  const bad = await post('/api/me/bodyweight', { weight: 0, unit: 'lb', date: today }, u.token);
-  ok(bad.error === 'Enter your weight', `zero weight refused (got ${JSON.stringify(bad)})`);
-
-  await post('/api/me/units', { units: 'kg' }, u.token);
-  const prog = await get('/api/progress', u.token);
-  ok(prog.bodyweight.unit === 'kg', `progress reports the user's current unit (got ${prog.bodyweight.unit})`);
-  const expectedKg = Math.round((179 / 2.2046226218) * 2) / 2;
-  ok(Math.abs(prog.bodyweight.entries[0].weight - expectedKg) < 0.01,
-    `179 lb reads back converted to ~${expectedKg} kg (got ${prog.bodyweight.entries[0].weight})`);
-
-  const gone = await del(`/api/me/bodyweight/${today}`, u.token);
-  ok(gone.entries.length === 0, `delete removes the entry (got ${gone.entries.length} left)`);
-}
-
-console.log('body weight: two distinct days both show up, sorted ascending');
-{
-  const u = await reg('bw_u2', 'pass1234', 'BW Two');
-  const today = localToday();
-  const yestDate = new Date(); yestDate.setUTCDate(yestDate.getUTCDate() - 1);
-  const yest = yestDate.toISOString().slice(0, 10);
-  await post('/api/me/bodyweight', { weight: 200, unit: 'lb', date: yest }, u.token);
-  await post('/api/me/bodyweight', { weight: 198, unit: 'lb', date: today }, u.token);
-  const prog = await get('/api/progress', u.token);
-  ok(prog.bodyweight.entries.length === 2, `two distinct days both stored (got ${prog.bodyweight.entries.length})`);
-  ok(prog.bodyweight.entries[0].date === yest && prog.bodyweight.entries[1].date === today,
-    `sorted ascending, oldest first (got ${JSON.stringify(prog.bodyweight.entries.map(e => e.date))})`);
-}
-
-console.log('body weight: auth required');
-{
-  const noAuth = await post('/api/me/bodyweight', { weight: 180, unit: 'lb' }, null);
-  ok(noAuth.error !== undefined, `unauthenticated POST is refused (got ${JSON.stringify(noAuth)})`);
 }
 
 console.log(fails ? `\n${fails} FAILURE(S)\n` : '\nall assertions passed\n');

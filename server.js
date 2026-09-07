@@ -3489,19 +3489,6 @@ function volumeTrendFor(userId, weeks) {
   };
 }
 
-// ---- Body weight tracking --------------------------------------------------------------------
-// One entry per calendar day (see POST /api/me/bodyweight below — same day re-logs upsert rather
-// than pile up), stored in whatever unit it was typed in exactly like a logged set, converted to
-// the user's current preference on the way OUT so switching units never rewrites history.
-function bodyweightFor(userId) {
-  const u = DB.users[userId];
-  const unit = (u && u.units) || 'lb';
-  const raw = (u && Array.isArray(u.bodyweight)) ? u.bodyweight : [];
-  const entries = raw.slice().sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : 0))
-    .map(e => ({ date: e.date, weight: inUnit(e.weight, e.unit, unit) }));
-  return { unit, entries };
-}
-
 // ---- Strength trend -----------------------------------------------------------------------
 // Estimated max (Epley: w * (1 + reps/30)) converts every set to one comparable number, so a
 // heavy triple and a light set of ten sit on the same line. One point per session, taken from
@@ -3771,38 +3758,6 @@ app.post('/api/me/trend-picks', auth, async (req, res) => {
   res.json({ picks: clean });
 });
 
-// Body weight tracking (Progress page, Aug 31 addition). One entry per calendar day — a same-day
-// re-log UPSERTS in place rather than piling up duplicates, same "correcting a mistake, not
-// logging a second real event" call as the once-per-day rule on creditFinish. `date` is trusted
-// the same way /leave and /lock already trust the client's local day (see isValidLocalDateStr's
-// own comment above) since a weigh-in has no meaningful server-side day of its own to fall back to.
-app.post('/api/me/bodyweight', auth, async (req, res) => {
-  const { weight, unit, date } = req.body || {};
-  const w = numIn(weight, 2000);
-  if (!(w > 0)) return res.status(400).json({ error: 'Enter your weight' });
-  const u = (DB.users[req.userId] && DB.users[req.userId].units) || 'lb';
-  const wu = (unit === 'kg' || unit === 'lb') ? unit : u;
-  const d = isValidLocalDateStr(date) ? date : new Date().toISOString().slice(0, 10);
-  const user = DB.users[req.userId];
-  user.bodyweight = user.bodyweight || [];
-  const existing = user.bodyweight.find(e => e.date === d);
-  if (existing) { existing.weight = w; existing.unit = wu; existing.at = new Date().toISOString(); }
-  else {
-    // Defensive cap, same spirit as the 500-row cap on custom exercises — one entry a day means
-    // this takes ~10 years to matter, but an unbounded per-user array is still worth bounding.
-    if (user.bodyweight.length >= 3660) user.bodyweight.shift();
-    user.bodyweight.push({ date: d, weight: w, unit: wu, at: new Date().toISOString() });
-  }
-  await save(DB);
-  res.json(bodyweightFor(req.userId));
-});
-app.delete('/api/me/bodyweight/:date', auth, async (req, res) => {
-  const user = DB.users[req.userId];
-  user.bodyweight = (user.bodyweight || []).filter(e => e.date !== req.params.date);
-  await save(DB);
-  res.json(bodyweightFor(req.userId));
-});
-
 // The record list the UI renders: earned records, plus seeded entries for lifts with none yet.
 // An earned record that has passed its seed is flagged so the UI can celebrate it once.
 function recordsFor(userId) {
@@ -3912,8 +3867,7 @@ app.get('/api/progress', auth, async (req, res) => {
     // computed/returned since Consistency's own weeksFor still needs this same `weeks` param, and
     // nothing else currently depends on removing this field. Candidate for cleanup later if truly
     // nothing else ever needs real per-week history again.
-    volumeTrend: volumeTrendFor(req.userId, weeks),
-    bodyweight: bodyweightFor(req.userId)
+    volumeTrend: volumeTrendFor(req.userId, weeks)
   });
 });
 

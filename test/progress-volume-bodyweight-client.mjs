@@ -1,7 +1,6 @@
 // Progress page additions (Aug 31) -- client-side half. Server aggregation is covered by
-// test/progress-volume-bodyweight.mjs; this drives the real progressScreen/bodyweightChart/
-// openBodyweightSheet code in public/app.js via node:vm, same harness family as
-// test/suggest-add-exercise-client.mjs / test/audit-v253-client.mjs.
+// test/progress-volume-bodyweight.mjs; this drives the real progressScreen code in public/app.js
+// via node:vm, same harness family as test/suggest-add-exercise-client.mjs / test/audit-v253-client.mjs.
 //
 // Covers:
 //  - Volume trend: one row per non-cardio muscle group, "N / target sets" text, correct fill
@@ -12,20 +11,16 @@
 //    3 months range picker: no "Overall"/"Pick a muscle" chips, no picker sheet, no per-muscle SVG
 //    chart -- every muscle always shows as its own row, all the time.)
 //  - Empty state when nothing has been trained yet this week.
-//  - Body weight: empty-state CTA, single-entry state (no chart yet), multi-entry state renders an
-//    SVG chart with no crash -- this is the exact bug class the wiring test (xs/ys collision) would
-//    have caught at runtime if it had slipped through: bodyweightChart's own scale functions have
-//    to actually be in scope where they're used, not just declared.
-//  - openBodyweightSheet prefills today's existing entry (upsert-by-day, same as the server test)
-//    and posts {weight, unit, date} to /api/me/bodyweight on Save.
-//  - PROG_LAST is stashed after every progressScreen() render so the sheet (opened from a button
-//    on the page, not passed data directly) has something to read.
 //  - This week/Month/3 months range picker (round 6, replacing the earlier This-week/4-wk-avg
 //    2-way toggle): the pill markup, the range-dependent numbers (with a "/wk" suffix and switched
 //    rulenote copy on the two longer ranges), and specifically that the collapsed 5-row selection
 //    is PINNED to "This week" ranking regardless of which range is being viewed -- a real bug Jeff
 //    caught in the first draft, where tapping the toggle could swap out which muscles even
 //    appeared, not just their numbers.
+//
+// Sep 7 (Jeff): the Body weight section (chart, openBodyweightSheet, empty/one-entry/multi-entry
+// states) was removed from the Progress page entirely -- "I feel that's not needed" -- along with
+// its server endpoints (see server.js) and its own tests here.
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
@@ -66,16 +61,11 @@ const doc = {
 };
 
 let PROGRESS_FIXTURE = null;   // set per-test before calling progressScreen()
-let lastBodyweightPost = null;
 
 function jsonRes(v) { return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(v) }); }
 function mockFetch(url, opts) {
   const method = (opts && opts.method) || 'GET';
   if (/^\/api\/progress/.test(url) && method === 'GET') return jsonRes(PROGRESS_FIXTURE);
-  if (url === '/api/me/bodyweight' && method === 'POST') {
-    lastBodyweightPost = JSON.parse(opts.body);
-    return jsonRes({ unit: 'lb', entries: [] });
-  }
   return jsonRes({});
 }
 
@@ -100,7 +90,6 @@ vm.runInContext(SRC, ctx, { filename: 'public/app.js' });
 await new Promise(r => setTimeout(r, 0)); // let the no-token boot IIFE settle harmlessly
 
 const progressScreen = vm.runInContext('progressScreen', ctx);
-const openBodyweightSheet = vm.runInContext('openBodyweightSheet', ctx);
 const toggleVolExpanded = vm.runInContext('toggleVolExpanded', ctx);
 const getVolExpanded = () => vm.runInContext('VOL_EXPANDED', ctx);
 const setVolMode = vm.runInContext('setVolMode', ctx);
@@ -127,18 +116,17 @@ function baseProgress(overrides) {
     volume: { weekOf: '2026-08-24', weeks: 1, groups: emptyGroups() },
     volumeAvg: { weekOf: '2026-08-10', weeks: 4, groups: emptyGroups() },
     volume3mo: { weekOf: '2026-06-02', weeks: 13, groups: emptyGroups() },
-    bodyweight: { unit: 'lb', entries: [] },
   }, overrides);
 }
 
-console.log('volume trend: empty state when nothing trained in any range');
+console.log('volume trend: all-zero rows render when nothing trained in any range (Sep 7, Jeff: the zeroed rows ARE the report -- "okay, we need to start training those 0s" -- not a placeholder sentence hiding them)');
 {
   PROGRESS_FIXTURE = baseProgress();
   await progressScreen({ silent: true });
   const html = appEl.innerHTML;
   ok(html.includes('Volume trend'), 'section heading renders');
-  ok(html.includes("Log some working sets this"), 'shows the empty-state note (got no match)');
-  ok(!html.includes('mv-row'), 'no meter rows rendered when nothing trained yet');
+  ok(!html.includes("Log some working sets this"), 'the old generic placeholder sentence is gone');
+  ok(html.includes('mv-row'), 'meter rows render even when everything is at 0 -- that is the point of this section');
   ok(!html.includes(`onclick="setVolMode`), 'no range picker when This week, Month AND 3 months are all truly empty');
 }
 
@@ -154,8 +142,8 @@ console.log('volume trend: range picker still shows when THIS WEEK is empty but 
 
   await progressScreen({ silent: true });
   const html = appEl.innerHTML;
-  ok(html.includes("Log some working sets this"), 'This week itself still shows its own empty state (got no match)');
-  ok(!html.includes('mv-row'), 'no rows rendered while on the empty "This week" view');
+  ok(!html.includes("Log some working sets this"), 'This week -- itself still all-zero -- gets real zeroed rows too, not the old placeholder sentence');
+  ok(html.includes('mv-row'), 'rows DO render on the empty "This week" view, each reading 0 against its target');
   ok(html.includes(`onclick="setVolMode('month')"`), 'the "Month" button IS offered even though this week is empty (this was the bug)');
 
   setVolMode('month');
@@ -299,61 +287,6 @@ console.log('volume trend: round 6 -- no "Overall"/"Pick a muscle" chips and no 
   ok(vm.runInContext(`typeof TREND_VOL_PICK`, ctx) === 'undefined', 'TREND_VOL_PICK no longer exists in app.js');
 }
 
-console.log('body weight: empty state offers a CTA, no chart');
-{
-  PROGRESS_FIXTURE = baseProgress();
-  await progressScreen({ silent: true });
-  const html = appEl.innerHTML;
-  ok(html.includes('Body weight'), 'section heading renders');
-  ok(html.includes('Not tracked yet'), 'empty state message renders');
-  ok(html.includes('openBodyweightSheet()'), 'a control opens the log sheet');
-  ok(!html.includes('<polyline') && !html.includes('class="ch-svg"') && !/<svg[^>]*viewBox="0 0 3\d\d/.test(html), 'no chart svg with zero entries (the open empty state\'s 30px icon is not a chart)');
-}
-
-console.log('body weight: one entry shows the value but not a chart yet');
-{
-  PROGRESS_FIXTURE = baseProgress({ bodyweight: { unit: 'lb', entries: [{ date: '2026-08-30', weight: 181 }] } });
-  await progressScreen({ silent: true });
-  const html = appEl.innerHTML;
-  ok(html.includes('181'), 'the single logged weight is shown');
-  ok(html.includes('One more entry starts the chart'), 'explains the chart needs a second point');
-  ok(!html.includes('<svg'), 'still no chart svg with only one entry');
-}
-
-console.log('body weight: two+ entries render a real chart with no crash and a neutral delta');
-{
-  PROGRESS_FIXTURE = baseProgress({ bodyweight: { unit: 'lb', entries: [
-    { date: '2026-08-24', weight: 182 }, { date: '2026-08-27', weight: 180.5 }, { date: '2026-08-30', weight: 179 },
-  ] } });
-  await progressScreen({ silent: true }); // this is the call that would throw ReferenceError: xs/ys is not defined if bodyweightChart's own scale fns weren't correctly in scope
-  const html = appEl.innerHTML;
-  ok(html.includes('<svg'), 'chart svg renders for 3 entries');
-  ok(html.includes('179'), 'latest weight is the headline value');
-  ok(html.includes('-3 lb since'), 'delta since first entry is shown, plainly signed (got no match)');
-  ok(!/class="drv-p up"|class="drv-p flat"/.test(html), 'delta is NOT colored via the green "up"/achievement class -- direction is not a judgment here');
-}
-
-console.log('openBodyweightSheet: prefills today\'s existing entry and posts on save');
-{
-  const today = new Date().toISOString().slice(0, 10);
-  PROGRESS_FIXTURE = baseProgress({ bodyweight: { unit: 'lb', entries: [{ date: today, weight: 175 }] } });
-  await progressScreen({ silent: true }); // populates PROG_LAST
-  openBodyweightSheet();
-  // The fake DOM doesn't parse innerHTML into a real prefilled <input> (teVal.value never moves on
-  // its own here -- see the identical caveat in test/text-entry-double-tap.mjs), so check the sheet
-  // markup itself for the prefilled value attribute rather than a live input property.
-  const sheetHtml = body._children[body._children.length - 1].innerHTML;
-  ok(sheetHtml.includes('value="175"'), `sheet markup prefills today's already-logged weight (got ${sheetHtml.slice(0, 200)})`);
-  teVal.value = '174.5';
-  lastBodyweightPost = null;
-  vm.runInContext('_teConfirm()', ctx);
-  await new Promise(r => setTimeout(r, 0));
-  ok(!!lastBodyweightPost, 'Save posts to /api/me/bodyweight');
-  ok(lastBodyweightPost && lastBodyweightPost.weight === 174.5, `posts the typed weight (got ${lastBodyweightPost && lastBodyweightPost.weight})`);
-  ok(lastBodyweightPost && lastBodyweightPost.date === today, `posts today's local date (got ${lastBodyweightPost && lastBodyweightPost.date})`);
-  ok(lastBodyweightPost && lastBodyweightPost.unit === 'lb', `posts the user's current unit (got ${lastBodyweightPost && lastBodyweightPost.unit})`);
-}
-
 // Consistency card only, between its own heading and Strength trend's -- same scoping reasoning
 // as trendSection above.
 const consistencySection = html => html.slice(html.indexOf('Consistency'), (() => { const i = html.indexOf('Strength trend'); return i === -1 ? html.length : i; })());
@@ -410,6 +343,65 @@ console.log('Consistency: "How it works" line is absent on the true empty state 
   const section = consistencySection(appEl.innerHTML);
   ok(!section.includes('how-link'), `no rulenote when there is no chart to explain yet (got ${section.slice(0, 400)})`);
   ok(section.includes('No workouts logged yet'), 'shows the true empty state instead (got no match)');
+}
+
+console.log('Page subtitle: no demoralizing "0 days trained this week" (Sep 7, Jeff: the app already has a standing rule against zero-stats -- see Home\'s stat row -- and this line broke it, sitting right under the page title)');
+{
+  // Case 1: a returning user (real history exists -- nothingYet is false) who just hasn't trained
+  // YET this particular week. Used to render "0 days trained this week"; now renders no subtitle
+  // line at all, same "just don't show the zero" rule the Home stat row already follows.
+  PROGRESS_FIXTURE = baseProgress({
+    weeks: [{ weekOf: '2026-08-17', days: 2 }, { weekOf: '2026-08-24', days: 0 }],
+    thisWeek: 0,
+  });
+  await progressScreen({ silent: true });
+  const html = appEl.innerHTML;
+  ok(!html.includes('0 days trained this week') && !/<p class="sub">\s*<\/p>/.test(html), `no demoralizing zero-day subtitle for a returning user mid-week (got ${html.slice(html.indexOf('<h1>'), html.indexOf('<h1>') + 200)})`);
+  ok(!html.includes('class="sub"'), 'no subtitle paragraph renders at all in this state -- not even an empty one');
+
+  // Case 2: nothingYet (brand new account, never trained) keeps its own distinct, non-zero copy --
+  // unaffected by this fix, still the "here\'s what to do" nudge, not a bare "0".
+  PROGRESS_FIXTURE = baseProgress();
+  await progressScreen({ silent: true });
+  const html2 = appEl.innerHTML;
+  ok(html2.includes('Log a workout and this fills in'), 'brand-new-account copy is unchanged');
+
+  // Case 3: a real, non-zero count still renders normally.
+  PROGRESS_FIXTURE = baseProgress({
+    weeks: [{ weekOf: '2026-08-17', days: 2 }, { weekOf: '2026-08-24', days: 3 }],
+    thisWeek: 3,
+  });
+  await progressScreen({ silent: true });
+  const html3 = appEl.innerHTML;
+  ok(html3.includes('3 days trained this week'), 'a real nonzero count still renders as before');
+}
+
+console.log('Strength trend: a negative overall trend gets a one-line cushion, honest but not harsh (Sep 7, Jeff: "no cushioning" on a blunt "-3%" headline)');
+{
+  const liftFixture = (changePct, currentWeight) => ([{
+    name: 'Bench Press', points: [{ at: '2026-08-24T09:00:00Z', weight: 150, reps: 8 }],
+    changePct, currentWeight,
+  }]);
+  // Overall trend ends negative (0% -> -3%) -- the exact "flat, undecorated headline" case Jeff
+  // flagged. The real number is NOT hidden or softened -- honesty still matters -- just given one
+  // line of context so it doesn't land as a bare, unexplained bad grade.
+  PROGRESS_FIXTURE = baseProgress({
+    trend: { lifts: liftFixture(-3, 145), overall: [{ at: '2026-08-24T09:00:00Z', pct: 0 }, { at: '2026-08-31T09:00:00Z', pct: -3 }], allNames: ['Bench Press'], picks: [] },
+  });
+  await progressScreen({ silent: true });
+  const html = appEl.innerHTML;
+  ok(html.includes('-3%') && html.includes('overall strength'), `the real negative number still shows as-is -- not hidden (got ${html.slice(html.indexOf('ch-val'), html.indexOf('ch-val') + 60)})`);
+  ok(html.includes('a dip here is normal week to week, not a setback'), 'a negative overall trend gets the one-line cushion');
+
+  // Overall trend ends flat/positive -- no cushion needed, no clause added, base note unchanged.
+  PROGRESS_FIXTURE = baseProgress({
+    trend: { lifts: liftFixture(2, 155), overall: [{ at: '2026-08-24T09:00:00Z', pct: 0 }, { at: '2026-08-31T09:00:00Z', pct: 2 }], allNames: ['Bench Press'], picks: [] },
+  });
+  await progressScreen({ silent: true });
+  const html2 = appEl.innerHTML;
+  ok(html2.includes('+2%'), 'a positive overall trend still shows as-is');
+  ok(!html2.includes('a dip here is normal'), 'no cushion clause added when the trend is not negative');
+  ok(html2.includes("Each lift compared with where it started, weighted by how heavy it is"), 'base explanatory note is unchanged');
 }
 
 console.log(fails ? `\n${fails} FAILURE(S)\n` : '\nall assertions passed\n');
