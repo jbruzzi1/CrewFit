@@ -357,6 +357,7 @@ const ICON_LIST = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><
 const ICON_BELL = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M6 8a6 6 0 0 1 12 0c0 4 1.5 5.5 2 6.5H4c.5-1 2-2.5 2-6.5Z" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 19a2 2 0 0 0 4 0" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round"/></svg>`;
 // Same speech-bubble outline the recap social row already uses for comment counts (woCard, below),
 // just scaled up to the other ICON_* constants' 30px open-empty-state size.
+const ICON_SCALE = '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M12 12l2.5-3"/><path d="M7.5 9.5a6 6 0 0 1 9 0"/></svg>';
 const ICON_CHAT = `<svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
 // Sep 4: the Home/Profile bell button's icon -- same inline-SVG-string convention as gearSvg()
 // below (stroke="currentColor" so it inherits the button's own color, no separate light/dark rule
@@ -1481,7 +1482,7 @@ async function loadPostComments(id, authorId){
   const box=$('chatbox'); if(!box) return;
   const cs=await H.get(`/api/sessions/${id}/posts/${authorId}/comments`);
   if(!Array.isArray(cs)){ box.innerHTML='<div class="muted">Comments aren\'t visible here.</div>'; return; }
-  if(!cs.length){ box.innerHTML='<div class="muted">No comments yet. Be the first to comment.</div>'; return; }
+  if(!cs.length){ box.innerHTML='<div class="muted chat-empty">No comments yet — be the first.</div>'; return; }
   // Jeff, Sep 1: real photo avatars, not just letter circles -- avatarHtml() (defined below) is
   // the app's existing real-photo-or-initials helper, already used on Home/Profile/friends rows.
   // people[] caches the {displayName, username, avatar} shape it wants, one lookup per unique
@@ -1735,7 +1736,7 @@ async function loadChat(s){
   // A refusal is not an empty thread. This reported "No comments yet" on a 403, which is a claim
   // about the workout that happens to be false.
   if(!Array.isArray(cs)){ box.innerHTML='<div class="muted">Only people in this workout can see the chat.</div>'; return; }
-  if(!cs.length){ box.innerHTML='<div class="muted">No comments yet. Be the first to comment.</div>'; return; }
+  if(!cs.length){ box.innerHTML='<div class="muted chat-empty">No messages yet — say hey.</div>'; return; }
   const nm={};
   for(const c of cs){ if(!(c.userId in nm)) nm[c.userId]= await nameOf(c.userId); }
   box.innerHTML = cs.map(c=>{
@@ -2785,7 +2786,7 @@ async function showSavePage(id){
   const media = Array.isArray(post.media) ? post.media : [];
   $('app').innerHTML = `<div class="wrap save-page">
     <h1>Save workout</h1>
-    <p class="sub">${esc(s.name||'Workout')} · ${when} · ${plur((s.exercises||[]).length,'exercise')}</p>
+    <p class="sub">${when} · ${plur((s.exercises||[]).length,'exercise')}</p>
     <div class="sess-card">
       <b>${esc(s.name||'Workout')}</b>
       <div class="tag">${esc(exNames.join(' · '))}</div>
@@ -3402,7 +3403,17 @@ function tplSubtitle(t){
 }
 // ---- Templates: page-based flow (list -> name -> pick exercises -> save) ----
 const TPL_MODE = { active:false, id:null, name:'', copy:false };   // active while building a template; copy = forking a friend's shared routine
+// Sep 7 (cold-review catch): the Routines page's new "← Back" has to know where it came from.
+// From the New Workout form, createFlow() isn't a history entry (see the nav comment near the
+// top of the file), so history.back() would drop the person on the tab underneath, form gone --
+// tplUse() already returns by calling createFlow() directly, and this Back does the same.
+let TPL_FROM_CREATE = false;
+function routinesBack(){
+  if(TPL_FROM_CREATE){ TPL_FROM_CREATE = false; createFlow(); }
+  else history.back();
+}
 async function templatesPage(opts){
+  if(!(opts && (opts.replace || opts.fromHistory))) TPL_FROM_CREATE = !!$('wname');
   // Same gap as openAddExercises() had: "Browse templates" is also reachable mid-create (from
   // createFlow()'s form), and tplUse() returns via createFlow() too — so without stashing here,
   // browsing templates mid-create silently reverted name/visibility/date/location/length/note.
@@ -3445,7 +3456,7 @@ async function templatesPage(opts){
   const row = (t)=>`<div class="lib-item" onclick="tplView('${t.id}')"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${tplSubtitle(t)}${t.ownerName?` · from ${esc(t.ownerName)}`:''}</div></div>
     <button class="sec sm" onclick="event.stopPropagation(); tplUse('${t.id}')">Use</button></div>`;
   $('app').innerHTML = `<div class="wrap tpl-page">
-    <div class="pick-head lib-head"><h1 style="flex:1">Routines</h1>
+    <div class="pick-head lib-head"><button class="sec sm" onclick="routinesBack()">← Back</button><h1 style="flex:1">Routines</h1>
       <button class="icon-btn" onclick="tplNew()" title="New routine">＋</button></div>
     <div class="muted" style="font-size:13px;margin:4px 2px 12px">Reusable workouts. Build one, then use it to start a new session in a tap.</div>
     ${mine.length?mine.map(row).join(''):homeEmpty(ICON_LIST, 'No routines yet', 'Tap + to create one, or save a finished workout as a routine.')}
@@ -3995,10 +4006,12 @@ function eqFamilies(e){
   return [...fams];
 }
 function eqLabel(key){ const f=EQ_FAMILY.find(x=>x.key===key); return f?f.label:key; }
-function exBadges(e){
+// Sep 7 (audit): list rows carry the level only -- the COMPOUND/ISOLATION tag on every row was
+// noise that squeezed long names onto two lines. The detail sheet still shows it (withType).
+function exBadges(e, withType){
   const b=[];
   if(e.level) b.push(`<span class="ex-badge lv-${esc(e.level)}"><span class="dot"></span>${esc(e.level)}</span>`);
-  b.push(`<span class="ex-badge ex-type">${e.is_compound?'Compound':'Isolation'}</span>`);
+  if(withType) b.push(`<span class="ex-badge ex-type">${e.is_compound?'Compound':'Isolation'}</span>`);
   return b.join('');
 }
 // Solid blue when favorited, outline/muted when not -- reuses --blue (the app's existing
@@ -4345,11 +4358,8 @@ function volTrendChart(d){
 function bodyweightChart(d, U){
   const bw = (d.bodyweight && d.bodyweight.entries) || [];
   const logBtn = `<button class="txt-btn" style="margin-left:auto" onclick="openBodyweightSheet()">+ Log weight</button>`;
-  if(!bw.length) return `<div class="sec-head"><h2>Body weight</h2></div><div class="card"><div class="empty">
-    <div class="empty-t">Not tracked yet</div>
-    <div class="empty-b">Log your weight and it starts charting here.</div>
-    <button class="blue" style="margin-top:10px" onclick="openBodyweightSheet()">+ Log weight</button>
-  </div></div>`;
+  // Sep 7 (audit): the app's open empty state, not a card with a box inside it.
+  if(!bw.length) return `<div class="sec-head"><h2>Body weight</h2></div>${homeEmpty(ICON_SCALE, 'Not tracked yet', 'Log your weight and it starts charting here.', `<span class="he-cta" onclick="openBodyweightSheet()">+ Log weight</span>`)}`;
   if(bw.length<2){
     const only = bw[0];
     return `<div class="sec-head"><h2>Body weight</h2>${logBtn}</div><div class="card">
@@ -4785,6 +4795,7 @@ async function library(opts){
   const head = LIB_ADDMODE
     ? `<div class="pick-head lib-head">
          <h1 style="flex:1">${QUICK_ADD_MODE?'Quick Workout':'Workouts'}</h1>
+         ${QUICK_ADD_MODE?`<button class="txt-btn" onclick="quickPickRoutine()" title="Start from a routine">Routine</button>`:''}
          <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
          <button class="blue sm" onclick="libDone()">Done (<span id="libDoneCount">${DRAFT.exercises.length}</span>)</button>
        </div>`
@@ -4808,10 +4819,9 @@ async function library(opts){
          <button class="txt-btn" onclick="templatesPage()" title="Routines">Routines</button>
          <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
        </div>`;
+  // Sep 7 (audit): the Quick Workout "Routine" button lives in the header row now, not on an
+  // orphan row of its own under Done that read as if it had wrapped.
   $('app').innerHTML = `<div class="pick">${head}
-    ${QUICK_ADD_MODE?`<div style="display:flex;justify-content:flex-end;padding:0 2px 10px">
-      <button class="sec sm" onclick="quickPickRoutine()">Routine</button>
-    </div>`:''}
     <div class="pick-search"><input id="ls" placeholder="Search exercises" oninput="libSearch(this.value)"></div>
     <div class="pick-list" id="lib2"></div>
   </div>`;
@@ -4915,14 +4925,15 @@ function applyLibSearch(){
   if(LIB_STATE.view==='muscle') renderLibExercises();
   else renderLibGroups();
 }
+// Sep 7 (audit): the level rides on the meta line ("lats · biceps  • Beginner") instead of its
+// own right-hand column, so the name gets the row's width back and stops wrapping.
 function exRowHtml(e){
   if(SWAP_MODE){
     return `<div class="ex-row" onclick="swapPick('${jsq(e.name)}')">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
+          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}${exBadges(e)}</div>
         </div>
-        <div class="ex-badges">${exBadges(e)}</div>
         <div class="mg-chev">›</div>
       </div>`;
   }
@@ -4930,9 +4941,8 @@ function exRowHtml(e){
     return `<div class="ex-row" onclick="suggestAddPick('${jsq(e.name)}')">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
+          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}${exBadges(e)}</div>
         </div>
-        <div class="ex-badges">${exBadges(e)}</div>
         <div class="mg-chev">›</div>
       </div>`;
   }
@@ -4942,9 +4952,8 @@ function exRowHtml(e){
     return `<div class="ex-row" onclick="seedPickerPick('${jsq(e.name)}')">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}</div>
+          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${exBadges(e)}</div>
         </div>
-        <div class="ex-badges">${exBadges(e)}</div>
         <div class="mg-chev">›</div>
       </div>`;
   }
@@ -4955,9 +4964,8 @@ function exRowHtml(e){
     return `<div class="ex-row ${added?'ex-on':''}" onclick="libToggle('${jsq(e.name)}', this)">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
+          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}${exBadges(e)}</div>
         </div>
-        <div class="ex-badges">${exBadges(e)}</div>
         ${favBtnHtml(e)}
         <div class="ex-add">${added?'✓':'+'}</div>
       </div>`;
@@ -4965,9 +4973,8 @@ function exRowHtml(e){
   return `<div class="ex-row" onclick="exDetail('${jsq(e.name)}')">
       <div class="ex-main">
         <div class="ex-name">${esc(e.name)}</div>
-        <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}</div>
+        <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}${exBadges(e)}</div>
       </div>
-      <div class="ex-badges">${exBadges(e)}</div>
       ${favBtnHtml(e)}
       <div class="mg-chev">›</div>
     </div>`;
@@ -5041,7 +5048,7 @@ function exDetail(name){
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>${esc(e.name)}</h2>${favBtnHtml(e)}<button class="icon-btn" onclick="closeSheet()" aria-label="Close">✕</button></div>
       <div class="sheet-thumb"><div class="mg-ico">${exThumb(e)}</div>
-        <div class="sheet-thumb-meta"><span class="sheet-thumb-cap">${esc(exMuscles(e).join(' · '))}</span><div class="ex-badges sheet-badges">${exBadges(e)}</div></div></div>
+        <div class="sheet-thumb-meta"><span class="sheet-thumb-cap">${esc(exMuscles(e).join(' · '))}</span><div class="ex-badges sheet-badges">${exBadges(e, true)}</div></div></div>
       <div class="sheet-row"><span>Equipment</span><b>${eqs}</b></div>
       <div class="sheet-row"><span>Pattern</span><b>${esc(e.pattern||'—')}</b></div>
       <div class="sheet-row"><span>Suggested</span><b>${sets} × ${reps}</b></div>
@@ -5274,7 +5281,7 @@ async function friends(opts){
       <div id="fresults"></div>
     </div>
     ${freq.length?`<h2>Follow requests</h2><div class="card" style="padding:6px 12px">${followReqRows}</div>`:''}
-    <div class="h1-row"><h2 style="margin:0">Your Crews</h2><span class="he-cta" onclick="newCrewSheet()">+ New crew</span></div>
+    <div class="h1-row"><h2 style="margin:0">Your Crews</h2><span class="he-cta" style="margin:0 0 0 auto" onclick="newCrewSheet()">+ New crew</span></div>
     ${crews.length ? `<div class="card" style="padding:6px 12px">${crewRows}</div>`
       // Sep 5 (Jeff, following up on the crew-row hint above): a brand-new user with zero crews
       // never sees a crew row at all, so the row hint above can't teach them anything -- this empty
