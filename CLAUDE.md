@@ -23,11 +23,18 @@ because you wrote it.
 - **Always render before showing Jeff.** Playwright, 390×844 @2x, full page, check the
   console for `pageerror`. Never describe a visual change you have not looked at.
 - **Pin fixed bars before any full-page screenshot** (Jeff, Aug 28: the nav kept landing mid-
-  image). Playwright's fullPage stitching paints `position:fixed` elements at the viewport
-  position, so on tall pages the bottom nav / `#updateBar` / `.sticky-bar` float mid-screenshot.
-  Before capturing, convert them to `position:absolute` with `top: documentHeight - barHeight`
-  (nav flush at the bottom; updateBar its usual offset above), and restore afterwards if the
-  script keeps interacting. Overlays that cover the viewport (`.sheet-back`, `.crop-overlay`)
+  image). Playwright's fullPage stitching paints `position:fixed` AND `position:sticky` elements
+  at the viewport position, so on tall pages `#updateBar` / `.sticky-bar` float mid-screenshot.
+  Before capturing, convert fixed bars to `position:absolute` with `top: documentHeight - barHeight`
+  (updateBar its usual offset above the nav), and restore afterwards if the script keeps
+  interacting. **The bottom nav is `position:sticky` since Sep 7, 2026 (v361), not fixed** — it is
+  the last in-flow child of `body`, so for a capture set it to `position:static` and it lands at
+  the true end of the page by itself. (History: v160 propped up a fixed nav with translateZ/
+  will-change to stop iOS repainting it lazily mid-scroll; on Sep 7 Jeff's screen recording showed
+  it riding up the page again, so the fixed positioning was dropped altogether. Don't bring the
+  fixed version back without a reason Jeff has seen on his phone.) Because the nav is
+  in flow, `body` no longer reserves 72px for it; screens with their own fixed bar
+  (`.wrap.edit-mode` → `.sticky-bar`) carry their own small padding instead. Overlays that cover the viewport (`.sheet-back`, `.crop-overlay`)
   get pinned to `window.scrollY` instead. Write this as a shared helper once per session and
   use it for every full-page shot.
 - **Review with fresh eyes.** Before showing him, spawn a subagent to review the diff and
