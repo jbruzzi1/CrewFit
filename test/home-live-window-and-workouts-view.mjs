@@ -105,6 +105,10 @@ console.log('\nthe real Home render -- Live/Upcoming/Missed badges and the amber
       exercises: [{ id: 'e1' }], scheduledAt: daysAgo(2), ...base },
     { id: 's-future', name: 'Arms Day', creatorId: 'me1', participants: ['me1'], invited: [],
       exercises: [{ id: 'e1' }], scheduledAt: daysAhead(3), ...base },
+    // v364: a SECOND live session -- the first one is the Next up card, this one must still be a
+    // row with the amber highlight.
+    { id: 's-live-2', name: 'Core Day', creatorId: 'me1', participants: ['me1'], invited: [],
+      exercises: [{ id: 'e1' }], scheduledAt: minsFromNow(8), ...base },
   ];
   vm.runInContext(`
     H.get = (p) => Promise.resolve(
@@ -114,28 +118,35 @@ console.log('\nthe real Home render -- Live/Upcoming/Missed badges and the amber
     );
   `, ctx);
   sink.html = '';
-  await vm.runInContext('home', ctx)();
+  // v364: Home caps "Your sessions" at 3 rows behind a "See all" button; this fixture has 5 open
+  // sessions (1 card + 4 rows), so render with the expansion on to see every row.
+  vm.runInContext('window.HOME_ALL_SESSIONS = true', ctx);
+  await vm.runInContext('home', ctx)({ silent: true });
 
   const rows = sink.html.split('lib-item').slice(1);
   const rowFor = name => rows.find(r => r.includes(name)) || '';
 
-  ok(/Live now/.test(rowFor('Leg Day')), 'a session 5 min out shows "Live now"');
+  // v364 (Sep 7): the live session is Home's single "Next up" card now, not a row -- the badge
+  // moves with it. Everything else still renders as rows under "Your sessions".
+  const card = (sink.html.match(/<div class="next-card"[\s\S]*?<div class="next-actions"/) || [''])[0];
+  ok(card.includes('Leg Day') && /Live now/.test(card), 'a session 5 min out is the Next up card and shows "Live now"');
   ok(/Upcoming/.test(rowFor('Push Day')), 'a session 4 hours out today shows "Upcoming"');
   ok(!/Live now/.test(rowFor('Push Day')), '...and NOT "Live now"');
   ok(/Missed/.test(rowFor('Pull Day')), 'a 2-day-old unfinished session still shows "Missed", unaffected by this change');
   ok(!/Upcoming/.test(rowFor('Pull Day')) && !/Live now/.test(rowFor('Pull Day')), '...and never Upcoming/Live');
   ok(!/Missed|Upcoming|Live now/.test(rowFor('Arms Day')), 'a session 3 days out shows no badge at all (not "today", per Jeff\'s framing)');
 
-  // session-live (the amber highlighted row) is reserved for true Live, not Upcoming.
-  const liveIdx = sink.html.indexOf('Leg Day');
+  // session-live (the amber highlighted row) is reserved for true Live, not Upcoming. The live one
+  // is the card here (v364), so the row-level check is that the Upcoming row stays un-highlighted.
   const upcomingIdx = sink.html.indexOf('Push Day');
-  const liveRowStart = sink.html.lastIndexOf('lib-item', liveIdx);
   const upcomingRowStart = sink.html.lastIndexOf('lib-item', upcomingIdx);
-  ok(sink.html.slice(liveRowStart, liveIdx).includes('session-live'), 'the Live row gets the amber "session-live" highlight class');
   ok(!sink.html.slice(upcomingRowStart, upcomingIdx).includes('session-live'), 'the Upcoming row does NOT get the amber highlight (reserved for true Live)');
+  ok(!card.includes('Push Day') && !card.includes('Arms Day') && !card.includes('Core Day'), 'only ONE session is in the Next up card -- the rest are rows');
+  const live2Idx = sink.html.indexOf('Core Day'); const live2RowStart = sink.html.lastIndexOf('lib-item', live2Idx);
+  ok(/Live now/.test(rowFor('Core Day')) && sink.html.slice(live2RowStart, live2Idx).includes('session-live'), 'a second live session is a row with "Live now" AND the amber session-live highlight');
 
   // Both today's sessions (live or upcoming) still get pulled to the top, ahead of the missed one.
-  ok(liveIdx < sink.html.indexOf('Pull Day'), 'the live-soon session still sorts ahead of the missed one');
+  ok(sink.html.indexOf('Leg Day') < sink.html.indexOf('Pull Day'), 'the live-soon session (the card) still sits ahead of the missed one');
   ok(upcomingIdx < sink.html.indexOf('Pull Day'), 'the upcoming-today session also still sorts ahead of the missed one (unchanged "today" priority)');
 }
 

@@ -382,6 +382,7 @@ async function home(opts){
   // really is landing on Home from somewhere else, so those stay non-silent. Without this gate the
   // scrollTo(0,0) below would yank a scrolled Home back to the top just from dismissing a banner.
   const silent = !!(opts && opts.silent);
+  if(!silent) window.HOME_ALL_SESSIONS = false;   // v364: "See all" expansion lasts until you actually leave Home
   // weeks=26, not 4: streakWeeks is computed inside the requested window, so a 4-week request
   // silently caps the streak stat at "4 week streak" — false for anyone on a longer run.
   const [sessions, feed, _fr, prog, notif] = await Promise.all([
@@ -491,11 +492,6 @@ async function home(opts){
     }
     html += `</div>`;
   }
-  // Sep 6: the "No invites yet" line renders UNDER the action buttons (see below) as a quiet
-  // footnote, not as a stray sentence between the stats and the buttons -- greeting, stats and
-  // the two ways to start read as one block. Real pending invites still sit above the buttons.
-  const invEmptyLine = pending.length ? '' : `<div class="inv-empty">No invites yet — friends you train with will show up here.</div>`;
-
   // Primary action (compact), plus a zero-friction start for "I'm at the gym right now" — no
   // name, no schedule, no invite step, just a live session you add lifts to as you go. Jeff, Aug
   // 25: "a 'workout now' button or something for quick workouts."
@@ -505,41 +501,137 @@ async function home(opts){
   // then-Use list already reachable from New Workout's own "Routines" button (below, in
   // .tpl-actions) and from the Workouts tab's "Routines" link -- so it wasn't earning a dedicated
   // Home slot. Routines/full-details stay; only this shortcut is gone.
+  // Sep 7 (v364, Jeff: "combine these two but make them look great"): the buttons stay right
+  // under the stats -- they are "make something new" and belong with the greeting, not with the
+  // week below. The "No invites yet" footnote is gone; the solo line under Next up covers it.
   html += `<div class="home-actions">
     <button class="blue btn-new" onclick="newWorkout()">+ New workout</button>
     <button class="btn-quick" onclick="workoutNow()">+ Quick Workout</button>
-  </div>${invEmptyLine}`;
+  </div>`;
 
-  // Your Sessions (prime spot) — only sessions you've accepted/joined (exclude pending invites),
-  // and only ones still open FOR YOU. Once YOU have finished (hasFinishedSession — Log & Finish
-  // credits this the moment you tap it, same signal server.js's myWorkouts uses; each participant
-  // finishes independently), it's done for you: it belongs in "My Workouts" on your profile, not
-  // in this active list — even if a training partner on the same session hasn't finished yet, and
-  // even if you never went on to also save notes/a photo on the screen after Log & Finish.
-  // Today's not-yet-finished session (if any) is pulled to the top with a "Live now"/"Upcoming"
-  // badge — .sort() is stable (every browser this app targets), so this only reorders today's
-  // sessions forward and otherwise leaves everything exactly where the API's date order put it.
-  // Both Live and Upcoming count as "today" here (unchanged from before the 10-minute-window
-  // split above) — only the badge text/timing changed, not which sessions get pulled to the top.
-  const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && !hasFinishedSession(s, ME.id))
-    .sort((a,b) => ((isSessionLiveNow(b)||isSessionUpcoming(b))?1:0) - ((isSessionLiveNow(a)||isSessionUpcoming(a))?1:0));
-  html += `<h2>Your Sessions</h2>`;
-  if(yours.length){
-    html += `<div class="card">`;
-    for(const s of yours){
-      const label = s.name;
+  // ---- v364 Home (Jeff, Sep 7): the week strip + one "Next up" card, and NO empty states. ----
+  // Jeff's brief: keep the original Home (greeting, stats, the two buttons, sessions, friends)
+  // and fold in the first-hour pieces (week calendar, Next up, solo line). The rules that keep
+  // it small:
+  //   - the week strip is always there (7 dots: green check = you finished that day, dashed ring
+  //     = planned, solid ring = today);
+  //   - exactly ONE Next up card: the live session if any, else the soonest unfinished one; a
+  //     card for a later day drops the exercise list; nothing planned = a single muted line;
+  //   - every other open session is a plain row under "Your sessions" (capped at 3 + See all);
+  //   - the friends sections render only with content; with zero friends, one honest line
+  //     ("Training solo for now") replaces all three of the old "No ..." apologies.
+  // Design constant update (see CLAUDE.md): Home's discoverability now comes from the solo line
+  // and the card's own buttons, not from empty-state boxes.
+  const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && !hasFinishedSession(s, ME.id));
+  const byTime = (a,b) => new Date(a.scheduledAt) - new Date(b.scheduledAt);
+  const openOnes = yours.filter(s => !isSessionMissed(s, ME.id)).sort(byTime);
+  const nextUp = openOnes.find(isSessionLiveNow) || openOnes.find(s => dayDiff(s.scheduledAt) >= 0) || null;
+  // Rows: live/upcoming today first, then future plans soonest-first, then missed ones newest-first
+  // (cold-review catch: missed sessions have the earliest dates, so a plain time sort let three
+  // old misses push tomorrow's plan behind "See all").
+  const rank = s => (isSessionLiveNow(s)||isSessionUpcoming(s)) ? 0 : isSessionMissed(s, ME.id) ? 2 : 1;
+  const restRows = yours.filter(s => s !== nextUp).sort((a,b) => rank(a) - rank(b) || (rank(a) === 2 ? byTime(b,a) : byTime(a,b)));
+
+  // Week strip: Monday-first, this calendar week. Done days come from my finished sessions (same
+  // whenDone() the "Last workout" line uses -- last logged set, else the history date); planned
+  // days from open sessions. A day that is both (finished one, another planned) shows done.
+  const today0 = startOfDay(new Date());
+  const monday = new Date(today0); monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+  const doneDays = new Map();   // ymd -> session (tap opens the recap)
+  for(const x of mine.map(s => ({ s, when: whenDone(s) })).filter(x => x.when && !isNaN(x.when))) doneDays.set(localDateStr(x.when), x.s);
+  const planDays = new Map();   // ymd -> soonest open session that day
+  for(const s of openOnes){ const k = localDateStr(new Date(s.scheduledAt)); if(!planDays.has(k)) planDays.set(k, s); }
+  const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  let strip = '<div class="week-strip">';
+  for(let i = 0; i < 7; i++){
+    const d = new Date(monday); d.setDate(monday.getDate() + i); const k = localDateStr(d);
+    const isToday = d.getTime() === today0.getTime();
+    const isFuture = d.getTime() >= today0.getTime();
+    const done = doneDays.get(k), plan = planDays.get(k);
+    // Blank days (nothing done, nothing planned) are tappable too, same as done/plan days --
+    // Jeff, Sep 7: "have it clickable to plan something on the day that's empty." Scoped to
+    // today/future only -- a blank PAST day already happened, there's nothing to plan for it,
+    // and offering to "plan" one would be a confusing dead end.
+    const open = !done && !plan && isFuture;
+    const cls = ['wk', done ? 'done' : plan ? 'plan' : open ? 'open' : '', isToday ? 'today' : ''].filter(Boolean).join(' ');
+    const ico = done ? '✓' : open ? '+' : '';   // planned days are a dashed ring, today a solid one -- the label underneath already names the day
+    const tap = done ? `onclick="viewPost('${done.id}','${ME.id}')"` : plan ? `onclick="openSession('${plan.id}')"` : open ? `onclick="planDayFor('${k}')"` : '';
+    strip += `<div class="${cls}" ${tap}><div class="dot">${ico}</div>${dayNames[i]}</div>`;
+  }
+  strip += '</div>';
+  html += strip;
+
+  // Next up card
+  if(nextUp){
+    const s = nextUp;
+    const live = isSessionLiveNow(s);
+    const dd = dayDiff(s.scheduledAt);
+    const d = new Date(s.scheduledAt);
+    const time = d.toLocaleString(undefined,{hour:'numeric',minute:'2-digit'});
+    const dayLabel = dd === 0 ? 'today' : dd === 1 ? 'tomorrow' : dd < 7 ? d.toLocaleDateString(undefined,{weekday:'long'}) : d.toLocaleDateString(undefined,{month:'short',day:'numeric'});
+    const when = [time, s.location ? esc(s.location) : ''].filter(Boolean).join(' · ');
+    const others = (s.participants||[]).filter(pid => pid !== ME.id);
+    const lastLogAt = pid => Math.max(0, ...(((s.logs && s.logs[pid]) || []).map(l => new Date(l.at).getTime() || 0)));
+    const logging = others.filter(pid => lastLogAt(pid) > 0);
+    // "just started" only when their last set is under 20 minutes old -- otherwise it's a claim the
+    // data doesn't support (CLAUDE.md: never say something you can't stand behind); older activity
+    // reads as "is logging" / "N sets in".
+    const recent = logging.filter(pid => Date.now() - lastLogAt(pid) < 20*60000);
+    const nm = pid => { const f = myFriends.find(x => x.id === pid); return f ? (f.displayName || f.username || 'a friend').split(' ')[0] : 'a friend'; };
+    const ini = pid => { const n = nm(pid); return n === 'a friend' ? '?' : n[0].toUpperCase(); };
+    const list = (ids) => ids.length === 1 ? nm(ids[0]) : ids.length === 2 ? `${nm(ids[0])} and ${nm(ids[1])}` : `${nm(ids[0])} and ${ids.length-1} others`;
+    const setsIn = logging.reduce((n, pid) => n + ((s.logs[pid] || []).length), 0);
+    const activity = recent.length ? `${list(recent)} just started` : logging.length ? `${list(logging)} ${logging.length === 1 ? 'is' : 'are'} logging · ${setsIn} set${setsIn === 1 ? '' : 's'} in` : '';
+    const whoLine = others.length ? `<div class="next-who"><span class="avs">${others.slice(0,3).map(pid => `<span class="av">${esc(ini(pid))}</span>`).join('')}</span>${esc(list(others))} ${others.length === 1 ? 'is' : 'are'} in${activity ? ` · ${esc(activity)}` : ''}</div>` : '';
+    const badge = live ? '<span class="live-badge">● Live now</span>' : dd === 0 ? '<span class="upcoming-badge">Upcoming</span>' : '';
+    const exLine = dd === 0 && s.exercises.length ? `<div class="next-ex">${s.exercises.map(e => esc(e.name)).join(' · ')}</div>` : '';
+    const isCreator = s.creatorId === ME.id;
+    // With no friends yet the edit form's invite list is empty, so the button goes to the Friends
+    // tab (add someone) instead -- cold-review catch.
+    const inviteBtn = `<button class="sec" onclick="${isCreator && myFriends.length ? `editSession('${s.id}')` : `showTab('friends')`}">Invite a friend</button>`;
+    const actions = live
+      ? `<button class="blue" onclick="openSession('${s.id}')">${others.length ? 'Join now' : 'Start now'}</button>${others.length ? `<button class="sec" onclick="openSessionChat('${s.id}')">Chat</button>` : inviteBtn}`
+      : dd === 0
+        ? `<button class="blue" onclick="openSession('${s.id}')">Start now</button>${inviteBtn}`
+        : `<button class="sec" onclick="openSession('${s.id}')">Open</button>${inviteBtn}`;
+    html += `<div class="next-card" onclick="openSession('${s.id}')">
+      <div class="next-top"><div><div class="next-lbl">Next up · ${esc(dayLabel)}</div><div class="next-name">${esc(s.name)}</div><div class="next-when">${when}</div></div>${badge}</div>
+      ${exLine}${whoLine}
+      <div class="next-actions" onclick="event.stopPropagation()">${actions}</div>
+    </div>`;
+  } else {
+    html += `<div class="solo-line nothing-line"><span class="nl-title">Nothing planned this week.</span> Plan one with <b onclick="newWorkout()">+ New workout</b>, or start a Quick Workout right now.</div>`;
+  }
+
+  // Solo: one honest line, and (when there's a recap to show off) the one nudge that actually
+  // recruits. Both disappear the moment you have a friend.
+  if(!myFriends.length){
+    html += `<div class="solo-line">Training solo for now — <b onclick="showTab('friends')">invite a friend</b> and they'll see ${nextUp ? 'this workout' : 'your workouts'}.</div>`;
+  }
+
+  // Your sessions: everything open that isn't the Next up card -- plain rows, capped at 3.
+  if(restRows.length){
+    const showAll = !!window.HOME_ALL_SESSIONS;
+    const rows = showAll ? restRows : restRows.slice(0, 3);
+    html += `<h2>Your sessions</h2><div class="card">`;
+    for(const s of rows){
       const live = isSessionLiveNow(s);
       const upcoming = !live && isSessionUpcoming(s);
       const missed = !live && !upcoming && isSessionMissed(s, ME.id);
-      const badge = live ? '<div class="live-badge">● Live now</div>'
-        : upcoming ? '<div class="upcoming-badge">Upcoming</div>'
-        : missed ? '<div class="missed-badge">Missed</div>' : '';
+      const badge = live ? '<div class="live-badge">● Live now</div>' : upcoming ? '<div class="upcoming-badge">Upcoming</div>' : missed ? '<div class="missed-badge">Missed</div>' : '';
+      const others = (s.participants||[]).filter(pid => pid !== ME.id);
+      const withWho = others.length ? ` · with ${esc((() => { const f = myFriends.find(x => x.id === others[0]); const n = f ? (f.displayName || f.username || 'a friend').split(' ')[0] : 'a friend'; return others.length > 1 ? `${n} +${others.length-1}` : n; })())}` : '';
       html += `<div class="lib-item${live?' session-live':''}" onclick="openSession('${s.id}')">
-        <div>${badge}<b>${esc(label)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}</div></div></div>`;
+        <div>${badge}<b>${esc(s.name)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}${withWho}</div></div></div>`;
     }
     html += `</div>`;
-  } else {
-    html += homeEmpty(ICON_CAL, 'No upcoming sessions', 'Plan one with + New workout, or start a Quick Workout right now.');
+    if(restRows.length > 3 && !showAll) html += `<div style="text-align:right;margin-top:-4px"><button class="txt-btn" onclick="window.HOME_ALL_SESSIONS=true; home({silent:true})">See all ${restRows.length}</button></div>`;
+  }
+  // Solo share nudge sits UNDER your sessions (Jeff, Sep 7: "shouldn't be above sessions") -- the
+  // plan comes first, the recruiting move after.
+  if(!myFriends.length && lastDone){
+    const dayWord = fmtLastDay(lastDone.when);
+    html += `<div class="tip-card" onclick="viewPost('${lastDone.s.id}','${ME.id}')"><div class="t-ico">↗</div><div><div class="t-title">Share ${esc(dayWord === 'today' ? "today's" : dayWord === 'yesterday' ? "yesterday's" : dayWord + "'s")} recap</div><div class="t-sub">The fastest way to get a friend in here is showing them what you did.</div></div></div>`;
   }
 
   // Friends' Workouts — a friend's own joinable session, discoverable even before you have any
@@ -565,23 +657,19 @@ async function home(opts){
     && !(s.participants||[]).includes(ME.id)
     && !(Array.isArray(s.invited) && s.invited.includes(ME.id))
     && !s.creatorFinished);
-  html += `<h2 class="light">Friends' Workouts</h2>`;
   if(joinable.length){
-    html += `<div class="card">`;
+    html += `<h2 class="light">Friends' workouts</h2><div class="card">`;
     for(const s of joinable){
       const creatorName = await friendName(s.creatorId);
       html += `<div class="lib-item" onclick="openSession('${s.id}')">
         <div><b>${esc(s.name)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${esc(creatorName)} · ${fmtWhen(s.scheduledAt)}</div></div></div>`;
     }
     html += `</div>`;
-  } else {
-    html += homeEmpty(ICON_PEOPLE, 'No joinable workouts right now', `When a friend starts one you can join, it'll show up here.`);
   }
 
   // Friend's Activity (lighter strip, in an elevated card to match Your Sessions)
-  html += `<h2 class="light">Friends' Activity</h2>`;
   if(feed.length){
-    html += `<div class="card feed-strip">`;
+    html += `<h2 class="light">Friends' activity</h2><div class="card feed-strip">`;
     for(const f of feed){
       const who = await friendName(f.by);
       if(f.type==='recap' && f.sessionId){
@@ -597,14 +685,19 @@ async function home(opts){
       html += `<div class="feed-item" onclick="profileView('${f.by}')" style="cursor:pointer"><span class="feed-lead">${ic}</span><span><b>${esc(who)}</b> ${esc(f.text)}</span></div>`;
     }
     html += `</div>`;
-  } else {
-    // CTA label is honest either way: no friends yet -> "Add a friend", some friends -> invite more
-    html += homeEmpty(ICON_FEED, 'Nothing from your crew yet', `Friends' finished workouts will show up here.`,
-      `<span class="he-cta" onclick="showTab('friends')">${myFriends.length ? 'Invite another friend' : 'Add a friend'} →</span>`);
+  } else if(myFriends.length){
+    // You do have friends, they just haven't posted anything yet -- one open line, no box.
+    html += `<div class="solo-line">Nothing from your friends yet — their finished workouts will show up here.</div>`;
   }
   html += `</div>`;
   $('app').innerHTML = html;
   if(!silent) pageScrollTop();
+}
+// Sep 7 (v364): the Next up card's "Chat" button -- open the session and land on its chat box.
+async function openSessionChat(id){
+  await openSession(id);
+  const box = document.getElementById('chatInput') || document.querySelector('.chat-row');
+  if(box){ try{ box.scrollIntoView({ block:'center' }); }catch(e){} }
 }
 
 // v312 (Jeff, Sep 4): "get rid of the logging page and have it all on the active workout page.
@@ -3322,6 +3415,30 @@ function newWorkout(){
   DRAFT = { exercises:[], inviteUsernames:[], location: (ME && ME.defaultGym) || '' };
   EDITING_SESSION = null; EDITING_TPL = null; EDITING_ID = null;
   if(typeof TPL_MODE === 'object' && TPL_MODE) { TPL_MODE.active = false; TPL_MODE.id = null; TPL_MODE.name = ''; TPL_MODE.copy = false; }
+  createFlow();
+}
+// Same as newWorkout(), but for tapping a blank day on the Home week strip -- the day is
+// preset (shows as the selected chip in the When row, same as picking it by hand in the day
+// sheet would) rather than defaulting to today. Time still defaults to the next 15-min mark,
+// same as any other new workout; Jeff can change it in the form same as always.
+function planDayFor(ymd){
+  DRAFT = { exercises:[], inviteUsernames:[], location: (ME && ME.defaultGym) || '' };
+  EDITING_SESSION = null; EDITING_TPL = null; EDITING_ID = null;
+  if(typeof TPL_MODE === 'object' && TPL_MODE) { TPL_MODE.active = false; TPL_MODE.id = null; TPL_MODE.name = ''; TPL_MODE.copy = false; }
+  // Tapping today's own blank cell needs exactly newWorkout()'s "next 15-min mark from now"
+  // default. Gluing defaultDtValue()'s time-of-day onto a FIXED ymd is only safe for a day that's
+  // still in the future -- any time-of-day on a future day is still ahead of now. For today
+  // specifically, defaultDtValue() can round past midnight into 00:00 (calling it at 11:52pm
+  // rounds to 00:00) while ymd stays today's date, which would land the draft ~24h in the past
+  // and likely render as already missed (cold-review catch) -- so today skips the glue entirely
+  // and takes defaultDtValue()'s untouched value, same as newWorkout().
+  if(ymd === localDateStr()){
+    DRAFT._dt = defaultDtValue();
+  } else {
+    const defTime = defaultDtValue().split('T')[1] || '18:00';
+    DRAFT._day = ymd;
+    DRAFT._dt = `${ymd}T${defTime}`;
+  }
   createFlow();
 }
 function cancelCreate(){ EDITING_SESSION=null; EDITING_TPL=null; home(); }
