@@ -6114,6 +6114,45 @@ function walkStep(delta){
 //     out from under the user. Tightened to stillOnProfileWithNothingElseOpen()'s same precise
 //     check -- ME.avatar is still updated unconditionally either way, so the next real visit to
 //     profile always shows the new photo even when this skips the in-place re-render.
+// Sep 7, 2026: the bottom nav rides up the page while scrolling on Jeff's iPhone -- with a fixed
+// nav (v160-v360) AND with the sticky one (v361), which means the phone's idea of the viewport,
+// not the nav's positioning, is what's off. This overlay prints the live viewport numbers (layout
+// viewport, visual viewport, scroll, nav rect) on the phone so the cause can be read off a
+// screenshot instead of guessed at. Settings -> Help -> Screen diagnostics; off by default,
+// remembered in localStorage so it survives reloads; pointer-events:none so it never eats a tap.
+function toggleDiag(){
+  const on = localStorage.getItem('crewfit_diag') === '1';
+  localStorage.setItem('crewfit_diag', on ? '0' : '1');
+  const v = $('diagVal'); if(v) v.textContent = on ? 'Off' : 'On';
+  syncDiag();
+}
+function syncDiag(){
+  const want = localStorage.getItem('crewfit_diag') === '1';
+  let el = document.getElementById('diagBox');
+  if(!want){ if(el) el.remove(); return; }
+  if(!el){ el = document.createElement('pre'); el.id = 'diagBox'; document.body.appendChild(el);
+    const upd = () => renderDiag(el);
+    ['scroll','resize','orientationchange'].forEach(ev => window.addEventListener(ev, upd, {passive:true}));
+    if(window.visualViewport){ window.visualViewport.addEventListener('scroll', upd); window.visualViewport.addEventListener('resize', upd); }
+    setInterval(upd, 500);
+  }
+  renderDiag(el);
+}
+function renderDiag(el){
+  const nav = document.getElementById('nav'); const nr = nav ? nav.getBoundingClientRect() : null; const ncs = nav ? getComputedStyle(nav) : null;
+  const vv = window.visualViewport; const de = document.documentElement; const r = n => Math.round(n*10)/10;
+  const ios = (navigator.userAgent.match(/OS (\d+_\d+)/) || [])[1] || '?';
+  const lines = [
+    `v${myAppVersion()||'?'}  iOS ${ios.replace('_','.')}  standalone:${navigator.standalone===true?'yes':'no'}`,
+    `inner ${innerWidth}x${innerHeight}  client ${de.clientWidth}x${de.clientHeight}  screen ${screen.width}x${screen.height}`,
+    vv ? `visual ${r(vv.width)}x${r(vv.height)}  scale ${r(vv.scale)}  offTop ${r(vv.offsetTop)}  pageTop ${r(vv.pageTop)}` : 'visualViewport: none',
+    `scrollY ${r(scrollY)}  docH ${de.scrollHeight}  bodyH ${r(document.body.getBoundingClientRect().height)}  max ${de.scrollHeight-innerHeight}`,
+    nr ? `nav ${ncs.position} top ${r(nr.top)} bottom ${r(nr.bottom)} h ${r(nr.height)}  gap-to-inner ${r(innerHeight-nr.bottom)}` : 'nav: none',
+    nr ? `nav pad-b ${ncs.paddingBottom}  vis-gap ${vv?r(vv.offsetTop+vv.height-nr.bottom):'?'}` : '',
+    `html ovf ${getComputedStyle(de).overflow}  body ovf ${getComputedStyle(document.body).overflow}  sheet-open ${de.classList.contains('sheet-open')}  zoom ${r(outerWidth/innerWidth)}`,
+  ];
+  el.textContent = lines.join('\n');
+}
 function openSettings(opts){
   const fromHistory = !!(opts && opts.fromHistory);
   // Jeff (live, looking at the render): "the back button is almost covering the settings ... put
@@ -6150,6 +6189,7 @@ function openSettings(opts){
     <h2>Help</h2>
     <div class="sheet-list">
       <button class="sheet-row" onclick="openWalkthrough()">How CrewFit works</button>
+      <button class="sheet-row" onclick="toggleDiag()">Screen diagnostics <span class="row-val" id="diagVal">${localStorage.getItem('crewfit_diag')==='1'?'On':'Off'}</span></button>
     </div>
     <h2>Danger zone</h2>
     <div class="sheet-list">
@@ -6886,6 +6926,7 @@ async function tryBoot(){
   }
   if(TOKEN && ME && ME.id){
     $('nav').classList.remove('hidden');
+    syncDiag();
     // v254: establishes a sane baseline history entry on boot -- without this the very first
     // real navigation's navigated() call pushes ON TOP OF whatever entry the browser created for
     // the bare page load (no state object at all), so a single Back press from one screen in
