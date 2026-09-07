@@ -3239,12 +3239,11 @@ async function createFlow(){
     ${DRAFT._loadedFromTpl ? `<div class="upcoming-badge" id="loadedFromChip" style="display:flex;align-items:center;gap:6px;margin:8px 0 4px;width:fit-content;cursor:default"><span>↻ Loaded from "${esc(DRAFT._loadedFromTpl)}"</span><span style="opacity:.6;font-weight:400;margin-left:2px;cursor:pointer" onclick="dismissLoadedChip()">✕</span></div>` : ''}
     <h2 class="light">Details</h2>
     <label class="muted">Workout name</label><input id="wname" placeholder="e.g. Chest & Back" value="${esc(DRAFT.name||'')}">
-    <label class="muted">When</label><input id="dt" type="datetime-local" value="${esc(DRAFT._dt||'')}">
+    <label class="muted">When</label>${whenHtml(DRAFT._dt||'')}
     <div class="row">
       <div><label class="muted">Location</label><input id="loc" placeholder="e.g. Gold's Gym" value="${esc(DRAFT.location||'')}"></div>
       <div><label class="muted">Length (min)</label><input id="len" type="number" inputmode="tel" pattern="[0-9]*" placeholder="60" value="${DRAFT.lengthMin||''}"></div>
     </div>
-    <label class="muted">Note to friends</label><input id="note" placeholder="let's hit legs hard" value="${esc(DRAFT.creatorNote||'')}">
     <label class="muted">Visibility</label>
     <!-- selected= matters: without it this box always opened on Private, so saving an edit
          silently made a Public workout private and dropped it out of your followers' reach -->
@@ -3274,7 +3273,7 @@ async function createFlow(){
 let SUBMIT_BUSY = false;
 async function submitSession(){
   const dt=$('dt').value; const vis=$('vis').value;
-  const location=$('loc').value; const lengthMin=$('len').value; const creatorNote=$('note').value; const name=$('wname').value;
+  const location=$('loc').value; const lengthMin=$('len').value; const creatorNote=DRAFT.creatorNote||''; const name=$('wname').value;   // Sep 7: no note field on the form any more (Jeff) -- an existing note is carried through edits untouched and still renders on the session page
   if(!DRAFT.exercises.length) return alert('Add at least one exercise');
   if(SUBMIT_BUSY) return;
   SUBMIT_BUSY = true;
@@ -3390,6 +3389,90 @@ async function editSession(id){
   EDITING_SESSION = id; EDITING_TPL=null;
   createFlow();
 }
+// Sep 7 (audit: the browser's raw datetime-local -- "mm/dd/yyyy, --:-- --" -- was the last native
+// control in the app). The When field is an in-app row now: a Today / Tomorrow / Pick-a-day track
+// (Pick a day opens a small month grid in a sheet) plus a time field. A hidden #dt keeps the exact
+// "YYYY-MM-DDTHH:MM" value the old input produced, so submitSession/openAddExercises/templatesPage
+// and every test that reads $('dt').value are untouched. The row always shows a concrete choice
+// (Today + the current time rounded up to the next 15 minutes, when nothing's been set) and #dt
+// carries exactly that, so what's on screen is what gets saved.
+function whenHtml(dtValue){
+  const cur = dtValue || defaultDtValue();
+  const [ymd, hm] = cur.split('T');
+  const kind = dayKind(ymd);
+  const pickLabel = kind === 'pick' ? shortDate(ymd) : 'Pick a day';
+  return `<input type="hidden" id="dt" value="${esc(cur)}">
+    <div class="when-row">
+      <div class="seg wk-seg" id="daySeg">
+        <button type="button" class="${kind==='today'?'on':''}" data-k="today" onclick="setDraftDay('today')">Today</button>
+        <button type="button" class="${kind==='tomorrow'?'on':''}" data-k="tomorrow" onclick="setDraftDay('tomorrow')">Tomorrow</button>
+        <button type="button" class="${kind==='pick'?'on':''}" data-k="pick" onclick="openDaySheet()">${esc(pickLabel)}</button>
+      </div>
+      <input id="dtTime" type="time" value="${esc(hm||'')}" oninput="syncDt()" aria-label="Start time">
+    </div>`;
+}
+function defaultDtValue(){
+  const d = new Date(); d.setSeconds(0,0); d.setMinutes(Math.ceil(d.getMinutes()/15)*15);
+  return toLocalInput(d.toISOString());
+}
+// Calendar math, not Date.now()+24h: on the two DST nights a +24h step lands on the wrong day
+// (skips a day at 23:xx before spring-forward, repeats today at 00:xx on fall-back) -- cold-review catch.
+function tomorrowStr(){ const d = new Date(); return localDateStr(new Date(d.getFullYear(), d.getMonth(), d.getDate()+1)); }
+function dayKind(ymd){
+  const today = localDateStr(), tmr = tomorrowStr();
+  return ymd === today ? 'today' : ymd === tmr ? 'tomorrow' : 'pick';
+}
+// The day the row currently shows -- from #dt when set, else today.
+function draftYmd(){ const v = ($('dt')||{}).value; return v ? v.split('T')[0] : localDateStr(); }
+function setDraftDay(kind, ymd){
+  const day = kind === 'today' ? localDateStr() : kind === 'tomorrow' ? tomorrowStr() : ymd;
+  const k = dayKind(day);
+  document.querySelectorAll('#daySeg button').forEach(b=>{ b.classList.toggle('on', b.dataset.k===k); if(b.dataset.k==='pick') b.textContent = k==='pick' ? shortDate(day) : 'Pick a day'; });
+  DRAFT._day = day;
+  syncDt();
+}
+function syncDt(){
+  const day = DRAFT._day || draftYmd();
+  const t = $('dtTime'), dt = $('dt');
+  // A cleared time field keeps the time #dt already had (falling back to the default only when
+  // there is none) and is re-filled with it, so the field never shows "--:--" while #dt silently
+  // carries a time the user can't see -- cold-review catch.
+  let hm = t && t.value;
+  if(!hm){ hm = (dt && dt.value.split('T')[1]) || defaultDtValue().split('T')[1]; if(t) t.value = hm; }
+  if(dt) dt.value = `${day}T${hm}`;
+}
+// A month grid in a sheet: ‹ › to move months, tap a day. Past days are shown but muted -- a
+// workout can legitimately be logged for yesterday.
+let DAY_SHEET_MONTH = null;   // 'YYYY-MM' currently shown
+function openDaySheet(month){ openSheetHtml(daySheetInner(month)); }
+function daySheetInner(month){
+  const sel = draftYmd();
+  DAY_SHEET_MONTH = month || sel.slice(0,7);
+  const [y, m] = DAY_SHEET_MONTH.split('-').map(Number);
+  const first = new Date(y, m-1, 1), days = new Date(y, m, 0).getDate();
+  const p2 = n => String(n).padStart(2,"0");
+  const today = localDateStr();
+  const title = first.toLocaleDateString(undefined, { month:'long', year:'numeric' });
+  const prev = m === 1 ? `${y-1}-12` : `${y}-${p2(m-1)}`, next = m === 12 ? `${y+1}-01` : `${y}-${p2(m+1)}`;
+  let cells = '';
+  for(let i = 0; i < first.getDay(); i++) cells += '<span></span>';
+  for(let d = 1; d <= days; d++){
+    const ymd = `${y}-${p2(m)}-${p2(d)}`;
+    const cls = ['cal-d', ymd===sel?'on':'', ymd===today?'today':'', ymd<today?'past':''].filter(Boolean).join(' ');
+    cells += `<button type="button" class="${cls}" onclick="pickDay('${ymd}')">${d}</button>`;
+  }
+  return `<div class="sheet"><div class="sheet-head"><h2>Pick a day</h2><button type="button" class="icon-btn" onclick="closeSheet()" aria-label="Close">✕</button></div>
+    <div class="cal-nav"><button type="button" class="icon-btn" onclick="reopenDaySheet('${prev}')" aria-label="Previous month">‹</button><b>${esc(title)}</b><button type="button" class="icon-btn" onclick="reopenDaySheet('${next}')" aria-label="Next month">›</button></div>
+    <div class="cal-dow">${['S','M','T','W','T','F','S'].map(x=>`<span>${x}</span>`).join('')}</div>
+    <div class="cal-grid">${cells}</div></div>`;
+}
+// Month change re-renders in place -- swaps the open sheet's markup rather than closing and
+// re-opening it (which would replay the slide-down/slide-up and push a second history entry).
+function reopenDaySheet(month){
+  const l = document.querySelectorAll('.sheet-back'); const s = l[l.length-1];
+  if(s) s.innerHTML = daySheetInner(month); else openDaySheet(month);
+}
+function pickDay(ymd){ closeSheet(); setDraftDay('pick', ymd); }
 function toLocalInput(iso){ const d=new Date(iso); const p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; }
 // v306: one subtitle builder shared by the Routines list row and tplView()'s detail header, so
 // a routine that's grown beyond exercises-only (location/public visibility/invited friends) says
@@ -3433,7 +3516,6 @@ async function templatesPage(opts){
   if(DRAFT && $('wname')){
     if($('loc')) DRAFT.location = $('loc').value;
     if($('len')) DRAFT.lengthMin = $('len').value;
-    if($('note')) DRAFT.creatorNote = $('note').value;
     DRAFT.name = $('wname').value;
     if($('vis')) DRAFT.visibility = $('vis').value;
     if($('dt')) DRAFT._dt = $('dt').value;
@@ -3730,7 +3812,6 @@ async function templateExercises(){
     <h2 class="light" style="margin-top:14px">Details <span class="muted" style="font-weight:400;text-transform:none;font-size:12px">(optional)</span></h2>
     <div class="fineprint" style="margin:0 2px 10px">Leave these blank to save an exercises-only routine, same as before.</div>
     <label class="muted">Location</label><input id="loc" placeholder="e.g. Gold's Gym" value="${esc(DRAFT.location||'')}">
-    <label class="muted">Note to friends</label><input id="note" placeholder="let's hit legs hard" value="${esc(DRAFT.creatorNote||'')}">
     <label class="muted">Visibility</label>
     ${visSegHtml(DRAFT.visibility)}
     <h2>Invite friends</h2>${crewQuickInviteHtml()}<div id="invList" class="card">${invRows}</div>
@@ -3797,7 +3878,7 @@ async function finishTemplate(){
   // keystroke, so DRAFT itself isn't guaranteed current; the DOM is. inviteUsernames is the one
   // exception -- toggleInvite() already keeps DRAFT.inviteUsernames live on every checkbox tap.
   const location = $('loc') ? $('loc').value : (DRAFT.location||'');
-  const creatorNote = $('note') ? $('note').value : (DRAFT.creatorNote||'');
+  const creatorNote = DRAFT.creatorNote||'';   // Sep 7: no note field on the form (see submitSession)
   const visibility = $('vis') ? $('vis').value : (DRAFT.visibility||'private');
   const inviteUsernames = DRAFT.inviteUsernames || [];
   const payload = { name:liveName, exercises:DRAFT.exercises, location, creatorNote, visibility, inviteUsernames };
@@ -4093,7 +4174,6 @@ function exThumb(e){
 function addEx(name, el){
   if($('loc')) DRAFT.location = $('loc').value;
   if($('len')) DRAFT.lengthMin = $('len').value;
-  if($('note')) DRAFT.creatorNote = $('note').value;
   const exists = DRAFT.exercises.find(e=>e.name===name);
   if(exists){ DRAFT.exercises = DRAFT.exercises.filter(e=>e.name!==name); }
   else {
@@ -4724,7 +4804,6 @@ function openAddExercises(){
   // stash details typed so far on the workout form
   if($('loc')) DRAFT.location = $('loc').value;
   if($('len')) DRAFT.lengthMin = $('len').value;
-  if($('note')) DRAFT.creatorNote = $('note').value;
   if($('wname')) DRAFT.name = $('wname').value;
   // visibility and the scheduled date/time were missing here — createFlow() re-renders the
   // <select id="vis"> and <input id="dt"> from these DRAFT fields on return, so leaving them
