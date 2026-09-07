@@ -75,8 +75,11 @@ async function renderJoinable(sessions) {
   // Isolate the "Friends' Workouts" card from "Your Sessions" — a scenario deliberately testing
   // "already joined" puts the SAME session name in participants, so it can legitimately also
   // render in Your Sessions above; only the Friends' Workouts section answers the filter question.
-  const start = sink.html.indexOf("Friends' Workouts");
-  const end = sink.html.indexOf("Friends' Activity");
+  // v364 (Sep 7): the headings are sentence case now and the section only renders WITH content --
+  // an absent section means "nothing joinable", which is exactly the "gone" case below.
+  const start = sink.html.search(/Friends' workouts/i);
+  if (start === -1) return '';
+  const end = sink.html.search(/Friends' activity/i);
   return sink.html.slice(start, end === -1 ? undefined : end);
 }
 
