@@ -193,6 +193,21 @@
     h2.sep { margin-top:28px; padding-top:18px; border-top:1px solid var(--line); }
     .inv-banner { background:#f4f8ff; border:1px solid #dbe7fb; border-radius:14px; padding:10px 12px; margin:0 0 16px; }
     /* v222: an empty state gets no box (the box appears when an invite does) */
+    /* Sep 7: the When row on the create/edit forms -- day track + time field, and the Pick-a-day
+       month grid in its sheet. */
+    .when-row { display:flex; align-items:stretch; gap:8px; margin:5px 0; min-height:37px; }   /* 37 = the text inputs' height, so the row matches Workout name / Location */
+    .when-row #daySeg { flex:1 1 auto; min-width:0; margin:0; }
+    .when-row #dtTime { flex:0 0 auto; width:auto; margin:0; padding:0 10px; font-size:13px; font-weight:600; border-radius:10px; box-sizing:border-box; }
+    .when-row #dtTime::-webkit-calendar-picker-indicator { display:none; }
+    .when-row #dtTime::-webkit-date-and-time-value { text-align:center; }
+    .cal-nav { display:flex; align-items:center; justify-content:space-between; margin:4px 0 10px; font-size:15px; }
+    .cal-nav .icon-btn { font-size:22px; }
+    .cal-dow { display:grid; grid-template-columns:repeat(7,1fr); text-align:center; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:4px; }
+    .cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; padding-bottom:6px; }
+    .cal-grid .cal-d { width:auto; margin:0; padding:0; height:40px; border-radius:10px; background:transparent; color:var(--fg); font-size:14px; font-weight:500; border:1px solid transparent; }
+    .cal-grid .cal-d.past { color:var(--muted); }
+    .cal-grid .cal-d.today { border-color:var(--muted); font-weight:700; }
+    .cal-grid .cal-d.on { background:var(--blue); color:#fff; font-weight:700; }
     .inv-empty { font-size:12px; color:var(--muted); padding:0 2px; margin:14px 0 4px; }   /* Sep 6: sits under the action buttons; Jeff: "a slight bit of padding" from them */
     /* A pending invite on the home screen. Deliberately NOT called .inv-row: that name belongs to
        the friend picker in New Workout further down this file, and while these two shared it the
@@ -1226,6 +1241,7 @@
       :where(html.theme-dark) .req .ra .sm.ok { background:#1b2540; border-color:#2c3c63; color:var(--blue); }
       :where(html.theme-dark) .chat-row .chat-send { background:#3b6de8; }
       :where(html.theme-dark) .btn-quick { background:transparent; }
+      :where(html.theme-dark) .cal-grid .cal-d.on { background:#3b6de8; }
       :where(html.theme-dark) .mg-grid .mg-tile { box-shadow:0 1px 2px rgba(0,0,0,.35), 0 8px 20px -10px rgba(0,0,0,.55); }
       :where(html.theme-dark) .mg-grid .mg-tile:active { background:#262930; }
       :where(html.theme-dark) .btn-quick:active { background:#222c4a; }
@@ -1323,6 +1339,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=354"></script>
+  <script src="app.js?v=358"></script>
 </body>
 </html>
