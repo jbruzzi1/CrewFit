@@ -3478,6 +3478,15 @@ function toLocalInput(iso){ const d=new Date(iso); const p=n=>String(n).padStart
 // a routine that's grown beyond exercises-only (location/public visibility/invited friends) says
 // so in both places the same way, and a plain exercises-only routine reads exactly as it always
 // has -- just the exercise count.
+// Sep 7: the list row's meta line -- the first two exercise names (what you pick a routine by),
+// "+N" for the rest, then location / "from Brian" when present. tplSubtitle() stays for tplView.
+function tplPreview(t){
+  const names = t.exercises.map(e=>e.name);
+  const shown = names.slice(0,2).map(esc).join(', ') + (names.length>2 ? ` +${names.length-2}` : '');
+  // On a shared row WHO shared it leads (that's what tells two friends' "Leg Day" apart), then the
+  // exercises; location trails so an ellipsis eats the least useful part first.
+  return [t.ownerName ? `from ${esc(t.ownerName)}` : '', shown, t.location ? esc(t.location) : ''].filter(Boolean).join(' · ');
+}
 function tplSubtitle(t){
   // v306 cold-review catch: plur(n,'invited') pluralizes by appending 's' -- "2 inviteds". 'invited'
   // isn't a noun plur() can conjugate, so this builds the phrase directly instead of routing it
@@ -3535,14 +3544,21 @@ async function templatesPage(opts){
   // left on the row, so it needs its own event.stopPropagation() (same guard every other tappable
   // control nested inside a row's own onclick uses, e.g. ex-fav-btn) or tapping it would ALSO
   // open the detail screen out from under the tap.
-  const row = (t)=>`<div class="lib-item" onclick="tplView('${t.id}')"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${tplSubtitle(t)}${t.ownerName?` · from ${esc(t.ownerName)}`:''}</div></div>
-    <button class="sec sm" onclick="event.stopPropagation(); tplUse('${t.id}')">Use</button></div>`;
+  // Sep 7 (Jeff: "the routines page needs cleaning up"): the same page anatomy as New workout
+  // and the session page -- Back + the one primary action in a pp-head, the title on its own line
+  // underneath -- instead of a cramped ＋ icon squeezed beside the h1. The explainer sentence is
+  // gone (the title says it). Rows sit in a floating card like every other list, the meta line
+  // previews the exercises themselves (the thing you actually pick a routine by) instead of a bare
+  // count, and Use is a blue text button -- blue = action, and a grey outlined pill on every row
+  // read as noise.
+  const row = (t)=>`<div class="lib-item tpl-row" onclick="tplView('${t.id}')"><div style="flex:1;min-width:0"><div class="tpl-name">${esc(t.name)}</div><div class="muted tpl-meta">${tplPreview(t)}</div></div>
+    <button class="txt-btn" onclick="event.stopPropagation(); tplUse('${t.id}')">Use</button></div>`;
+  const section = (list)=>`<div class="card tpl-list">${list.map(row).join('')}</div>`;
   $('app').innerHTML = `<div class="wrap tpl-page">
-    <div class="pick-head lib-head"><button class="sec sm" onclick="routinesBack()">← Back</button><h1 style="flex:1">Routines</h1>
-      <button class="icon-btn" onclick="tplNew()" title="New routine">＋</button></div>
-    <div class="muted" style="font-size:13px;margin:4px 2px 12px">Reusable workouts. Build one, then use it to start a new session in a tap.</div>
-    ${mine.length?mine.map(row).join(''):homeEmpty(ICON_LIST, 'No routines yet', 'Tap + to create one, or save a finished workout as a routine.')}
-    ${shared.length?`<div class="lib-cat" style="margin-top:12px">Shared by friends</div>`+shared.map(row).join(''):''}</div>`;
+    <div class="pp-head tpl-head"><button class="sec sm" onclick="routinesBack()">← Back</button><button class="blue sm" onclick="tplNew()">+ New routine</button></div>
+    <h1 class="tpl-h1">Routines</h1>
+    ${mine.length?section(mine):homeEmpty(ICON_LIST, 'No routines yet', 'Build one with + New routine, or save a finished workout as a routine.')}
+    ${shared.length?`<div class="lib-cat">Shared by friends</div>`+section(shared):''}</div>`;
   // v304: templatesPage() becomes a real page in the nav-history stack (navigated()/landOn(),
   // same as followList/profileView/openSettings) now that tplView() sits a level below it and
   // needs somewhere real to Back to -- it used to be a bare direct call with no history entry.
@@ -3562,8 +3578,8 @@ async function templatesPage(opts){
 // The detail screen Jeff asked for: tap a routine on the list, see every exercise it has, with
 // the same ⋯ menu (Edit / Delete, or Edit a copy / Remove for a friend's shared routine) the
 // list row used to carry, now up in the header next to Back -- same pp-head/pp-dots/pp-menu
-// anatomy openSession uses for its own Edit session/Delete session pair. "Use this routine" stays
-// reachable here too, so viewing a routine before starting it doesn't cost an extra trip back.
+// anatomy openSession uses for its own Edit session/Delete session pair. "Use routine" sits in the
+// same header, so viewing a routine before starting it doesn't cost an extra trip back.
 async function tplView(id, opts){
   const fromHistory = !!(opts && opts.fromHistory);
   const { mine, shared } = await H.get('/api/templates');
@@ -3577,15 +3593,17 @@ async function tplView(id, opts){
     : `<button onclick="tplEditCopy('${id}')">Edit a copy</button><button class="danger" onclick="tplHide('${id}')">Remove</button>`;
   const dots = `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">⋯</button><div class="pp-menu" id="ppMenu-${id}" style="display:none">${menuItems}</div>`;
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
+  // Sep 7: the primary action moves up into the header (Jeff, v304: "I like having the save
+  // buttons at the top") -- Back on the left, ⋯ + "Use routine" on the right, same as New workout's
+  // Back / Create workout row. Nothing left dangling under the list.
   $('app').innerHTML = `<div class="wrap">
-    <div class="pp-head">
+    <div class="pp-head tpl-head">
       <button class="sec sm" onclick="history.back()">← Back</button>
-      ${dots}
+      <div class="pp-right"><span class="pp-dots-wrap">${dots}</span><button class="blue sm" onclick="tplUse('${id}')">Use routine</button></div>
     </div>
-    <h1 style="margin:18px 0 4px">${esc(t.name)}</h1>
+    <h1 class="tpl-h1" style="margin-bottom:4px">${esc(t.name)}</h1>
     <div class="muted" style="font-size:13px;margin:0 2px 14px">${tplSubtitle(t)}${t.ownerName?` · from ${esc(t.ownerName)}`:''}</div>
     <div class="card">${t.exercises.map(e=>`<div class="lib-item"><div style="flex:1;min-width:0;font-weight:600">${esc(e.name)}</div><span class="draft-chip">${e.defaultSets} × ${repLabel(e)}</span></div>`).join('')}</div>
-    <button class="blue" style="margin-top:14px" onclick="tplUse('${id}')">Use this routine</button>
   </div>`;
   const st = {t:'routineView', id};
   fromHistory ? landOn(st) : navigated(st);
@@ -3804,19 +3822,18 @@ async function templateExercises(){
   // "+ Add exercise", where it used to be the last thing on the page rather than the first thing
   // reached. "+ Add exercise" stays where it is, right after the list it adds to.
   $('app').innerHTML = `<div class="wrap create-flow">
-    <div class="pp-head" style="margin-bottom:14px">
+    <div class="pp-head tpl-head" style="margin-bottom:14px">
       <button class="sec sm" onclick="tplBack()">← Back</button>
       <button class="blue sm" onclick="finishTemplate()">✓ ${TPL_MODE.id?'Save changes':(TPL_MODE.copy?'Save as my routine':'Create routine')}</button>
     </div>
     ${nameField}
-    <h2 class="light" style="margin-top:14px">Details <span class="muted" style="font-weight:400;text-transform:none;font-size:12px">(optional)</span></h2>
-    <div class="fineprint" style="margin:0 2px 10px">Leave these blank to save an exercises-only routine, same as before.</div>
+    <h2 class="light" style="margin-top:14px">Exercises</h2><div id="draftList" class="card"></div>
+    <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button>
+    <h2>Details <span class="muted" style="font-weight:400;text-transform:none;font-size:12px">(optional)</span></h2>
     <label class="muted">Location</label><input id="loc" placeholder="e.g. Gold's Gym" value="${esc(DRAFT.location||'')}">
     <label class="muted">Visibility</label>
     ${visSegHtml(DRAFT.visibility)}
-    <h2>Invite friends</h2>${crewQuickInviteHtml()}<div id="invList" class="card">${invRows}</div>
-    <h2>Exercises</h2><div id="draftList" class="card"></div>
-    <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button></div>`;
+    <h2>Invite friends</h2>${crewQuickInviteHtml()}<div id="invList" class="card">${invRows}</div></div>`;
   window.scrollTo(0,0);
   renderDraft();
 }
