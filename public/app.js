@@ -615,8 +615,13 @@ async function home(opts){
   // always-on section headers below (Sep 7) -- "Friends' workouts" has no CTA of its own (never
   // did, even pre-v364), so this is still the one place a zero-friend user is told to invite
   // someone, not just shown a quiet box that says nothing will happen until they do.
-  if(!myFriends.length){
-    html += `<div class="solo-line">Training solo for now — <b onclick="showTab('friends')">invite a friend</b> and they'll see ${nextUp ? 'this workout' : 'your workouts'}.</div>`;
+  // Sep 7 (Jeff): dropped once a Next up card is showing -- its own "Invite a friend" button
+  // (see inviteBtn above, always present for a solo user) already does this job, so the line
+  // would just be repeating a button that's already on screen. It survives only for the
+  // genuinely-nothing-planned state, where there's no card at all and this is the one invite
+  // nudge on the page.
+  if(!myFriends.length && !nextUp){
+    html += `<div class="solo-line">Training solo for now — <b onclick="showTab('friends')">invite a friend</b> and they'll see your workouts.</div>`;
   }
 
   // Your sessions: always visible (Jeff, Sep 7: "no guessing... where things would show"). The
@@ -643,7 +648,13 @@ async function home(opts){
       html += `</div>`;
       if(restRows.length > 3 && !showAll) html += `<div style="text-align:right;margin-top:-4px"><button class="txt-btn" onclick="window.HOME_ALL_SESSIONS=true; home({silent:true})">See all ${restRows.length}</button></div>`;
     } else if(nextUp){
-      html += `<div class="solo-line">That's everything on your plate right now.</div>`;
+      // .rest-line (not just .solo-line) -- Jeff, Sep 7: this one-line summary sat right on top of
+      // the next header (Friends' workouts) with nothing to separate them; a bit of extra bottom
+      // margin specific to this case, not a change to .solo-line's base spacing everywhere else it
+      // shows up (the "Training solo" line above, and the Friends tab's own empty line).
+      // Sep 7 (Jeff): reworded from a passive "nothing on your plate" statement to an actual nudge
+      // to plan another -- same bold-clickable-link pattern as the "Training solo" line above it.
+      html += `<div class="solo-line rest-line">That's everything on your plate — <b onclick="newWorkout()">plan another workout</b>.</div>`;
     } else {
       html += homeEmpty(ICON_CAL, 'No upcoming sessions', 'Plan one with + New workout, or start a Quick Workout right now.');
     }
