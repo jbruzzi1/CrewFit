@@ -383,6 +383,7 @@ async function home(opts){
   // scrollTo(0,0) below would yank a scrolled Home back to the top just from dismissing a banner.
   const silent = !!(opts && opts.silent);
   if(!silent) window.HOME_ALL_SESSIONS = false;   // v364: "See all" expansion lasts until you actually leave Home
+  if(!silent) window.HOME_CAL_EXPANDED = false;   // same rule for the week-strip/month-calendar toggle below
   // weeks=26, not 4: streakWeeks is computed inside the requested window, so a 4-week request
   // silently caps the streak stat at "4 week streak" — false for anyone on a longer run.
   // Sep 7: /api/feed moved out of Home's fetch -- Friends' Activity now lives on the Friends tab
@@ -544,24 +545,55 @@ async function home(opts){
   const planDays = new Map();   // ymd -> soonest open session that day
   for(const s of openOnes){ const k = localDateStr(new Date(s.scheduledAt)); if(!planDays.has(k)) planDays.set(k, s); }
   const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-  let strip = '<div class="week-strip">';
-  for(let i = 0; i < 7; i++){
-    const d = new Date(monday); d.setDate(monday.getDate() + i); const k = localDateStr(d);
+  // One cell, shared by the compact week strip and the expanded month grid below -- a day's
+  // done/plan/open state and its tap target (open the recap, open the planned session, or start
+  // planning a blank day) are computed in exactly one place, so expanding never changes what
+  // tapping a day actually does, only how many days are on screen at once.
+  // Blank days (nothing done, nothing planned) are tappable too, same as done/plan days --
+  // Jeff, Sep 7: "have it clickable to plan something on the day that's empty." Scoped to
+  // today/future only -- a blank PAST day already happened, there's nothing to plan for it,
+  // and offering to "plan" one would be a confusing dead end.
+  const dayCell = (d, label, dim) => {
+    const k = localDateStr(d);
     const isToday = d.getTime() === today0.getTime();
     const isFuture = d.getTime() >= today0.getTime();
     const done = doneDays.get(k), plan = planDays.get(k);
-    // Blank days (nothing done, nothing planned) are tappable too, same as done/plan days --
-    // Jeff, Sep 7: "have it clickable to plan something on the day that's empty." Scoped to
-    // today/future only -- a blank PAST day already happened, there's nothing to plan for it,
-    // and offering to "plan" one would be a confusing dead end.
     const open = !done && !plan && isFuture;
-    const cls = ['wk', done ? 'done' : plan ? 'plan' : open ? 'open' : '', isToday ? 'today' : ''].filter(Boolean).join(' ');
+    const cls = ['wk', done ? 'done' : plan ? 'plan' : open ? 'open' : '', isToday ? 'today' : '', dim ? 'dim' : ''].filter(Boolean).join(' ');
     const ico = done ? '✓' : open ? '+' : '';   // planned days are a dashed ring, today a solid one -- the label underneath already names the day
     const tap = done ? `onclick="viewPost('${done.id}','${ME.id}')"` : plan ? `onclick="openSession('${plan.id}')"` : open ? `onclick="planDayFor('${k}')"` : '';
-    strip += `<div class="${cls}" ${tap}><div class="dot">${ico}</div>${dayNames[i]}</div>`;
+    return `<div class="${cls}" ${tap}><div class="dot">${ico}</div>${label}</div>`;
+  };
+  // Sep 8 (Jeff: "could we have the calendar expandable... while having selecting the days open
+  // the workouts"): collapsed stays exactly the original 7-day strip; expanded swaps in the
+  // CURRENT month as a Monday-first grid (no prev/next month browsing yet -- ask if that's
+  // wanted once he's seen this). Leading/trailing days from neighboring months fill out the grid
+  // (a month rarely starts or ends on a Monday) and stay fully tappable, just dimmed -- a workout
+  // logged on the 1st is never invisible just because it falls in the grid's first row.
+  const calExpanded = !!window.HOME_CAL_EXPANDED;
+  let strip;
+  if(!calExpanded){
+    strip = '<div class="week-strip">';
+    for(let i = 0; i < 7; i++){
+      const d = new Date(monday); d.setDate(monday.getDate() + i);
+      strip += dayCell(d, dayNames[i], false);
+    }
+    strip += '</div>';
+  } else {
+    const monthStart = new Date(today0.getFullYear(), today0.getMonth(), 1);
+    const monthEnd = new Date(today0.getFullYear(), today0.getMonth()+1, 0);
+    const gridStart = new Date(monthStart); gridStart.setDate(gridStart.getDate() - ((gridStart.getDay()+6)%7));
+    const gridEnd = new Date(monthEnd); gridEnd.setDate(gridEnd.getDate() + (7 - 1 - ((gridEnd.getDay()+6)%7)));
+    strip = `<div class="cal-lbl">${monthStart.toLocaleDateString(undefined,{month:'long',year:'numeric'})}</div>
+      <div class="cal-hdr">${dayNames.map(n=>`<span>${n[0]}</span>`).join('')}</div>`;
+    for(let d = new Date(gridStart); d <= gridEnd; ){
+      strip += '<div class="week-strip">';
+      for(let i = 0; i < 7; i++){ strip += dayCell(d, String(d.getDate()), d.getMonth() !== today0.getMonth()); d.setDate(d.getDate()+1); }
+      strip += '</div>';
+    }
   }
-  strip += '</div>';
   html += strip;
+  html += `<div style="text-align:right;margin:2px 0 12px"><button class="txt-btn" onclick="window.HOME_CAL_EXPANDED=${!calExpanded};home({silent:true})">${calExpanded ? 'Show week only' : 'Show full month'}</button></div>`;
 
   // Next up card
   if(nextUp){
