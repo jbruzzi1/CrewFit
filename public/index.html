@@ -271,6 +271,10 @@
     .next-actions button.sec { border-color:var(--line); }
     .solo-line { font-size:12.5px; color:var(--muted); padding:0 2px; margin:12px 0 0; line-height:1.45; }
     .solo-line b { color:var(--blue); font-weight:600; cursor:pointer; padding:6px 0; margin:-6px 0; }   /* a real thumb target without changing the line height */
+    /* padding, not margin -- margin-bottom here would collapse with the next h2's own margin-top
+       (same block-formatting context, nothing between them blocks collapsing) and end up with NO
+       visible extra space at all. Padding never collapses, so this is the one that actually works. */
+    .solo-line.rest-line { padding-bottom:14px; }   /* Sep 7 (Jeff): breathing room before the next header when this line stands in for "Your sessions" empty content */
     /* .nothing-line/.nl-title removed Sep 7 -- the "Nothing planned this week" replacement for the
        Next up card is gone (see home()'s comment); "Your sessions" own empty state covers it now. */
     .tip-card { border-radius:18px; background:var(--card); padding:14px; display:flex; gap:12px; align-items:flex-start; margin-top:12px; box-shadow:0 1px 2px rgba(20,24,31,.04), 0 8px 20px -10px rgba(20,24,31,.14); cursor:pointer; }
@@ -1434,6 +1438,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=369"></script>
+  <script src="app.js?v=372"></script>
 </body>
 </html>
