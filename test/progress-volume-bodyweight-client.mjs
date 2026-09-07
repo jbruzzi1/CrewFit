@@ -307,7 +307,7 @@ console.log('body weight: empty state offers a CTA, no chart');
   ok(html.includes('Body weight'), 'section heading renders');
   ok(html.includes('Not tracked yet'), 'empty state message renders');
   ok(html.includes('openBodyweightSheet()'), 'a control opens the log sheet');
-  ok(!html.includes('<svg'), 'no chart svg with zero entries');
+  ok(!html.includes('<polyline') && !html.includes('class="ch-svg"') && !/<svg[^>]*viewBox="0 0 3\d\d/.test(html), 'no chart svg with zero entries (the open empty state\'s 30px icon is not a chart)');
 }
 
 console.log('body weight: one entry shows the value but not a chart yet');
