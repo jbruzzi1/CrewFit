@@ -150,6 +150,87 @@ console.log('\nthe real Home render -- Live/Upcoming/Missed badges and the amber
   ok(upcomingIdx < sink.html.indexOf('Pull Day'), 'the upcoming-today session also still sorts ahead of the missed one (unchanged "today" priority)');
 }
 
+console.log('\nHome week strip / expandable month calendar (Sep 8, Jeff: "have the calendar expandable... selecting the days open the workouts")');
+{
+  // FIXED_NOW is Mon Aug 31 2026 -- deliberately: the Monday-first grid for THIS month (August)
+  // needs 5 leading days (back to Mon Jul 27) AND 6 trailing days (through Sun Sep 6) to fill out
+  // a 6-row grid, so this one fixture exercises both boundaries at once, plus the "today is also
+  // the grid's very first live day" edge.
+  const doneSession = { id: 's-done-825', name: 'Pull Day', creatorId: 'me1', participants: ['me1'], invited: [],
+    exercises: [{ id: 'e1' }], scheduledAt: '2026-08-25T18:00:00.000Z', logs: {}, posts: {},
+    history: [{ userId: 'me1', date: '2026-08-25' }] };
+  // Scheduled for Sep 3 -- inside the grid's TRAILING (next-month) days when viewing August expanded.
+  const plannedSession = { id: 's-plan-sep3', name: 'Leg Day', creatorId: 'me1', participants: ['me1'], invited: [],
+    exercises: [{ id: 'e1' }], scheduledAt: daysAhead(3), history: [], logs: {}, posts: {} };
+  const sessions = [doneSession, plannedSession];
+  vm.runInContext(`
+    H.get = (p) => Promise.resolve(
+      p === '/api/sessions' ? ${JSON.stringify(sessions)} :
+      p === '/api/feed' ? [] :
+      p === '/api/friends' ? { friends: [] } : []
+    );
+  `, ctx);
+
+  // --- Collapsed (default): unchanged 7-day strip, Aug 31 (today) through Sep 6 ---
+  sink.html = '';
+  vm.runInContext('window.HOME_CAL_EXPANDED = undefined', ctx);
+  await vm.runInContext('home', ctx)({ silent: true });
+  const stripHtml = (sink.html.match(/<div class="week-strip">[\s\S]*?<\/div>\s*<\/div>/) || [''])[0];
+  const wkCells = sink.html.match(/<div class="wk[^"]*"[^>]*>/g) || [];
+  ok(wkCells.length === 7, `collapsed strip renders exactly 7 day cells (got ${wkCells.length})`);
+  ok(sink.html.includes('Show full month'), 'the toggle link offers to expand, collapsed by default');
+  ok(!sink.html.includes('Show week only'), 'and does not simultaneously offer to collapse');
+  ok(/class="wk today"[^>]*><div class="dot"><\/div>Mon/.test(sink.html) || /"wk[^"]*today[^"]*"/.test(sink.html), 'today (Aug 31, a blank/open day) is marked .today');
+  ok(sink.html.includes(`onclick="planDayFor('2026-09-01')"`), 'tomorrow (a blank future day) is tappable to plan, same as before this change');
+
+  // --- Expanded: August 2026, Monday-first, 6 rows (5 leading + 31 + 6 trailing = 42 cells) ---
+  vm.runInContext('window.HOME_CAL_EXPANDED = true', ctx);
+  sink.html = '';
+  await vm.runInContext('home', ctx)({ silent: true });
+  ok(sink.html.includes('August 2026'), `month label renders (got no match in: ${sink.html.slice(sink.html.indexOf('cal-lbl'), sink.html.indexOf('cal-lbl')+60)})`);
+  ok(sink.html.includes('cal-hdr'), 'the Mon..Sun weekday-initials header renders');
+  const monthWkCells = sink.html.match(/<div class="wk[^"]*"[^>]*>/g) || [];
+  ok(monthWkCells.length === 42, `expanded grid renders 5 leading + 31 August + 6 trailing = 42 day cells (got ${monthWkCells.length})`);
+  ok(sink.html.includes('Show week only'), 'the toggle now offers to collapse back');
+  ok(!sink.html.includes('Show full month'), 'and no longer offers to expand (already expanded)');
+
+  // The done day (Aug 25) -- real date, checkmark, opens the recap, NOT dimmed (it's inside August).
+  const doneCellIdx = sink.html.indexOf('viewPost(\'s-done-825\'');
+  ok(doneCellIdx > -1, 'Aug 25 (a finished session, via history date -- no logs needed) opens its recap on tap');
+  const doneCellTag = sink.html.slice(Math.max(0, doneCellIdx - 120), doneCellIdx);
+  ok(/class="wk done"/.test(doneCellTag) || /"wk[^"]*done[^"]*"/.test(doneCellTag), 'Aug 25\'s cell carries the done class (green check)');
+  ok(!/dim/.test(doneCellTag), 'Aug 25 is inside the current month, so it is NOT dimmed');
+
+  // Sep 3 (the planned session) -- inside the grid's TRAILING days -- still opens the real session,
+  // but IS dimmed since it belongs to the next month, not August.
+  const planCellIdx = sink.html.indexOf(`openSession('s-plan-sep3')`);
+  ok(planCellIdx > -1, 'Sep 3 (a planned session, shown as a trailing day of the August grid) opens the real session on tap');
+  const planCellTag = sink.html.slice(Math.max(0, planCellIdx - 120), planCellIdx);
+  ok(/dim/.test(planCellTag), 'Sep 3 is dimmed -- it belongs to September, not the August month being shown');
+
+  // Sep 1 (a blank trailing day) -- still tappable to plan, still its own real date, still dimmed.
+  const blankTrailIdx = sink.html.indexOf(`planDayFor('2026-09-01')`);
+  ok(blankTrailIdx > -1, 'Sep 1 (blank, trailing) is still tappable to plan that exact real date');
+  ok(/dim/.test(sink.html.slice(Math.max(0, blankTrailIdx - 120), blankTrailIdx)), 'Sep 1 is dimmed too, same as any other day outside August');
+
+  // A blank PAST day within August itself (before today, nothing done/planned) stays fully inert --
+  // unaffected by expanding, same "no dead-end plan button on a day that already happened" rule.
+  ok(!sink.html.includes(`planDayFor('2026-08-20')`), 'a blank day BEFORE today (Aug 20) is not tappable to plan, expanded or not');
+
+  // Collapsing back drops the month grid and restores exactly the 7-cell strip.
+  vm.runInContext('window.HOME_CAL_EXPANDED = false', ctx);
+  sink.html = '';
+  await vm.runInContext('home', ctx)({ silent: true });
+  ok((sink.html.match(/<div class="wk[^"]*"[^>]*>/g) || []).length === 7, 'toggling back to the week strip returns to exactly 7 cells');
+  ok(!sink.html.includes('cal-hdr'), 'and the month header is gone');
+
+  // A real (non-silent) navigation to Home resets the expansion, same rule HOME_ALL_SESSIONS
+  // already follows -- expanding the calendar should not silently persist across a real revisit.
+  vm.runInContext('window.HOME_CAL_EXPANDED = true', ctx);
+  await vm.runInContext('home', ctx)({});
+  ok(vm.runInContext('!!window.HOME_CAL_EXPANDED', ctx) === false, 'a real navigation to Home resets HOME_CAL_EXPANDED back to false');
+}
+
 console.log('\nMy Workouts (profile page): defaults to List view, buttons swapped on screen');
 {
   const PROFILE = {
