@@ -5495,15 +5495,19 @@ async function friends(opts){
     : homeEmpty(ICON_PEOPLE, 'No connections yet', 'Search above to find people to train with.');
   // Sep 4 (Jeff, same ask generalized to the follow-requests list too): same
   // onclick="profileView(id)" + cursor:pointer + stopPropagation-on-the-buttons pattern as the
-  // search results above -- clicking the person's name/row here now opens their profile; Approve/
-  // Reject still work without also triggering that navigation.
+  // search results above -- clicking the person's name/row here now opens their profile; Accept/
+  // Decline still work without also triggering that navigation.
+  // Sep 7 (Jeff): wording changed from Approve/Reject to Accept/Decline -- matches the word already
+  // used for this exact kind of row everywhere else in the app (the Home invite banner, join
+  // requests), and reads softer for turning down a person rather than an action. Function names
+  // (acceptFollow/rejectFollow) are internal and untouched -- only the visible label changed.
   const followReqRows = freq.length ? freq.map(x=>`
     <div class="req" onclick="profileView('${jsq(x.id)}')" style="cursor:pointer">
       ${avatarHtml(x,'av')}
       <div class="rc"><b>${esc(x.displayName||x.username)}</b> wants to follow you</div>
       <div class="ra" onclick="event.stopPropagation()">
-        <button class="sm ok" onclick="acceptFollow('${jsq(x.id)}')">Approve</button>
-        <button class="sm no" onclick="rejectFollow('${jsq(x.id)}')">Reject</button>
+        <button class="sm ok" onclick="acceptFollow('${jsq(x.id)}')">Accept</button>
+        <button class="sm no" onclick="rejectFollow('${jsq(x.id)}')">Decline</button>
       </div>
     </div>`).join('') : '';
   const pending = freq.length;
@@ -6430,14 +6434,17 @@ async function renderNotifications(opts){
       </div>`).join('') + `</div>` : '';
   // Same .req row shape as the Friends-tab follow-request rows and the in-session join-request
   // rows (openSession, above) -- reusing both rather than inventing a third look for the same kind
-  // of "approve/reject someone" row.
+  // of "accept/decline someone" row. Wording here (Accept/Decline) matches the Friends tab's own
+  // follow-request row (Sep 7, Jeff) -- Join requests just below keeps Approve/Reject, a
+  // deliberately different action (joining a session, not a person), so this is not a blanket
+  // rename across the page.
   const followHtml = followRequests.length ? `<h2>Follow requests</h2><div class="card" style="padding:6px 12px">` + followRequests.map(fr => `
       <div class="req">
         ${avatarHtml(fr.from,'av')}
         <div class="rc"><b>${esc(fr.from.displayName||fr.from.username)}</b> wants to follow you</div>
         <div class="ra">
-          <button class="sm ok" onclick="notifAcceptFollow('${fr.from.id}')">Approve</button>
-          <button class="sm no" onclick="notifRejectFollow('${fr.from.id}')">Reject</button>
+          <button class="sm ok" onclick="notifAcceptFollow('${fr.from.id}')">Accept</button>
+          <button class="sm no" onclick="notifRejectFollow('${fr.from.id}')">Decline</button>
         </div>
       </div>`).join('') + `</div>` : '';
   const joinHtml = joinRequests.length ? `<h2>Join requests</h2><div class="card" style="padding:6px 12px">` + joinRequests.map(jr => `
