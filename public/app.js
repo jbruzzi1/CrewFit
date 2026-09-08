@@ -7035,8 +7035,21 @@ function syncFrameToViewport(){
   if(!window.visualViewport) return;
   const vv = window.visualViewport;
   const keyboardUp = vv.height < window.innerHeight - 100;
-  if(keyboardUp){ document.body.style.height = Math.round(vv.height) + 'px'; FRAME_SHRUNK = true; }
-  else if(FRAME_SHRUNK){ document.body.style.height = ''; FRAME_SHRUNK = false; try{ window.scrollTo(0,0); }catch(e){} }
+  const nav = document.getElementById('nav');
+  if(keyboardUp){
+    document.body.style.height = Math.round(vv.height) + 'px'; FRAME_SHRUNK = true;
+    // Sep 8 (Jeff, screenshot from Create workout's "Length (min)" field): .nav is a real flex
+    // sibling of #app at the bottom of body, not a fixed overlay -- shrinking body down to the
+    // visible area above the keyboard (the fix just above, so #app stays scrollable) drags .nav
+    // up along with it, since it's still the last thing in that now-shorter flex column. It ends
+    // up floating mid-screen riding the top edge of the keyboard, instead of just being covered by
+    // it the way a native tab bar would be. Hide it while the keyboard is up -- #app (flex:1) then
+    // fills the whole shrunk body on its own -- and restore it the instant the keyboard closes.
+    // A separate class from the auth-flow's own .hidden (toggled in setToken/logout) so closing
+    // the keyboard while logged out can't accidentally reveal the nav again.
+    if(nav) nav.classList.add('kb-hide');
+  }
+  else if(FRAME_SHRUNK){ document.body.style.height = ''; FRAME_SHRUNK = false; try{ window.scrollTo(0,0); }catch(e){} if(nav) nav.classList.remove('kb-hide'); }
 }
 if(window.visualViewport){
   window.visualViewport.addEventListener('resize', syncSheetsToViewport);
