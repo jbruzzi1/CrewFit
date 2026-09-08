@@ -164,6 +164,70 @@ console.log('\n/admin.html is actually served as a static file');
   ok(r.status === 200 && text.includes('Report Review'), '/admin.html responds 200 and contains the report-review page (cold-review fix: this route did not exist at all before)');
 }
 
+console.log('\nediting your own message works everywhere you can post one (Jeff, Sep 8 2026)');
+{
+  // live in-workout chat -- edit permission is "own message only", which doesn't depend on
+  // session membership at all (see the route: it checks c.userId, never sessionTier), so bob
+  // doesn't need to be a participant for the "not the author" case below to be meaningful.
+  const sess = await api('POST', '/api/sessions', A, { name: 'Chat Edit Test', visibility: 'public', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Deadlift' }] });
+  const sid = sess.json.id;
+  const chatMsg = await api('POST', `/api/sessions/${sid}/comments`, A, { text: 'meet at rack 3' });
+  const chatCid = chatMsg.json.comments.at(-1).id;
+  const editedChat = await api('PUT', `/api/sessions/${sid}/comments/${chatCid}`, A, { text: 'meet at rack 4 instead' });
+  ok(editedChat.status === 200 && editedChat.json.text === 'meet at rack 4 instead' && !!editedChat.json.editedAt, 'alice can edit her own live-chat message, editedAt gets stamped');
+  const bobEditsAlicesChat = await api('PUT', `/api/sessions/${sid}/comments/${chatCid}`, B, { text: 'hijacked' });
+  ok(bobEditsAlicesChat.status === 403, "bob (not the message's author) cannot edit alice's chat message");
+  const emptyEdit = await api('PUT', `/api/sessions/${sid}/comments/${chatCid}`, A, { text: '   ' });
+  ok(emptyEdit.status === 400, 'editing a chat message to empty text is refused');
+
+  // crew messages
+  // Earlier sections blocked and unblocked alice<->bob repeatedly; blocking severs the follow graph
+  // (see blockUser) and unblocking does not restore it, so without re-establishing a connection
+  // here validCrewMemberIds would silently filter bob out of memberIds below (crew membership
+  // requires an existing follow connection) and every "bob is a member" assertion in this block
+  // would pass or fail for the wrong reason.
+  await api('POST', `/api/follow/${AID}`, B);
+  const crew = await api('POST', '/api/crews', A, { name: 'Edit Test Crew', memberIds: [BID] });
+  ok(crew.json.members && crew.json.members.some(m => m.id === BID), 'sanity: bob actually landed in the new crew as a member');
+  const crewMsg = await api('POST', `/api/crews/${crew.json.id}/messages`, A, { text: 'leg day friday' });
+  const crewMid = crewMsg.json.id;
+  const editedCrew = await api('PUT', `/api/crews/${crew.json.id}/messages/${crewMid}`, A, { text: 'leg day saturday instead' });
+  ok(editedCrew.status === 200 && editedCrew.json.text === 'leg day saturday instead' && !!editedCrew.json.editedAt, 'alice can edit her own crew message, editedAt gets stamped');
+  const bobEditsAlicesCrewMsg = await api('PUT', `/api/crews/${crew.json.id}/messages/${crewMid}`, B, { text: 'hijacked' });
+  ok(bobEditsAlicesCrewMsg.status === 403, "bob (a crew member, but not the message's author) cannot edit alice's crew message");
+  // carol is deliberately NOT added to this crew, so this proves the isCrewMember gate specifically
+  // (as opposed to just "not the author," which the bob case above already covers) -- see the next
+  // block for the complementary case: the message's OWN author, once they've left.
+  const nonMemberEdit = await api('PUT', `/api/crews/${crew.json.id}/messages/${crewMid}`, C, { text: 'hijacked' });
+  ok(nonMemberEdit.status === 403, 'carol (not a crew member at all) is refused by the membership gate before authorship is even checked');
+  const missingMsg = await api('PUT', `/api/crews/${crew.json.id}/messages/does_not_exist`, A, { text: 'x' });
+  ok(missingMsg.status === 404, 'editing a message id that does not exist 404s rather than 500ing');
+
+  // Cold-review fix: a message's own author loses edit access once they leave the group it was
+  // posted in -- mirrors the membership check already required to read/post there in the first
+  // place (GET/POST on both these routes require isCrewMember / sessionTier). Before this fix,
+  // ownership alone was sufficient, so someone who'd left could keep rewriting their old message's
+  // text forever, in a chat they could no longer read or post into, with no delete/moderation
+  // route on crew messages to undo it.
+  const bobMsg = await api('POST', `/api/crews/${crew.json.id}/messages`, B, { text: "I'll be there" });
+  const bobMid = bobMsg.json.id;
+  ok((await api('PUT', `/api/crews/${crew.json.id}/messages/${bobMid}`, B, { text: 'still coming' })).status === 200, 'bob can edit his own crew message while still a member');
+  await api('POST', `/api/crews/${crew.json.id}/leave`, B);
+  const afterLeaveCrewEdit = await api('PUT', `/api/crews/${crew.json.id}/messages/${bobMid}`, B, { text: 'edited after leaving -- should be refused' });
+  ok(afterLeaveCrewEdit.status === 403, "bob can no longer edit his OWN crew message after leaving the crew (cold-review fix)");
+
+  await api('POST', `/api/follow/${AID}`, B); // ensure alice<->bob are connected so alice can invite him below
+  const inviteSess = await api('POST', '/api/sessions', A, { name: 'Departed Member Test', visibility: 'private', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Deadlift' }], inviteUsernames: [bob.user.username] });
+  const isid = inviteSess.json.id;
+  ok((await api('POST', `/api/sessions/${isid}/accept`, B)).status === 200, 'bob accepts the invite and becomes a participant');
+  const bobChatMsg = await api('POST', `/api/sessions/${isid}/comments`, B, { text: 'omw' });
+  const bobChatCid = bobChatMsg.json.comments.find(x => x.userId === BID).id;
+  ok((await api('PUT', `/api/sessions/${isid}/comments/${bobChatCid}`, B, { text: 'on my way, 5 min' })).status === 200, 'bob can edit his own live-chat message while still a participant');
+  ok((await api('POST', `/api/sessions/${isid}/leave`, B)).status === 200, 'bob leaves the session');
+  const afterLeaveChatEdit = await api('PUT', `/api/sessions/${isid}/comments/${bobChatCid}`, B, { text: 'edited after leaving -- should be refused' });
+  ok(afterLeaveChatEdit.status === 403, "bob can no longer edit his OWN chat message after leaving the session (cold-review fix)");
+}
+
 } finally {
   srv.kill();
   await testDb.drop();
