@@ -2017,8 +2017,30 @@ async function loadChat(s){
     // the bold "You"/name label right next to it is what actually says whose comment this is.
     const col = avatarColor(nm[c.userId]||c.userId);
     const t = new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-    return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div></div>';
+    const editedTag = c.editedAt ? ' <span class="muted" style="font-size:11px">(edited)</span>' : '';
+    // Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one") -- own
+    // messages only, same Edit-only menu shape as the posted-recap comments' own-comment case
+    // (no Delete/Remove here: Jeff's ask was specifically about editing, and live chat has never
+    // had a delete concept). The menu id is prefixed 'cmt-' on purpose -- togglePostMenu's fixed-
+    // position anchoring (see its own comment) already handles anything with that prefix escaping
+    // a scrolling ancestor's clip, and this row lives in the exact same #chatbox.scrolllist
+    // container the posted-recap comments do, so it needs the identical fix, not a new one.
+    const dots = c.userId===ME.id
+      ? '<div class="cmt-react-col"><button class="pp-dots cmt-dots" onclick="togglePostMenu(\'cmt-chat-'+c.id+'\')" aria-label="More">⋯</button><div class="pp-menu" id="ppMenu-cmt-chat-'+c.id+'" style="display:none"><button onclick="editChatMessagePrompt(\''+s.id+'\',\''+c.id+'\',\''+jsq(c.text)+'\')">Edit</button></div></div>'
+      : '';
+    return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span>'+editedTag+'</div><div class="cmt-text">'+esc(c.text)+'</div></div>'+dots+'</div>';
   }).join('');
+}
+async function editChatMessagePrompt(sessionId, commentId, currentText){
+  textEntrySheet({
+    title:'Edit message', label:'Message', value: currentText, multiline:true, confirmLabel:'Save',
+    onConfirm: async v => {
+      const text = (v||'').trim(); if(!text) return;
+      const r = await H.put(`/api/sessions/${sessionId}/comments/${commentId}`, {text});
+      if(r && r.error){ alert(r.error); return; }
+      loadChat({id: sessionId});
+    }
+  });
 }
 
 // v254: openSwapPicker() reaches the library via showTab('lib', true), which pushes its own
@@ -5776,7 +5798,17 @@ async function crewView(crewId, opts){
   const msgRows = hasMessages ? messages.map(m=>{
     if(m.system) return `<div class="crew-msg crew-msg-sys">${esc(m.text)}</div>`;
     const from = c.members.find(x=>x.id===m.userId);
-    return `<div class="crew-msg"><b>${esc(from?(from.displayName||from.username):UNKNOWN_NAME)}</b> ${esc(m.text)}</div>`;
+    const editedTag = m.editedAt ? ' <span class="muted" style="font-size:11px">(edited)</span>' : '';
+    // Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one") -- own
+    // messages only, same Edit-only menu as the live workout chat above. 'cmt-' id prefix on
+    // purpose: this list (#crewMsgs-<id>) has the identical overflow-y:auto/max-height clipping
+    // risk as #chatbox.scrolllist, and togglePostMenu's fixed-position anchoring already handles
+    // anything with that prefix escaping a scrolling ancestor's clip.
+    const isOwn = m.userId===ME.id;
+    const dots = isOwn
+      ? `<button class="pp-dots cmt-dots" style="flex:0 0 auto" onclick="togglePostMenu('cmt-crewmsg-${m.id}')" aria-label="More">⋯</button><div class="pp-menu" id="ppMenu-cmt-crewmsg-${m.id}" style="display:none"><button onclick="editCrewMsgPrompt('${jsq(c.id)}','${m.id}','${jsq(m.text)}')">Edit</button></div>`
+      : '';
+    return `<div class="crew-msg"${isOwn?' style="display:flex;align-items:flex-start;gap:2px;position:relative"':''}><span style="flex:1"><b>${esc(from?(from.displayName||from.username):UNKNOWN_NAME)}</b> ${esc(m.text)}${editedTag}</span>${dots}</div>`;
   }).join('') : '';
   const head = `<div class="pp-head"><h1 style="margin:0;flex:1">${esc(c.name)}</h1>${c.isOwner?`<button class="sec sm" onclick="newCrewSheet('${jsq(c.id)}')">Edit</button>`:''}<button class="sec sm" onclick="history.back()">← Back</button></div>`;
   // Sep 6 (Jeff: the "No messages yet" box "seems poorly done... a box showing where potential
@@ -5815,6 +5847,17 @@ async function openCrewChat(id){
   await crewView(id);
   const box = document.getElementById('crewChatInput-'+id) || document.querySelector('.chat-row');
   if(box){ try{ box.scrollIntoView({ block:'center' }); }catch(e){} }
+}
+async function editCrewMsgPrompt(crewId, messageId, currentText){
+  textEntrySheet({
+    title:'Edit message', label:'Message', value: currentText, multiline:true, confirmLabel:'Save',
+    onConfirm: async v => {
+      const text = (v||'').trim(); if(!text) return;
+      const r = await H.put(`/api/crews/${crewId}/messages/${messageId}`, {text});
+      if(r && r.error){ alert(r.error); return; }
+      crewView(crewId, {silent:true});
+    }
+  });
 }
 async function sendCrewMsg(crewId){
   const inp = $('crewChatInput-'+crewId); if(!inp) return;

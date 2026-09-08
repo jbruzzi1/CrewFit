@@ -1472,6 +1472,30 @@ app.post('/api/crews/:id/messages', auth, async (req, res) => {
     { group: { key: `crew:${c.id}:chat`, singularBody: `${who} commented in ${c.name}`, pluralBody: n => `${n} new comments in ${c.name}` } });
   res.json(m);
 });
+// Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one") -- same
+// own-message-only edit as the session chat and posted-recap comment editors. `c.messages` can
+// also hold a `system` row (crew-challenge-hit celebrations, no real userId) -- those simply have
+// no matching userId to compare against req.userId, so this refuses them the same as anyone
+// else's message, with no special-casing needed.
+// Cold-review fix: also re-check isCrewMember, matching the sibling GET/POST routes just above --
+// without it, someone who's since LEFT the crew (POST /leave, self-service, no re-invite needed)
+// kept the ability to rewrite their old messages' text indefinitely, in a chat they can no longer
+// read or post into, with no delete/moderation route on crew messages to undo it.
+app.put('/api/crews/:id/messages/:messageId', auth, async (req, res) => {
+  const c = DB.crews[req.params.id];
+  if (!c) return res.status(404).json({ error: 'not found' });
+  ensureCrewShape(c);
+  if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  const m = (c.messages || []).find(x => x.id === req.params.messageId);
+  if (!m) return res.status(404).json({ error: 'not found' });
+  if (m.userId !== req.userId) return res.status(403).json({ error: 'forbidden' });
+  const text = capStr((req.body || {}).text, CREW_MSG_MAX);
+  if (!text.trim()) return res.status(400).json({ error: 'empty' });
+  m.text = text;
+  m.editedAt = new Date().toISOString();
+  await save(DB);
+  res.json(m);
+});
 
 // ---- Crew Challenges (Sep 2026, Jeff: "make it more fun -- both collaborative AND competitive")
 // One shared, week-long goal the whole crew works toward together (every member's finished
@@ -2115,6 +2139,33 @@ app.post('/api/sessions/:id/comments', auth, async (req, res) => {
   for (const pid of s.participants) if (pid !== req.userId) notify(pid, { title: 'New message', body: `${who}: ${text.slice(0,40)}`, link: { type: 'session-chat', sessionId: s.id } },
     { group: { key: `session:${s.id}:chat`, singularBody: `${who} commented on ${wkName}`, pluralBody: n => `${n} new comments on ${wkName}` } });
   res.json(sessionView(s, req.userId));
+});
+// Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one"). The
+// posted-recap comment editor above (PUT .../posts/:authorId/comments/:commentId) only ever
+// covered p.comments; this is the same permission shape (your own message only, stamps
+// editedAt) applied to the OTHER place a user posts free text -- the live in-workout chat.
+// Cold-review fix: this originally checked ownership ONLY, on the reasoning that the recap
+// comment editor takes the same posture -- but it doesn't, really. The recap editor's own gate
+// (post visibility) doesn't change when you edit; here, membership is the gate, and skipping it
+// let someone who's since left a session (session tier no longer 'member'/'invited' -- same
+// sessionTier check the GET/POST comment routes above already require) keep rewriting their old
+// message's text indefinitely, in a thread they can no longer read or post into. Re-checking the
+// same tier the sibling routes already enforce closes that.
+app.put('/api/sessions/:id/comments/:commentId', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  const tier = sessionTier(s, req.userId);
+  if (tier !== 'member' && tier !== 'invited') return res.status(403).json({ error: 'forbidden' });
+  const c = (s.comments || []).find(x => x.id === req.params.commentId);
+  if (!c) return res.status(404).json({ error: 'not found' });
+  if (c.userId !== req.userId) return res.status(403).json({ error: 'forbidden' });
+  const text = capStr((req.body || {}).text, 2000);
+  if (!text.trim()) return res.status(400).json({ error: 'empty' });
+  c.text = text;
+  c.editedAt = new Date().toISOString();
+  await save(DB);
+  res.json(c);
 });
 
 // ---- Comments on a POSTED recap (Instagram-style: comment on the finished workout) ----
