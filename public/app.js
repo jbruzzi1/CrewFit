@@ -57,7 +57,15 @@ function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ESC_MAP[c]
 // then reads as one character of a string. This is also, finally, what makes Captain's Chair Leg
 // Raise, Jacob's Ladder and Farmer's Carry tappable: their apostrophe arrives as \' rather than
 // as a string terminator.
-function jsq(s){ return esc(String(s==null?'':s).replace(/\\/g, '\\\\').replace(/'/g, "\\'")); }
+// Sep 8 2026 (cold-review finding): editCommentPrompt's onclick was the first call site to ever
+// pass a real multiline value (a comment's text, edited through a <textarea>) through jsq() --
+// every prior call site was an id/name that could never contain a line break. Backslash+quote
+// escaping alone left a literal newline sitting inside a single-quoted JS string in the onclick
+// attribute, which is a JS syntax error: the Edit button silently stopped working (for everyone
+// viewing that comment) the moment its text contained a line break. Line terminators are now
+// turned into a literal \n escape sequence -- after backslash-escaping (so the backslash this
+// inserts is never itself re-escaped) and before the closing-quote escape.
+function jsq(s){ return esc(String(s==null?'':s).replace(/\\/g, '\\\\').replace(/\r\n|\r|\n/g, '\\n').replace(/'/g, "\\'")); }
 // "I cannot resolve this person" — you only ever see your own friends. It is a REAL WORD on
 // purpose: this value flows into a dozen `name || fallback` expressions written long before it
 // existed, and every one of them prints it. A sentinel nobody can read (a null byte, say) turns
@@ -297,6 +305,7 @@ function renderNavState(st){
   else if(st.t==='library') library({fromHistory:true});
   else if(st.t==='seeds') seedSetupScreen({fromHistory:true});
   else if(st.t==='settings') openSettings({fromHistory:true});
+  else if(st.t==='blockedAccounts') blockedAccountsScreen({fromHistory:true});
   else if(st.t==='notifications') renderNotifications({fromHistory:true});
   else if(st.t==='routines') templatesPage({fromHistory:true});
   else if(st.t==='routineView') tplView(st.id, {fromHistory:true});
@@ -1503,9 +1512,15 @@ async function viewPost(id, authorId, opts){
   // exercise list Edit session governs), so this is gated on isAuthor/hasFinishedPost alone and
   // folded into whichever branch below actually applies. See reactivateWorkout's own comment.
   const reactivateBtn = (isAuthor && hasFinishedPost) ? `<button onclick="reactivateWorkout('${id}','${authorId}')">Reactivate workout</button>` : '';
+  // Sep 2026 (app-store readiness): a plain viewer -- neither the creator nor this recap's author
+  // -- used to get no ⋯ menu at all here. They now get exactly one item: Report. Reusing the same
+  // generic sheet as the profile menu's Report (openReportSheet), targetType 'post' with
+  // targetUserId set to the recap's actual author so "also block" (inside that sheet) blocks the
+  // right person -- not the session creator, who may be someone else entirely in a shared workout.
+  const reportBtn = (!isCreator && !isAuthor) ? `<button onclick="openReportSheet({targetType:'post', targetUserId:'${authorId}', sessionId:'${id}', authorId:'${authorId}', label:'this workout'})">Report</button>` : '';
   const menuItems = isCreator
     ? `<button onclick="enterWorkoutEdit('${id}')">Edit session</button>${reactivateBtn}<button class="danger" onclick="deleteSession('${id}', ${hasFinishedPost})">Delete session</button>`
-    : (isAuthor ? `${reactivateBtn}<button class="danger" onclick="removeFromMyProfile('${id}')">Remove from my profile</button>` : '');
+    : (isAuthor ? `${reactivateBtn}<button class="danger" onclick="removeFromMyProfile('${id}')">Remove from my profile</button>` : reportBtn);
   const dots = menuItems ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none">${menuItems}</div>` : '';
   // v254 fix (Jeff, Aug 30): this in-page Back button was hardcoded to showTab('home') -- reached
   // from a profile's "My Workouts" tile (or the feed), it always dumped you on Home instead of
@@ -1536,7 +1551,41 @@ function togglePostMenu(id){
   if(!m) return;
   const wasOpen = m.style.display !== 'none';
   document.querySelectorAll('.pp-menu').forEach(x => { x.style.display = 'none'; });
-  if(!wasOpen) m.style.display = 'block';
+  if(!wasOpen){
+    m.style.display = 'block';
+    // Sep 8 2026 (comment moderation menus): per-comment ⋯ menus live inside #chatbox.scrolllist
+    // (overflow:auto, capped at 46vh) so the normal CSS-relative dropdown gets visually clipped by
+    // that ancestor whenever the comment thread's own rendered height is shorter than the menu
+    // (a single short comment, or the last row in a longer thread) -- found by rendering this
+    // screen in Playwright, not by reasoning about it. Anchoring the menu with position:fixed,
+    // computed from the dots button's own screen position, escapes the scrolling ancestor's clip
+    // the same way a native context menu would. Scoped to cmt- menus only: every OTHER ⋯ menu in
+    // the app (profile, post, routines) isn't inside a scrolling container and keeps its existing,
+    // already-correct CSS-relative placement untouched.
+    if(id.startsWith('cmt-')){
+      const btn = m.previousElementSibling;
+      if(btn){
+        const r = btn.getBoundingClientRect();
+        const mw = m.offsetWidth || 150;
+        const mh = m.offsetHeight || 90;
+        let left = r.right - mw;
+        if(left < 8) left = 8;
+        // Sep 8 2026 (cold-review finding): the original fix clamped left but never checked
+        // whether the menu would run off the BOTTOM of the viewport -- since this is position:
+        // fixed rather than in-flow, an overflow past the viewport edge isn't just clipped like
+        // the original ancestor-scroll bug, it's genuinely unreachable (no scroll brings a fixed
+        // element's own overflow into view). The comments card is routinely the last section on a
+        // recap page, so a comment near the bottom of the screen is the common case, not an edge
+        // case. Flip to opening ABOVE the dots button whenever below doesn't fit.
+        let top = r.bottom + 4;
+        if(top + mh > innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+        m.style.position = 'fixed';
+        m.style.top = top + 'px';
+        m.style.left = left + 'px';
+        m.style.right = 'auto';
+      }
+    }
+  }
 }
 // Guarded: test/client-hostile.mjs executes this file in a vm whose mock document may lack
 // addEventListener. Element.closest covers taps on the dots glyph/svg inside the button.
@@ -1551,6 +1600,15 @@ if(typeof document !== 'undefined' && typeof document.addEventListener === 'func
     if(t && t.closest && t.closest('.pp-dots')) return;
     document.querySelectorAll('.pp-menu').forEach(x => { x.style.display = 'none'; });
   });
+  // Sep 8 2026 (cold-review finding): a cmt- menu is position:fixed, anchored to the dots
+  // button's screen position AT THE MOMENT it opened -- it does not track that button, so
+  // scrolling #chatbox (or any other scrolling ancestor) after opening one leaves the menu
+  // floating over the wrong row instead of the comment it was opened for. Capture phase because
+  // #chatbox's own scroll event doesn't bubble to document. Closing (rather than repositioning)
+  // matches how the outside-click listener above already treats "the user moved on."
+  document.addEventListener('scroll', () => {
+    document.querySelectorAll('.pp-menu').forEach(x => { x.style.display = 'none'; });
+  }, true);
 }
 // Comments on a POSTED recap — a separate thread from the live-workout Chat (see loadChat /
 // sendChat below), stored on the post itself (server.js: s.posts[authorId].comments) rather than
@@ -1684,8 +1742,43 @@ async function loadPostComments(id, authorId){
     const reactions = Array.isArray(c.reactions) ? c.reactions : [];
     const reactedByMe = reactions.includes(ME.id);
     const ck = id+'-'+authorId+'-'+c.id;
-    return '<div class="cmt">'+avHtml+'<div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span></div><div class="cmt-text">'+esc(c.text)+'</div></div><div class="cmt-react-col"><button class="cmt-react-btn'+(reactedByMe?' on':'')+'" id="cmtReact-'+ck+'" onclick="toggleCommentReaction(\''+id+'\',\''+authorId+'\',\''+c.id+'\')" aria-label="'+(reactedByMe?'Remove reaction':'React to this comment')+'"><svg viewBox="0 0 24 24" fill="'+(reactedByMe?'currentColor':'none')+'" stroke="currentColor" stroke-width="'+(reactedByMe?'0':'2')+'" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button><span class="cmt-react-count" id="cmtReactCount-'+ck+'">'+(reactions.length||'')+'</span></div></div>';
+    // Sep 2026 (app-store readiness + Jeff: "edit comments made or remove comments added to your
+    // profiles workouts"): every comment row gets exactly one relevant menu action -- your OWN
+    // comment gets Edit + Delete; anyone else's comment on a post YOU authored gets Remove
+    // (moderation -- see the server-side comment on the DELETE route for why the post owner can
+    // remove any comment on their own post); anyone else's comment on someone else's post gets
+    // Report. Same pp-dots/pp-menu/togglePostMenu mechanism as every other ⋯ menu in this app,
+    // scoped by ck (already unique per id+authorId+commentId, same key toggleCommentReaction uses)
+    // so opening one comment's menu doesn't collide with another's.
+    const isOwnComment = c.userId===ME.id;
+    const isPostOwner = ME.id===authorId;
+    const cmtMenuItems = isOwnComment
+      ? `<button onclick="editCommentPrompt('${id}','${authorId}','${c.id}','${jsq(c.text)}')">Edit</button><button class="danger" onclick="confirmDeleteComment('${id}','${authorId}','${c.id}',true)">Delete</button>`
+      : (isPostOwner
+          ? `<button class="danger" onclick="confirmDeleteComment('${id}','${authorId}','${c.id}',false)">Remove comment</button>`
+          : `<button onclick="openReportSheet({targetType:'comment', targetUserId:'${c.userId}', sessionId:'${id}', authorId:'${authorId}', commentId:'${c.id}', label:'this comment'})">Report</button>`);
+    const cmtDots = `<button class="pp-dots cmt-dots" onclick="togglePostMenu('cmt-${ck}')" aria-label="More">⋯</button><div class="pp-menu" id="ppMenu-cmt-${ck}" style="display:none">${cmtMenuItems}</div>`;
+    const editedTag = c.editedAt ? ' <span class="muted" style="font-size:11px">(edited)</span>' : '';
+    return '<div class="cmt">'+avHtml+'<div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span>'+editedTag+'</div><div class="cmt-text" id="cmtText-'+ck+'">'+esc(c.text)+'</div></div><div class="cmt-react-col">'+cmtDots+'<button class="cmt-react-btn'+(reactedByMe?' on':'')+'" id="cmtReact-'+ck+'" onclick="toggleCommentReaction(\''+id+'\',\''+authorId+'\',\''+c.id+'\')" aria-label="'+(reactedByMe?'Remove reaction':'React to this comment')+'"><svg viewBox="0 0 24 24" fill="'+(reactedByMe?'currentColor':'none')+'" stroke="currentColor" stroke-width="'+(reactedByMe?'0':'2')+'" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button><span class="cmt-react-count" id="cmtReactCount-'+ck+'">'+(reactions.length||'')+'</span></div></div>';
   }).join('');
+}
+async function editCommentPrompt(id, authorId, commentId, currentText){
+  textEntrySheet({
+    title:'Edit comment', value: currentText, placeholder:'Add a comment…', multiline:true,
+    onConfirm: async v => {
+      if(!v.trim()) return;
+      const r = await H.put(`/api/sessions/${id}/posts/${authorId}/comments/${commentId}`, {text:v});
+      if(r && r.error){ alert(r.error); return; }
+      loadPostComments(id, authorId);
+    }
+  });
+}
+function confirmDeleteComment(id, authorId, commentId, isOwn){
+  confirmSheet(isOwn ? 'Delete this comment?' : 'Remove this comment?', isOwn ? 'This can\'t be undone.' : 'This removes it for everyone -- the person who wrote it won\'t be notified.', isOwn?'Delete':'Remove', async () => {
+    const r = await H.delete(`/api/sessions/${id}/posts/${authorId}/comments/${commentId}`);
+    if(r && r.error){ alert(r.error); return; }
+    loadPostComments(id, authorId);
+  }, true);
 }
 let CMT_REACT_BUSY = new Set();
 async function toggleCommentReaction(id, authorId, commentId){
@@ -6366,6 +6459,13 @@ function openSettings(opts){
            Public; Public = anyone can. Same on/off row shape as the two reminder toggles below. -->
       <button class="sheet-row" onclick="toggleProfileVisibility()">Profile visibility <span class="row-val" id="profileVisVal">${ME.profileVisibility==='private'?'Private':'Public'}</span></button>
     </div>
+    <!-- Sep 2026 (app-store readiness): its own section rather than folded into Profile above --
+         Block/Report live on the OTHER person's profile menu (see profileView), this is the one
+         place to review and undo them. -->
+    <h2>Privacy &amp; Safety</h2>
+    <div class="sheet-list">
+      <button class="sheet-row" onclick="blockedAccountsScreen()">Blocked accounts</button>
+    </div>
     <h2>Preferences</h2>
     <div class="sheet-list">
       <button class="sheet-row" onclick="toggleTheme()">Appearance <span class="row-val" id="themeVal">${currentTheme()==='dark'?'Dark':'Light'}</span></button>
@@ -6380,6 +6480,11 @@ function openSettings(opts){
     <h2>Help</h2>
     <div class="sheet-list">
       <button class="sheet-row" onclick="openWalkthrough()">How CrewFit works</button>
+      <!-- Sep 2026 (app-store readiness): Apple requires a published way to reach the developer
+           about abuse/objectionable content (guideline 1.2), and a real support contact is also
+           needed for the privacy-policy page itself. SUPPORT_EMAIL server-side (see its own
+           comment) is currently a placeholder -- swap it before submitting. -->
+      <button class="sheet-row" onclick="contactSupport()">Contact us</button>
       <button class="sheet-row" onclick="toggleDiag()">Screen diagnostics <span class="row-val" id="diagVal">${localStorage.getItem('crewfit_diag')==='1'?'On':'Off'}</span></button>
     </div>
     <h2>Danger zone</h2>
@@ -6659,6 +6764,25 @@ async function profileView(id, opts){
   // transparent .profile-set button, positioned via .profile-notif (see the CSS comment on
   // .profile-set in index.html).
   const notifBtn = isMe ? notifBellHtml('profile-set profile-notif', notifCount) : '';
+  // Sep 2026 (app-store readiness): Report + Block/Unblock on every OTHER account's profile.
+  // Reuses the exact same pp-dots/pp-menu/togglePostMenu pattern as viewPost's ⋯ menu and
+  // Routines' ⋯ menu above -- one menu mechanism app-wide rather than a new one per screen.
+  // class="profile-set pp-dots" is deliberate on both counts: profile-set gives it the same
+  // round, top:2px/right:0 slot the settings gear sits in on your own profile (this button only
+  // ever renders when settingsBtn/notifBtn do NOT -- i.e. never on your own profile, so there's
+  // no collision); pp-dots is what exempts it from the document-level "any tap outside a menu or
+  // its dots closes whatever is open" listener just below togglePostMenu -- without that class on
+  // this specific button, tapping it would open the menu and then immediately close it again in
+  // the same click (the listener runs in the same bubble phase, right after the inline onclick).
+  const profileMenuItems = !isMe ? (
+    `<button onclick="openReportSheet({targetType:'user', targetUserId:'${p.id}', label:'${jsq(p.displayName||p.username)}'})">Report</button>`
+    + (p.youBlocked
+      ? `<button onclick="unblockUser('${p.id}')">Unblock</button>`
+      : `<button class="danger" onclick="confirmBlockUser('${p.id}','${jsq(p.displayName||p.username)}')">Block</button>`)
+  ) : '';
+  const profileDots = profileMenuItems
+    ? `<button class="profile-set pp-dots" title="More" onclick="togglePostMenu('profile-${p.id}')" aria-label="More">⋯</button><div class="pp-menu" id="ppMenu-profile-${p.id}" style="display:none">${profileMenuItems}</div>`
+    : '';
   const FOLLOW_LABEL = { none: ['Follow','blue'], requested: ['Requested','sec'], following: ['Following','sec'] };
   const [flabel, fcls] = FOLLOW_LABEL[p.youFollow] || FOLLOW_LABEL.none;
   const action = (isMe || p.youFollow === 'self') ? ''
@@ -6735,7 +6859,7 @@ async function profileView(id, opts){
         <div class="muted">@${esc(p.username)}</div>
         ${p.streak>=2?`<div class="streak-pill" style="margin-top:6px">${flameSvg()}${p.streak} day streak</div>`:''}
       </div>
-      ${notifBtn}${settingsBtn}
+      ${notifBtn}${settingsBtn}${profileDots}
     </div>
     ${stats}
     ${actHtml}
@@ -6817,6 +6941,117 @@ async function toggleFollow(id, state){
     : await H.post('/api/unfollow/'+id,{});
   if(r && r.error){ alert(r.error); return; }
   if(nothingNavigatedSince(epoch)) profileView(id, {silent:true});   // re-render from the server's fresh youFollow so the button is always right
+}
+// ---- Block / unblock / report (Sep 2026, app-store readiness) ----
+// confirmSheet's danger styling for Block -- it's a real, meaningful action (severs any existing
+// follow relationship both ways, see the long server-side comment on blockUser) even though it's
+// also fully reversible from either the profile menu or Settings -> Blocked accounts.
+function confirmBlockUser(id, name){
+  confirmSheet(`Block ${name}?`, `They won't be able to see your profile or posted workouts, follow you, or comment on your posts. You can unblock them any time from Settings.`, 'Block', () => doBlockUser(id), true);
+}
+async function doBlockUser(id){
+  const epoch = UI_EPOCH;
+  const r = await H.post('/api/block/'+id, {});
+  if(r && r.error){ alert(r.error); return; }
+  // profileView(id) re-renders the SAME profile silently -- now behind the block, so it comes
+  // back showing the same "this profile is private"-shaped limited view a private stranger's
+  // profile shows (canSeeProfile returns false for a blocked relationship exactly like it does
+  // for an unapproved private profile -- see canSeeProfile's own comment server-side). Also used
+  // from Settings -> Blocked accounts' own list, which re-renders itself instead -- see
+  // blockedAccountsScreen below.
+  if(nothingNavigatedSince(epoch) && CURRENT_NAV_STATE && CURRENT_NAV_STATE.t==='profile') profileView(id, {silent:true});
+  else if(nothingNavigatedSince(epoch) && CURRENT_NAV_STATE && CURRENT_NAV_STATE.t==='blockedAccounts') blockedAccountsScreen({silent:true});
+}
+async function unblockUser(id){
+  const epoch = UI_EPOCH;
+  const r = await H.post('/api/unblock/'+id, {});
+  if(r && r.error){ alert(r.error); return; }
+  if(nothingNavigatedSince(epoch) && CURRENT_NAV_STATE && CURRENT_NAV_STATE.t==='profile') profileView(id, {silent:true});
+  else if(nothingNavigatedSince(epoch) && CURRENT_NAV_STATE && CURRENT_NAV_STATE.t==='blockedAccounts') blockedAccountsScreen({silent:true});
+}
+// Settings -> Blocked accounts. Same friend-row/avatar list shape as followList() above, with an
+// Unblock button per row instead of a tap-through (blocked accounts are exactly the one list in
+// this app you do NOT want a tap on the row itself to navigate into -- see canSeeProfile, their
+// profile is deliberately unreachable from here anyway while blocked).
+async function blockedAccountsScreen(opts){
+  const fromHistory = !!(opts && opts.fromHistory), silent = !!(opts && opts.silent);
+  if(!silent) UI_EPOCH++;
+  const list = await H.get('/api/blocked');
+  const rows = (Array.isArray(list) && list.length) ? list.map(x=>`
+    <div class="friend-row">
+      ${avatarHtml(x,'avatar')}
+      <div class="meta">
+        <div class="name">${esc(x.displayName||x.username)}</div>
+        <div class="handle">@${esc(x.username)}</div>
+      </div>
+      <button class="sm sec" onclick="unblockUser('${x.id}')">Unblock</button>
+    </div>`).join('')
+    : `<div class="muted" style="padding:14px 2px;text-align:center">No blocked accounts.</div>`;
+  $('app').innerHTML = `<div class="wrap"><div class="pp-head"><h1 style="margin:0;flex:1">Blocked accounts</h1><button class="sec sm" onclick="history.back()">← Back</button></div>
+    <div class="card" style="padding:6px 12px">${rows}</div>
+  </div>`;
+  const st={t:'blockedAccounts'}; fromHistory ? landOn(st) : navigated(st);
+}
+// ---- Report a user, a posted workout, or a single comment ----
+// One generic sheet for all three -- opts.targetType is 'user' | 'post' | 'comment', opts.label is
+// whatever the sheet's heading should call the thing being reported (a name, or "this workout").
+// Apple's guideline 1.2 (UGC apps) asks for a way to report objectionable content, not specifically
+// for automated review -- this is a single-operator app, so a report is stored and reviewed by
+// whoever holds ADMIN_TOKEN (see /admin.html + the server-side comment on POST /api/report) rather
+// than acted on automatically. alsoBlock defaults ON whenever a targetUserId is known (reporting
+// someone is usually also a "and I don't want to see them again" moment) but stays a real,
+// visible, uncheckable-off... checkbox -- not silently forced -- since a report can legitimately
+// be about a stranger's one bad comment without wanting to lose the ability to see their public
+// posts generally.
+const REPORT_REASON_LABELS = { spam: 'Spam', harassment: 'Harassment or bullying', inappropriate: 'Inappropriate content', impersonation: 'Impersonation', other: 'Something else' };
+let REPORT_CTX = null;
+function openReportSheet(opts){
+  // Captured now (openSheetHtml below bumps UI_EPOCH itself, right as this sheet actually opens)
+  // so submitReport can tell whether the user backed all the way out and navigated elsewhere
+  // before tapping Submit -- same staleness guard shape as toggleFollow/doBlockUser above.
+  REPORT_CTX = { ...opts, _epoch: null };
+  const showBlock = !!opts.targetUserId && opts.targetUserId !== ME.id;
+  const reasonRows = Object.entries(REPORT_REASON_LABELS).map(([key,label])=>
+    `<button class="sheet-row" data-reason="${key}" onclick="_pickReportReason('${key}')">${esc(label)}<span class="row-val" id="reportCheck-${key}"></span></button>`).join('');
+  const inner = `<div class="sheet"><div class="sheet-head"><h2>Report ${esc(opts.label||'')}</h2>
+      <button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="sheet-list">${reasonRows}</div>
+    <label class="muted" style="display:block;margin-top:10px">Details (optional)</label>
+    <textarea id="reportDetails" placeholder="Anything else we should know?" style="min-height:70px"></textarea>
+    ${showBlock ? `<label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px"><input type="checkbox" id="reportAlsoBlock" checked style="width:auto"> Also block this account</label>` : ''}
+    <button class="blue" style="width:100%;margin-top:16px" onclick="submitReport()">Submit report</button>
+    <div class="note">Sent to CrewFit for review. This doesn't notify the person you're reporting.</div>
+  </div>`;
+  openSheetHtml(inner);
+  REPORT_CTX._epoch = UI_EPOCH;
+}
+function _pickReportReason(key){
+  REPORT_CTX = REPORT_CTX || {};
+  REPORT_CTX.reason = key;
+  Object.keys(REPORT_REASON_LABELS).forEach(k=>{ const el=$('reportCheck-'+k); if(el) el.textContent = (k===key) ? '✓' : ''; });
+}
+async function submitReport(){
+  if(!REPORT_CTX || !REPORT_CTX.reason){ alert('Choose a reason first.'); return; }
+  const details = ($('reportDetails')||{}).value || '';
+  const alsoBlockEl = $('reportAlsoBlock');
+  const body = {
+    targetType: REPORT_CTX.targetType, targetUserId: REPORT_CTX.targetUserId || undefined,
+    sessionId: REPORT_CTX.sessionId || undefined, authorId: REPORT_CTX.authorId || undefined, commentId: REPORT_CTX.commentId || undefined,
+    reason: REPORT_CTX.reason, details, alsoBlock: !!(alsoBlockEl && alsoBlockEl.checked),
+  };
+  const ctx = REPORT_CTX;
+  closeSheet();
+  const r = await H.post('/api/report', body);
+  if(r && r.error){ alert(r.error); return; }
+  alert('Report submitted. Thanks for letting us know.');
+  // Same "which screen re-renders itself" pattern as doBlockUser above -- only relevant when
+  // alsoBlock was checked, since that's the only case anything about the current screen changed.
+  // Guarded by the epoch captured when the sheet opened (see openReportSheet) -- a real navigation
+  // away (not just closing this sheet, which doesn't itself bump UI_EPOCH) in the moment between
+  // tapping Submit and this response actually arriving correctly skips the stale re-render.
+  if(body.alsoBlock && ctx.targetUserId && ctx._epoch===UI_EPOCH && CURRENT_NAV_STATE){
+    if(CURRENT_NAV_STATE.t==='profile') profileView(ctx.targetUserId, {silent:true});
+  }
 }
 // v250 (audit finding): editBio/editDefaultGym below both fire their real side effect (a full
 // navigate back to the profile, or reopening Settings) from an async .then() -- an arbitrary,
@@ -7063,6 +7298,15 @@ async function setupPush(){
   }catch(e){ /* push optional for demo */ }
 }
 async function vapidKey(){ const r=await (await fetch('/api/vapid')).json(); return r.publicKey; }
+// Settings -> Help -> Contact us (app-store readiness, Sep 2026). Fetched fresh rather than
+// hardcoded/cached -- same reasoning as vapidKey() just above having its own tiny round trip
+// instead of baking a value into this file: a real support inbox can change without a client
+// redeploy this way (SUPPORT_EMAIL server-side is env-overridable, see its own comment).
+async function contactSupport(){
+  const r = await (await fetch('/api/config')).json();
+  const email = (r && r.supportEmail) || 'support@example.com';
+  location.href = 'mailto:' + email;
+}
 
 // ---- Keyboard-aware bottom sheets ----
 // Jeff, Aug 28 (screenshot from logging a set on Lat Pulldown): "When I go to log a set the

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>CrewFit — Report Review</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#f4f5f7; color:#14181f; }
+  header { position:sticky; top:0; background:#fff; border-bottom:1px solid #e4e7ec; padding:14px 18px; display:flex; align-items:center; justify-content:space-between; gap:12px; z-index:10; }
+  header h1 { font-size:17px; margin:0; }
+  header .sub { font-size:12.5px; color:#6b7280; margin-top:2px; }
+  main { max-width:760px; margin:0 auto; padding:16px; }
+
+  /* ---- token gate ---- */
+  #gate { max-width:400px; margin:80px auto; padding:24px; background:#fff; border-radius:14px; box-shadow:0 1px 2px rgba(20,24,31,.04), 0 8px 20px -10px rgba(20,24,31,.14); }
+  #gate h2 { margin:0 0 6px; font-size:18px; }
+  #gate p { font-size:13.5px; color:#6b7280; margin:0 0 16px; line-height:1.5; }
+  #gate input { width:100%; padding:11px 12px; border:1px solid #d7dbe2; border-radius:10px; font-size:14px; margin-bottom:12px; }
+  #gate button, .btn { background:#2563eb; color:#fff; border:none; border-radius:10px; padding:10px 16px; font-size:14px; font-weight:600; cursor:pointer; }
+  #gate button:active, .btn:active { opacity:.85; }
+  #gateErr { color:#c0392b; font-size:13px; margin-top:-4px; margin-bottom:10px; display:none; }
+
+  /* ---- filters ---- */
+  .filters { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+  .filters button { background:#fff; border:1px solid #d7dbe2; border-radius:999px; padding:7px 14px; font-size:13px; font-weight:600; color:#4b5563; cursor:pointer; }
+  .filters button.on { background:#2563eb; border-color:#2563eb; color:#fff; }
+  .count { font-size:13px; color:#6b7280; margin-bottom:10px; }
+
+  /* ---- report cards ---- */
+  .card { background:#fff; border-radius:14px; padding:14px 16px; margin-bottom:10px; box-shadow:0 1px 2px rgba(20,24,31,.04), 0 8px 20px -10px rgba(20,24,31,.14); }
+  .card.resolved { opacity:.6; }
+  .row1 { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px; }
+  .badge { display:inline-block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; padding:3px 8px; border-radius:6px; }
+  .badge.user { background:#eef2ff; color:#4338ca; }
+  .badge.post { background:#ecfdf5; color:#047857; }
+  .badge.comment { background:#fff7ed; color:#c2410c; }
+  .reason { font-weight:700; font-size:14.5px; }
+  .when { font-size:12px; color:#9ca3af; white-space:nowrap; }
+  .who { font-size:13.5px; color:#374151; margin-bottom:4px; }
+  .who b { color:#111827; }
+  .details { font-size:13.5px; color:#374151; background:#f9fafb; border-radius:8px; padding:8px 10px; margin:8px 0; white-space:pre-wrap; word-break:break-word; }
+  .ctx { font-size:11.5px; color:#9ca3af; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; margin-top:6px; word-break:break-all; }
+  .row2 { display:flex; align-items:center; justify-content:space-between; margin-top:10px; }
+  .status { font-size:12.5px; font-weight:700; }
+  .status.open { color:#b45309; }
+  .status.resolved { color:#059669; }
+  .resolveBtn { background:#fff; border:1px solid #d7dbe2; border-radius:8px; padding:7px 13px; font-size:13px; font-weight:600; color:#374151; cursor:pointer; }
+  .resolveBtn:active { opacity:.8; }
+  .empty { text-align:center; padding:60px 20px; color:#9ca3af; font-size:14px; }
+  .err { background:#fef2f2; color:#b91c1c; padding:10px 14px; border-radius:10px; font-size:13.5px; margin-bottom:12px; }
+  #logout { background:none; border:none; color:#6b7280; font-size:13px; cursor:pointer; text-decoration:underline; padding:0; }
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <h2>Report Review</h2>
+  <p>Paste the admin token printed to the server log at boot (<code>fly logs --app spotmeapp</code>, look for "Generated ADMIN_TOKEN" — or the token you set as the <code>ADMIN_TOKEN</code> Fly secret). Stored only in this browser.</p>
+  <div id="gateErr">That token was rejected. Double-check it and try again.</div>
+  <input id="tokenInput" type="password" placeholder="Admin token" autocomplete="off" spellcheck="false">
+  <button onclick="saveToken()">Continue</button>
+</div>
+
+<div id="appUI" style="display:none">
+  <header>
+    <div>
+      <h1>Report Review</h1>
+      <div class="sub" id="subline">&nbsp;</div>
+    </div>
+    <button id="logout" onclick="logout()">Change token</button>
+  </header>
+  <main>
+    <div id="errBox"></div>
+    <div class="filters">
+      <button id="fOpen" class="on" onclick="setFilter('open')">Open</button>
+      <button id="fResolved" onclick="setFilter('resolved')">Resolved</button>
+      <button id="fAll" onclick="setFilter('all')">All</button>
+    </div>
+    <div class="count" id="countLine"></div>
+    <div id="list"></div>
+  </main>
+</div>
+
+<script>
+const TOKEN_KEY = 'crewfit_admin_token';
+let REPORTS = [];
+let FILTER = 'open';
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtWhen(iso){
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+  } catch(e){ return iso || ''; }
+}
+const REASON_LABELS = { spam:'Spam', harassment:'Harassment or bullying', inappropriate:'Inappropriate content', impersonation:'Impersonation', other:'Something else' };
+
+async function api(path, opts){
+  const token = localStorage.getItem(TOKEN_KEY) || '';
+  const res = await fetch(path, { ...opts, headers: { ...(opts&&opts.headers||{}), 'x-admin-token': token } });
+  if (res.status === 401) { unauthorized(); throw new Error('unauthorized'); }
+  if (!res.ok) throw new Error('request failed (' + res.status + ')');
+  return res.json();
+}
+
+function unauthorized(){
+  localStorage.removeItem(TOKEN_KEY);
+  document.getElementById('gateErr').style.display = 'block';
+  document.getElementById('appUI').style.display = 'none';
+  document.getElementById('gate').style.display = 'block';
+}
+
+function saveToken(){
+  const v = document.getElementById('tokenInput').value.trim();
+  if (!v) return;
+  localStorage.setItem(TOKEN_KEY, v);
+  document.getElementById('gateErr').style.display = 'none';
+  boot();
+}
+function logout(){
+  localStorage.removeItem(TOKEN_KEY);
+  document.getElementById('appUI').style.display = 'none';
+  document.getElementById('gate').style.display = 'block';
+  document.getElementById('tokenInput').value = '';
+  document.getElementById('tokenInput').focus();
+}
+
+function setFilter(f){
+  FILTER = f;
+  ['fOpen','fResolved','fAll'].forEach(id => document.getElementById(id).classList.remove('on'));
+  document.getElementById('f' + f[0].toUpperCase() + f.slice(1)).classList.add('on');
+  render();
+}
+
+function render(){
+  const errBox = document.getElementById('errBox');
+  errBox.innerHTML = '';
+  const visible = REPORTS.filter(r => FILTER === 'all' ? true : (FILTER === 'open' ? r.status !== 'resolved' : r.status === 'resolved'));
+  const openCount = REPORTS.filter(r => r.status !== 'resolved').length;
+  document.getElementById('subline').textContent = openCount + ' open · ' + REPORTS.length + ' total';
+  document.getElementById('countLine').textContent = visible.length + (visible.length === 1 ? ' report' : ' reports');
+  const list = document.getElementById('list');
+  if (!visible.length) {
+    list.innerHTML = '<div class="empty">Nothing here.</div>';
+    return;
+  }
+  list.innerHTML = visible.map(r => {
+    const ctxParts = [];
+    if (r.sessionId) ctxParts.push('session ' + esc(r.sessionId));
+    if (r.authorId) ctxParts.push('author ' + esc(r.authorId));
+    if (r.commentId) ctxParts.push('comment ' + esc(r.commentId));
+    const ctx = ctxParts.length ? '<div class="ctx">' + ctxParts.join(' · ') + '</div>' : '';
+    const details = r.details ? '<div class="details">' + esc(r.details) + '</div>' : '';
+    const resolveBtn = r.status === 'resolved'
+      ? ''
+      : '<button class="resolveBtn" onclick="resolve(\'' + r.id + '\')">Mark resolved</button>';
+    return '<div class="card' + (r.status === 'resolved' ? ' resolved' : '') + '">'
+      + '<div class="row1">'
+        + '<span><span class="badge ' + esc(r.targetType) + '">' + esc(r.targetType) + '</span> <span class="reason">' + esc(REASON_LABELS[r.reason] || r.reason) + '</span></span>'
+        + '<span class="when">' + fmtWhen(r.at) + '</span>'
+      + '</div>'
+      + '<div class="who">Reported by <b>' + esc(r.reporterName || r.reporterId) + '</b>' + (r.targetName ? ' · about <b>' + esc(r.targetName) + '</b>' : '') + '</div>'
+      + details
+      + ctx
+      + '<div class="row2">'
+        + '<span class="status ' + (r.status === 'resolved' ? 'resolved' : 'open') + '">' + (r.status === 'resolved' ? ('Resolved ' + fmtWhen(r.resolvedAt)) : 'Open') + '</span>'
+        + resolveBtn
+      + '</div>'
+    + '</div>';
+  }).join('');
+}
+
+async function resolve(id){
+  try {
+    await api('/api/admin/reports/' + encodeURIComponent(id) + '/resolve', { method: 'POST' });
+    const r = REPORTS.find(x => x.id === id);
+    if (r) { r.status = 'resolved'; r.resolvedAt = new Date().toISOString(); }
+    render();
+  } catch (e) {
+    document.getElementById('errBox').innerHTML = '<div class="err">Could not resolve that report: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function loadReports(){
+  try {
+    REPORTS = await api('/api/admin/reports');
+    render();
+  } catch (e) {
+    if (e.message !== 'unauthorized') document.getElementById('errBox').innerHTML = '<div class="err">Could not load reports: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function boot(){
+  document.getElementById('gate').style.display = 'none';
+  document.getElementById('appUI').style.display = 'block';
+  await loadReports();
+}
+
+if (localStorage.getItem(TOKEN_KEY)) boot();
+document.getElementById('tokenInput').addEventListener('keydown', e => { if (e.key === 'Enter') saveToken(); });
+</script>
+</body>
+</html>
