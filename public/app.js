@@ -5701,6 +5701,17 @@ async function crewView(crewId, opts){
   </div>`;
   if(!silent){ const st = {t:'crew', id: crewId}; fromHistory ? landOn(st) : navigated(st); }
 }
+// Sep 8 2026 (Jeff: "if brian commented in our crew ... it brings me to see his comments") --
+// same shape as openSessionChat() just below crewView's session counterpart: render the page
+// normally, then scroll to the message input so the messages sitting just above it (msgBox in
+// crewView) are actually in view, rather than leaving the tap land wherever the top of the crew
+// page happens to put the member list / challenge card. crewChatInput is scoped by crew id (see
+// the comment above msgBox in crewView), unlike the session chat's plain #chatInput.
+async function openCrewChat(id){
+  await crewView(id);
+  const box = document.getElementById('crewChatInput-'+id) || document.querySelector('.chat-row');
+  if(box){ try{ box.scrollIntoView({ block:'center' }); }catch(e){} }
+}
 async function sendCrewMsg(crewId){
   const inp = $('crewChatInput-'+crewId); if(!inp) return;
   const text=(inp.value||'').trim(); if(!text) return;
@@ -6472,12 +6483,30 @@ async function renderNotifications(opts){
   const historyTapAttrs = (n) => {
     const l = n.link; if(!l || typeof l !== 'object') return '';
     if(l.type === 'session' && l.sessionId) return ` onclick="openSession('${jsq(l.sessionId)}')" style="cursor:pointer"`;
+    // Sep 8 2026 (Jeff: "if brian commented in our crew or workout - it brings me to see his
+    // comments") -- these two land scrolled to the actual messages, same reasoning as
+    // openDeepLink()'s own session-chat/crew-chat cases a few screens down.
+    if(l.type === 'session-chat' && l.sessionId) return ` onclick="openSessionChat('${jsq(l.sessionId)}')" style="cursor:pointer"`;
     if(l.type === 'post' && l.sessionId && l.authorId) return ` onclick="viewPost('${jsq(l.sessionId)}','${jsq(l.authorId)}')" style="cursor:pointer"`;
     if(l.type === 'profile' && l.userId) return ` onclick="profileView('${jsq(l.userId)}')" style="cursor:pointer"`;
     if(l.type === 'crew' && l.crewId) return ` onclick="crewView('${jsq(l.crewId)}')" style="cursor:pointer"`;
+    if(l.type === 'crew-chat' && l.crewId) return ` onclick="openCrewChat('${jsq(l.crewId)}')" style="cursor:pointer"`;
     return '';   // {type:'notifications'} (already here) and anything unrecognized: inert, as before
   };
-  const historyRow = n => `<div class="feed-item"${historyTapAttrs(n)}><span class="feed-lead">${historyLead}</span><span>${esc(n.body || n.title || '')}<div class="tag">${fmtWhen(n.at)}</div></span></div>`;
+  // Sep 8 2026: on a touch screen `cursor:pointer` (historyTapAttrs, above) is invisible -- there's
+  // no hover state to reveal it, so a tappable row and a dead one look identical until you try
+  // tapping (this is exactly what made a genuinely-fixed row read as still-broken: Jeff's report
+  // turned out to be an OLD notification stored before link-tagging existed, so it has no
+  // destination and never will -- see the long comment above notify() in server.js -- but there
+  // was also no way to SEE that from the row itself). Reuses the same .mg-chev "›" the muscle-group
+  // tiles already use for "this row goes somewhere" (see mgTileHtml/crewChallengeCardHtml) rather
+  // than inventing a second affordance -- shown only when historyTapAttrs actually returned an
+  // onclick, so a dead row (old data, or a type with nowhere to go) stays visibly plain.
+  const historyRow = n => {
+    const tap = historyTapAttrs(n);
+    const chev = tap ? `<div class="mg-chev" style="align-self:center">›</div>` : '';
+    return `<div class="feed-item"${tap}><span class="feed-lead">${historyLead}</span><span style="flex:1;min-width:0">${esc(n.body || n.title || '')}<div class="tag">${fmtWhen(n.at)}</div></span>${chev}</div>`;
+  };
   const historyToday = history.filter(n => dayDiff(n.at) === 0);
   const historyEarlier = history.filter(n => dayDiff(n.at) !== 0);
   const historyHtml = history.length ? `
@@ -7150,9 +7179,14 @@ async function openDeepLink(link){
   if(!link || typeof link !== 'object' || typeof link.type !== 'string') return false;
   try{
     if(link.type === 'session' && link.sessionId){ await openSession(link.sessionId); return true; }
+    // Sep 8 2026: 'session-chat'/'crew-chat' (distinct from the plain 'session'/'crew' just above
+    // and below) land scrolled to the actual comments, not just the top of the page -- see
+    // openSessionChat/openCrewChat and the comments above their notify() call sites in server.js.
+    if(link.type === 'session-chat' && link.sessionId){ await openSessionChat(link.sessionId); return true; }
     if(link.type === 'post' && link.sessionId && link.authorId){ await viewPost(link.sessionId, link.authorId); return true; }
     if(link.type === 'profile' && link.userId){ await profileView(link.userId); return true; }
     if(link.type === 'crew' && link.crewId){ await crewView(link.crewId); return true; }
+    if(link.type === 'crew-chat' && link.crewId){ await openCrewChat(link.crewId); return true; }
     if(link.type === 'notifications'){ await renderNotifications(); return true; }
   }catch(e){ /* best-effort deep link -- see comment above */ }
   return false;

@@ -66,7 +66,7 @@ function mockFetch(url) {
 // (?dl=/?openLog=) first when that matters, same reasoning as lockscreen-deeplink-guard.mjs.
 let swMessageListeners, calls;
 function freshCtx() {
-  calls = { openSession: [], viewPost: [], profileView: [], crewView: [], renderNotifications: [] };
+  calls = { openSession: [], openSessionChat: [], viewPost: [], profileView: [], crewView: [], openCrewChat: [], renderNotifications: [] };
   swMessageListeners = [];
   const historyStub = { pushState() {}, replaceState() {}, go() {}, length: 1 };
   const ctx = {
@@ -102,9 +102,11 @@ function freshCtx() {
 function load(ctx) {
   vm.runInContext(SRC, ctx, { filename: 'public/app.js' });
   ctx.openSession = (...a) => { calls.openSession.push(a); return Promise.resolve(true); };
+  ctx.openSessionChat = (...a) => { calls.openSessionChat.push(a); return Promise.resolve(true); };
   ctx.viewPost = (...a) => { calls.viewPost.push(a); return Promise.resolve(true); };
   ctx.profileView = (...a) => { calls.profileView.push(a); return Promise.resolve(true); };
   ctx.crewView = (...a) => { calls.crewView.push(a); return Promise.resolve(true); };
+  ctx.openCrewChat = (...a) => { calls.openCrewChat.push(a); return Promise.resolve(true); };
   ctx.renderNotifications = (...a) => { calls.renderNotifications.push(a); return Promise.resolve(true); };
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -113,9 +115,15 @@ console.log('openDeepLink() dispatch table -- right type routes to the right scr
 {
   const cases = [
     { link: { type: 'session', sessionId: 's1' }, fn: 'openSession', args: ['s1'] },
+    // Sep 8 2026: 'session-chat'/'crew-chat' -- a comment notification lands scrolled to the
+    // actual messages (openSessionChat/openCrewChat), distinct from plain 'session'/'crew' above
+    // and below, which land at the top of the page (used for swap/join/invite outcomes and
+    // "added you to the crew" respectively).
+    { link: { type: 'session-chat', sessionId: 's1' }, fn: 'openSessionChat', args: ['s1'] },
     { link: { type: 'post', sessionId: 's1', authorId: 'u1' }, fn: 'viewPost', args: ['s1', 'u1'] },
     { link: { type: 'profile', userId: 'u1' }, fn: 'profileView', args: ['u1'] },
     { link: { type: 'crew', crewId: 'c1' }, fn: 'crewView', args: ['c1'] },
+    { link: { type: 'crew-chat', crewId: 'c1' }, fn: 'openCrewChat', args: ['c1'] },
     { link: { type: 'notifications' }, fn: 'renderNotifications', args: [] },
   ];
   for (const c of cases) {
@@ -137,9 +145,11 @@ console.log('\nopenDeepLink() fails open (returns false, calls nothing) for bad 
   const badInputs = [
     null, undefined, 'a string', 42, {},
     { type: 'session' }, // missing sessionId
+    { type: 'session-chat' }, // missing sessionId
     { type: 'post', sessionId: 's1' }, // missing authorId
     { type: 'profile' }, // missing userId
     { type: 'crew' }, // missing crewId
+    { type: 'crew-chat' }, // missing crewId
     { sessionId: 's1' }, // missing type entirely
     { type: 'teleport', sessionId: 's1' }, // unrecognized type
   ];

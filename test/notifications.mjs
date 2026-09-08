@@ -172,6 +172,12 @@ console.log('\nthe three still-pending types are not double-logged into history 
   // days) -- now aggregated instead of dropped: still exactly one durable row per still-unseen
   // thread, updated in place as more messages arrive, rather than either flooding the list or
   // showing nothing.
+  // Sep 8 2026 (Jeff: "will this also now show properly on the bell for notifications?") --
+  // count deltas are checked at each step below, not just the row shape, since a grouped update
+  // (unlike every other notify() call) mutates an EXISTING row rather than inserting a new one --
+  // the bell badge (data.count, the same field notifBellHtml() in app.js renders) must reflect
+  // that: one unseen thread = one badge count, whether it holds 1 message or 50.
+  const countBeforeGroup = (await G(me, '/api/notifications')).count;
   const crew = await P(me, '/api/crews', { name: 'Iron Crew', memberIds: [alice.user.id] });
   ok(!crew.error && crew.id, `crew created with alice as a member (got ${JSON.stringify(crew)})`);
   await P(alice, `/api/crews/${crew.id}/messages`, { text: 'who is hitting legs tomorrow' });
@@ -180,25 +186,39 @@ console.log('\nthe three still-pending types are not double-logged into history 
   ok(!!crewRow1, `me's crew-chat message from alice DOES now land in Past notifications, grouped (got ${JSON.stringify(data.history.map(h => h.body))})`);
   ok(!!crewRow1 && crewRow1.body === 'nalice commented in Iron Crew', `and reads as a plain "commented in" line, not the raw message text (got "${crewRow1 && crewRow1.body}")`);
   ok(!data.history.some(h => h.body && h.body.includes('hitting legs tomorrow')), 'the raw message text itself is not what shows in history (that\'s what the live chat thread is for)');
+  ok(data.count === countBeforeGroup + 1, `the FIRST message in a new group bumps the bell badge by exactly 1 (got ${data.count}, was ${countBeforeGroup})`);
+  // Sep 8 2026, cont'd (Jeff: "if brian commented in our crew ... it brings me to see his
+  // comments") -- a distinct 'crew-chat' link type (not plain 'crew', which the "added you to the
+  // crew"/challenge notifications above still use, landing at the TOP of the page), so tapping
+  // this row scrolls straight to the messages instead of leaving it to be found on the page.
+  ok(!!crewRow1 && crewRow1.link && crewRow1.link.type === 'crew-chat' && crewRow1.link.crewId === crew.id,
+    `and it carries a crew-chat link (not plain 'crew') back to Iron Crew (got ${JSON.stringify(crewRow1 && crewRow1.link)})`);
 
   // a SECOND message before I've looked -- must update the SAME row (still exactly one crew-chat
-  // row), not add a second one.
+  // row), not add a second one -- and the badge must NOT double-count it (still +1 total, not +2,
+  // even though this is technically the 2nd notify() call for the same underlying event stream).
   await P(alice, `/api/crews/${crew.id}/messages`, { text: 'squat rack is free after 6' });
   data = await G(me, '/api/notifications');
   const crewRowsAfter2 = data.history.filter(h => h.body && h.body.includes('Iron Crew'));
   ok(crewRowsAfter2.length === 1, `still exactly one crew-chat history row after a 2nd unseen message, not two (got ${JSON.stringify(crewRowsAfter2.map(h => h.body))})`);
   ok(crewRowsAfter2[0].body === '2 new comments in Iron Crew', `and it reads as the aggregate count, matching Jeff's own example wording (got "${crewRowsAfter2[0].body}")`);
   ok(crewRowsAfter2[0].id === crewRow1.id, 'and it is literally the same row (same id), updated in place, not a new one');
+  ok(data.count === countBeforeGroup + 1, `the bell badge is STILL just +1 after the 2nd message in the same still-unseen group, not +2 (got ${data.count}, was ${countBeforeGroup})`);
 
-  // once I've SEEN it, a new message must start a FRESH row -- not silently reopen the one I
-  // already read.
+  // once I've SEEN it, the badge drops back down (same as any other notification type)...
   await P(me, '/api/notifications/seen');
+  data = await G(me, '/api/notifications');
+  ok(data.count === 0, `viewing the page drops the badge to 0, same as any other notification type (got ${data.count})`);
+
+  // ...and a new message must start a FRESH row -- not silently reopen the one I already read --
+  // which bumps the badge again, exactly like a brand-new notification would.
   await P(alice, `/api/crews/${crew.id}/messages`, { text: 'leg day moved to Thursday' });
   data = await G(me, '/api/notifications');
   const crewRowsAfterSeen = data.history.filter(h => h.body && h.body.includes('Iron Crew'));
   ok(crewRowsAfterSeen.length === 2, `a message after I've seen the group starts a NEW row (got ${JSON.stringify(crewRowsAfterSeen.map(h => h.body))})`);
   ok(crewRowsAfterSeen.some(h => h.body === 'nalice commented in Iron Crew') && crewRowsAfterSeen.some(h => h.body === '2 new comments in Iron Crew'),
     `the old (now-seen) "2 new comments" row is untouched, and a fresh singular row sits alongside it (got ${JSON.stringify(crewRowsAfterSeen.map(h => h.body))})`);
+  ok(data.count === 1, `and the badge is back to 1 for this new, still-unseen message (got ${data.count})`);
 
   // eve is now an approved participant on openSess (just above) -- she posts into that workout's
   // live chat, which every OTHER participant (me) is notified of. Same grouping treatment, scoped
@@ -209,6 +229,8 @@ console.log('\nthe three still-pending types are not double-logged into history 
   ok(!!sessRow, `me's in-workout chat message from eve now lands in Past notifications too, grouped (got ${JSON.stringify(data.history.map(h => h.body))})`);
   ok(!!sessRow && sessRow.body === 'neve commented on Leg Day', `and reads as "commented on {workout}", matching Jeff's own phrasing (got "${sessRow && sessRow.body}")`);
   ok(!data.history.some(h => h.body && h.body.includes('running 10 min late')), 'again, not the raw message text');
+  ok(!!sessRow && sessRow.link && sessRow.link.type === 'session-chat' && sessRow.link.sessionId === openSess.id,
+    `and it carries a session-chat link (not plain 'session') back to Leg Day (got ${JSON.stringify(sessRow && sessRow.link)})`);
 }
 
 console.log('\na reaction on a posted workout also lands in the recap author\'s notification history');
