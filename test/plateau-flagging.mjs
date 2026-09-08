@@ -203,6 +203,23 @@ console.log('client markup');
   ok(/No change in estimated strength/.test(app), 'plateau section sub-heading present');
   ok(/no increase in estimated strength/.test(app), 'per-row explanation copy present');
 
+  // Sep 8 (Jeff): cushioning line under the plateau headline, mirroring the Strength trend chart's
+  // own dip cushion -- a bare "no change" headline with nothing softening it right above a list of
+  // stalled lifts read as discouraging with no context.
+  // Cold-review catch: a plain app.includes() on the copy alone would still pass if the line were
+  // pasted outside the `if((d.plateaus||[]).length)` guard, in a dead branch, or in the wrong spot
+  // relative to the headline/rows -- so extract the actual guarded block (between the guard and its
+  // "How it works" toggle) and check the line's real position inside it.
+  const plateauBlockMatch = app.match(/if\(\(d\.plateaus\|\|\[\]\)\.length\)\{([\s\S]*?)howItWorks\('Plateaus'/);
+  ok(!!plateauBlockMatch, 'the guarded plateau block is extractable between its if() and its How it works toggle');
+  const plateauBlock = plateauBlockMatch ? plateauBlockMatch[1] : '';
+  ok(/class="ch-note">Normal over time — a rep-range change, a deload, or swapping the exercise for a bit usually gets it moving again\./.test(plateauBlock), 'the cushioning line is present, styled as a .ch-note (same tone as the Strength trend cushion)');
+  const headIdx = plateauBlock.indexOf('hold-head');
+  const noteIdx = plateauBlock.search(/class="ch-note">Normal over time/);
+  const rowsIdx = plateauBlock.indexOf('.map(p=>');
+  ok(headIdx >= 0 && noteIdx > headIdx, 'the cushioning line renders AFTER the "No change in estimated strength" headline, not before or outside it');
+  ok(rowsIdx < 0 || noteIdx < rowsIdx, 'and BEFORE the per-lift row list, so it reads as context for the headline, not attached to a specific lift');
+
   const vMatch = html.match(/app\.js\?v=(\d+)/);
   ok(!!vMatch && Number(vMatch[1]) >= 281, `cache-bust bumped to >= 281 (got ${vMatch && vMatch[1]})`);
 }

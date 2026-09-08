@@ -187,42 +187,94 @@ console.log('\nHome week strip / expandable month calendar (Sep 8, Jeff: "have t
   vm.runInContext('window.HOME_CAL_EXPANDED = true', ctx);
   sink.html = '';
   await vm.runInContext('home', ctx)({ silent: true });
-  ok(sink.html.includes('August 2026'), `month label renders (got no match in: ${sink.html.slice(sink.html.indexOf('cal-lbl'), sink.html.indexOf('cal-lbl')+60)})`);
+  ok(sink.html.includes('August 2026'), `month label renders (got no match in: ${sink.html.slice(sink.html.indexOf('cal-nav'), sink.html.indexOf('cal-nav')+80)})`);
   ok(sink.html.includes('cal-hdr'), 'the Mon..Sun weekday-initials header renders');
+  // Sep 8, round 2: the prev/next month arrows reuse the app's existing .cal-nav/.icon-btn
+  // idiom (same as the "Pick a day" sheet's own month browser) rather than a bespoke control.
+  ok(sink.html.includes('class="cal-nav"'), 'the month-nav row renders with the app\'s existing calendar-nav class');
+  ok(sink.html.includes(`onclick="navHomeCalMonth(-1)"`) && sink.html.includes(`onclick="navHomeCalMonth(1)"`), 'both a previous- and next-month arrow render, wired to navHomeCalMonth');
   const monthWkCells = sink.html.match(/<div class="wk[^"]*"[^>]*>/g) || [];
   ok(monthWkCells.length === 42, `expanded grid renders 5 leading + 31 August + 6 trailing = 42 day cells (got ${monthWkCells.length})`);
   ok(sink.html.includes('Show week only'), 'the toggle now offers to collapse back');
   ok(!sink.html.includes('Show full month'), 'and no longer offers to expand (already expanded)');
 
+  // cold-review catch (self-caught): a plain indexOf/backward-slice search for these onclick
+  // strings also matches an UNRELATED control elsewhere on Home -- the "Share your recap" tip
+  // card links to the same most-recent-finished session via the identical viewPost(...) call, and
+  // it sits earlier in the page than the calendar grid, so a loose search silently grabbed THAT
+  // markup instead of the actual .wk cell and read its (always non-dim) classes as the day's own.
+  // This helper anchors the match to the day cell's OWN opening tag (class="wk ..." immediately
+  // followed by the onclick, exactly how dayCell emits it) so it can never cross into other markup.
+  const wkClassesFor = (onclickFrag) => {
+    const m = sink.html.match(new RegExp(`<div class="(wk[^"]*)"\\s+onclick="${onclickFrag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
+    return m ? m[1] : null;
+  };
+
   // The done day (Aug 25) -- real date, checkmark, opens the recap, NOT dimmed (it's inside August).
-  const doneCellIdx = sink.html.indexOf('viewPost(\'s-done-825\'');
-  ok(doneCellIdx > -1, 'Aug 25 (a finished session, via history date -- no logs needed) opens its recap on tap');
-  const doneCellTag = sink.html.slice(Math.max(0, doneCellIdx - 120), doneCellIdx);
-  ok(/class="wk done"/.test(doneCellTag) || /"wk[^"]*done[^"]*"/.test(doneCellTag), 'Aug 25\'s cell carries the done class (green check)');
-  ok(!/dim/.test(doneCellTag), 'Aug 25 is inside the current month, so it is NOT dimmed');
+  const doneCls = wkClassesFor(`viewPost('s-done-825','me1')`);
+  ok(doneCls !== null, 'Aug 25 (a finished session, via history date -- no logs needed) opens its recap on tap');
+  ok(/\bdone\b/.test(doneCls || ''), `Aug 25's cell carries the done class -- green check (got: ${doneCls})`);
+  ok(!/\bdim\b/.test(doneCls || ''), 'Aug 25 is inside the current month, so it is NOT dimmed');
 
   // Sep 3 (the planned session) -- inside the grid's TRAILING days -- still opens the real session,
   // but IS dimmed since it belongs to the next month, not August.
-  const planCellIdx = sink.html.indexOf(`openSession('s-plan-sep3')`);
-  ok(planCellIdx > -1, 'Sep 3 (a planned session, shown as a trailing day of the August grid) opens the real session on tap');
-  const planCellTag = sink.html.slice(Math.max(0, planCellIdx - 120), planCellIdx);
-  ok(/dim/.test(planCellTag), 'Sep 3 is dimmed -- it belongs to September, not the August month being shown');
+  const planCls = wkClassesFor(`openSession('s-plan-sep3')`);
+  ok(planCls !== null, 'Sep 3 (a planned session, shown as a trailing day of the August grid) opens the real session on tap');
+  ok(/\bdim\b/.test(planCls || ''), `Sep 3 is dimmed -- it belongs to September, not the August month being shown (got: ${planCls})`);
 
   // Sep 1 (a blank trailing day) -- still tappable to plan, still its own real date, still dimmed.
-  const blankTrailIdx = sink.html.indexOf(`planDayFor('2026-09-01')`);
-  ok(blankTrailIdx > -1, 'Sep 1 (blank, trailing) is still tappable to plan that exact real date');
-  ok(/dim/.test(sink.html.slice(Math.max(0, blankTrailIdx - 120), blankTrailIdx)), 'Sep 1 is dimmed too, same as any other day outside August');
+  const blankTrailCls = wkClassesFor(`planDayFor('2026-09-01')`);
+  ok(blankTrailCls !== null, 'Sep 1 (blank, trailing) is still tappable to plan that exact real date');
+  ok(/\bdim\b/.test(blankTrailCls || ''), `Sep 1 is dimmed too, same as any other day outside August (got: ${blankTrailCls})`);
 
   // A blank PAST day within August itself (before today, nothing done/planned) stays fully inert --
   // unaffected by expanding, same "no dead-end plan button on a day that already happened" rule.
   ok(!sink.html.includes(`planDayFor('2026-08-20')`), 'a blank day BEFORE today (Aug 20) is not tappable to plan, expanded or not');
 
-  // Collapsing back drops the month grid and restores exactly the 7-cell strip.
-  vm.runInContext('window.HOME_CAL_EXPANDED = false', ctx);
+  // --- Paging with the arrows: navHomeCalMonth moves HOME_CAL_MONTH_OFFSET and re-renders ---
+  const navHomeCalMonth = vm.runInContext('navHomeCalMonth', ctx);
   sink.html = '';
-  await vm.runInContext('home', ctx)({ silent: true });
-  ok((sink.html.match(/<div class="wk[^"]*"[^>]*>/g) || []).length === 7, 'toggling back to the week strip returns to exactly 7 cells');
+  navHomeCalMonth(1);   // -> September 2026
+  await new Promise(r => setTimeout(r, 0));
+  ok(sink.html.includes('September 2026'), `next-month arrow advances to September (got: ${sink.html.slice(sink.html.indexOf('cal-nav'), sink.html.indexOf('cal-nav')+80)})`);
+  // September's Monday-first grid needs exactly ONE leading day (Sep 1 2026 is a Tuesday), and
+  // that one leading day IS today (Aug 31) -- a genuinely useful edge: the real "today" still
+  // needs to read as today even when it's only on screen as filler for the NEXT month's grid, and
+  // .wk.dim.today (previously dead code when the grid was locked to the current month) is now the
+  // real, reachable state this exercises.
+  const todayCls = wkClassesFor(`planDayFor('2026-08-31')`);
+  ok(todayCls !== null, 'Aug 31 (today, still blank/open) is September grid\'s one leading day, and still tappable to plan');
+  ok(/\btoday\b/.test(todayCls || ''), `...still carries .today (the real date, not the viewed month, decides this) (got: ${todayCls})`);
+  ok(/\bdim\b/.test(todayCls || ''), `...AND is dimmed, since September (not August) is the month on screen (got: ${todayCls})`);
+
+  sink.html = '';
+  navHomeCalMonth(-2);   // September -> August -> July
+  await new Promise(r => setTimeout(r, 0));
+  ok(sink.html.includes('July 2026'), `two steps back from September lands on July (got: ${sink.html.slice(sink.html.indexOf('cal-nav'), sink.html.indexOf('cal-nav')+80)})`);
+
+  // Collapsing resets the paged offset -- re-expanding later starts back at the current month,
+  // not wherever the user last browsed to.
+  // Cold-review catch (self-caught): hand-poking the two globals to the values the toggle button
+  // is SUPPOSED to produce doesn't actually exercise the button's own onclick ternary
+  // (`${calExpanded?'window.HOME_CAL_MONTH_OFFSET=0;':''}` in home()) -- a dropped semicolon or a
+  // flipped condition there would still pass. Extract the REAL rendered onclick string off the
+  // "Show week only" button (still on screen from July, above) and run that verbatim instead.
+  const collapseOnclick = (sink.html.match(/onclick="([^"]+)">Show week only</) || [])[1];
+  ok(!!collapseOnclick && /HOME_CAL_MONTH_OFFSET=0/.test(collapseOnclick), 'the real collapse-button onclick actually zeroes HOME_CAL_MONTH_OFFSET, not just HOME_CAL_EXPANDED');
+  sink.html = '';
+  vm.runInContext(collapseOnclick, ctx);
+  await new Promise(r => setTimeout(r, 0));
+  ok((sink.html.match(/<div class="wk[^"]*"[^>]*>/g) || []).length === 7, 'clicking "Show week only" (the real onclick) collapses back to exactly 7 cells');
   ok(!sink.html.includes('cal-hdr'), 'and the month header is gone');
+
+  // Now re-expand via the real "Show full month" onclick (also just rendered) and confirm the
+  // offset it zeroed on collapse actually stuck -- lands back on August, not July where we paged to.
+  const expandOnclick = (sink.html.match(/onclick="([^"]+)">Show full month</) || [])[1];
+  ok(!!expandOnclick, 'the real "Show full month" button onclick string is present to extract');
+  sink.html = '';
+  vm.runInContext(expandOnclick, ctx);
+  await new Promise(r => setTimeout(r, 0));
+  ok(sink.html.includes('August 2026'), 're-expanding via the real button onclick lands back on the real current month, not July where we last paged to');
 
   // A real (non-silent) navigation to Home resets the expansion, same rule HOME_ALL_SESSIONS
   // already follows -- expanding the calendar should not silently persist across a real revisit.
