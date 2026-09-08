@@ -1261,8 +1261,15 @@ app.post('/api/crews/:id/messages', auth, async (req, res) => {
   // catch, Sep 5) -- now grouped instead of dropped: see the long comment above groupedHistoryWrite
   // (right above notify()) for the aggregation rule. The chat thread itself is still the durable,
   // full-detail place to catch up; this is just a pointer that something happened there.
+  // Sep 8 2026, cont'd (Jeff: "when i open the notification page ... I want to be able to click
+  // on the notification and it bring me to that notification ... if brian commented in our crew
+  // or workout - it brings me to see his comments"). `crew-chat` (distinct from plain `crew`,
+  // still used elsewhere for "added you to the crew"/challenge notifications, which correctly land
+  // at the TOP of the crew page) is its own link type specifically so a comment notification lands
+  // scrolled to the actual messages, not just somewhere on the crew page above them -- see
+  // openCrewChat() in app.js.
   const who = DB.users[req.userId].displayName;
-  for (const pid of c.memberIds) if (pid !== req.userId) notify(pid, { title: c.name, body: `${who}: ${text.slice(0, 40)}`, link: { type: 'crew', crewId: c.id } },
+  for (const pid of c.memberIds) if (pid !== req.userId) notify(pid, { title: c.name, body: `${who}: ${text.slice(0, 40)}`, link: { type: 'crew-chat', crewId: c.id } },
     { group: { key: `crew:${c.id}:chat`, singularBody: `${who} commented in ${c.name}`, pluralBody: n => `${n} new comments in ${c.name}` } });
   res.json(m);
 });
@@ -1900,9 +1907,13 @@ app.post('/api/sessions/:id/comments', auth, async (req, res) => {
   // Sep 8 2026: same grouping treatment as crew chat above (see the long comment above
   // groupedHistoryWrite) -- was history:false, now aggregates into one durable "X commented on
   // {workout}" / "N new comments on {workout}" row per recipient instead of being dropped.
+  // `session-chat` (distinct from plain `session`, still used for the swap/join/invite outcomes
+  // above and below, which correctly land at the TOP of the workout) is its own link type so a
+  // comment notification lands scrolled to the actual chat thread -- see openSessionChat() in
+  // app.js (Jeff: "if brian commented in our ... workout - it brings me to see his comments").
   const who = DB.users[req.userId].displayName;
   const wkName = s.name || 'Workout';
-  for (const pid of s.participants) if (pid !== req.userId) notify(pid, { title: 'New message', body: `${who}: ${text.slice(0,40)}`, link: { type: 'session', sessionId: s.id } },
+  for (const pid of s.participants) if (pid !== req.userId) notify(pid, { title: 'New message', body: `${who}: ${text.slice(0,40)}`, link: { type: 'session-chat', sessionId: s.id } },
     { group: { key: `session:${s.id}:chat`, singularBody: `${who} commented on ${wkName}`, pluralBody: n => `${n} new comments on ${wkName}` } });
   res.json(sessionView(s, req.userId));
 });

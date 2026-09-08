@@ -132,9 +132,15 @@ console.log('\nhistory rows tap through to the right screen, matching n.link (sa
 {
   const rows = [
     { type: 'history', id: 'n1', title: 'T', body: 'session link row', at: isoDaysAgo(0), link: { type: 'session', sessionId: 's_1' } },
+    // Sep 8 2026: 'session-chat'/'crew-chat' -- a comment notification (Jeff: "if brian commented
+    // in our crew or workout - it brings me to see his comments") routes to a DIFFERENT function
+    // than plain 'session'/'crew' (openSessionChat/openCrewChat, which additionally scroll to the
+    // messages), so these need their own tap-through coverage, not just the plain-link cases.
+    { type: 'history', id: 'n1b', title: 'T', body: 'session-chat link row', at: isoDaysAgo(0), link: { type: 'session-chat', sessionId: 's_1b' } },
     { type: 'history', id: 'n2', title: 'T', body: 'post link row', at: isoDaysAgo(0), link: { type: 'post', sessionId: 's_2', authorId: 'u_2' } },
     { type: 'history', id: 'n3', title: 'T', body: 'profile link row', at: isoDaysAgo(0), link: { type: 'profile', userId: 'u_3' } },
     { type: 'history', id: 'n4', title: 'T', body: 'crew link row', at: isoDaysAgo(0), link: { type: 'crew', crewId: 'c_4' } },
+    { type: 'history', id: 'n4b', title: 'T', body: 'crew-chat link row', at: isoDaysAgo(0), link: { type: 'crew-chat', crewId: 'c_4b' } },
     { type: 'history', id: 'n5', title: 'T', body: 'no link at all row', at: isoDaysAgo(0), link: null },
     { type: 'history', id: 'n6', title: 'T', body: 'inert notifications-type row', at: isoDaysAgo(0), link: { type: 'notifications' } },
   ];
@@ -143,9 +149,11 @@ console.log('\nhistory rows tap through to the right screen, matching n.link (sa
   await sleep(5);
   const html = appEl.innerHTML;
   ok(html.includes(`onclick="openSession('s_1')"`), "session-linked row calls openSession('s_1')");
+  ok(html.includes(`onclick="openSessionChat('s_1b')"`), "session-chat-linked row calls openSessionChat('s_1b'), not plain openSession");
   ok(html.includes(`onclick="viewPost('s_2','u_2')"`), "post-linked row calls viewPost('s_2','u_2')");
   ok(html.includes(`onclick="profileView('u_3')"`), "profile-linked row calls profileView('u_3')");
   ok(html.includes(`onclick="crewView('c_4')"`), "crew-linked row calls crewView('c_4')");
+  ok(html.includes(`onclick="openCrewChat('c_4b')"`), "crew-chat-linked row calls openCrewChat('c_4b'), not plain crewView");
   // Rows 5 and 6 must NOT be tappable -- extract each row's own markup (by its distinguishing body
   // text) rather than asserting on the whole page, since rows 1-4 legitimately DO have onclick.
   const rowFor = text => { const i = html.indexOf(text); const start = html.lastIndexOf('<div class="feed-item"', i); const end = html.indexOf('</div></div>', i) + '</div></div>'.length; return html.slice(start, end); };
