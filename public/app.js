@@ -560,7 +560,18 @@ async function home(opts){
     const isFuture = d.getTime() >= today0.getTime();
     const done = doneDays.get(k), plan = planDays.get(k);
     const open = !done && !plan && isFuture;
-    const cls = ['wk', done ? 'done' : plan ? 'plan' : open ? 'open' : '', isToday ? 'today' : '', dim ? 'dim' : ''].filter(Boolean).join(' ');
+    // Sep 8 2026 (Jeff: "why did Monday disappear... it should still show, right?"): a past day
+    // with nothing done and nothing planned fell through every branch above -- no done/plan/open
+    // class at all -- so its .dot rendered with the BASE rule's plain var(--card) fill, no border,
+    // no icon. In dark mode --card (#1c1e22) sits almost on top of --bg (#131417) with no shadow to
+    // separate them (dark mode explicitly drops .wk .dot's box-shadow), so the circle was there in
+    // the DOM but functionally invisible. Deliberately NOT labeled "missed" -- the app has no way
+    // to know whether Monday was skipped or a planned rest day, and CLAUDE.md's rule (v163: don't
+    // state something about the user you can't stand behind) says don't guess. A plain outlined
+    // ring, no icon, no color-language claim either way -- just "nothing logged here" -- same
+    // honest treatment the rest of the app gives an unknown state.
+    const past = !done && !plan && !isFuture;
+    const cls = ['wk', done ? 'done' : plan ? 'plan' : open ? 'open' : past ? 'past' : '', isToday ? 'today' : '', dim ? 'dim' : ''].filter(Boolean).join(' ');
     const ico = done ? '✓' : open ? '+' : '';   // planned days are a dashed ring, today a solid one -- the label underneath already names the day
     const tap = done ? `onclick="viewPost('${done.id}','${ME.id}')"` : plan ? `onclick="openSession('${plan.id}')"` : open ? `onclick="planDayFor('${k}')"` : '';
     return `<div class="${cls}" ${tap}><div class="dot">${ico}</div>${label}</div>`;
