@@ -77,6 +77,10 @@ CREATE TABLE IF NOT EXISTS notifications (
   id text PRIMARY KEY,
   data jsonb NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reports (
+  id text PRIMARY KEY,
+  data jsonb NOT NULL
+);
 CREATE TABLE IF NOT EXISTS app_state (
   key text PRIMARY KEY,
   value jsonb NOT NULL
@@ -104,7 +108,7 @@ async function ensureSchema() {
   }
 }
 
-const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, customExercises: {}, prs: {}, crews: {}, notifications: {} });
+const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, customExercises: {}, prs: {}, crews: {}, notifications: {}, reports: {} });
 
 // ---- diffed writes ----
 //
@@ -135,7 +139,7 @@ const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, 
 let lastPersisted = null; // null, or { users:{}, sessions:{}, ..., singletons:{} } — each inner value id/key -> last-written JSON string
 
 function freshSnapshot() {
-  return { users: {}, sessions: {}, templates: {}, push_subs: {}, custom_exercises: {}, prs: {}, crews: {}, notifications: {}, singletons: {} };
+  return { users: {}, sessions: {}, templates: {}, push_subs: {}, custom_exercises: {}, prs: {}, crews: {}, notifications: {}, reports: {}, singletons: {} };
 }
 
 // Reassembles the exact in-memory shape server.js has always used, from Postgres rows. Also the
@@ -196,6 +200,12 @@ async function doLoad() {
   // is not itself app "state" a user edits, just an append-and-eventually-pruned log.
   const notifications = await c.query('SELECT id, data FROM notifications');
   for (const row of notifications.rows) { d.notifications[row.id] = JSON.parse(row.data); snap.notifications[row.id] = JSON.stringify(d.notifications[row.id]); }
+
+  // Sep 2026: user/content reports (app-store readiness -- see the comment above /api/report in
+  // server.js). Same one-row-per-entity JSONB shape as notifications just above; also a passive,
+  // append-and-eventually-resolved log rather than something a user edits directly.
+  const reports = await c.query('SELECT id, data FROM reports');
+  for (const row of reports.rows) { d.reports[row.id] = JSON.parse(row.data); snap.reports[row.id] = JSON.stringify(d.reports[row.id]); }
 
   // Small singleton bookkeeping fields server.js reads/writes directly on DB (not per-entity
   // data) — followApprovalV1 is a boot migration's "did this already run" marker (see
@@ -292,6 +302,9 @@ async function doSave(d) {
     pending.notifications = bootstrapping
       ? await syncTableFull(c, 'notifications', 'id', d.notifications, jsonToParams, NOTIFICATIONS_UPSERT_SQL)
       : await syncTableDiff(c, 'notifications', 'id', d.notifications, jsonToParams, NOTIFICATIONS_UPSERT_SQL, base.notifications);
+    pending.reports = bootstrapping
+      ? await syncTableFull(c, 'reports', 'id', d.reports, jsonToParams, REPORTS_UPSERT_SQL)
+      : await syncTableDiff(c, 'reports', 'id', d.reports, jsonToParams, REPORTS_UPSERT_SQL, base.reports);
 
     // Singletons: never deleted for being merely absent from `d` (unlike collections above) —
     // `d[key] === undefined` has always meant "this save() call has nothing to say about this
@@ -333,6 +346,7 @@ const CUSTOM_EXERCISES_UPSERT_SQL = 'INSERT INTO custom_exercises (owner_id, dat
 const PRS_UPSERT_SQL = 'INSERT INTO prs (user_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data';
 const CREWS_UPSERT_SQL = 'INSERT INTO crews (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
 const NOTIFICATIONS_UPSERT_SQL = 'INSERT INTO notifications (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
+const REPORTS_UPSERT_SQL = 'INSERT INTO reports (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
 
 // The original, pre-Sep-8 behavior, kept verbatim as the bootstrap fallback (see the comment
 // above lastPersisted): upserts every entry currently in `obj`, then deletes any DB row whose

@@ -484,7 +484,7 @@
     .fav { display:inline-flex; align-items:center; gap:7px; background:#eef1f5; border:1px solid var(--line); border-radius:999px; padding:4px 11px 4px 4px; }
     .fav-av { width:28px; height:28px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; flex:0 0 auto; object-fit:cover; overflow:hidden; }
     /* Comments thread */
-    .cmt { display:flex; gap:9px; padding:9px 6px; border-bottom:1px solid var(--line); }
+    .cmt { display:flex; gap:9px; padding:9px 6px; border-bottom:1px solid var(--line); position:relative; }
     .cmt:last-child { border-bottom:none; }
     .cmt-av { width:30px; height:30px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; flex:0 0 auto; }
     .cmt-body { flex:1 1 auto; min-width:0; }
@@ -500,6 +500,13 @@
     .cmt-react-btn svg { width:14px; height:14px; }
     .cmt-react-btn.on { color:var(--blue); }
     .cmt-react-count { font-size:10px; color:var(--muted); line-height:1; min-height:11px; }
+    /* Sep 2026 (app-store readiness): the per-comment ⋯ menu (Edit/Delete your own, Remove on
+       your own post, Report on anyone else's) sits above the reaction heart in the same narrow
+       column -- .pp-dots' default sizing (22px font, 8px side padding, margin-left:auto) is tuned
+       for a full-width header bar, not this ~30px-wide column, so it gets its own compact
+       override here rather than fighting the shared rule with more specific overrides per property. */
+    .cmt-dots { font-size:15px; padding:0; width:20px; height:20px; margin:0 0 2px; border-radius:6px; color:var(--muted); display:flex; align-items:center; justify-content:center; }
+    .cmt .pp-menu { top:24px; right:-2px; min-width:150px; }
     /* ---- Save workout page ---- */
     .card.center-v { padding:14px; line-height:1.4; }
     .add-media { display:inline-flex; align-items:center; justify-content:center; width:64px; height:64px; border-radius:12px; border:1px solid var(--line); background:#fafbfc; color:var(--blue); cursor:pointer; position:relative; flex:0 0 auto; vertical-align:middle; }
@@ -1473,6 +1480,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=382"></script>
+  <script src="app.js?v=385"></script>
 </body>
 </html>

@@ -27,6 +27,38 @@ if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
 }
 webpush.setVapidDetails('mailto:jeff@example.com', vapid.publicKey, vapid.privateKey);
 
+// ---- Support contact (app-store readiness, Sep 2026) ----
+// Apple requires a published way for a user to reach the developer about abuse/objectionable
+// content (guideline 1.2), and App Store Connect separately requires a privacy-policy contact.
+// This is a REAL placeholder, not a working inbox -- swap it for an address that's actually
+// checked (a Fly secret `SUPPORT_EMAIL=...` overrides it with no code change) before submitting.
+// Reused for both the client's Settings -> Help "Contact us" link and could replace the VAPID
+// mailto: above too, whenever this becomes a real address.
+const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'support@example.com';
+
+// ---- Admin token (app-store readiness, Sep 2026) ----
+// Gates GET/POST /api/admin/reports (below) and the standalone /admin.html page -- deliberately
+// NOT tied to any particular app account (no "isAdmin" flag on a user, no hardcoded username to
+// keep in sync if Jeff's account is ever renamed). Same generate-once-and-persist-to-the-volume
+// pattern as VAPID above: an ADMIN_TOKEN env var (a Fly secret) always wins if set; otherwise one
+// is generated on first boot and written to the volume so it survives restarts/deploys, and
+// printed to the boot log (`fly logs`) so whoever is running the app can retrieve it once and
+// paste it into /admin.html, which then remembers it in that browser's localStorage.
+const ADMIN_TOKEN_FILE = path.join(DATA_DIR, 'admin-token.json');
+let ADMIN_TOKEN;
+if (process.env.ADMIN_TOKEN) {
+  ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+} else if (fs.existsSync(ADMIN_TOKEN_FILE)) {
+  ADMIN_TOKEN = JSON.parse(fs.readFileSync(ADMIN_TOKEN_FILE, 'utf8')).token;
+} else {
+  ADMIN_TOKEN = crypto.randomBytes(24).toString('base64url');
+  fs.writeFileSync(ADMIN_TOKEN_FILE, JSON.stringify({ token: ADMIN_TOKEN }, null, 2));
+  // Only logged the one time it's freshly generated (not when it came from an env var or an
+  // already-written file) -- this is the one and only place to retrieve it (fly logs), so it's
+  // worth a boot-time line, same spirit as any other "here's your generated secret" first-run.
+  console.log('Generated ADMIN_TOKEN for /admin.html (also saved to', ADMIN_TOKEN_FILE + '):', ADMIN_TOKEN);
+}
+
 // ---- Store ----
 // Aug 2026: moved off a single data.json file onto Postgres (see db.js for the full design
 // rationale — this is a lift-and-shift: DB keeps the exact same in-memory shape, every route
@@ -444,6 +476,16 @@ function auth(req, res, next) {
   req.userId = userId;
   next();
 }
+// Gates the /api/admin/* routes (report review) -- see the comment above ADMIN_TOKEN's setup for
+// why this is a standalone token rather than an isAdmin flag on a user account. Deliberately a
+// SEPARATE middleware from auth() above, not layered on top of it: reviewing reports is an
+// operator action, not a logged-in-user action, and requiring both would mean the token holder
+// also needs a live CrewFit login token, which is one more thing to keep valid for no benefit.
+function adminAuth(req, res, next) {
+  const t = req.headers['x-admin-token'] || '';
+  if (!ADMIN_TOKEN || t !== ADMIN_TOKEN) return res.status(401).json({ error: 'unauthorized' });
+  next();
+}
 
 // The deploy pipeline gates on this, so it has to assert something. A constant `{ok:true}` would
 // have passed over a wiped database. Counts are aggregate only — no names, no PINs.
@@ -453,6 +495,11 @@ app.get('/healthz', async (req, res) => {
   res.json({ ok: true, users: Object.keys(DB.users).length, sessions: Object.keys(DB.sessions).length });
 });
 app.get('/api/vapid', (req, res) => res.json({ publicKey: vapid.publicKey }));
+// Powers Settings -> Help -> "Contact us" (see SUPPORT_EMAIL's own comment above). No auth
+// needed -- same publicly-fetchable shape as /api/vapid just above, and this specifically needs
+// to be reachable before login too (a locked-out or not-yet-registered person still needs a way
+// to reach support).
+app.get('/api/config', (req, res) => res.json({ supportEmail: SUPPORT_EMAIL }));
 app.post('/api/register', async (req, res) => {
   const ip = clientIp(req);
   if (ip && overLimit('reg:' + ip, 20, 60 * 60 * 1000))
@@ -651,6 +698,25 @@ app.post('/api/favorites/toggle', auth, async (req, res) => {
   res.json({ favorited });
 });
 
+// Sep 2026 (app-store readiness pass, Apple guideline 1.2 -- UGC apps must let a user block
+// abusive accounts): 'blocked' lives on the user object exactly like followers/following/
+// followReqs above -- an array of ids THIS account has blocked. Lazily created on first use,
+// same pattern as ensureFollowArrays, so every account that existed before this shipped doesn't
+// need a migration.
+function ensureBlockArray(u) { if (!Array.isArray(u.blocked)) u.blocked = []; }
+// Deliberately bidirectional/symmetric: if EITHER account has blocked the other, neither can see
+// or interact with the other, regardless of who blocked whom. This matches how blocking works in
+// every mainstream social app (Instagram, Twitter/X) -- the blocked person is never told they were
+// blocked, but their experience of the blocker (and the blocker's experience of them) is
+// identical either way. The alternative (one-directional: only the blocker stops seeing the
+// blockee, who can still see and follow the blocker) is what a "mute" would be, not a block, and
+// would not satisfy "block abusive users" -- an abusive account could still follow, invite, and
+// message someone who blocked them, just without knowing they'd been noticed.
+function isBlocked(aId, bId) {
+  const a = DB.users[aId], b = DB.users[bId];
+  return !!(a && Array.isArray(a.blocked) && a.blocked.includes(bId))
+      || !!(b && Array.isArray(b.blocked) && b.blocked.includes(aId));
+}
 // v190 (profile-privacy unification, Sep 2026): the ONE rule for "can this viewer see {id}'s
 // gated stuff" -- profile detail (PRs/streak/activity), a 'public' post, and session joinability
 // all resolve through this now, instead of independently-written copies that drift apart (see the
@@ -658,10 +724,20 @@ app.post('/api/favorites/toggle', auth, async (req, res) => {
 // friends-only recap through a profile page while the session route correctly refused it).
 // Public (default, unset counts as public) = anyone. Private is opt-in via Settings = only
 // approved followers, and you.
+//
+// Sep 2026 (app-store readiness): the block check runs FIRST, before the public/private branch,
+// and unconditionally overrides it -- a blocked relationship must win over 'public' the same way
+// it wins over an approved follower, or blocking someone with a public profile would do nothing
+// at all. Every caller of canSeeProfile (profileOf's isApproved, sessionTier's 'friend' tier via
+// the line below, /api/sessions/:id/join) inherits this automatically, which is deliberate: one
+// change here closes profile visibility, session joinability, and (via canSeePostAuthor, which
+// has its own identical block check) posted-recap visibility all at once, instead of needing a
+// block check bolted onto every call site independently.
 function canSeeProfile(id, viewerId) {
   if (id === viewerId) return true;
   const u = DB.users[id];
   if (!u) return false;
+  if (isBlocked(id, viewerId)) return false;
   if (u.profileVisibility !== 'private') return true;
   return (u.followers || []).includes(viewerId);
 }
@@ -773,6 +849,10 @@ function profileOf(id, viewerId, localToday) {
       : ((u.followers || []).includes(viewerId) ? 'following'
       : ((u.followReqs || []).includes(viewerId) ? 'requested' : 'none')),
     followsYou: !!(viewerId && id !== viewerId && (DB.users[viewerId].followers || []).includes(id)),
+    // Sep 2026: whether the VIEWER has blocked this profile -- drives the Block/Unblock menu item
+    // client-side. Deliberately not "did this profile block the viewer" (that's not the viewer's
+    // business to know, same as every other block implementation -- see isBlocked's comment).
+    youBlocked: !!(viewerId && id !== viewerId && (DB.users[viewerId].blocked || []).includes(id)),
     myWorkouts,
     // Below the line — approved followers (and you) only. The workout count and follower/following
     // counts from publicUser above stay public.
@@ -933,6 +1013,10 @@ app.post('/api/follow/:id', auth, async (req, res) => {
   const target = DB.users[req.params.id];
   if (!target) return res.status(404).json({ error: 'user not found' });
   if (req.params.id === req.userId) return res.status(400).json({ error: 'cannot follow self' });
+  // Sep 2026 (app-store readiness): a blocked relationship (either direction) refuses a new
+  // follow outright. Doesn't reveal WHICH direction the block is in -- same generic wording
+  // either way, so this can't be used to probe whether someone blocked you.
+  if (isBlocked(req.userId, req.params.id)) return res.status(403).json({ error: 'unable to follow this account' });
   ensureFollowArrays(target); ensureFollowArrays(DB.users[req.userId]);
   if (target.followers.includes(req.userId)) return res.json({ status: 'following' });
   // Sep 2026: a Public profile has nothing to approve -- everyone can already see it -- so a
@@ -983,6 +1067,121 @@ app.post('/api/follow-requests/:id/accept', auth, async (req, res) => {
 app.post('/api/follow-requests/:id/reject', auth, async (req, res) => {
   const me = DB.users[req.userId]; ensureFollowArrays(me);
   me.followReqs = me.followReqs.filter(x => x !== req.params.id);
+  await save(DB);
+  res.json({ ok: true });
+});
+
+// ---- Block / unblock (Sep 2026, app-store readiness: Apple guideline 1.2 requires letting
+// users block abusive accounts in apps with social/UGC features) ----
+// Blocking severs any existing follow relationship in BOTH directions and cancels any pending
+// follow request either way -- an already-approved follower you've decided to block should not
+// keep seeing your stuff just because they followed you before you blocked them, and a pending
+// "wants to follow you" request from someone you're blocking should not sit there waiting for an
+// answer you're never going to give. Nothing about a session the two of you already trained
+// together is touched here (see the long comment on canSeePostAuthor's own block check above for
+// why that's a deliberate, separate scope decision) -- this only affects the follow graph and,
+// through canSeeProfile/canSeePostAuthor, everything gated by it going forward.
+//
+// Extracted so /api/block/:id (below) and the "also block" option on /api/report (further down)
+// share exactly one implementation rather than two copies of the same follow-graph cleanup
+// drifting apart over time. Returns false (does nothing) for a missing target or blocking
+// yourself, so callers can no-op safely rather than needing their own guard first.
+function blockUser(blockerId, targetId) {
+  const me = DB.users[blockerId], target = DB.users[targetId];
+  if (!me || !target || blockerId === targetId) return false;
+  ensureBlockArray(me); ensureFollowArrays(me);
+  ensureFollowArrays(target);
+  if (!me.blocked.includes(targetId)) me.blocked.push(targetId);
+  me.following = me.following.filter(x => x !== targetId);
+  me.followers = me.followers.filter(x => x !== targetId);
+  me.followReqs = me.followReqs.filter(x => x !== targetId);
+  target.following = target.following.filter(x => x !== blockerId);
+  target.followers = target.followers.filter(x => x !== blockerId);
+  target.followReqs = target.followReqs.filter(x => x !== blockerId);
+  return true;
+}
+app.post('/api/block/:id', auth, async (req, res) => {
+  if (!DB.users[req.params.id]) return res.status(404).json({ error: 'user not found' });
+  if (req.params.id === req.userId) return res.status(400).json({ error: 'cannot block yourself' });
+  blockUser(req.userId, req.params.id);
+  await save(DB);
+  res.json({ ok: true, blocked: true });
+});
+app.post('/api/unblock/:id', auth, async (req, res) => {
+  const me = DB.users[req.userId];
+  ensureBlockArray(me);
+  me.blocked = me.blocked.filter(x => x !== req.params.id);
+  await save(DB);
+  res.json({ ok: true, blocked: false });
+});
+// Powers Settings -> Blocked accounts. publicUser() is the same headline-only shape used
+// everywhere else a list of OTHER people's accounts is returned (followList, etc.) -- a blocked
+// account you can no longer see the private detail of, but you still get to see who it was to
+// manage the list.
+app.get('/api/blocked', auth, async (req, res) => {
+  const me = DB.users[req.userId];
+  ensureBlockArray(me);
+  res.json(me.blocked.filter(id => DB.users[id]).map(id => publicUser(id)));
+});
+
+// ---- Report content / a user (Sep 2026, app-store readiness: Apple guideline 1.2) ----
+// Deliberately simple: this is a single-operator app with no moderation team, so a report is
+// stored durably and reviewed by Jeff (or whoever holds ADMIN_TOKEN) through GET /api/admin/
+// reports below -- there is no automated action taken against the reported account, and reporting
+// something does not by itself hide it from anyone. What DOES take immediate effect is the
+// reporter's own view: alsoBlock (below) runs the exact same blockUser() the Block button uses,
+// so "report and block" is one tap, matching what every mainstream app offers from a report sheet.
+const REPORT_REASONS = ['spam', 'harassment', 'inappropriate', 'impersonation', 'other'];
+const REPORT_TARGET_TYPES = ['user', 'post', 'comment'];
+app.post('/api/report', auth, async (req, res) => {
+  // Sep 8 2026 (cold-review finding): unlike /api/register and /api/login, this had no cap at
+  // all -- one account could flood DB.reports without limit, burying real reports on the one
+  // review screen that reads it (GET /api/admin/reports has no pagination either, which is a
+  // known, accepted tradeoff for a single-operator app -- but it makes an unbounded flood worse,
+  // not just annoying). Keyed per-user (not per-IP like login/register) since the thing being
+  // protected here is the review queue's signal-to-noise, not a brute-force target.
+  if (overLimit('report:' + req.userId, 30, 60 * 60 * 1000))
+    return res.status(429).json({ error: 'Too many reports. Please try again later.' });
+  const b = req.body || {};
+  if (!REPORT_TARGET_TYPES.includes(b.targetType)) return res.status(400).json({ error: 'invalid report' });
+  if (!REPORT_REASONS.includes(b.reason)) return res.status(400).json({ error: 'invalid report' });
+  const targetUserId = (typeof b.targetUserId === 'string' && DB.users[b.targetUserId]) ? b.targetUserId : null;
+  // A 'user' report always needs a real targetUserId; 'post'/'comment' reports are still useful
+  // without one resolving (the content itself, named by sessionId/authorId/commentId below, is
+  // the point) but in practice always carry one too since every post/comment has an author.
+  if (b.targetType === 'user' && !targetUserId) return res.status(400).json({ error: 'invalid report' });
+  const id = 'rep_' + uid();
+  // sessionId/authorId/commentId are optional context for post/comment reports, capped and
+  // stored as opaque labels only -- never dereferenced or trusted as anything but text an admin
+  // reads on the review screen, so a stale or fabricated id here can't do anything but show up
+  // oddly on that screen.
+  DB.reports[id] = {
+    id, reporterId: req.userId, targetType: b.targetType, targetUserId,
+    sessionId: capStr(b.sessionId, 60), authorId: capStr(b.authorId, 60), commentId: capStr(b.commentId, 60),
+    reason: b.reason, details: capStr(b.details, 1000),
+    at: new Date().toISOString(), status: 'open',
+  };
+  if (b.alsoBlock && targetUserId) blockUser(req.userId, targetUserId);
+  await save(DB);
+  res.json({ ok: true });
+});
+// ---- Admin: review reports (Sep 2026) ----
+// See adminAuth's comment for why this is token-gated rather than tied to a user account.
+// Deliberately minimal -- list + resolve, no reply/messaging, no per-report detail route (the
+// list already carries everything a report has). reporter/target are resolved to a display name
+// server-side so /admin.html never has to make a second round trip per row.
+app.get('/api/admin/reports', adminAuth, async (req, res) => {
+  const nameOf = id => { const u = DB.users[id]; return u ? (u.displayName || u.username) : (id ? '(deleted account)' : ''); };
+  const list = Object.values(DB.reports || {})
+    .map(r => ({ ...r, reporterName: nameOf(r.reporterId), targetName: nameOf(r.targetUserId) }))
+    .sort((a, b) => new Date(b.at) - new Date(a.at));
+  res.json(list);
+});
+app.post('/api/admin/reports/:id/resolve', adminAuth, async (req, res) => {
+  const r = DB.reports[req.params.id];
+  if (!r) return res.status(404).json({ error: 'not found' });
+  r.status = 'resolved';
+  r.resolvedAt = new Date().toISOString();
   await save(DB);
   res.json({ ok: true });
 });
@@ -1939,6 +2138,12 @@ app.post('/api/sessions/:id/posts/:authorId/comments', auth, async (req, res) =>
   if (!s) return res.status(404).json({ error: 'not found' });
   const p = s.posts && s.posts[req.params.authorId];
   if (!canSeePostAuthor(p, req.params.authorId, req.userId, s)) return res.status(403).json({ error: 'forbidden' });
+  // Sep 2026: canSeePostAuthor already refuses a blocked relationship (see its own comment) for
+  // everyone EXCEPT current session participants, who keep read access to a workout they actually
+  // trained together -- deliberate, see canSeePostAuthor's comment. Posting a brand new comment is
+  // the highest-risk action here (new abusive text, not just re-reading old shared history), so it
+  // gets its own, unconditional block check on top, regardless of that participant carve-out.
+  if (isBlocked(req.params.authorId, req.userId)) return res.status(403).json({ error: 'forbidden' });
   const text = capStr((req.body || {}).text, 2000);
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
   const c = { id: 'c_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
@@ -1948,6 +2153,61 @@ app.post('/api/sessions/:id/posts/:authorId/comments', auth, async (req, res) =>
   if (req.params.authorId !== req.userId)
     notify(req.params.authorId, { title: 'New comment', body: `${DB.users[req.userId].displayName}: ${text.slice(0,40)}`, link: { type: 'post', sessionId: s.id, authorId: req.params.authorId } });
   res.json(sessionView(s, req.userId));
+});
+// ---- Edit / remove a comment on a posted recap (Sep 2026) ----
+// Jeff: "I also want to be able to edit comments made or remove comments added to your profiles
+// workouts" -- two distinct permissions in one sentence, both implemented here:
+//   - Edit is YOUR OWN comment only (c.userId === req.userId). Editing someone else's words would
+//     be tampering with what they actually said, not moderation -- nobody but the original author
+//     ever gets to change a comment's text. Stamps editedAt so anyone reading the thread can tell
+//     it was changed after posting, same honesty standard as everywhere else in this app (see the
+//     "never state something about the user you can't stand behind" rule in CLAUDE.md, extended
+//     here to "never show a comment as original when it's been edited").
+//   - Delete allows EITHER the comment's own author OR the post owner (req.userId === authorId) --
+//     your own comment, or anything left on your own posted workout. This is the actual moderation
+//     tool Apple's UGC guideline (1.2) asks for: the owner of a piece of content must be able to
+//     remove abusive replies to it without waiting on anyone else.
+// Deliberately scoped to POSTED-recap comments only (p.comments), not the live in-workout chat
+// (s.comments) -- Jeff's own wording ("your profiles workouts") matches the recap thread, which is
+// also the one visible to a wider, less-trusted audience (canSeePostAuthor's 'public' branch);
+// the workout chat is only ever visible to members/invitees of that specific session.
+app.put('/api/sessions/:id/posts/:authorId/comments/:commentId', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  const p = s.posts && s.posts[req.params.authorId];
+  if (!p) return res.status(404).json({ error: 'not found' });
+  p.comments = objArray(p.comments);
+  const c = p.comments.find(x => x.id === req.params.commentId);
+  if (!c) return res.status(404).json({ error: 'not found' });
+  if (c.userId !== req.userId) return res.status(403).json({ error: 'forbidden' });
+  // Sep 8 2026 (cold-review finding): same unconditional block check as the POST-new-comment
+  // route above, and for the same reason -- replacing an existing comment's text is exactly as
+  // capable of landing new abusive content as posting a fresh one, so it can't be exempt from the
+  // block check just because the row already existed. Without this, a post owner who blocks a
+  // commenter AFTER the comment was left could not stop that commenter from rewriting it to
+  // arbitrary new text indefinitely.
+  if (isBlocked(req.params.authorId, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  const text = capStr((req.body || {}).text, 2000);
+  if (!text.trim()) return res.status(400).json({ error: 'empty' });
+  c.text = text;
+  c.editedAt = new Date().toISOString();
+  await save(DB);
+  res.json(c);
+});
+app.delete('/api/sessions/:id/posts/:authorId/comments/:commentId', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  const p = s.posts && s.posts[req.params.authorId];
+  if (!p) return res.status(404).json({ error: 'not found' });
+  p.comments = objArray(p.comments);
+  const c = p.comments.find(x => x.id === req.params.commentId);
+  if (!c) return res.status(404).json({ error: 'not found' });
+  // Own comment, or the post owner removing anything left on their own post -- see the long
+  // comment above the PUT handler just above for why these are the two allowed cases.
+  if (c.userId !== req.userId && req.params.authorId !== req.userId) return res.status(403).json({ error: 'forbidden' });
+  p.comments = p.comments.filter(x => x.id !== req.params.commentId);
+  await save(DB);
+  res.json({ ok: true });
 });
 
 // ---- Push subscribe ----
@@ -2345,6 +2605,13 @@ function canFinishOrPost(s, userId) {
 function canSeePostAuthor(p, authorId, viewerId, s) {
   if (!p) return false;
   if (authorId === viewerId) return true;
+  // Sep 2026 (app-store readiness): checked before the participant/membership bypass just below,
+  // not just before the public-visibility branch -- a shared session's OWN participants can
+  // normally always see each other's recaps regardless of visibility ("you were there"), and that
+  // bypass must not survive a block. Without this a workout the two of you already did together
+  // would keep exposing your recap to someone you've since blocked, since they'd still read as a
+  // fellow participant. See the identical, more detailed comment on isBlocked/canSeeProfile above.
+  if (isBlocked(authorId, viewerId)) return false;
   // Membership checked BEFORE the public-visibility branch, not after: 'public' is meant to be a
   // WIDER audience than 'private' (private already admits every current member), never a narrower
   // one. Checking canSeeProfile first would let a 'public' post be hidden from a fellow participant
@@ -4659,6 +4926,13 @@ app.post('/api/sessions/:id/posts/:authorId/comments/:commentId/react', auth, as
   if (!canSeePostAuthor(p, req.params.authorId, req.userId, s)) return res.status(403).json({ error: 'forbidden' });
   const c = objArray(p.comments).find(x => x.id === req.params.commentId);
   if (!c) return res.status(404).json({ error: 'not found' });
+  // Sep 8 2026 (cold-review finding): canSeePostAuthor above only checks the block relationship
+  // between the VIEWER and the POST's author -- it says nothing about the individual COMMENTER,
+  // who may be a third party neither the viewer nor the post author has any block relationship
+  // with. Without this, two users who've blocked each OTHER could still react to (and notify) one
+  // another through a shared, unrelated third party's comment thread -- a direct interaction the
+  // block was supposed to prevent, even though neither of them is the post's own author.
+  if (isBlocked(c.userId, req.userId)) return res.status(403).json({ error: 'forbidden' });
   c.reactions = Array.isArray(c.reactions) ? c.reactions.filter(x => typeof x === 'string') : [];
   const i = c.reactions.indexOf(req.userId);
   const reacted = i === -1;
