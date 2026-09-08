@@ -384,6 +384,7 @@ async function home(opts){
   const silent = !!(opts && opts.silent);
   if(!silent) window.HOME_ALL_SESSIONS = false;   // v364: "See all" expansion lasts until you actually leave Home
   if(!silent) window.HOME_CAL_EXPANDED = false;   // same rule for the week-strip/month-calendar toggle below
+  if(!silent) window.HOME_CAL_MONTH_OFFSET = 0;   // and for which month the expanded grid is paged to
   // weeks=26, not 4: streakWeeks is computed inside the requested window, so a 4-week request
   // silently caps the streak stat at "4 week streak" — false for anyone on a longer run.
   // Sep 7: /api/feed moved out of Home's fetch -- Friends' Activity now lives on the Friends tab
@@ -565,10 +566,9 @@ async function home(opts){
     return `<div class="${cls}" ${tap}><div class="dot">${ico}</div>${label}</div>`;
   };
   // Sep 8 (Jeff: "could we have the calendar expandable... while having selecting the days open
-  // the workouts"): collapsed stays exactly the original 7-day strip; expanded swaps in the
-  // CURRENT month as a Monday-first grid (no prev/next month browsing yet -- ask if that's
-  // wanted once he's seen this). Leading/trailing days from neighboring months fill out the grid
-  // (a month rarely starts or ends on a Monday) and stay fully tappable, just dimmed -- a workout
+  // the workouts"): collapsed stays exactly the original 7-day strip; expanded swaps in a
+  // Monday-first month grid. Leading/trailing days from neighboring months fill out the grid (a
+  // month rarely starts or ends on a Monday) and stay fully tappable, just dimmed -- a workout
   // logged on the 1st is never invisible just because it falls in the grid's first row.
   const calExpanded = !!window.HOME_CAL_EXPANDED;
   let strip;
@@ -580,20 +580,29 @@ async function home(opts){
     }
     strip += '</div>';
   } else {
-    const monthStart = new Date(today0.getFullYear(), today0.getMonth(), 1);
-    const monthEnd = new Date(today0.getFullYear(), today0.getMonth()+1, 0);
+    // Sep 8, round 2 (Jeff: "add the arrows but done well and minimalist"): month browsing reuses
+    // the app's OWN existing calendar-nav idiom verbatim -- .cal-nav/.icon-btn, the same ‹/›
+    // circular buttons the "Pick a day" sheet already uses (see daySheetInner above) -- rather
+    // than inventing a second nav control style. HOME_CAL_MONTH_OFFSET (0 = this month) is the
+    // only new state; it follows the exact same silent-persists/real-nav-resets rule as
+    // HOME_CAL_EXPANDED, so paging to a different month and then tapping something else on Home
+    // doesn't snap back, but actually leaving and returning to Home does.
+    const off = window.HOME_CAL_MONTH_OFFSET||0;
+    const viewMonth = new Date(today0.getFullYear(), today0.getMonth()+off, 1);
+    const monthStart = new Date(viewMonth.getFullYear(), viewMonth.getMonth(), 1);
+    const monthEnd = new Date(viewMonth.getFullYear(), viewMonth.getMonth()+1, 0);
     const gridStart = new Date(monthStart); gridStart.setDate(gridStart.getDate() - ((gridStart.getDay()+6)%7));
     const gridEnd = new Date(monthEnd); gridEnd.setDate(gridEnd.getDate() + (7 - 1 - ((gridEnd.getDay()+6)%7)));
-    strip = `<div class="cal-lbl">${monthStart.toLocaleDateString(undefined,{month:'long',year:'numeric'})}</div>
+    strip = `<div class="cal-nav"><button type="button" class="icon-btn" onclick="navHomeCalMonth(-1)" aria-label="Previous month">‹</button><b>${esc(monthStart.toLocaleDateString(undefined,{month:'long',year:'numeric'}))}</b><button type="button" class="icon-btn" onclick="navHomeCalMonth(1)" aria-label="Next month">›</button></div>
       <div class="cal-hdr">${dayNames.map(n=>`<span>${n[0]}</span>`).join('')}</div>`;
     for(let d = new Date(gridStart); d <= gridEnd; ){
       strip += '<div class="week-strip">';
-      for(let i = 0; i < 7; i++){ strip += dayCell(d, String(d.getDate()), d.getMonth() !== today0.getMonth()); d.setDate(d.getDate()+1); }
+      for(let i = 0; i < 7; i++){ strip += dayCell(d, String(d.getDate()), d.getMonth() !== viewMonth.getMonth() || d.getFullYear() !== viewMonth.getFullYear()); d.setDate(d.getDate()+1); }
       strip += '</div>';
     }
   }
   html += strip;
-  html += `<div style="text-align:right;margin:2px 0 12px"><button class="txt-btn" onclick="window.HOME_CAL_EXPANDED=${!calExpanded};home({silent:true})">${calExpanded ? 'Show week only' : 'Show full month'}</button></div>`;
+  html += `<div style="text-align:right;margin:2px 0 12px"><button class="txt-btn" onclick="window.HOME_CAL_EXPANDED=${!calExpanded};${calExpanded?'window.HOME_CAL_MONTH_OFFSET=0;':''}home({silent:true})">${calExpanded ? 'Show week only' : 'Show full month'}</button></div>`;
 
   // Next up card
   if(nextUp){
@@ -746,6 +755,11 @@ async function home(opts){
   $('app').innerHTML = html;
   if(!silent) pageScrollTop();
 }
+// Sep 8: the expanded Home calendar's ‹/› buttons -- page HOME_CAL_MONTH_OFFSET and re-render in
+// place. No clamping in either direction, same as any real calendar; today's own cell (and its
+// tap targets) are unaffected by which month happens to be on screen, since dayCell always
+// compares against the real today, not the viewed month.
+function navHomeCalMonth(delta){ window.HOME_CAL_MONTH_OFFSET = (window.HOME_CAL_MONTH_OFFSET||0) + delta; home({silent:true}); }
 // Sep 7 (v364): the Next up card's "Chat" button -- open the session and land on its chat box.
 async function openSessionChat(id){
   await openSession(id);
@@ -4741,8 +4755,16 @@ async function progressScreen(opts){
   let plateauHtml = '';
   if((d.plateaus||[]).length){
     const pw = d.plateaus[0].weeks;
+    // Sep 8 (Jeff): same "no cushioning" issue Strength trend had -- a bare "No change in
+    // estimated strength" headline with nothing softening it, immediately followed by a list of
+    // lifts not gaining. The real assessment is unchanged (still says exactly what stalled, and
+    // for how long) -- this just adds the one line of normal-and-actionable framing right under
+    // the headline, same restrained tone/placement as trendChart's own cushion (a .ch-note, not a
+    // color change or a hidden explainer -- the existing "How it works" toggle below still has
+    // the fuller version of this same advice for anyone who wants it).
     plateauHtml = `<h2>Plateau watch</h2>
     <div class="card"><div class="hold-sec"><div class="hold-head">No change in estimated strength</div>
+      <div class="ch-note">Normal over time — a rep-range change, a deload, or swapping the exercise for a bit usually gets it moving again.</div>
       ${d.plateaus.map(p=>`<div class="hold">
         <div class="hold-ic" aria-hidden="true">=</div>
         <div class="rp-main"><div class="rp-name">${esc(p.exercise)}</div>

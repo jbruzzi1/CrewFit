@@ -256,17 +256,22 @@
        normally dashed). Belt-and-braces, not load-bearing. */
     .wk.today.open .dot { border-style:solid; }
     .wk.plan, .wk.done, .wk.open { cursor:pointer; }
-    /* Sep 8 (Jeff, "have the calendar expandable"): the expanded month view reuses .week-strip/.wk
-       verbatim, one row per calendar week -- .cal-lbl/.cal-hdr are the only new pieces, a month
-       name and a Mon..Sun initials row sitting above the stacked weeks. .wk.dim mutes a day that
-       belongs to the previous/next month (the grid always starts on a Monday and ends on a
-       Sunday, so most months show a few) -- still fully tappable, just visually out of focus.
-       cold-review catch: dim needs to win over .wk.done/.wk.plan's own opacity:1 (two classes),
-       so each pairing below is deliberately THREE classes -- higher specificity, not matching --
-       to beat them regardless of source order. (.wk.dim.today is never reachable -- dim means
-       "not this month" and today is always in it -- but costs nothing to leave in case that
-       assumption ever changes.) */
-    .cal-lbl { text-align:center; font-size:12.5px; font-weight:600; color:var(--muted); margin:14px 0 2px; }
+    /* Sep 8 (Jeff, "have the calendar expandable" / "add the arrows but done well and minimalist"):
+       the expanded month view reuses .week-strip/.wk verbatim, one row per calendar week, and the
+       month-nav row reuses .cal-nav/.icon-btn EXACTLY as the existing "Pick a day" sheet's own
+       month browser already does (see daySheetInner in app.js) -- one calendar-nav look app-wide,
+       not a second one invented for Home. .cal-hdr (new) is just the Mon..Sun initials row sitting
+       under it -- Home's grid is Monday-first like the week strip above it, unlike the Pick-a-day
+       sheet's Sunday-first .cal-dow, so that one specific piece couldn't be reused as-is.
+       .wk.dim mutes a day that belongs to the previous/next month (the grid always starts on a
+       Monday and ends on a Sunday, so most months show a few) -- still fully tappable, just
+       visually out of focus. cold-review catch: dim needs to win over .wk.done/.wk.plan's own
+       opacity:1 (two classes), so each pairing below is deliberately THREE classes -- higher
+       specificity, not matching -- to beat them regardless of source order.
+       Round 2 (‹/› month paging): .wk.dim.today is NOT dead code after all -- today's real date
+       can land as a leading/trailing filler day once you page to an adjacent month (e.g. Aug 31
+       is September's one leading day), and it should read as both "dimmed, not this month" AND
+       "this is today" at once. Covered in test/home-live-window-and-workouts-view.mjs. */
     .cal-hdr { display:flex; gap:6px; margin:0 0 2px; }
     .cal-hdr span { flex:1; text-align:center; font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
     .wk.dim, .wk.dim.today, .wk.dim.done, .wk.dim.plan, .wk.dim.open { opacity:.35; }
@@ -1452,6 +1457,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=376"></script>
+  <script src="app.js?v=377"></script>
 </body>
 </html>
