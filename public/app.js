@@ -2018,15 +2018,17 @@ async function loadChat(s){
     const col = avatarColor(nm[c.userId]||c.userId);
     const t = new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
     const editedTag = c.editedAt ? ' <span class="muted" style="font-size:11px">(edited)</span>' : '';
-    // Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one") -- own
-    // messages only, same Edit-only menu shape as the posted-recap comments' own-comment case
-    // (no Delete/Remove here: Jeff's ask was specifically about editing, and live chat has never
-    // had a delete concept). The menu id is prefixed 'cmt-' on purpose -- togglePostMenu's fixed-
-    // position anchoring (see its own comment) already handles anything with that prefix escaping
-    // a scrolling ancestor's clip, and this row lives in the exact same #chatbox.scrolllist
-    // container the posted-recap comments do, so it needs the identical fix, not a new one.
+    // Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one", then
+    // "Can we correct how these pop up menus open for buttons like that with a pop up just for
+    // edit? This does not look good to my standards.") -- own messages only. Live chat has never
+    // had a delete concept, so an own-message row only ever needs ONE action: Edit. That started
+    // as a ⋯ menu with a single item in it (matching the posted-recap comments' shape) and Jeff
+    // called out the extra tap-to-reveal for a menu with nothing to choose between as poor UX, so
+    // it's now a direct pencil button (editPencilSvg/.cmt-edit-btn) that opens the edit prompt on
+    // one tap, no menu step. Posted-recap comments keep the real ⋯ menu below -- that case has
+    // actual choices (Edit/Delete/Remove/Report).
     const dots = c.userId===ME.id
-      ? '<div class="cmt-react-col"><button class="pp-dots cmt-dots" onclick="togglePostMenu(\'cmt-chat-'+c.id+'\')" aria-label="More">⋯</button><div class="pp-menu" id="ppMenu-cmt-chat-'+c.id+'" style="display:none"><button onclick="editChatMessagePrompt(\''+s.id+'\',\''+c.id+'\',\''+jsq(c.text)+'\')">Edit</button></div></div>'
+      ? '<div class="cmt-react-col"><button class="cmt-edit-btn" onclick="editChatMessagePrompt(\''+s.id+'\',\''+c.id+'\',\''+jsq(c.text)+'\')" aria-label="Edit message">'+editPencilSvg()+'</button></div>'
       : '';
     return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span>'+editedTag+'</div><div class="cmt-text">'+esc(c.text)+'</div></div>'+dots+'</div>';
   }).join('');
@@ -5799,14 +5801,15 @@ async function crewView(crewId, opts){
     if(m.system) return `<div class="crew-msg crew-msg-sys">${esc(m.text)}</div>`;
     const from = c.members.find(x=>x.id===m.userId);
     const editedTag = m.editedAt ? ' <span class="muted" style="font-size:11px">(edited)</span>' : '';
-    // Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one") -- own
-    // messages only, same Edit-only menu as the live workout chat above. 'cmt-' id prefix on
-    // purpose: this list (#crewMsgs-<id>) has the identical overflow-y:auto/max-height clipping
-    // risk as #chatbox.scrolllist, and togglePostMenu's fixed-position anchoring already handles
-    // anything with that prefix escaping a scrolling ancestor's clip.
+    // Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one", then
+    // "Can we correct how these pop up menus open for buttons like that with a pop up just for
+    // edit? This does not look good to my standards.") -- own messages only, same single-tap
+    // pencil button as the live workout chat above (see its own comment on why the ⋯-menu-for-
+    // just-Edit shape got replaced): editPencilSvg/.cmt-edit-btn open the edit prompt directly,
+    // no intermediate menu.
     const isOwn = m.userId===ME.id;
     const dots = isOwn
-      ? `<button class="pp-dots cmt-dots" style="flex:0 0 auto" onclick="togglePostMenu('cmt-crewmsg-${m.id}')" aria-label="More">⋯</button><div class="pp-menu" id="ppMenu-cmt-crewmsg-${m.id}" style="display:none"><button onclick="editCrewMsgPrompt('${jsq(c.id)}','${m.id}','${jsq(m.text)}')">Edit</button></div>`
+      ? `<button class="cmt-edit-btn" style="flex:0 0 auto" onclick="editCrewMsgPrompt('${jsq(c.id)}','${m.id}','${jsq(m.text)}')" aria-label="Edit message">${editPencilSvg()}</button>`
       : '';
     return `<div class="crew-msg"${isOwn?' style="display:flex;align-items:flex-start;gap:2px;position:relative"':''}><span style="flex:1"><b>${esc(from?(from.displayName||from.username):UNKNOWN_NAME)}</b> ${esc(m.text)}${editedTag}</span>${dots}</div>`;
   }).join('') : '';
@@ -6287,6 +6290,10 @@ function avatarColor(seed){
 
 // ---- Profile (me + any friend) ----
 function flameSvg(){ return '<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px;vertical-align:-1px"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>'; }
+// Sep 8 2026 -- the compact pencil used by .cmt-edit-btn (loadChat's live-chat rows, crewView's
+// msgRows) for a direct, single-tap "edit this message" action. Sized entirely by .cmt-edit-btn
+// svg (14px) rather than baked-in width/height, same as the reaction heart it sits beside.
+function editPencilSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>'; }
 function gearSvg(){ return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>'; }
 // v230: dark is the app's DEFAULT look; this device-local switch is the only way to go light
 // (the app deliberately does not follow the phone's setting - Jeff's call, Aug 28). The <head>
