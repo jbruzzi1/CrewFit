@@ -6456,8 +6456,33 @@ async function renderNotifications(opts){
   // or an earned achievement (CLAUDE.md's color language), so it stays visually quiet like the
   // crew-row challenge hint does for the same reason.
   const historyLead = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 4 1.5 5.5 2 6.5H4c.5-1 2-2.5 2-6.5Z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>`;
-  const historyHtml = history.length ? `<h2 class="light">Past notifications</h2><div class="card feed-strip">` + history.map(n => `
-      <div class="feed-item"><span class="feed-lead">${historyLead}</span><span>${esc(n.body || n.title || '')}<div class="tag">${fmtWhen(n.at)}</div></span></div>`).join('') + `</div>` : '';
+  // Sep 8 2026 (Jeff: "this notification list should show notifications for 7 days (today and
+  // then last 7 days -- two groups)"). Was one flat list under a single "Past notifications"
+  // heading; now two, split on the same real-calendar-day boundary fmtWhen already uses for each
+  // row's own Today/Yesterday wording (dayDiff, not a raw 24-hour window -- 11pm today and 1am
+  // today are both "Today" even though they're 2 hours apart, and 11:01pm yesterday is NOT "Today"
+  // even though it's 1 minute away). The server already caps this at the last
+  // NOTIFICATION_HISTORY_DAYS (7) days, so "last 7 days" here just means "not today, of what's
+  // already here" -- no separate cutoff to keep in sync with the server's.
+  // Sep 8 2026: rows now also deep-link, same as tapping the push notification that made them
+  // would (n.link, set by server.js's notify() -- see the comment above it) -- reuses the exact
+  // functions the rest of the app already calls for each destination (openSession/viewPost/
+  // profileView/crewView), not a new mechanism, so a row behaves exactly like tapping the
+  // equivalent live row elsewhere (e.g. a Friends-tab profile row) would.
+  const historyTapAttrs = (n) => {
+    const l = n.link; if(!l || typeof l !== 'object') return '';
+    if(l.type === 'session' && l.sessionId) return ` onclick="openSession('${jsq(l.sessionId)}')" style="cursor:pointer"`;
+    if(l.type === 'post' && l.sessionId && l.authorId) return ` onclick="viewPost('${jsq(l.sessionId)}','${jsq(l.authorId)}')" style="cursor:pointer"`;
+    if(l.type === 'profile' && l.userId) return ` onclick="profileView('${jsq(l.userId)}')" style="cursor:pointer"`;
+    if(l.type === 'crew' && l.crewId) return ` onclick="crewView('${jsq(l.crewId)}')" style="cursor:pointer"`;
+    return '';   // {type:'notifications'} (already here) and anything unrecognized: inert, as before
+  };
+  const historyRow = n => `<div class="feed-item"${historyTapAttrs(n)}><span class="feed-lead">${historyLead}</span><span>${esc(n.body || n.title || '')}<div class="tag">${fmtWhen(n.at)}</div></span></div>`;
+  const historyToday = history.filter(n => dayDiff(n.at) === 0);
+  const historyEarlier = history.filter(n => dayDiff(n.at) !== 0);
+  const historyHtml = history.length ? `
+      ${historyToday.length ? `<h2 class="light">Today</h2><div class="card feed-strip">${historyToday.map(historyRow).join('')}</div>` : ''}
+      ${historyEarlier.length ? `<h2 class="light">Last 7 days</h2><div class="card feed-strip">${historyEarlier.map(historyRow).join('')}</div>` : ''}` : '';
   // Discoverability rule (CLAUDE.md): never hide an empty state -- render it open, not a blank page.
   const empty = (!invites.length && !followRequests.length && !joinRequests.length && !history.length)
     ? homeEmpty(ICON_BELL, "You're all caught up", 'Invites and requests will show up here.') : '';
@@ -7108,6 +7133,30 @@ if(typeof document !== 'undefined' && typeof document.addEventListener === 'func
   setInterval(checkAppVersion, 10 * 60 * 1000);
 }
 
+// Sep 8 2026 (Jeff, lock-screen screenshot: "when I click on a push notification it should open
+// to where the notification happened... currently it just opens to where I was last"). server.js's
+// notify() now tags most of its payloads with `link: {type, ...ids}` (see the long comment above
+// notify() in server.js for the full list); this is the one place that turns that tag into an
+// actual navigation, shared by both entry points sw.js's notificationclick can reach (see that
+// file's comment): the `?dl=` boot query-string (no tab was open when the notification was
+// tapped -- tryBoot() below) and the 'deepLink' postMessage (a tab WAS open -- the listener further
+// down). Best-effort, matching this app's existing openLog/sid/exId deep link one function up:
+// an unrecognized type, a missing id, or the target having been deleted/gone-private since the
+// push fired (openSession/viewPost/etc. already alert and return on that) all fail open to
+// whatever's already on screen rather than throwing. Returns whether a recognized type was
+// dispatched at all -- not whether the underlying fetch actually succeeded -- so callers know
+// whether to fall through to their own default (home()) or not.
+async function openDeepLink(link){
+  if(!link || typeof link !== 'object' || typeof link.type !== 'string') return false;
+  try{
+    if(link.type === 'session' && link.sessionId){ await openSession(link.sessionId); return true; }
+    if(link.type === 'post' && link.sessionId && link.authorId){ await viewPost(link.sessionId, link.authorId); return true; }
+    if(link.type === 'profile' && link.userId){ await profileView(link.userId); return true; }
+    if(link.type === 'crew' && link.crewId){ await crewView(link.crewId); return true; }
+    if(link.type === 'notifications'){ await renderNotifications(); return true; }
+  }catch(e){ /* best-effort deep link -- see comment above */ }
+  return false;
+}
 // ---- Boot ----
 // v253 (audit finding): this used to wipe the token and drop straight to the login screen the
 // instant /api/profile/me failed for ANY reason -- not just a real 401. A genuinely invalid/
@@ -7138,11 +7187,16 @@ async function tryBoot(){
     // already-open tab for sw.js's notificationclick to postMessage into instead (see that file's
     // comment). Stripped from the URL immediately either way, success or failure -- a stale query
     // string sitting in the address bar must not re-open the same log sheet on every later reload.
+    // Sep 8 2026: ?dl= is the same idea, generalized -- every OTHER notify()'d push (a comment, a
+    // swap, someone joining...) that ALSO had no open tab for sw.js to postMessage into instead.
     // Parsed by hand rather than via URLSearchParams -- several of this app's own test harnesses
     // run app.js in a minimal mock global (same reasoning as the serviceWorker check above), and
     // URLSearchParams isn't one of the globals any of them provide.
     const openLogMatch = /(?:^|[?&])openLog=([^&]*)/.exec(location.search || '');
     const openLog = openLogMatch ? decodeURIComponent(openLogMatch[1]) : null;
+    const dlMatch = /(?:^|[?&])dl=([^&]*)/.exec(location.search || '');
+    let dlLink = null;
+    if(dlMatch){ try{ dlLink = JSON.parse(decodeURIComponent(dlMatch[1])); }catch(e){ dlLink = null; } }
     history.replaceState(CURRENT_NAV_STATE, '', location.pathname);
     if(openLog && openLog.includes(':')){
       const [sid, exId] = openLog.split(':');
@@ -7150,6 +7204,7 @@ async function tryBoot(){
       // comment at openSession's `return true;` for why calling both unconditionally double-alerted.
       if(sid && exId){ const opened = await openSession(sid); if(opened) focusLogBlock(exId); return; }
     }
+    if(dlLink && await openDeepLink(dlLink)) return;
     home();
     return;
   }
@@ -7197,6 +7252,15 @@ if('serviceWorker' in navigator && typeof navigator.serviceWorker.addEventListen
       // same success-gating as tryBoot's ?openLog= branch above -- see openSession's `return true;` comment.
       const opened = await openSession(d.sid);
       if(opened) focusLogBlock(d.exId);
+    }
+    // Sep 8 2026: the open-tab half of the general `link` deep link -- sw.js's notificationclick
+    // posts this instead of 'openLog' for every notify() call that tagged its payload with `link`
+    // (see the long comment above openDeepLink() a few screens up). Same BOOT_DONE/ME race guard
+    // as 'openLog' just above, same reasoning.
+    if(d && d.type==='deepLink' && d.link){
+      await BOOT_DONE;
+      if(!ME || !ME.id) return;
+      openDeepLink(d.link);
     }
   });
 }

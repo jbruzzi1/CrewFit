@@ -944,7 +944,7 @@ app.post('/api/follow/:id', auth, async (req, res) => {
     const me = DB.users[req.userId];
     if (!me.following.includes(target.id)) me.following.push(target.id);
     await save(DB);
-    notify(target.id, { title: 'New follower', body: `${DB.users[req.userId].displayName} started following you` });
+    notify(target.id, { title: 'New follower', body: `${DB.users[req.userId].displayName} started following you`, link: { type: 'profile', userId: req.userId } });
     return res.json({ status: 'following' });
   }
   if (!target.followReqs.includes(req.userId)) {
@@ -953,7 +953,7 @@ app.post('/api/follow/:id', auth, async (req, res) => {
     // history:false -- this is the live, still-pending "wants to follow you" ask, already shown
     // as an actionable row in GET /api/notifications' followRequests while it's pending; the
     // accepted/rejected outcome (line ~995 below) gets its own history entry instead.
-    notify(target.id, { title: 'New follow request', body: `${DB.users[req.userId].displayName} wants to follow you` }, { history: false });
+    notify(target.id, { title: 'New follow request', body: `${DB.users[req.userId].displayName} wants to follow you`, link: { type: 'notifications' } }, { history: false });
   }
   res.json({ status: 'requested' });
 });
@@ -977,7 +977,7 @@ app.post('/api/follow-requests/:id/accept', auth, async (req, res) => {
   const from = DB.users[fromId];
   if (from) { ensureFollowArrays(from); if (!from.following.includes(req.userId)) from.following.push(req.userId); }
   await save(DB);
-  if (from) notify(fromId, { title: 'Follow request accepted', body: `${me.displayName} accepted your follow request` });
+  if (from) notify(fromId, { title: 'Follow request accepted', body: `${me.displayName} accepted your follow request`, link: { type: 'profile', userId: req.userId } });
   res.json({ ok: true });
 });
 app.post('/api/follow-requests/:id/reject', auth, async (req, res) => {
@@ -1178,7 +1178,7 @@ app.post('/api/crews', auth, async (req, res) => {
   // Every other "you were just put into something" flow in this app notifies (workout invite,
   // follow accepted, new follower) -- being silently dropped into a standing group chat with no
   // signal until you happen to open the Friends tab would be the odd one out (cold-review catch).
-  for (const mid of memberIds) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} added you to the crew` });
+  for (const mid of memberIds) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} added you to the crew`, link: { type: 'crew', crewId: c.id } });
   res.json(publicCrew(c, req.userId));
 });
 app.get('/api/crews/:id', auth, async (req, res) => {
@@ -1207,7 +1207,7 @@ app.put('/api/crews/:id', auth, async (req, res) => {
     // Only the newly-added members, not everyone -- an edit that touches just the name (or
     // re-submits the same roster, which the client always does alongside a name change) must not
     // re-notify people who were already in the crew, only whoever is actually new to it.
-    for (const mid of c.memberIds) if (!before.has(mid)) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} added you to the crew` });
+    for (const mid of c.memberIds) if (!before.has(mid)) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} added you to the crew`, link: { type: 'crew', crewId: c.id } });
     // A newly-added member can already have logging that falls inside a running challenge's
     // window (see checkChallengeCompletion's comment) -- check right here, not just on the next
     // workout finish, so the crew isn't left staring at a stalled 100%+ bar with no celebration.
@@ -1254,12 +1254,16 @@ app.post('/api/crews/:id/messages', auth, async (req, res) => {
   const m = { id: 'cm_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
   c.messages.push(m);
   await save(DB);
-  // history:false -- a live group chat is exactly the kind of high-frequency notify() call the
-  // history feature was never meant to absorb (cold-review catch, Sep 5): a chatty crew could
-  // blow past the history list's cap in hours, pushing out the one-shot life events (a follow, a
-  // reaction, an accepted invite) it exists to surface. The chat thread itself is already a
-  // durable, viewable place to catch up on messages -- history doesn't need to duplicate it.
-  for (const pid of c.memberIds) if (pid !== req.userId) notify(pid, { title: c.name, body: `${DB.users[req.userId].displayName}: ${text.slice(0, 40)}` }, { history: false });
+  // Sep 8 2026 (Jeff: "I want a notification for ... comments ... We don't have to see multiple
+  // comments, just 'brian commented on XYZ' ... or grouped notifications ... '7 New Comments in
+  // XYZ Crew'"). Used to be history:false (a live group chat is exactly the kind of high-frequency
+  // notify() call the history feature was never meant to absorb one-row-per-message -- cold-review
+  // catch, Sep 5) -- now grouped instead of dropped: see the long comment above groupedHistoryWrite
+  // (right above notify()) for the aggregation rule. The chat thread itself is still the durable,
+  // full-detail place to catch up; this is just a pointer that something happened there.
+  const who = DB.users[req.userId].displayName;
+  for (const pid of c.memberIds) if (pid !== req.userId) notify(pid, { title: c.name, body: `${who}: ${text.slice(0, 40)}`, link: { type: 'crew', crewId: c.id } },
+    { group: { key: `crew:${c.id}:chat`, singularBody: `${who} commented in ${c.name}`, pluralBody: n => `${n} new comments in ${c.name}` } });
   res.json(m);
 });
 
@@ -1440,7 +1444,7 @@ function checkChallengeCompletion(c) {
   // crewView's own comment on that fallback) -- those two blanks mean different things.
   c.messages.push({ id: 'cm_' + uid(), userId: null, system: true, at: ch.completedAt,
     text: `🎉 Challenge complete! ${total}${unit} ${ch.type} as a crew.` });
-  for (const mid of c.memberIds) notify(mid, { title: c.name, body: `Challenge complete: ${ch.target}${unit} ${ch.type} this week! 🎉` });
+  for (const mid of c.memberIds) notify(mid, { title: c.name, body: `Challenge complete: ${ch.target}${unit} ${ch.type} this week! 🎉`, link: { type: 'crew', crewId: c.id } });
   return true;
 }
 // Called right after a workout gets credited (session lock, and a keep-leave -- see creditFinish's
@@ -1482,7 +1486,7 @@ app.post('/api/crews/:id/challenge', auth, async (req, res) => {
   }
   c.challenges.push(ch);
   await save(DB);
-  for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: notifyBody });
+  for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: notifyBody, link: { type: 'crew', crewId: c.id } });
   res.json(publicCrew(c, req.userId));
 });
 
@@ -1523,7 +1527,7 @@ app.get('/api/notifications', auth, async (req, res) => {
     .filter(n => n.userId === req.userId && new Date(n.createdAt).getTime() >= cutoff)
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .slice(0, 50)
-    .map(n => ({ type: 'history', id: n.id, title: n.title, body: n.body, at: n.createdAt }));
+    .map(n => ({ type: 'history', id: n.id, title: n.title, body: n.body, at: n.createdAt, link: n.link || null }));
   const seenAt = me.notificationsSeenAt ? new Date(me.notificationsSeenAt).getTime() : 0;
   const unseenHistory = history.filter(n => new Date(n.at).getTime() > seenAt).length;
   res.json({ invites, followRequests, joinRequests, history, count: invites.length + followRequests.length + joinRequests.length + unseenHistory });
@@ -1893,10 +1897,13 @@ app.post('/api/sessions/:id/comments', auth, async (req, res) => {
   if (!s.comments) s.comments = [];
   s.comments.push(c);
   await save(DB);
-  // history:false -- same reasoning as crew chat above: a live in-workout chat thread is already
-  // its own durable, viewable place to catch up, and can be chatty enough to crowd out one-shot
-  // history entries if it wrote one per message too.
-  for (const pid of s.participants) if (pid !== req.userId) notify(pid, { title: 'New message', body: `${DB.users[req.userId].displayName}: ${text.slice(0,40)}` }, { history: false });
+  // Sep 8 2026: same grouping treatment as crew chat above (see the long comment above
+  // groupedHistoryWrite) -- was history:false, now aggregates into one durable "X commented on
+  // {workout}" / "N new comments on {workout}" row per recipient instead of being dropped.
+  const who = DB.users[req.userId].displayName;
+  const wkName = s.name || 'Workout';
+  for (const pid of s.participants) if (pid !== req.userId) notify(pid, { title: 'New message', body: `${who}: ${text.slice(0,40)}`, link: { type: 'session', sessionId: s.id } },
+    { group: { key: `session:${s.id}:chat`, singularBody: `${who} commented on ${wkName}`, pluralBody: n => `${n} new comments on ${wkName}` } });
   res.json(sessionView(s, req.userId));
 });
 
@@ -1928,7 +1935,7 @@ app.post('/api/sessions/:id/posts/:authorId/comments', auth, async (req, res) =>
   p.comments.push(c);
   await save(DB);
   if (req.params.authorId !== req.userId)
-    notify(req.params.authorId, { title: 'New comment', body: `${DB.users[req.userId].displayName}: ${text.slice(0,40)}` });
+    notify(req.params.authorId, { title: 'New comment', body: `${DB.users[req.userId].displayName}: ${text.slice(0,40)}`, link: { type: 'post', sessionId: s.id, authorId: req.params.authorId } });
   res.json(sessionView(s, req.userId));
 });
 
@@ -1962,22 +1969,70 @@ app.post('/api/push/subscribe', auth, async (req, res) => {
 // append a durable, read-only history record, independent of whether the push itself succeeds
 // (a user with push permission off, or the payload's target off this device entirely, should
 // still see it in-app; the old `if (!sub) return` was strictly a push-delivery gate, not a
-// "this happened" gate). Callers pass `{ history: false }` for two different reasons: the three
-// notify() calls for a still-pending invite/follow-request/join-request duplicate a type already
-// shown live elsewhere (logging those too would show the exact same ask twice, once as a live
-// actionable row and once as an inert history line); and the two live-chat notify() calls (crew
-// messages, in-workout chat) are high-frequency and already have their own durable thread to
-// catch up on -- a chatty crew would otherwise crowd real one-shot events out of the history
-// list's cap within hours (cold-review catch). Everything else -- new follower, an
-// accepted/declined invite or join, a reaction, a comment on a POSTED recap, a challenge event --
-// has no other durable trace once the moment passes, so it's exactly what "past notifications"
-// needs to mean. Retention is NOTIFICATION_HISTORY_DAYS (pruneOldNotifications, below) -- an
-// in-app inbox is not meant to become a permanent activity log.
+// "this happened" gate). Callers pass `{ history: false }` for the three still-pending types
+// (invite/follow-request/join-request) -- those duplicate a type already shown live elsewhere
+// (logging them too would show the exact same ask twice, once as a live actionable row and once
+// as an inert history line). Everything else -- new follower, an accepted/declined invite or join,
+// a reaction, a comment on a POSTED recap, a challenge event -- has no other durable trace once the
+// moment passes, so it's exactly what "past notifications" needs to mean. Retention is
+// NOTIFICATION_HISTORY_DAYS (pruneOldNotifications, below) -- an in-app inbox is not meant to
+// become a permanent activity log.
 const NOTIFICATION_HISTORY_DAYS = 7;
+// `opts.group` -- Sep 8 2026 (Jeff: "I want a notification for ... comments ... We don't have to
+// see multiple comments, just 'brian commented on XYZ' within notifications. or grouped
+// notifications for example '7 New Comments in XYZ Crew'"). Crew chat and in-workout chat used to
+// pass `{ history: false }` and skip history ENTIRELY (cold-review catch, Sep 5: a chatty thread
+// could blow past the history list's cap in hours, crowding out one-shot life events) -- this is
+// the replacement: still exactly one durable row per (recipient, thread), but that ONE row gets
+// updated in place as more messages arrive, rather than either duplicating one-row-per-message or
+// being dropped outright. Shape: `{ key, singularBody, pluralBody(count) }` -- `key` scopes what
+// counts as "the same thread" (e.g. `crew:${c.id}:chat`), `singularBody` is what a first, lone
+// message reads as ("Brian commented in Iron Crew"), `pluralBody(n)` is what it becomes once a
+// second message lands before the first was ever seen ("7 new comments in Iron Crew"). The row is
+// only ever extended while STILL UNSEEN (createdAt after the recipient's own notificationsSeenAt,
+// the same "have they actually looked" signal the bell badge already uses) -- once they've opened
+// Notifications and seen it, the next message starts a fresh row rather than silently re-opening
+// a group they already read. `payload.body` (the per-message push text, e.g. "Brian: on my way")
+// is untouched by any of this -- only the durable history row's own text is aggregated; the live
+// push notification still fires, and still reads, exactly as it always did per message.
+function groupedHistoryWrite(userId, payload, group) {
+  const seenAt = DB.users[userId] && DB.users[userId].notificationsSeenAt ? new Date(DB.users[userId].notificationsSeenAt).getTime() : 0;
+  let existing = null;
+  for (const n of Object.values(DB.notifications)) {
+    if (n.userId === userId && n.groupKey === group.key && new Date(n.createdAt).getTime() > seenAt) {
+      if (!existing || new Date(n.createdAt) > new Date(existing.createdAt)) existing = n;
+    }
+  }
+  if (existing) {
+    existing.count = (existing.count || 1) + 1;
+    existing.title = capStr(payload.title, 120);
+    existing.body = capStr(group.pluralBody(existing.count), 300);
+    existing.link = isObj(payload.link) ? payload.link : existing.link;
+    existing.createdAt = new Date().toISOString();   // bump to now -- re-sorts to the top, re-enters "Today" if the group started yesterday
+  } else {
+    const id = 'ntf_' + uid();
+    DB.notifications[id] = { id, userId, title: capStr(payload.title, 120), body: capStr(group.singularBody, 300),
+      link: isObj(payload.link) ? payload.link : null, groupKey: group.key, count: 1, createdAt: new Date().toISOString() };
+  }
+}
+// `payload.link` (optional) -- Sep 8 2026 (Jeff, lock-screen screenshot: "when I click on a push
+// notification it should open to where the notification happened... currently it just opens to
+// where I was last"). One small tagged shape, `{type, ...ids}`, set by the callers below that have
+// somewhere real to point at (a session, a posted recap, a profile, a crew) -- see
+// public/sw.js's notificationclick and app.js's openDeepLink() for what each `type` opens. Callers
+// with nothing specific to point at (a streak reminder, a follow REQUEST -- the notifications page
+// itself is the destination) simply omit it, same as before this existed. Carried on the payload
+// object itself (not nested under `data`) so it rides the exact same JSON.stringify(payload) the
+// push already sends -- no wire-format change -- and is copied into the durable history row below
+// so a tap on a PAST notification (not just a fresh push) can also deep-link.
 function notify(userId, payload, opts) {
   if (!opts || opts.history !== false) {
-    const id = 'ntf_' + uid();
-    DB.notifications[id] = { id, userId, title: capStr(payload.title, 120), body: capStr(payload.body, 300), createdAt: new Date().toISOString() };
+    if (opts && opts.group) {
+      groupedHistoryWrite(userId, payload, opts.group);
+    } else {
+      const id = 'ntf_' + uid();
+      DB.notifications[id] = { id, userId, title: capStr(payload.title, 120), body: capStr(payload.body, 300), link: isObj(payload.link) ? payload.link : null, createdAt: new Date().toISOString() };
+    }
     // Deliberately its own save(), not left to whatever save(DB) the calling route happens to run
     // -- several callers already `await save(DB)` BEFORE calling notify() (the mutation they're
     // persisting is unrelated to the notification), which would otherwise silently drop this
@@ -1986,6 +2041,13 @@ function notify(userId, payload, opts) {
     // tight loop (e.g. notifying every crew member) without racing itself.
     save(DB).catch(e => console.error('notify: failed to persist notification history:', e && e.message));
   }
+  // opts.push === false -- Sep 8 2026: for the one case where the recipient IS the actor (a
+  // creator approving their own join request -- see /join/:reqId/approve below), a push would just
+  // be telling someone about the button they themselves just tapped. The in-app history record is
+  // still worth keeping (so "who's in my workout" has a durable trail), just not worth interrupting
+  // them over -- same reasoning already applied to POST /api/sessions dropping ITS OWN self-push
+  // ("you already know you just made it") a comment up in that route.
+  if (opts && opts.push === false) return;
   const sub = DB.pushSubs[userId];
   if (!sub) return;
   webpush.sendNotification(sub, JSON.stringify(payload)).catch(err => {
@@ -2086,7 +2148,7 @@ app.post('/api/sessions', auth, async (req, res) => {
   // notify invited friends
   // history:false -- already shown live as an actionable "Workout invites" row in GET
   // /api/notifications while it's unanswered; accept/decline (elsewhere) gets its own notify().
-  for (const fid of invites) notify(fid, { title: 'Workout invite', body: `${DB.users[req.userId].displayName} invited you to a workout` }, { history: false });
+  for (const fid of invites) notify(fid, { title: 'Workout invite', body: `${DB.users[req.userId].displayName} invited you to a workout`, link: { type: 'session', sessionId: id } }, { history: false });
   // Jeff, Aug 31: lock-screen nudge naming the exercise you're about to walk up to, sent to the
   // CREATOR themselves the moment their own "starting now" session was created (see
   // notify-helpers.js for the original full reasoning and the START_WINDOW_MS scoping).
@@ -2749,7 +2811,7 @@ app.post('/api/sessions/:id/accept', auth, async (req, res) => {
   s.invited = s.invited.filter(x => x !== req.userId);
   if (!s.participants.includes(req.userId)) s.participants.push(req.userId);
   await save(DB);
-  notify(s.creatorId, { title: 'Invite accepted', body: `${DB.users[req.userId].displayName} joined your workout` });
+  notify(s.creatorId, { title: 'Invite accepted', body: `${DB.users[req.userId].displayName} joined your workout`, link: { type: 'session', sessionId: s.id } });
   res.json(sessionView(s, req.userId));
 });
 
@@ -2779,7 +2841,7 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   // /leave: it was settled while they were still around, not left dangling.
   s.joinRequests = (s.joinRequests || []).filter(j => !(j.userId === req.userId && j.status === 'pending'));
   await save(DB);
-  notify(s.creatorId, { title: 'Invite declined', body: `${DB.users[req.userId].displayName} declined your workout` });
+  notify(s.creatorId, { title: 'Invite declined', body: `${DB.users[req.userId].displayName} declined your workout`, link: { type: 'session', sessionId: s.id } });
   res.json(sessionView(s, req.userId));
 });
 
@@ -2832,7 +2894,7 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
   const who = DB.users[req.userId].displayName;
   const hostName = DB.users[s.creatorId] ? DB.users[s.creatorId].displayName : 'the host';
   if (type === 'add') {
-    notify(s.creatorId, { title: 'Exercise suggested', body: `${who} suggested adding ${edit.swapTo}` });
+    notify(s.creatorId, { title: 'Exercise suggested', body: `${who} suggested adding ${edit.swapTo}`, link: { type: 'session', sessionId: s.id } });
   } else {
     const fromEx = s.exercises.find(e => e.id === edit.exerciseId);
     const fromName = fromEx ? fromEx.name : 'an exercise';
@@ -2840,8 +2902,8 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
     for (const uid_ of everyone) {
       if (uid_ === req.userId || !DB.users[uid_]) continue;
       notify(uid_, uid_ === s.creatorId
-        ? { title: 'Swap requested', body: `${who} wants to swap ${fromName} → ${edit.swapTo} for everyone. Your call.` }
-        : { title: 'Swap requested', body: `${who} wants to swap ${fromName} → ${edit.swapTo} for everyone — ${hostName} decides.` });
+        ? { title: 'Swap requested', body: `${who} wants to swap ${fromName} → ${edit.swapTo} for everyone. Your call.`, link: { type: 'session', sessionId: s.id } }
+        : { title: 'Swap requested', body: `${who} wants to swap ${fromName} → ${edit.swapTo} for everyone — ${hostName} decides.`, link: { type: 'session', sessionId: s.id } });
     }
   }
   res.json(sessionView(s, req.userId));
@@ -2904,7 +2966,7 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
     const newEx = Object.assign({ id: 'e_' + uid(), order: s.exercises.length }, withDefaults({ name: edit.swapTo }));
     s.exercises.push(newEx);
     await save(DB);
-    notify(edit.proposedBy, { title: 'Exercise added', body: `${DB.users[s.creatorId].displayName} added ${edit.swapTo} to the workout` });
+    notify(edit.proposedBy, { title: 'Exercise added', body: `${DB.users[s.creatorId].displayName} added ${edit.swapTo} to the workout`, link: { type: 'session', sessionId: s.id } });
     return res.json(sessionView(s, req.userId));
   }
   // Sep 6 (Jeff: "if brian suggests a swap and I approve it - that swaps the exercise for us both,
@@ -2950,8 +3012,8 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
   for (const uid_ of new Set([...s.participants, edit.proposedBy])) {
     if (uid_ === s.creatorId || !DB.users[uid_]) continue;
     notify(uid_, uid_ === edit.proposedBy
-      ? { title: 'Swap approved', body: `${hostName} approved your swap: ${fromName || 'the exercise'} → ${edit.swapTo}, for everyone` }
-      : { title: 'Workout changed', body: `${hostName} approved ${proposerName}'s swap: ${fromName || 'the exercise'} → ${edit.swapTo}` });
+      ? { title: 'Swap approved', body: `${hostName} approved your swap: ${fromName || 'the exercise'} → ${edit.swapTo}, for everyone`, link: { type: 'session', sessionId: s.id } }
+      : { title: 'Workout changed', body: `${hostName} approved ${proposerName}'s swap: ${fromName || 'the exercise'} → ${edit.swapTo}`, link: { type: 'session', sessionId: s.id } });
   }
   res.json(sessionView(s, req.userId));
 });
@@ -2970,7 +3032,7 @@ app.post('/api/sessions/:id/suggest/:editId/reject', auth, async (req, res) => {
   await save(DB);
   if (edit.type !== 'add') {
     const ex = s.exercises.find(x => x.id === edit.exerciseId);
-    notify(edit.proposedBy, { title: 'Swap not approved', body: `${DB.users[s.creatorId].displayName} kept ${ex ? ex.name : 'the exercise'}. You can still swap it for just you.` });
+    notify(edit.proposedBy, { title: 'Swap not approved', body: `${DB.users[s.creatorId].displayName} kept ${ex ? ex.name : 'the exercise'}. You can still swap it for just you.`, link: { type: 'session', sessionId: s.id } });
   }
   res.json(sessionView(s, req.userId));
 });
@@ -3009,7 +3071,7 @@ app.post('/api/sessions/:id/join', auth, async (req, res) => {
   await save(DB);
   // history:false -- already shown live as an actionable "Join requests" row in GET
   // /api/notifications while it's pending; the approved/declined outcome (below) notifies too.
-  notify(s.creatorId, { title: 'Join request', body: `${DB.users[req.userId].displayName} wants to join your workout` }, { history: false });
+  notify(s.creatorId, { title: 'Join request', body: `${DB.users[req.userId].displayName} wants to join your workout`, link: { type: 'session', sessionId: s.id } }, { history: false });
   res.json({ ok: true, requested: true });     // the answer to "may I join" is not the workout
 });
 
@@ -3026,7 +3088,15 @@ app.post('/api/sessions/:id/join/:reqId/approve', auth, async (req, res) => {
   jr.status = 'approved';
   if (!s.participants.includes(jr.userId)) s.participants.push(jr.userId);
   await save(DB);
-  notify(jr.userId, { title: 'Join approved', body: `${DB.users[s.creatorId].displayName} approved your join request` });
+  notify(jr.userId, { title: 'Join approved', body: `${DB.users[s.creatorId].displayName} approved your join request`, link: { type: 'session', sessionId: s.id } });
+  // Sep 8 2026 (Jeff: a "test workout" where Brian requested to join and Jeff approved him left
+  // NOTHING in Jeff's own notification history for "Brian joined" -- only the invite-and-accept
+  // path (above) notifies the creator; this request-and-approve path only ever told the
+  // REQUESTER their request went through. The creator, having just tapped Approve themselves,
+  // doesn't need a PUSH about their own action (same reasoning as POST /api/sessions dropping its
+  // own self-push) -- push:false -- but "who's actually in my workout" is exactly what the
+  // in-app history is for, so it still gets a durable record.
+  notify(s.creatorId, { title: 'New participant', body: `${DB.users[jr.userId].displayName} joined your workout`, link: { type: 'session', sessionId: s.id } }, { push: false });
   res.json(sessionView(s, req.userId));
 });
 
@@ -3040,7 +3110,7 @@ app.post('/api/sessions/:id/join/:reqId/reject', auth, async (req, res) => {
   if (jr.status !== 'pending') return res.status(400).json({ error: 'already decided' });
   jr.status = 'rejected';
   await save(DB);
-  notify(jr.userId, { title: 'Join declined', body: `${DB.users[s.creatorId].displayName} declined your join request` });
+  notify(jr.userId, { title: 'Join declined', body: `${DB.users[s.creatorId].displayName} declined your join request`, link: { type: 'session', sessionId: s.id } });
   res.json(sessionView(s, req.userId));
 });
 
@@ -4560,7 +4630,7 @@ app.post('/api/sessions/:id/posts/:authorId/react', auth, async (req, res) => {
   if (reacted) p.reactions.push(req.userId); else p.reactions.splice(i, 1);
   await save(DB);
   if (reacted && req.params.authorId !== req.userId)
-    notify(req.params.authorId, { title: 'New reaction', body: `${DB.users[req.userId].displayName} reacted to your workout` });
+    notify(req.params.authorId, { title: 'New reaction', body: `${DB.users[req.userId].displayName} reacted to your workout`, link: { type: 'post', sessionId: s.id, authorId: req.params.authorId } });
   res.json({ reacted, count: p.reactions.length });
 });
 // ---- Reactions on an individual COMMENT under a posted recap ----
@@ -4584,7 +4654,7 @@ app.post('/api/sessions/:id/posts/:authorId/comments/:commentId/react', auth, as
   if (reacted) c.reactions.push(req.userId); else c.reactions.splice(i, 1);
   await save(DB);
   if (reacted && c.userId !== req.userId)
-    notify(c.userId, { title: 'New reaction', body: `${DB.users[req.userId].displayName} reacted to your comment` });
+    notify(c.userId, { title: 'New reaction', body: `${DB.users[req.userId].displayName} reacted to your comment`, link: { type: 'post', sessionId: s.id, authorId: req.params.authorId } });
   res.json({ reacted, count: c.reactions.length });
 });
 
