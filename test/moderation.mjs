@@ -228,6 +228,60 @@ console.log('\nediting your own message works everywhere you can post one (Jeff,
   ok(afterLeaveChatEdit.status === 403, "bob can no longer edit his OWN chat message after leaving the session (cold-review fix)");
 }
 
+console.log('\ndeleting your own message works everywhere you can post one too (Jeff, Sep 8 2026: "I should be able to edit or delete any comment I have made anywhere also")');
+{
+  // live in-workout chat
+  const sess = await api('POST', '/api/sessions', A, { name: 'Chat Delete Test', visibility: 'public', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Bench Press' }] });
+  const sid = sess.json.id;
+  const chatMsg = await api('POST', `/api/sessions/${sid}/comments`, A, { text: 'warming up' });
+  const chatCid = chatMsg.json.comments.at(-1).id;
+  const bobDeletesAlicesChat = await api('DELETE', `/api/sessions/${sid}/comments/${chatCid}`, B);
+  ok(bobDeletesAlicesChat.status === 403, "bob (not the message's author) cannot delete alice's chat message");
+  const stillThere = await api('GET', `/api/sessions/${sid}/comments`, A);
+  ok(stillThere.json.some(c => c.id === chatCid), 'the message survives the refused delete attempt');
+  const deletedChat = await api('DELETE', `/api/sessions/${sid}/comments/${chatCid}`, A);
+  ok(deletedChat.status === 200, 'alice can delete her own live-chat message');
+  const goneNow = await api('GET', `/api/sessions/${sid}/comments`, A);
+  ok(!goneNow.json.some(c => c.id === chatCid), 'the deleted message is actually gone from the thread');
+  const missingChatDelete = await api('DELETE', `/api/sessions/${sid}/comments/${chatCid}`, A);
+  ok(missingChatDelete.status === 404, 'deleting an already-deleted (now-missing) chat message id 404s rather than 500ing');
+
+  // crew messages
+  await api('POST', `/api/follow/${AID}`, B);
+  const crew = await api('POST', '/api/crews', A, { name: 'Delete Test Crew', memberIds: [BID] });
+  const crewMsg = await api('POST', `/api/crews/${crew.json.id}/messages`, A, { text: 'push day tomorrow' });
+  const crewMid = crewMsg.json.id;
+  const bobDeletesAlicesCrewMsg = await api('DELETE', `/api/crews/${crew.json.id}/messages/${crewMid}`, B);
+  ok(bobDeletesAlicesCrewMsg.status === 403, "bob (a crew member, but not the message's author) cannot delete alice's crew message");
+  const nonMemberDelete = await api('DELETE', `/api/crews/${crew.json.id}/messages/${crewMid}`, C);
+  ok(nonMemberDelete.status === 403, 'carol (not a crew member at all) is refused by the membership gate before authorship is even checked');
+  const deletedCrewMsg = await api('DELETE', `/api/crews/${crew.json.id}/messages/${crewMid}`, A);
+  ok(deletedCrewMsg.status === 200, 'alice can delete her own crew message');
+  const crewMsgsAfter = await api('GET', `/api/crews/${crew.json.id}/messages`, A);
+  ok(!crewMsgsAfter.json.some(m => m.id === crewMid), 'the deleted crew message is actually gone from the thread');
+  const missingCrewDelete = await api('DELETE', `/api/crews/${crew.json.id}/messages/does_not_exist`, A);
+  ok(missingCrewDelete.status === 404, 'deleting a crew message id that does not exist 404s rather than 500ing');
+
+  // same "you lose write access once you're no longer in the thread" rule the edit routes enforce,
+  // now checked for delete too -- same membership gate, same code shape, worth its own assertion
+  // rather than assuming it transfers.
+  const bobMsg = await api('POST', `/api/crews/${crew.json.id}/messages`, B, { text: 'in for push day' });
+  const bobMid = bobMsg.json.id;
+  await api('POST', `/api/crews/${crew.json.id}/leave`, B);
+  const afterLeaveCrewDelete = await api('DELETE', `/api/crews/${crew.json.id}/messages/${bobMid}`, B);
+  ok(afterLeaveCrewDelete.status === 403, "bob can no longer delete his OWN crew message after leaving the crew");
+
+  await api('POST', `/api/follow/${AID}`, B);
+  const inviteSess = await api('POST', '/api/sessions', A, { name: 'Departed Member Delete Test', visibility: 'private', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Bench Press' }], inviteUsernames: [bob.user.username] });
+  const isid = inviteSess.json.id;
+  await api('POST', `/api/sessions/${isid}/accept`, B);
+  const bobChatMsg = await api('POST', `/api/sessions/${isid}/comments`, B, { text: 'on my way' });
+  const bobChatCid = bobChatMsg.json.comments.find(c => c.userId === BID).id;
+  await api('POST', `/api/sessions/${isid}/leave`, B);
+  const afterLeaveChatDelete = await api('DELETE', `/api/sessions/${isid}/comments/${bobChatCid}`, B);
+  ok(afterLeaveChatDelete.status === 403, "bob can no longer delete his OWN chat message after leaving the session");
+}
+
 } finally {
   srv.kill();
   await testDb.drop();

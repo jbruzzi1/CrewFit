@@ -2020,15 +2020,18 @@ async function loadChat(s){
     const editedTag = c.editedAt ? ' <span class="muted" style="font-size:11px">(edited)</span>' : '';
     // Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one", then
     // "Can we correct how these pop up menus open for buttons like that with a pop up just for
-    // edit? This does not look good to my standards.") -- own messages only. Live chat has never
-    // had a delete concept, so an own-message row only ever needs ONE action: Edit. That started
-    // as a ⋯ menu with a single item in it (matching the posted-recap comments' shape) and Jeff
-    // called out the extra tap-to-reveal for a menu with nothing to choose between as poor UX, so
-    // it's now a direct pencil button (editPencilSvg/.cmt-edit-btn) that opens the edit prompt on
-    // one tap, no menu step. Posted-recap comments keep the real ⋯ menu below -- that case has
-    // actual choices (Edit/Delete/Remove/Report).
+    // edit? This does not look good to my standards.", then "I should be able to edit or delete
+    // any comment I have made anywhere also") -- own messages only. Started as a ⋯ menu with a
+    // single "Edit" item, which Jeff called out as poor UX for a menu with nothing to choose
+    // between, so it became one direct pencil button. Now Delete exists too (server-side DELETE
+    // /api/sessions/:id/comments/:commentId, same own-message-only + membership-tier gate as the
+    // PUT), so there are genuinely two peer actions -- rather than bring the dropdown back for
+    // two items, they're two small direct icon buttons side by side (.cmt-own-actions), same
+    // no-menu-step language as the pencil-only version. Delete asks via confirmSheet first (CLAUDE.md:
+    // never a bare browser confirm()). Posted-recap comments keep their real ⋯ menu below -- that
+    // case has MORE than two choices (Edit/Delete/Remove/Report depending on viewer).
     const dots = c.userId===ME.id
-      ? '<div class="cmt-react-col"><button class="cmt-edit-btn" onclick="editChatMessagePrompt(\''+s.id+'\',\''+c.id+'\',\''+jsq(c.text)+'\')" aria-label="Edit message">'+editPencilSvg()+'</button></div>'
+      ? '<div class="cmt-own-actions"><button class="cmt-edit-btn" onclick="editChatMessagePrompt(\''+s.id+'\',\''+c.id+'\',\''+jsq(c.text)+'\')" aria-label="Edit message">'+editPencilSvg()+'</button><button class="cmt-delete-btn" onclick="deleteChatMessagePrompt(\''+s.id+'\',\''+c.id+'\')" aria-label="Delete message">'+trashSvg()+'</button></div>'
       : '';
     return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span>'+editedTag+'</div><div class="cmt-text">'+esc(c.text)+'</div></div>'+dots+'</div>';
   }).join('');
@@ -2043,6 +2046,13 @@ async function editChatMessagePrompt(sessionId, commentId, currentText){
       loadChat({id: sessionId});
     }
   });
+}
+function deleteChatMessagePrompt(sessionId, commentId){
+  confirmSheet('Delete this message?', "This can't be undone.", 'Delete', async () => {
+    const r = await H.delete(`/api/sessions/${sessionId}/comments/${commentId}`);
+    if(r && r.error){ alert(r.error); return; }
+    loadChat({id: sessionId});
+  }, true);
 }
 
 // v254: openSwapPicker() reaches the library via showTab('lib', true), which pushes its own
@@ -5803,13 +5813,14 @@ async function crewView(crewId, opts){
     const editedTag = m.editedAt ? ' <span class="muted" style="font-size:11px">(edited)</span>' : '';
     // Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one", then
     // "Can we correct how these pop up menus open for buttons like that with a pop up just for
-    // edit? This does not look good to my standards.") -- own messages only, same single-tap
-    // pencil button as the live workout chat above (see its own comment on why the ⋯-menu-for-
-    // just-Edit shape got replaced): editPencilSvg/.cmt-edit-btn open the edit prompt directly,
-    // no intermediate menu.
+    // edit? This does not look good to my standards.", then "I should be able to edit or delete
+    // any comment I have made anywhere also") -- own messages only, same two-direct-icon-buttons
+    // pattern as the live workout chat above (see its own comment for the full history/reasoning):
+    // Edit and Delete (server-side DELETE /api/crews/:id/messages/:messageId, own-message-only +
+    // isCrewMember gate, same shape as the PUT right above it) sit side by side, no menu step.
     const isOwn = m.userId===ME.id;
     const dots = isOwn
-      ? `<button class="cmt-edit-btn" style="flex:0 0 auto" onclick="editCrewMsgPrompt('${jsq(c.id)}','${m.id}','${jsq(m.text)}')" aria-label="Edit message">${editPencilSvg()}</button>`
+      ? `<div class="cmt-own-actions" style="flex:0 0 auto"><button class="cmt-edit-btn" onclick="editCrewMsgPrompt('${jsq(c.id)}','${m.id}','${jsq(m.text)}')" aria-label="Edit message">${editPencilSvg()}</button><button class="cmt-delete-btn" onclick="deleteCrewMsgPrompt('${jsq(c.id)}','${m.id}')" aria-label="Delete message">${trashSvg()}</button></div>`
       : '';
     return `<div class="crew-msg"${isOwn?' style="display:flex;align-items:flex-start;gap:2px;position:relative"':''}><span style="flex:1"><b>${esc(from?(from.displayName||from.username):UNKNOWN_NAME)}</b> ${esc(m.text)}${editedTag}</span>${dots}</div>`;
   }).join('') : '';
@@ -5861,6 +5872,13 @@ async function editCrewMsgPrompt(crewId, messageId, currentText){
       crewView(crewId, {silent:true});
     }
   });
+}
+function deleteCrewMsgPrompt(crewId, messageId){
+  confirmSheet('Delete this message?', "This can't be undone.", 'Delete', async () => {
+    const r = await H.delete(`/api/crews/${crewId}/messages/${messageId}`);
+    if(r && r.error){ alert(r.error); return; }
+    crewView(crewId, {silent:true});
+  }, true);
 }
 async function sendCrewMsg(crewId){
   const inp = $('crewChatInput-'+crewId); if(!inp) return;
@@ -6294,6 +6312,11 @@ function flameSvg(){ return '<svg viewBox="0 0 24 24" fill="currentColor" style=
 // msgRows) for a direct, single-tap "edit this message" action. Sized entirely by .cmt-edit-btn
 // svg (14px) rather than baked-in width/height, same as the reaction heart it sits beside.
 function editPencilSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>'; }
+// Sep 8 2026 -- pairs with editPencilSvg() in .cmt-own-actions (loadChat, crewView's msgRows) now
+// that both Edit and Delete exist on your own live-chat/crew messages (Jeff: "I should be able to
+// edit or delete any comment I have made anywhere also"). Simplified outline (no lid handle/ribs)
+// so it stays legible at the same 14px .cmt-delete-btn svg sizing as the pencil beside it.
+function trashSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>'; }
 function gearSvg(){ return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>'; }
 // v230: dark is the app's DEFAULT look; this device-local switch is the only way to go light
 // (the app deliberately does not follow the phone's setting - Jeff's call, Aug 28). The <head>

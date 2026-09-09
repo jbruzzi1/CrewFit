@@ -501,16 +501,20 @@
     .cmt-react-btn.on { color:var(--blue); }
     .cmt-react-count { font-size:10px; color:var(--muted); line-height:1; min-height:11px; }
     /* Sep 8 2026 (Jeff: "Can we correct how these pop up menus open for buttons like that with a
-       pop up just for edit? This does not look good to my standards.") -- live-chat and crew
-       messages only ever had ONE thing an own-message ⋯ menu could open (Edit), so the extra tap
-       through a dropdown to reach it was pure friction with nothing to show for it. Both now use
-       this single pencil button that calls the edit prompt directly, no menu in between. Posted-
-       recap comments keep their real ⋯ menu (loadPostComments, .cmt-dots/.pp-menu below) --
-       Edit/Delete/Remove/Report is a genuine set of choices, not a single action in disguise.
+       pop up just for edit? This does not look good to my standards.", then "I should be able to
+       edit or delete any comment I have made anywhere also") -- live-chat and crew messages only
+       ever had ONE thing an own-message ⋯ menu could open (Edit), so the extra tap through a
+       dropdown to reach it was pure friction with nothing to show for it. That became a single
+       pencil button that opens the edit prompt directly. Now Delete exists too (own message only),
+       so .cmt-own-actions holds both as a pair of small direct icon buttons -- still no menu step,
+       since two peer actions don't need a dropdown to choose between them any more than one did.
+       Posted-recap comments keep their real ⋯ menu (loadPostComments, .cmt-dots/.pp-menu below) --
+       Edit/Delete/Remove/Report is a genuinely bigger, viewer-dependent set of choices.
        Same 22px box / 14px stroke icon / muted-until-tapped look as .cmt-react-btn right above, so
-       an edit control and a reaction control read as siblings, not two different UI languages. */
-    .cmt-edit-btn { width:22px; height:22px; background:transparent; border:none; color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; padding:0; }
-    .cmt-edit-btn svg { width:14px; height:14px; }
+       edit/delete/reaction controls all read as one family, not three different UI languages. */
+    .cmt-own-actions { display:flex; align-items:center; gap:6px; flex:0 0 auto; padding-top:3px; }
+    .cmt-edit-btn, .cmt-delete-btn { width:22px; height:22px; background:transparent; border:none; color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; padding:0; }
+    .cmt-edit-btn svg, .cmt-delete-btn svg { width:14px; height:14px; }
     /* Sep 2026 (app-store readiness): the per-comment ⋯ menu (Edit/Delete your own, Remove on
        your own post, Report on anyone else's) sits above the reaction heart in the same narrow
        column -- .pp-dots' default sizing (22px font, 8px side padding, margin-left:auto) is tuned
@@ -1491,6 +1495,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=387"></script>
+  <script src="app.js?v=388"></script>
 </body>
 </html>
