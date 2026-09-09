@@ -2464,10 +2464,11 @@ function exLogBlockHtml(s, e, o){
     <div class="seg type-seg" data-f="typeSeg" role="radiogroup" aria-label="Set type">
       ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" role="radio" aria-checked="${i===0}" data-t="${t.key}" onclick="logSetType('${e.id}','${t.key}')">${t.label}</div>`).join('')}
     </div>
+    <div data-f="lastRef">${lastSetChipHtml(e.id, o.exLogs)}</div>
     <div class="add-row">
       <button type="button" class="icon-btn ql-mic-icon" data-f="mic" aria-label="Hold to speak a set" onpointerdown="qlMicDown(event,'${e.id}')" onpointerup="qlMicUp()" onpointercancel="qlMicUp()"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-      <input data-f="w" placeholder="${myUnit()}" type="number" inputmode="decimal" step="any" oninput="updateLoadHint('${e.id}')" onfocus="this.select()">
-      <input data-f="r" placeholder="reps" type="number" inputmode="tel" pattern="[0-9]*" onfocus="this.select()">
+      <input data-f="w" placeholder="${myUnit()}" type="number" inputmode="decimal" step="any" oninput="updateLoadHint('${e.id}')">
+      <input data-f="r" placeholder="reps" type="number" inputmode="tel" pattern="[0-9]*">
       <button type="button" class="rir-toggle" data-f="rirBtn" onclick="toggleRirInput('${e.id}')" aria-label="Add reps in reserve" title="Reps in reserve (optional)">RIR</button>
       <input data-f="rir" class="hidden" placeholder="RIR" type="number" inputmode="tel" pattern="[0-9]*" style="flex:0 0 60px; padding-left:8px; padding-right:6px" title="Reps in reserve (optional)">
       <button class="add-btn" onclick="addLogSet('${e.id}')">+ Add</button>
@@ -2504,6 +2505,46 @@ function renderExSets(exId, s, justLoggedId){
   const list = block.querySelector('[data-f="sets"]'); if(!list) return;
   const mine = (s && s.logs && s.logs[ME.id]) || [];
   list.innerHTML = exSetRowsHtml(block.dataset.sid, exId, mine.filter(l=>l.exerciseId===exId), block.dataset.load || '', justLoggedId);
+}
+// PROTOTYPE (Sep 9 2026, for Jeff to look at before deciding, not yet a final call): the weight/
+// reps boxes used to carry the LAST set forward as an already-filled, auto-selected value (Aug
+// 30 -> Sep 9). Jeff's own worry -- "majority of the time we are doing different weight" -- means
+// that prefilled value was showing the WRONG number most of the time by default, with a real
+// failure mode: tap +Add fast between sets without noticing the box still says the old weight,
+// and a set gets logged that never happened. This tries the pattern Hevy uses instead: the boxes
+// stay genuinely empty (nothing to accidentally submit unread), and a small tappable reference
+// under the set-type chips shows what the last set here actually was -- one deliberate tap fills
+// both boxes for you (same speed as before for a straight set), typing straight into an empty box
+// costs nothing extra for a different weight (no select-and-overwrite step at all, even simpler
+// than the version this replaces). Scoped to THIS session's most recent set for this exercise --
+// not cross-session "last time you did this" history -- to match exactly what the old carry-
+// forward showed, so this is an apples-to-apples comparison, not a bigger feature.
+function lastSetChipHtml(exId, exLogs){
+  const rows = (exLogs||[]).slice().sort((a,b)=>(a.set||0)-(b.set||0));
+  if(!rows.length) return '';
+  const last = rows[rows.length-1];
+  const u = unitOf(last);
+  const t = last.loadType || ''; const suffix = t==='pair' ? ' each' : t==='added' ? ' added' : '';
+  return `<button type="button" class="last-set-chip" onclick="useLastSet('${exId}',${Number(last.weight)||0},${Number(last.reps)||0})">
+      <span class="lsc-lbl">Last set</span>
+      <span class="lsc-val">${Number(last.weight)||0} ${u}${suffix} × ${Number(last.reps)||0} reps</span>
+      <span class="lsc-tap">Tap to use</span>
+    </button>`;
+}
+function useLastSet(exId, w, r){
+  const wEl = lf(exId,'w'), rEl = lf(exId,'r');
+  if(wEl) wEl.value = w;
+  if(rEl) rEl.value = r;
+  updateLoadHint(exId);
+}
+// Same "patch just this one piece" pattern as renderExSets -- called alongside it after a
+// successful add, so the chip reflects the set that was JUST logged without re-rendering
+// anything else on the card (typed values in other exercises' rows must survive untouched).
+function renderLastSetChip(exId, s){
+  const block = logBlock(exId); if(!block) return;
+  const ref = block.querySelector('[data-f="lastRef"]'); if(!ref) return;
+  const mine = (s && s.logs && s.logs[ME.id]) || [];
+  ref.innerHTML = lastSetChipHtml(exId, mine.filter(l=>l.exerciseId===exId));
 }
 // What a re-render of the workout screen must not lose (see openSession): per card, the typed
 // weight/reps/RIR, whether RIR is open, the picked set type -- and the one rest timer if it is
@@ -2902,21 +2943,15 @@ async function addLogSet(exId){
     const justMine = ((s.logs&&s.logs[ME.id])||[]).filter(l=>l.exerciseId===exId);
     const newest = justMine.slice().sort((a,b)=>String(b.at).localeCompare(String(a.at)))[0];
     renderExSets(exId, s, newest && newest.isPr ? newest.id : null);
-    // Jeff, Aug 30: "how do we think we can make this more convenient" -- weight and reps used to
-    // clear to blank after every set, so three straight sets of the same weight meant retyping
-    // the same numbers three times. Straight sets (same weight, same reps) are the overwhelmingly
-    // common case, so the boxes now carry the just-logged weight/reps forward instead -- still one
-    // tap to change if the next set is different, but nothing to retype if it isn't. RIR is
-    // deliberately NOT carried over: it is a per-set read on how much was left in the tank, and a
-    // stale leftover number here would misrecord effort on a set it was never actually true for
-    // (e.g. 2 RIR on set 1, all-out on set 3) — silently wrong is worse than asking again.
-    // Sep 9 2026 (Jeff, revisiting this: "the majority of the time we are doing different
-    // weight" -- the opposite assumption from Aug 30): rather than pick a side and reintroduce
-    // whichever friction the other case had, both fields now select-all on focus (see their
-    // onfocus="this.select()" in exLogBlockHtml). Same weight again -- tap +Add, untouched,
-    // exactly as before. Different weight -- tap the box, start typing, the old number is gone
-    // with no manual delete. Neither case pays for the other one anymore.
-    if(wEl) wEl.value=w; if(rEl) rEl.value=r;
+    // Jeff, Aug 30 -> Sep 9 2026, PROTOTYPE (see the big comment on lastSetChipHtml for the full
+    // reasoning): weight/reps used to clear (pre-Aug-30), then carry the just-logged value
+    // forward as an already-filled, auto-selected box (Aug 30 -> Sep 9). Both boxes now go back
+    // to genuinely blank after every add -- nothing sitting there to submit unread by mistake --
+    // and lastSetChipHtml/renderLastSetChip below offer the same just-logged weight/reps back as
+    // a single deliberate tap instead. RIR still isn't carried over or offered back, same
+    // reasoning as before: a per-set read on effort, not something safe to imply repeats.
+    if(wEl) wEl.value=''; if(rEl) rEl.value='';
+    renderLastSetChip(exId, s);
     // RIR collapses back behind its toggle too, not just blanks -- same "ask again" reasoning as
     // clearing the value itself: leaving it open and empty after a set that didn't have one typed
     // still invites a leftover glance/assumption it applies to the next set. Both jobs, one line.
