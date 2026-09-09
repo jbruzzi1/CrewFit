@@ -2544,12 +2544,40 @@ app.post('/api/sessions', auth, async (req, res) => {
 // is a harmless no-op, not a moved timestamp. Same "in this workout" gate as /lock and /post
 // (canFinishOrPost) -- starting is exactly as much "an action taken on this workout" as finishing
 // or posting one, not open to someone merely invited-but-undecided.
+//
+// Sep 9 2026 (Jeff: "If I click 'start now' on a workout... I think it should show live right
+// away. Even if the timer was for 8:00PM and its 7:30PM. It should change the time of the
+// workout to the time at when you selected 'start now' and show live with that time"). Setting
+// startedAt alone was not enough: Home's Live-now badge (isSessionLiveNow, public/app.js) is
+// purely a clock comparison against scheduledAt, so an 8:00PM workout started early at 7:30PM
+// kept reading "Upcoming" in Your Sessions for the next 20 minutes -- started, but not yet
+// "live" by the original plan's clock. scheduledAt now moves to the same instant as startedAt,
+// which both (a) makes it read Live now immediately, since "now" always satisfies the live
+// window against itself, and (b) makes the workout's own displayed time (sessTitle/sessSub,
+// wherever it's untitled) honestly say when it actually started rather than when it was
+// originally planned for. Same idempotency guard as startedAt itself -- only the FIRST start
+// moves the clock; a second participant's Join now, or a repeat tap, must not re-time it.
+// Cold-review catch: the only UI paths that ever call this (the Next up card's Start/Join now,
+// and Quick Workout's auto-start) are already restricted to a session that's live or scheduled
+// TODAY -- so today, this route's safety around silently moving scheduledAt has depended
+// entirely on that client-side gating, nothing here. A 24h guard below is the server-side
+// backstop: if this were ever reached for a genuinely stale, days-old session (devtools, or a
+// future UI surface), starting it must not ALSO quietly erase its "Missed" flag and relocate it
+// onto today's week strip / weekly stats -- it still gets marked started, just without the
+// re-time. (A future-scheduled session always passes this check -- Date.now() - scheduledMs is
+// negative there -- this only ever holds back something already well in the past.)
 app.post('/api/sessions/:id/start', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   if (!canFinishOrPost(s, req.userId)) return res.status(403).json({ error: 'not in this workout' });
-  if (!s.startedAt) { s.startedAt = new Date().toISOString(); await save(DB); }
+  if (!s.startedAt) {
+    const now = new Date().toISOString();
+    s.startedAt = now;
+    const scheduledMs = new Date(s.scheduledAt).getTime();
+    if (!isNaN(scheduledMs) && (Date.now() - scheduledMs) < 24 * 3600e3) s.scheduledAt = now;
+    await save(DB);
+  }
   res.json(sessionView(s, req.userId));
 });
 
