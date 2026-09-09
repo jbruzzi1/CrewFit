@@ -14,13 +14,27 @@
 // the auth flow's own `.hidden` (toggled in setToken/logout) specifically so closing the keyboard
 // while logged out can't accidentally reveal the nav again.
 //
+// Sep 9 2026 (Jeff, screen recording tapping between two "lb" fields on the active-workout
+// screen: "it pushes things up and sometimes covers what we are typing"): a second, independent
+// bug in the same function. Shrinking body's height (above) is what keeps #app scrollable above
+// the keyboard, but nothing re-positioned the field that was ALREADY focused before that shrink
+// ran -- the browser's own scroll-focused-field-into-view fires once, synchronously, at focus
+// time, against the OLD (taller, pre-shrink) viewport. By the time this resize listener actually
+// shrinks body, the focused field's position in the new, shorter #app is wrong: clipped at the
+// edge, or floating above a dead gap where the browser still thought there was page left to
+// scroll -- both visible in the recording. Fix: the first time (not every resize tick while
+// already shrunk -- see the comment in app.js) a keyboard-open transition shrinks the body,
+// re-scroll document.activeElement (if it's the focused INPUT/TEXTAREA) into the new frame.
+//
 // This runs the REAL public/app.js in a node:vm context, same harness shape as
 // test/home-live-window-and-workouts-view.mjs, but with a minimal stub tailored to this one
 // function: a stable #nav element with a real (Set-backed) classList so add/remove actually
 // persist across calls (the shared el() Proxy used elsewhere returns a fresh object every access,
-// which can't hold state), a stable document.body.style object, and a controllable
+// which can't hold state), a stable document.body.style object, a controllable
 // window.visualViewport whose height we move by hand to simulate the keyboard opening and closing
-// (no real on-screen keyboard exists in this harness or in headless Chromium either).
+// (no real on-screen keyboard exists in this harness or in headless Chromium either), and a
+// settable document.activeElement standing in for "whichever input the user had focused" with a
+// scrollIntoView() spy so the fix's re-scroll can actually be observed.
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
@@ -48,11 +62,19 @@ const genericEl = () => new Proxy(function () {}, {
     : k === 'innerHTML' ? '' : k === 'children' || k === 'childNodes' ? [] : genericEl(),
   set: () => true, apply: () => genericEl(), has: () => true,
 });
+// A fake focused form field: real enough (tagName + a spy-able scrollIntoView) for
+// syncFrameToViewport's active-element check, settable per-test via doc.activeElement = ....
+function makeFakeInput(tag){
+  const calls = [];
+  return { tagName: tag, scrollIntoView(opts){ calls.push(opts); }, _scrollIntoViewCalls: calls };
+}
+let ACTIVE_ELEMENT = null;
 const doc = {
   getElementById: (id) => id === 'nav' ? navEl : id === 'app' ? genericEl() : genericEl(),
   querySelector: () => genericEl(), querySelectorAll: () => [],
   createElement: () => genericEl(), addEventListener() {}, body: bodyEl, documentElement: genericEl(), head: genericEl(),
   cookie: '', readyState: 'complete',
+  get activeElement() { return ACTIVE_ELEMENT; },
 };
 
 const vvListeners = {};
@@ -124,6 +146,49 @@ console.log('syncFrameToViewport() hides/restores #nav around the on-screen keyb
   ok(navClasses.has('kb-hide') && !navClasses.has('hidden'), 'logged in: keyboard up hides nav via kb-hide alone');
   vv.height = 800; sync();
   ok(!navClasses.has('kb-hide') && !navClasses.has('hidden'), 'logged in: keyboard down restores nav (neither class present)');
+}
+
+console.log('\nsyncFrameToViewport() re-scrolls the already-focused field into the new, keyboard-shrunk frame -- once per open, not every resize tick');
+{
+  const sync = () => vvListeners.resize.forEach(fn => fn());
+  const tick = () => new Promise(r => setTimeout(r, 10));   // let the rAF-scheduled scrollIntoView (setTimeout(f,0) in this harness) actually run
+
+  // Starting state carried over from the block above: keyboard down (vv.height=800), FRAME_SHRUNK false.
+  ok(vm.runInContext('FRAME_SHRUNK', ctx) === false, 'sanity: keyboard is down before this block starts');
+
+  // Nothing focused when the keyboard opens -- must not throw, and there is nothing to have scrolled.
+  ACTIVE_ELEMENT = null;
+  vv.height = 400; sync(); await tick();
+  ok(true, 'no active element: keyboard-open resize does not throw');
+
+  vv.height = 800; sync(); await tick();   // close it again before the real case below
+
+  const field = makeFakeInput('INPUT');
+  ACTIVE_ELEMENT = field;
+  vv.height = 400; sync(); await tick();
+  ok(field._scrollIntoViewCalls.length === 1, `the focused input is re-scrolled exactly once on the open transition (got ${field._scrollIntoViewCalls.length} calls)`);
+  ok(field._scrollIntoViewCalls[0] && field._scrollIntoViewCalls[0].block === 'center', `scrolled with {block:'center'}, same style as the rest of the app's scrollIntoView calls (got ${JSON.stringify(field._scrollIntoViewCalls[0])})`);
+
+  // Keyboard is still up -- a second resize tick (visualViewport firing mid-animation, or any
+  // other reason) must NOT re-scroll again. Re-scrolling on every tick would yank the view out
+  // from under someone who has since scrolled the (still-focused) field out of center on purpose.
+  sync(); await tick();
+  ok(field._scrollIntoViewCalls.length === 1, `a second resize while already shrunk does not re-scroll (still ${field._scrollIntoViewCalls.length} call)`);
+
+  // Close and reopen -- a genuinely NEW open transition scrolls again.
+  vv.height = 800; sync(); await tick();
+  vv.height = 400; sync(); await tick();
+  ok(field._scrollIntoViewCalls.length === 2, `closing and reopening the keyboard re-scrolls again on the fresh transition (got ${field._scrollIntoViewCalls.length} calls)`);
+
+  vv.height = 800; sync(); await tick();   // leave the keyboard down for the next block
+
+  // A focused element that isn't a text field (e.g. a button someone tapped) must not be yanked
+  // into view -- the fix is specifically for form fields the person is mid-typing into.
+  const btn = makeFakeInput('BUTTON');
+  ACTIVE_ELEMENT = btn;
+  vv.height = 400; sync(); await tick();
+  ok(btn._scrollIntoViewCalls.length === 0, `a focused non-input/textarea element is left alone (got ${btn._scrollIntoViewCalls.length} calls)`);
+  vv.height = 800; sync(); await tick();
 }
 
 console.log('\nclient markup / CSS');

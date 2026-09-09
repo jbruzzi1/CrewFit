@@ -7563,6 +7563,7 @@ function syncFrameToViewport(){
   const keyboardUp = vv.height < window.innerHeight - 100;
   const nav = document.getElementById('nav');
   if(keyboardUp){
+    const wasShrunk = FRAME_SHRUNK;
     document.body.style.height = Math.round(vv.height) + 'px'; FRAME_SHRUNK = true;
     // Sep 8 (Jeff, screenshot from Create workout's "Length (min)" field): .nav is a real flex
     // sibling of #app at the bottom of body, not a fixed overlay -- shrinking body down to the
@@ -7574,6 +7575,26 @@ function syncFrameToViewport(){
     // A separate class from the auth-flow's own .hidden (toggled in setToken/logout) so closing
     // the keyboard while logged out can't accidentally reveal the nav again.
     if(nav) nav.classList.add('kb-hide');
+    // Sep 9 2026 (Jeff, screen recording tapping between two "lb" fields on the active-workout
+    // screen: "it pushes things up and sometimes covers what we are typing"): the shrink above is
+    // what keeps #app scrollable above the keyboard, but nothing re-positions the field that was
+    // ALREADY focused before this ran -- the browser's own scroll-focused-field-into-view fires
+    // once, synchronously, at focus time, against the OLD (pre-shrink) viewport height. By the
+    // time THIS resize listener actually shrinks body, that field's position relative to the new,
+    // shorter #app can be wrong: clipped right at the edge, or sitting well above the keyboard
+    // with a dead gap under it where the browser thought there was still page left to scroll --
+    // both exactly what the recording shows. Re-scroll the focused field into the new frame once,
+    // the first time THIS keyboard-open transition shrinks the body (wasShrunk was false) -- not
+    // on every later resize tick while it's already shrunk, since visualViewport can fire resize
+    // repeatedly mid-animation and re-scrolling on each one would yank the view out from under
+    // someone who has since scrolled manually with the keyboard still up. rAF so the scroll runs
+    // after the body-height write above has actually taken layout effect.
+    if(!wasShrunk){
+      const active = document.activeElement;
+      if(active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && typeof active.scrollIntoView === 'function'){
+        requestAnimationFrame(()=>{ try{ active.scrollIntoView({ block:'center' }); }catch(e){} });
+      }
+    }
   }
   else if(FRAME_SHRUNK){ document.body.style.height = ''; FRAME_SHRUNK = false; try{ window.scrollTo(0,0); }catch(e){} if(nav) nav.classList.remove('kb-hide'); }
 }
