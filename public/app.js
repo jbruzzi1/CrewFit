@@ -2518,19 +2518,22 @@ function renderExSets(exId, s, justLoggedId){
   const mine = (s && s.logs && s.logs[ME.id]) || [];
   list.innerHTML = exSetRowsHtml(block.dataset.sid, exId, mine.filter(l=>l.exerciseId===exId), block.dataset.load || '', justLoggedId);
 }
-// PROTOTYPE (Sep 9 2026, for Jeff to look at before deciding, not yet a final call): the weight/
-// reps boxes used to carry the LAST set forward as an already-filled, auto-selected value (Aug
-// 30 -> Sep 9). Jeff's own worry -- "majority of the time we are doing different weight" -- means
-// that prefilled value was showing the WRONG number most of the time by default, with a real
-// failure mode: tap +Add fast between sets without noticing the box still says the old weight,
-// and a set gets logged that never happened. This tries the pattern Hevy uses instead: the boxes
-// stay genuinely empty (nothing to accidentally submit unread), and a small tappable reference
-// under the set-type chips shows what the last set here actually was -- one deliberate tap fills
-// both boxes for you (same speed as before for a straight set), typing straight into an empty box
-// costs nothing extra for a different weight (no select-and-overwrite step at all, even simpler
-// than the version this replaces). Scoped to THIS session's most recent set for this exercise --
-// not cross-session "last time you did this" history -- to match exactly what the old carry-
-// forward showed, so this is an apples-to-apples comparison, not a bigger feature.
+// Sep 9 2026 (Jeff, on the prototype below: "the tap to use function should automatically record
+// that set - I should have to select tap to use then click add. it should be tap to add instead I
+// feel - one less click"): this used to be a two-step "fill the boxes, then still tap +Add"
+// shortcut (Aug 30 -> Sep 9, see the history this replaces two paragraphs down). It's now a single
+// tap that logs the set directly, same as if you'd typed those exact numbers yourself and hit
+// +Add -- because it reuses addLogSet() itself rather than reimplementing any part of it, it gets
+// the same double-tap guard, the same PR/set-record pop animation, the same rest timer, for free.
+//
+// History (Aug 30 -> Sep 9 2026): the weight/reps boxes used to carry the LAST set forward as an
+// already-filled, auto-selected value. Jeff's own worry -- "majority of the time we are doing
+// different weight" -- meant that prefilled value was showing the WRONG number most of the time by
+// default, with a real failure mode: tap +Add fast between sets without noticing the box still
+// says the old weight, and a set gets logged that never happened. The fix that shipped instead
+// (the Hevy-style pattern): boxes stay genuinely empty by default, and a small tappable reference
+// under the set-type chips shows what the last set here actually was. Scoped to THIS session's
+// most recent set for this exercise -- not cross-session "last time you did this" history.
 function lastSetChipHtml(exId, exLogs){
   const rows = (exLogs||[]).slice().sort((a,b)=>(a.set||0)-(b.set||0));
   if(!rows.length) return '';
@@ -2540,7 +2543,7 @@ function lastSetChipHtml(exId, exLogs){
   return `<button type="button" class="last-set-chip" onclick="useLastSet('${exId}',${Number(last.weight)||0},${Number(last.reps)||0})">
       <span class="lsc-lbl">Last set</span>
       <span class="lsc-val">${Number(last.weight)||0} ${u}${suffix} × ${Number(last.reps)||0} reps</span>
-      <span class="lsc-tap">Tap to use</span>
+      <span class="lsc-tap">Tap to add</span>
     </button>`;
 }
 function useLastSet(exId, w, r){
@@ -2548,6 +2551,7 @@ function useLastSet(exId, w, r){
   if(wEl) wEl.value = w;
   if(rEl) rEl.value = r;
   updateLoadHint(exId);
+  addLogSet(exId);
 }
 // Same "patch just this one piece" pattern as renderExSets -- called alongside it after a
 // successful add, so the chip reflects the set that was JUST logged without re-rendering
