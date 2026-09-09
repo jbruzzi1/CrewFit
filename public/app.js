@@ -1432,7 +1432,7 @@ async function viewPost(id, authorId, opts){
   // the same PUT/DELETE /api/sessions/:id/log/:logId already used by the live in-workout
   // "Edit set" sheet (editLogSet et al above) -- that route is keyed off req.userId's own
   // s.logs entry server-side, so this needed no server change, just this entry point.
-  const setRows = (ls, mine) => `<div class="pp-sets">${ls.map(l=>`<div class="pp-set${mine?' pp-set-mine':''}"${mine?` onclick="editPostedSet('${id}','${authorId}','${l.id}')"`:''}>${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr">PR</span>':''}${l.isSetPr?'<span class="pp-pr">VOL</span>':''}</div>`).join('')}</div>`;
+  const setRows = (ls, mine) => `<div class="pp-sets">${ls.map(l=>`<div class="pp-set${mine?' pp-set-mine':''}"${mine?` onclick="editPostedSet('${id}','${authorId}','${l.id}')"`:''}>${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr pp-pr-gold">PR</span>':''}${l.isSetPr?'<span class="pp-pr">VOLUME</span>':''}</div>`).join('')}</div>`;
   // An approved swap replaces the exercise for the session, and openSession already titles the
   // card with the swapped-in name. This screen said the original, so the two disagreed about what
   // the lift even was. Same resolution here, so they agree.
@@ -2497,17 +2497,20 @@ function exSetRowsHtml(sid, exId, exLogs, loadType, justLoggedId){
     // set... different color and acronym"): two independent records can land on the same set, so
     // both pills can show together. Kept both SOLID GREEN (CLAUDE.md: "green = achievements" is a
     // closed set of three colors app-wide — a new hue per record type would break that rule on a
-    // 10px pill), differentiated by label text only. "VOL" (Jeff's own call, hard rule #9's first
-    // case -- flagged that "Volume" already means the recap tile's/crew-challenge's cumulative
-    // total across MANY sets, this badge is one single set's total instead; Jeff heard it and
-    // decided it's fine: "Volume with the crew challenge is the same as the amount of volume
-    // lifted in the recap. They mean the same thing. VOL is different for just the set... only two
-    // items really. I think VOL is okay.").
+    // 10px pill), differentiated by label text only. Originally "VOL" (Jeff's own call, hard rule
+    // #9's first case -- flagged that "Volume" already means the recap tile's/crew-challenge's
+    // cumulative total across MANY sets, this badge is one single set's total instead; Jeff heard
+    // it and decided it's fine: "Volume with the crew challenge is the same as the amount of
+    // volume lifted in the recap. They mean the same thing. VOL is different for just the set...
+    // only two items really. I think VOL is okay."). Changed to the full "VOLUME" (Jeff, Sep 9
+    // 2026, same day: "I think maybe it should say VOLUME instead of VOL - Hevy says VOLUME full
+    // and that avoids confusion") -- matching the convention of a well-known competitor app Jeff
+    // referenced by name.
     return `<div class="pp-set pp-set-mine" onclick="editLogSet('${sid}','${exId}','${l.id}')">
       <span class="pp-set-n ${b.c}">${b.t}</span>
       <span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)}${suffixFor(l)} × ${Number(l.reps)||0} reps${rirFor(l)}</span>
-      ${l.isPr?`<span class="pp-pr${pop}">PR</span>`:''}
-      ${l.isSetPr?`<span class="pp-pr${pop}">VOL</span>`:''}
+      ${l.isPr?`<span class="pp-pr pp-pr-gold${pop}">PR</span>`:''}
+      ${l.isSetPr?`<span class="pp-pr${pop}">VOLUME</span>`:''}
     </div>`; }).join('');
 }
 // Re-render one card's set rows from a fresh session object, in place -- nothing else on the
