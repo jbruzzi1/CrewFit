@@ -965,6 +965,17 @@
        test/_render_inline_log.mjs. */
     .add-btn { flex:0 0 auto; width:auto; margin:0; background:var(--blue); color:#fff; border:1px solid transparent; border-radius:10px; height:41px; padding:0 14px; font-size:13.5px; font-weight:700; }
     .add-btn:active { filter:brightness(.92); }
+    /* Sep 9 2026 PROTOTYPE (Jeff: challenging the select-all-on-focus fix -- "what do we think is
+       the best option... based on actual research"): replaces that carried-forward, auto-selected
+       box with a deliberate tap-to-reuse chip instead (see lastSetChipHtml's comment for the full
+       reasoning). One line, full width, dashed border to read as "not yet in the boxes below"
+       (same visual family as .log-rec.almost's dashed border) rather than a solid filled control. */
+    .last-set-chip { display:flex; align-items:center; gap:8px; width:100%; margin:8px 0 10px; padding:9px 12px; border:1.5px dashed var(--line); border-radius:10px; background:transparent; text-align:left; cursor:pointer; }
+    .last-set-chip:active { background:rgba(37,99,235,.06); }
+    .last-set-chip .lsc-lbl { flex:0 0 auto; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.3px; color:var(--muted); }
+    .last-set-chip .lsc-val { flex:1 1 auto; min-width:0; font-size:13.5px; font-weight:600; color:var(--fg); }
+    .last-set-chip .lsc-tap { flex:0 0 auto; font-size:12px; font-weight:700; color:var(--blue); }
+    :where(html.theme-dark) .last-set-chip:active { background:rgba(90,139,255,.1); }
     /* v257: Jeff, Aug 30 - the v243 quick-log box (a whole separate blue-bordered input+button
        row above the real weight/reps/RIR row) was "taking over" the log-set sheet -- its border
        drew the eye and its position, first after the recommendation box, is exactly where a
@@ -1503,6 +1514,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=393"></script>
+  <script src="app.js?v=396"></script>
 </body>
 </html>

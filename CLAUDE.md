@@ -13,6 +13,8 @@ This file is the short version — the rules that must never be missed.
 5. **Bump the `?v=` cache-bust in `public/index.html`** on ANY frontend change. No build step exists — this is the only cache control.
 6. **`npm test` before and after** anything touching progression, PRs, units or the log sheet — and add to it. Every assertion in `test/progression.mjs` exists because something was actually broken.
 7. **Never add startup work to the top of `server.js`.** Use the *Boot migrations* block above `app.listen`. Three separate crashes have come from this; see §9 of `CLAUDE_HANDOFF.md`. The failures are conditional, so they do not show up in testing — one kilogram set in `data.json` was enough to stop the server booting for good.
+8. **Before calling any change validated, ask: will this behave the same inside a native/wrapped app, not just the website version?** (Jeff, Sep 9, 2026, after the select-all-on-focus fix turned up a real iOS-Safari-only quirk with `.select()` on `<input type="number">`: "will this translate over when we are inside an app and not on a website version. I want us to ALWAYS remember and ask that question before we validate the change.") CrewFit is tested today as a website in mobile Safari (Playwright + Jeff's own iPhone). Anything that leans on browser-specific behavior — input selection/focus quirks, `history.pushState` (the sheet-dismiss-on-Back pattern), service workers/push, `localStorage`, viewport/keyboard handling, deep links — can behave differently once this ships inside an actual app wrapper.
+   **Addition (Jeff, same day): "If browser specific - we avoid and FLAG TO JEFF. We want everything to translate over to an app."** This is not just a disclosure rule — prefer a non-browser-specific way to build the thing FIRST. Reach for a browser-specific API/behavior only when there's no reasonable alternative, and when you do, say so explicitly to Jeff before he approves it (what's browser-specific about it, and what happens to it in an app wrapper), rather than silently shipping it and only mentioning it if asked. Don't silently assume a website-only test covers the app case either way.
 
 ## Verifying your own work (you own this end to end)
 
@@ -45,6 +47,10 @@ because you wrote it.
   or session state.
 - **Say what you did NOT verify.** If something could not be tested, name it plainly
   rather than letting silence imply it passed.
+- **Ask the app-vs-website question (hard rule #8) before calling anything validated.** A
+  Playwright/mobile-Safari pass proves the website works — it does not by itself prove the same
+  for a future app wrapper. If the change touches browser-specific behavior, say so explicitly
+  when showing Jeff the result.
 - **Double-check the visuals every time — actually look at the screenshot as a designer would,
   not just as a "did it render" check.** (Jeff, Sep 6, 2026, with a phone screenshot of the
   Start-a-challenge page: "I don't like the visual of this. The pill boxes and size of texts just
