@@ -991,7 +991,7 @@ async function openSession(id, opts){
     // which is what you are doing; the prescription is an instruction and it now lives in the log
     // sheet, where you read it at the moment you act on it rather than four lifts in advance.
     let head = canEdit
-      ? exLogBlockHtml(s, e, { name, statusTag, crewLine,
+      ? exLogBlockHtml(s, e, { name, statusTag, crewLine, recName: recExName,
           loadType: (LIBN[e.name] && LIBN[e.name].loadType) || '',
           exLogs: ((s.logs && s.logs[ME.id]) || []).filter(l => l.exerciseId === e.id) })
       : `<div class="ex-head"${tap}><div class="ex-main"><div class="ex-name">${name}</div>${statusTag}${crewLine}</div></div>`;
@@ -2445,7 +2445,20 @@ function updateLoadHint(exId){
 function exLogBlockHtml(s, e, o){
   const target = repLabel(e) ? `<div class="ex-sub">Target <b>${e.defaultSets} × ${repLabel(e)}</b></div>` : '';
   const loadType = o.loadType || '';
-  return `<div class="ex-head"><div class="ex-main"><div class="ex-name">${o.name}</div>${target}${o.statusTag||''}${o.crewLine||''}</div></div>
+  // Sep 9 2026 (Jeff, screenshot of the active-workout card with an "i" circled next to the
+  // exercise name): tapping it opens the SAME exercise-detail sheet the library's browse list
+  // already uses (exDetail -- muscle diagram, equipment, pattern, suggested sets/reps, personal
+  // best), so nothing new was built here, just a second way in. Keyed on recName (the exercise
+  // this user is ACTUALLY logging right now -- their own undone personal swap, if any, else the
+  // session's exercise name), the same lookup key the "when to add weight" box already uses, not
+  // the display markup in o.name (which can carry a swap-note <span>, not a plain library name).
+  // Cold-review note: unlike that box's data-rec attribute, this deliberately does NOT blank
+  // itself during a pending swap -- a pending swap only lives in editByEx, never in recExName
+  // (that's reserved for YOUR OWN undone personal swap), so recExName still resolves to the
+  // exercise as it stands right now. Showing ITS detail sheet while a swap is pending is correct,
+  // not stale -- the swap isn't real yet.
+  const infoBtn = o.recName ? `<button type="button" class="ex-info-btn" onclick="exDetail('${jsq(o.recName)}')" aria-label="Exercise details"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="11.5"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button>` : '';
+  return `<div class="ex-head"><div class="ex-main"><div class="ex-name">${o.name}</div>${target}${o.statusTag||''}${o.crewLine||''}</div>${infoBtn}</div>
     <div class="pp-sets ex-log-sets" data-f="sets">${exSetRowsHtml(s.id, e.id, o.exLogs, loadType)}</div>
     <div data-f="rec"></div>
     <div class="seg type-seg" data-f="typeSeg" role="radiogroup" aria-label="Set type">
