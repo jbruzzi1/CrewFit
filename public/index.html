@@ -420,10 +420,28 @@
        but the default `line-height:normal` line box still reserves descender space under them,
        so the glyphs sat visibly high with more green below the text than above. inline-flex +
        align-items:center centers the actual glyph box instead of the font's line-height box,
-       which is what actually fixes it (line-height:1 alone still leaves a small residual font-
-       metric offset on some platforms). Verified via Range.getBoundingClientRect() before and
-       after -- see the measure script this comment references in the PR description. */
-    .pp-pr { display:inline-flex; align-items:center; line-height:1; font-size:10px; font-weight:700; color:#fff; background:var(--green); border-radius:6px; padding:1px 6px; }
+       which is what actually fixes it.
+       Round 2 (Jeff, same day, after a real fresh-reload photo from his phone, confirmed NOT a
+       stale-tab issue -- "It looks like to me - visually - that there is more gap under the text
+       than there is on top of the text"): even with the round-1 fix, a small residual bias
+       remains, because flex/line-height:1 correctly centers the font's LINE BOX in the padding
+       box, but the glyph ink of an all-caps string sits high WITHIN that line box, on every
+       font -- ascent (used, by the caps) vs. descent (reserved, unused by caps) are asymmetric by
+       design in a font's own metrics, and no amount of flex/line-height math on OUR CSS side
+       changes that internal split. Measured this shape (not just asserted it) across 4 real
+       fonts actually installed here (DejaVu Sans, Liberation Sans, Carlito, FreeSans) and all 4
+       show the identical direction of bias, just smaller in magnitude than what Jeff sees --
+       consistent with San Francisco (the font actually rendering on his iPhone) having a larger
+       ascent/descent split than any of those. Could not verify the exact SF Pro number directly:
+       this sandbox has no WebKit engine (`npx playwright install webkit` is network-blocked here)
+       and San Francisco itself is Apple-only, unavailable on Linux -- flagging that limitation
+       explicitly rather than claiming false certainty. Compensated by shifting padding from
+       bottom to top (1px 6px -> 1.5px 6px 0.5px 6px), nudging the glyph position down within the
+       pill without changing the pill's total height. This is a calibrated correction based on the
+       consistent DIRECTION every tested font agreed on, not a measurement against the actual
+       target font/engine -- needs Jeff's phone to confirm it actually lands centered, not just
+       "closer." */
+    .pp-pr { display:inline-flex; align-items:center; line-height:1; font-size:10px; font-weight:700; color:#fff; background:var(--green); border-radius:6px; padding:1.5px 6px 0.5px 6px; }
     /* Sep 9 2026 (Jeff: "I think maybe... PR should be some type of gold color (JUST FOR THE
        LOGGING TAB)... I like keeping the green color for the recap page/etc. The gold would be
        just for the logging set tab and next to the logged set in a posted workout."). This is
@@ -1541,6 +1559,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=401"></script>
+  <script src="app.js?v=402"></script>
 </body>
 </html>
