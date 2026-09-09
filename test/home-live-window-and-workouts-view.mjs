@@ -150,6 +150,50 @@ console.log('\nthe real Home render -- Live/Upcoming/Missed badges and the amber
   ok(upcomingIdx < sink.html.indexOf('Pull Day'), 'the upcoming-today session also still sorts ahead of the missed one (unchanged "today" priority)');
 }
 
+console.log('\nNext up vs Your sessions now keys on startedAt, not raw live-window timing (Sep 9 2026, Jeff: "I want to create a workout and it show up in what\'s up next until I click \'Start now\' then it moves to your sessions")');
+{
+  // Before this change, a session that's today and past its own scheduled time satisfies
+  // isSessionLiveNow() forever (it's a pure clock check) -- which is exactly why a Quick Workout
+  // (scheduled for the literal instant it's created) or any same-day "New workout" never left the
+  // Next up card once its time arrived, no matter how long ago you actually opened it. The ONLY
+  // thing that changed is which sessions are ELIGIBLE for the Next up slot: unstarted ones still
+  // win it by the same live-then-soonest priority as before; a started one is never a candidate,
+  // full stop, regardless of how "live" it looks by the clock.
+  const started = { id: 's-started-live', name: 'Bench Day', creatorId: 'me1', participants: ['me1'], invited: [],
+    exercises: [{ id: 'e1' }], scheduledAt: minsFromNow(-30), startedAt: minsFromNow(-30), ...base };
+  vm.runInContext(`H.get = (p) => Promise.resolve(p === '/api/sessions' ? ${JSON.stringify([started])} : p === '/api/feed' ? [] : p === '/api/friends' ? { friends: [] } : []);`, ctx);
+  sink.html = '';
+  vm.runInContext('window.HOME_ALL_SESSIONS = true', ctx);
+  await vm.runInContext('home', ctx)({ silent: true });
+  ok(!sink.html.includes('class="next-card"'), 'the ONLY open session is live by the clock, but it is already started -- no Next up card at all');
+  const startedRow = sink.html.split('lib-item').slice(1).find(r => r.includes('Bench Day')) || '';
+  ok(/Live now/.test(startedRow), 'instead it is a row under Your sessions, still correctly badged "Live now" (badge logic is untouched, still time-based)');
+  const startedRowIdx = sink.html.indexOf('Bench Day'); const startedRowStart = sink.html.lastIndexOf('lib-item', startedRowIdx);
+  ok(sink.html.slice(startedRowStart, startedRowIdx).includes('session-live'), 'and gets the amber session-live highlight, same as any other live row');
+
+  // Same session, minus startedAt -- the exact control case proving startedAt (not something else
+  // about this fixture) is what moved it in the assertions just above.
+  const notStartedYet = { ...started, startedAt: null };
+  vm.runInContext(`H.get = (p) => Promise.resolve(p === '/api/sessions' ? ${JSON.stringify([notStartedYet])} : p === '/api/feed' ? [] : p === '/api/friends' ? { friends: [] } : []);`, ctx);
+  sink.html = '';
+  await vm.runInContext('home', ctx)({ silent: true });
+  const card2 = (sink.html.match(/<div class="next-card"[\s\S]*?<div class="next-actions"[^>]*>[\s\S]*?<\/div>\s*<\/div>/) || [''])[0];
+  ok(card2.includes('Bench Day') && /Live now/.test(card2), 'the identical session WITHOUT startedAt set is the Next up card instead, control case');
+  ok(card2.includes(`startSession('${notStartedYet.id}')`), 'its primary action (and the card\'s own tap target) calls startSession(), not a plain openSession() -- tapping it is what is supposed to mark it started');
+  ok(!card2.includes(`openSession('${notStartedYet.id}')`), '...and does not ALSO wire a plain openSession() call anywhere on the card (no inconsistent tap target)');
+
+  // A genuinely future-day session (not today, not live) is never something you "start" by looking
+  // at it -- its card stays a plain Open/openSession(), same as before this change.
+  const future = { id: 's-future-plan', name: 'Future Day', creatorId: 'me1', participants: ['me1'], invited: [],
+    exercises: [{ id: 'e1' }], scheduledAt: daysAhead(3), startedAt: null, ...base };
+  vm.runInContext(`H.get = (p) => Promise.resolve(p === '/api/sessions' ? ${JSON.stringify([future])} : p === '/api/feed' ? [] : p === '/api/friends' ? { friends: [] } : []);`, ctx);
+  sink.html = '';
+  await vm.runInContext('home', ctx)({ silent: true });
+  const card3 = (sink.html.match(/<div class="next-card"[\s\S]*?<div class="next-actions"[^>]*>[\s\S]*?<\/div>\s*<\/div>/) || [''])[0];
+  ok(card3.includes('Future Day') && card3.includes('Open') && card3.includes(`openSession('${future.id}')`), 'a future (non-today) session\'s Next up card uses plain "Open"/openSession()');
+  ok(!card3.includes(`startSession('${future.id}')`), '...never startSession() -- merely viewing a future plan does not start it');
+}
+
 console.log('\nHome week strip / expandable month calendar (Sep 8, Jeff: "have the calendar expandable... selecting the days open the workouts")');
 {
   // FIXED_NOW is Mon Aug 31 2026 -- deliberately: the Monday-first grid for THIS month (August)

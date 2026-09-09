@@ -2500,7 +2500,12 @@ app.post('/api/sessions', auth, async (req, res) => {
     comments: [],
     history: [],
     posts: {},
-    draftNotes: {}
+    draftNotes: {},
+    // Sep 9 2026 (Jeff: "I want to create a workout and it show up in what's up next until I click
+    // 'Start now' then it moves to your sessions") -- see the long comment on the /start route
+    // below for what this actually drives. null, not just absent, so `!s.startedAt` reads the same
+    // whether a row was created before or after this field existed.
+    startedAt: null
   };
   DB.sessions[id] = session;
   await save(DB);
@@ -2520,6 +2525,32 @@ app.post('/api/sessions', auth, async (req, res) => {
   // (app.js) exist only to serve this notification's tap target -- now unreachable via this path,
   // left as harmless passthrough rather than ripped out, since nothing else generates that link.
   res.json(session);
+});
+
+// Sep 9 2026 (Jeff: "If I create a workout or quick workout they go to what's up next - but don't
+// show in your sessions... I want to create a workout and it show up in what's up next until I
+// click 'Start now' then it moves to your sessions"). Home's "Next up" card used to pick whichever
+// open session was closest to now (see isSessionLiveNow, public/app.js) -- which meant a session
+// scheduled for right now (every Quick Workout; any "New workout" once its time arrives) satisfied
+// that check the instant it existed, stayed the single most-live-looking session for as long as it
+// stayed unfinished, and so never once made it to "Your sessions" no matter how long it sat there.
+// startedAt (session-level, set once by whoever actually taps Start now/Join now on it -- see the
+// two call sites of this route in app.js) gives Home a distinct "has anyone actually begun this"
+// signal to key "Next up" eligibility on INSTEAD of raw live-window timing: not yet started stays
+// eligible for the Next up slot; started routes it into Your Sessions, still carrying its Live
+// now/Upcoming badge there exactly as before (that badge logic is untouched, still purely
+// time-based) -- only which SECTION it renders in changes. Idempotent (first tap wins, same
+// shape as /lock's creditFinish) so a repeat call, or two participants tapping it moments apart,
+// is a harmless no-op, not a moved timestamp. Same "in this workout" gate as /lock and /post
+// (canFinishOrPost) -- starting is exactly as much "an action taken on this workout" as finishing
+// or posting one, not open to someone merely invited-but-undecided.
+app.post('/api/sessions/:id/start', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  if (!canFinishOrPost(s, req.userId)) return res.status(403).json({ error: 'not in this workout' });
+  if (!s.startedAt) { s.startedAt = new Date().toISOString(); await save(DB); }
+  res.json(sessionView(s, req.userId));
 });
 
 // list sessions visible to me: mine, invited to, or friends-visibility from friends
