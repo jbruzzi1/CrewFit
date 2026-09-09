@@ -2580,10 +2580,18 @@ function refreshLogRec(exId){
       </div>`;
     // One clean session away. Dashed green, not solid: the same family as the real suggestion,
     // visibly not yet the real suggestion, and — unlike the green box — not tappable.
+    // Sep 9 2026 (Jeff, asked whether a first-time user would understand this box): the old
+    // headline, "One more like that", named no unit at all -- read fast, it could pass for "log
+    // one more SET, right now, this workout." That is not what actually moves the recommendation:
+    // sessionsForUser()/recommendationsFor() (server.js) compare the heaviest set of TODAY's
+    // workout against the heaviest set of your LAST one for this exercise -- a second set logged
+    // today changes nothing, today already counts once. Jeff's call, after hearing that: keep
+    // "set" (his preferred wording, simplest to read) but land the timing in the subtext instead,
+    // where it was missing too -- "next time" is the one word doing the disambiguating work here.
     else if(r.soon) box.innerHTML=`<div class="log-rec almost">
         <span class="lr-ic" aria-hidden="true">⋯</span>
-        <span class="lr-t">One more like that</span>
-        <span class="lr-why">hit ${r.soon.targetRepsMax} reps at ${W(r.soon.weight)} again and the weight goes up</span>
+        <span class="lr-t">One more set like that</span>
+        <span class="lr-why">hit ${r.soon.targetRepsMax} reps at ${W(r.soon.weight)} next time and the weight goes up</span>
       </div>`;
     // Nothing to advise yet. With a seeded working weight there is still something personal to
     // say; otherwise the card stays clean -- v312: with every exercise's logger on one page, the
@@ -4917,13 +4925,16 @@ async function progressScreen(opts){
   }
   // The log sheet shows this state on the exercise row; without it here the two screens
   // contradicted each other — "one more like that" in the sheet, "nothing to add yet" on Progress.
+  // Sep 9 2026 (Jeff, matching the log sheet's copy fix -- "as it's talking about a specific
+  // set"): same headline and why-text as refreshLogRec's r.soon branch above, word for word, so
+  // this and the log sheet never again say two different things about the identical state.
   let soonHtml = '';
   if((d.soon||[]).length){
-    soonHtml = `<div class="hold-sec"><div class="hold-head">Almost — one more good session</div>
+    soonHtml = `<div class="hold-sec"><div class="hold-head">Almost — one more set like that</div>
       ${d.soon.map(h=>`<div class="hold">
         <div class="hold-ic almost-ic" aria-hidden="true">⋯</div>
         <div class="rp-main"><div class="rp-name">${esc(h.exercise)}</div>
-          <div class="rp-why">Hit ${h.targetRepsMax} reps at ${WL(h.weight)} again and the weight goes up</div></div>
+          <div class="rp-why">Hit ${h.targetRepsMax} reps at ${WL(h.weight)} next time and the weight goes up</div></div>
       </div>`).join('')}</div>`;
   }
   let holdHtml = '';
