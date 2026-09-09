@@ -415,7 +415,34 @@
     .pp-set-n.drop { background:#ffe8e0; color:#c2410c; }
     .pp-set-n.fail { background:#fde2e2; color:#b91c1c; }
     .pp-set-val { color:var(--fg); }
-    .pp-pr { font-size:10px; font-weight:700; color:#fff; background:var(--green); border-radius:6px; padding:1px 6px; }
+    /* Sep 9 2026 (Jeff, on a zoomed screenshot: "The widgets don't look centered properly"):
+       real bug, not a screenshot artifact -- "PR"/"VOLUME" are both all-caps with no descenders,
+       but the default `line-height:normal` line box still reserves descender space under them,
+       so the glyphs sat visibly high with more green below the text than above. inline-flex +
+       align-items:center centers the actual glyph box instead of the font's line-height box,
+       which is what actually fixes it (line-height:1 alone still leaves a small residual font-
+       metric offset on some platforms). Verified via Range.getBoundingClientRect() before and
+       after -- see the measure script this comment references in the PR description. */
+    .pp-pr { display:inline-flex; align-items:center; line-height:1; font-size:10px; font-weight:700; color:#fff; background:var(--green); border-radius:6px; padding:1px 6px; }
+    /* Sep 9 2026 (Jeff: "I think maybe... PR should be some type of gold color (JUST FOR THE
+       LOGGING TAB)... I like keeping the green color for the recap page/etc. The gold would be
+       just for the logging set tab and next to the logged set in a posted workout."). This is
+       the ONLY place `.pp-pr` renders the PR badge specifically -- the recap page's PR list uses
+       a different element entirely (prLabel(), .pr-w), so it's untouched and stays green, as
+       does the feed/notification "PR" chip (.act-chip.act-pr, also untouched). Deliberately a
+       SEPARATE modifier class rather than restyling `.pp-pr` itself, so the VOLUME pill (which
+       shares `.pp-pr` at these same two render sites) stays green exactly as before. Two rounds
+       of real rendered options were shown to Jeff before this value was picked -- first three
+       darker "legible with white text" golds all read as amber/brown/olive rather than gold, so
+       a second round tried dark text on a genuinely bright yellow fill instead (the first
+       round's white-text options can't go brighter without failing contrast; #eab308 is only
+       1.9:1 against white, unreadable, but 7.2:1 against this dark brown -- see the compound
+       selector below, which needs (0,2,0) specificity to beat the dark-theme .pp-pr override a
+       few lines down, since both are otherwise equal specificity). Jeff picked this one (labeled
+       "H" when shown): "I say we go with H." This intentionally supersedes CLAUDE.md's older
+       "gold marks Live now ONLY" design-constants line for this one specific case -- update that
+       doc alongside this change instead of treating it as still absolute. */
+    .pp-pr.pp-pr-gold { background:#eab308; color:#3a2a05; }
     .pp-collab { font-size:12px; color:var(--blue); margin:2px 0 10px; }
     /* Task #157: one-tap reaction on a posted recap -- deliberately one reaction, not a picker.
        Jeff, Sep 1: wanted the Instagram treatment -- a plain icon with no button chrome (no
@@ -1514,6 +1541,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=400"></script>
+  <script src="app.js?v=401"></script>
 </body>
 </html>
