@@ -6842,10 +6842,22 @@ async function renderNotifications(opts){
   // tiles already use for "this row goes somewhere" (see mgTileHtml/crewChallengeCardHtml) rather
   // than inventing a second affordance -- shown only when historyTapAttrs actually returned an
   // onclick, so a dead row (old data, or a type with nowhere to go) stays visibly plain.
+  // Sep 9 (Jeff: "slide notifications away (slide them to the left) to remove them from the
+  // list if I don't want to wait the full 7 days"). First built as an iOS-Mail-style
+  // reveal-a-red-Delete-button-behind-the-row interaction; Jeff's reaction: "That looks
+  // terrible... I ultimately think we simply just be able to slide the pill box to the left and
+  // it removes the notification... its almost instinctive to do so." Rebuilt as a direct
+  // swipe-to-dismiss instead: the row itself is the only thing that moves -- drag it far enough
+  // left and IT slides away and is gone, no separate button to land on. See
+  // historySwipeInit/histSwipeAttach below for the mechanics, and the DELETE
+  // /api/notifications/:id route in server.js for the other end. Only history rows get this --
+  // invites/follow requests/join requests above keep their existing Accept/Decline rows.
   const historyRow = n => {
     const tap = historyTapAttrs(n);
     const chev = tap ? `<div class="mg-chev" style="align-self:center">›</div>` : '';
-    return `<div class="feed-item"${tap}><span class="feed-lead">${historyLead}</span><span style="flex:1;min-width:0">${esc(n.body || n.title || '')}<div class="tag">${fmtWhen(n.at)}</div></span>${chev}</div>`;
+    return `<div class="hist-swipe" data-nid="${esc(n.id)}">
+      <div class="feed-item hist-swipe-row"${tap}><span class="feed-lead">${historyLead}</span><span style="flex:1;min-width:0">${esc(n.body || n.title || '')}<div class="tag">${fmtWhen(n.at)}</div></span>${chev}</div>
+    </div>`;
   };
   const historyToday = history.filter(n => dayDiff(n.at) === 0);
   const historyEarlier = history.filter(n => dayDiff(n.at) !== 0);
@@ -6856,7 +6868,146 @@ async function renderNotifications(opts){
   const empty = (!invites.length && !followRequests.length && !joinRequests.length && !history.length)
     ? homeEmpty(ICON_BELL, "You're all caught up", 'Invites and requests will show up here.') : '';
   $('app').innerHTML = `<div class="wrap">${head}${invitesHtml}${followHtml}${joinHtml}${historyHtml}${empty}</div>`;
+  if(history.length) historySwipeInit($('app'));
   if(!silent){ const st = { t:'notifications' }; fromHistory ? landOn(st) : navigated(st); }
+}
+// Sep 9 (Jeff): swipe-to-dismiss for a single notification history row -- see the long comment
+// above historyRow's definition for the feature history (first built as a reveal-a-Delete-button
+// interaction, rejected as "terrible" in favor of this: dragging the row itself far enough left
+// sends it away and deletes it directly, no separate button to land on). Shares dragReorder()'s
+// general shape above (raw mouse+touch listeners added on interaction start, torn down on
+// release) but not its variable names -- see the cold-review note inside histSwipeAttach for why.
+const HIST_DISMISS_RATIO = 0.32; // drag past this fraction of the row's own width -> gone
+// Sep 9 (cold-review catch, verified against a real browser via Playwright): a mouse (or
+// trackpad, or Playwright's own simulated pointer) fires a trailing 'click' after ANY
+// mousedown+mouseup pair, however far the mouse moved in between -- so a drag that snapped back
+// (or one that just sent the row away) also produces a click landing back on the same spot a
+// moment later, which -- left alone -- would reach the row's OWN onclick (its deep-link, from
+// historyTapAttrs) and navigate away right after a gesture that was never meant to. Set for the
+// length of one drag that actually moved (dragging===true), cleared on the next tick (after the
+// trailing click has had its chance to run and been swallowed) via setTimeout(...,0) -- click
+// always fires synchronously right after mouseup, before any queued timeout gets to run. Real
+// single-finger taps on iOS don't synthesize a click after a genuine drag the way mouse input
+// does, so this mainly matters for mouse/trackpad use and for testing the mechanism from this
+// sandbox.
+let histJustDragged = false;
+// Sep 9 cold-review catch: onHistDown adds its mousemove/mouseup/touchmove/touchend listeners on
+// WINDOW (so the drag keeps tracking even once the finger/mouse leaves the row), and they were
+// only ever torn down by that same drag's own onHistUp. If #app gets re-rendered mid-drag --
+// renderNotifications() re-running from the service-worker deepLink handler (a real path: see
+// openDeepLink's own `type==='notifications'` case), or landing back on this page via popstate,
+// both real possibilities while a finger is still down -- the row those listeners close over is
+// detached, but the listeners themselves stay live on window forever, and the next unrelated
+// mouseup/touchend anywhere in the app would fire the orphaned onHistUp, which -- seeing its own
+// `dragging` still true -- sets histJustDragged and eats that click. A Set rather than a single
+// slot (cold-review catch #2: a lone variable would let two overlapping drags -- a re-render
+// landing mid-drag while ANOTHER row is also being dragged, or genuine two-finger multitouch on
+// two different rows -- clobber each other's teardown reference) so every drag that's ever
+// started records its own teardown here, and historySwipeInit() (called at the top of every
+// render) fires and clears whatever's left over from the previous render first, so no drag's
+// window listeners can outlive the row they belong to.
+let histActiveDrags = new Set();
+// Slides a row fully off to the left and deletes it for real, once a drag has passed the
+// dismiss threshold. Two things animate together: the row's own content (fg) slides out of the
+// wrapper's clipped area, and the wrapper (row) collapses its height to close the gap it leaves
+// behind -- the classic "measure current height, force it inline, then transition to 0" trick,
+// since a bare `height:auto` can't be animated. No confirmSheet (Jeff: "no need for the
+// confirmation") and no undo -- a direct, silent removal, matching every other request in this
+// feature to keep it to one clean motion. If the DELETE itself fails (offline, a dropped
+// connection), this stays optimistic rather than snapping the row back or showing an error --
+// deliberately not adding UI Jeff didn't ask for. It's not silently wrong forever: the next real
+// GET /api/notifications (any full page load) reflects the server's actual state, so a failed
+// delete just reappears next time, same as this app's other optimistic actions.
+// Cold-review catch: removes by re-querying `.hist-swipe[data-nid="ID"]` at the END, not by
+// holding onto the `row` element from when the drag started -- if #app got re-rendered mid-flight
+// (the same deepLink race above), the ORIGINAL row is a detached no-op to remove, but a FRESH row
+// for this same still-existing id would have rendered in its place and kept showing a
+// notification that this call is about to delete server-side. Re-querying by id catches either
+// case: the stale original, or a freshly re-rendered stand-in, whichever currently exists.
+async function histDismiss(row, fg, id){
+  row.dataset.dismissing = '1'; // re-entrancy guard -- see onHistDown's own check for why
+  const h = row.getBoundingClientRect().height;
+  row.style.maxHeight = h + 'px';
+  row.style.overflow = 'hidden';
+  fg.style.transition = 'transform .22s ease-in, opacity .22s ease-in';
+  fg.style.transform = 'translateX(-100%)';
+  fg.style.opacity = '0';
+  void row.offsetHeight; // force layout so the maxHeight transition below actually animates from h, not from "auto"
+  row.style.transition = 'max-height .18s ease-in .08s, opacity .18s ease-in .08s, border-color .18s ease-in .08s';
+  row.style.maxHeight = '0px';
+  row.style.opacity = '0';
+  row.style.borderBottomColor = 'transparent'; // no floating divider line while the row collapses
+  await new Promise(res => setTimeout(res, 280));
+  try { await H.delete('/api/notifications/' + encodeURIComponent(id)); } catch(e){}
+  const current = document.querySelector(`.hist-swipe[data-nid="${CSS.escape(id)}"]`);
+  if(current) current.remove();
+}
+function histSwipeAttach(row){
+  // Sep 9 cold-review note: named onHistMove/onHistUp/onHistDown rather than dragReorder()'s
+  // plain onMove/onUp/onDown -- test/wiring.mjs's "no function is defined twice" check scans the
+  // whole file textually for `const name = (...) => {...}`, with no notion of closure scope, so
+  // reusing those same three names here (even though they're a separate closure) reads to it as
+  // the same submitSession-style duplicate-definition bug it exists to catch.
+  const fg = row.querySelector('.hist-swipe-row'); if(!fg) return;
+  let startX = 0, startY = 0, dx = 0, dragging = false, width = 0;
+  const detachDragListeners = () => {
+    window.removeEventListener('mousemove', onHistMove); window.removeEventListener('mouseup', onHistUp);
+    window.removeEventListener('touchmove', onHistMove); window.removeEventListener('touchend', onHistUp);
+    histActiveDrags.delete(detachDragListeners);
+  };
+  const onHistMove = (e) => {
+    const t = e.touches ? e.touches[0] : e;
+    const mx = t.clientX - startX, my = t.clientY - startY;
+    if(!dragging){
+      if(Math.abs(mx) < 6 && Math.abs(my) < 6) return;
+      if(Math.abs(my) > Math.abs(mx)){ onHistUp(); return; } // a vertical scroll, not a swipe -- let it scroll
+      dragging = true;
+    }
+    if(e.cancelable) e.preventDefault();
+    dx = Math.min(0, mx); // left only -- a real finger can overshoot right past 0, don't let the row lead it
+    fg.style.transform = `translateX(${dx}px)`;
+    // A light fade as it travels, so the row itself is the only feedback needed -- no separate
+    // reveal underneath it. Bottoms out well above 0 so it doesn't look gone before release.
+    fg.style.opacity = String(Math.max(0.5, 1 - Math.abs(dx) / (width * HIST_DISMISS_RATIO) * 0.5));
+  };
+  const onHistUp = () => {
+    detachDragListeners();
+    if(!dragging) return;
+    histJustDragged = true;
+    setTimeout(() => { histJustDragged = false; }, 0);
+    if(width > 0 && -dx >= width * HIST_DISMISS_RATIO){
+      histDismiss(row, fg, row.getAttribute('data-nid'));
+    } else {
+      fg.style.transition = 'transform .18s ease-out, opacity .18s ease-out';
+      fg.style.transform = ''; fg.style.opacity = '';
+      setTimeout(() => { fg.style.transition = ''; }, 200); // don't fight the next drag's own transform writes
+    }
+  };
+  const onHistDown = (e) => {
+    if(row.dataset.dismissing) return; // cold-review catch: this row is already sliding away and being deleted -- a second drag on it mid-animation would restart the animation and could double-fire the DELETE
+    const t = e.touches ? e.touches[0] : e;
+    startX = t.clientX; startY = t.clientY; dragging = false;
+    width = fg.getBoundingClientRect().width;
+    fg.style.transition = '';
+    histActiveDrags.add(detachDragListeners);
+    window.addEventListener('mousemove', onHistMove); window.addEventListener('mouseup', onHistUp);
+    window.addEventListener('touchmove', onHistMove, {passive:false}); window.addEventListener('touchend', onHistUp);
+  };
+  fg.addEventListener('mousedown', onHistDown); fg.addEventListener('touchstart', onHistDown, {passive:true});
+}
+// Registered once, at script-parse time (same convention as the serviceWorker message listener
+// above), on document itself rather than #app -- #app's innerHTML gets replaced on every
+// navigation/render (including every visit to this same Notifications page), so a listener added
+// inside historySwipeInit() itself would stack a fresh one on every visit instead of firing once.
+// Swallows the trailing click a mouse/trackpad drag always fires on mouseup -- see histJustDragged's
+// own comment above for why it would otherwise reach the row's onclick and navigate away right
+// after a drag that was never meant to.
+document.addEventListener('click', (e) => {
+  if(histJustDragged){ e.stopPropagation(); e.preventDefault(); }
+}, true);
+function historySwipeInit(container){
+  histActiveDrags.forEach(cancel => cancel()); // clean up any previous render's in-flight drag(s) -- see histActiveDrags' own comment above (safe to delete-while-iterating a Set, see MDN)
+  container.querySelectorAll('.hist-swipe').forEach(histSwipeAttach);
 }
 // Exact same accept/decline pipeline as acceptInvite/declineInvite above (same server routes),
 // just refreshing THIS screen afterward instead of home() -- kept as separate functions rather

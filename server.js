@@ -1790,6 +1790,21 @@ app.post('/api/notifications/seen', auth, async (req, res) => {
   await save(DB);
   res.json({ ok: true });
 });
+// Sep 9 (Jeff): "slide notifications away... to remove them from the list if I don't want to
+// wait the full 7 days." A single history row's own dismiss, distinct from pruneOldNotifications'
+// time-based sweep below -- same mechanism though: DB.notifications is a plain object map, so
+// deleting a key and calling save(DB) is enough for syncTableDiff (db.js) to issue the real
+// Postgres DELETE on the next save cycle, same as the prune job already relies on. Ownership is
+// checked (404, not 403, so a guessed id doesn't confirm whether it exists for someone else) and
+// no confirmation step -- Jeff explicitly said this one doesn't need it, unlike the app's other
+// destructive actions (confirmSheet).
+app.delete('/api/notifications/:id', auth, async (req, res) => {
+  const n = DB.notifications[req.params.id];
+  if (!n || n.userId !== req.userId) return res.status(404).json({ error: 'not found' });
+  delete DB.notifications[req.params.id];
+  await save(DB);
+  res.json({ ok: true });
+});
 
 // ---- Activity feed (Friend's Activity) ----
 // Shows friends' COMPLETED activity: PRs they hit + workouts they finished this week + current streak.

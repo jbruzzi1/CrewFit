@@ -23,7 +23,12 @@ const SRC = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 // Proxy-based genericEl() used for everything else returns a fresh object on every property
 // access, which can't hold an assigned innerHTML string.
 function makeAppEl() {
-  const el = { tagName: 'DIV', id: 'app', style: {}, scrollTop: 0, _html: '' };
+  // Sep 9: renderNotifications() now also calls historySwipeInit($('app')) when there's any
+  // history, which does container.querySelectorAll('.hist-swipe') -- needs a real method here,
+  // not the undefined this plain object had before. [] is fine: this harness isn't exercising the
+  // swipe gesture itself (see test/notification-swipe-dismiss.mjs for that), just making sure
+  // rendering a page with history rows doesn't throw.
+  const el = { tagName: 'DIV', id: 'app', style: {}, scrollTop: 0, _html: '', querySelectorAll: () => [] };
   Object.defineProperty(el, 'innerHTML', { get() { return el._html; }, set(v) { el._html = v; } });
   return el;
 }
