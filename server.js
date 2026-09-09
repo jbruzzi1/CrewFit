@@ -1496,6 +1496,25 @@ app.put('/api/crews/:id/messages/:messageId', auth, async (req, res) => {
   await save(DB);
   res.json(m);
 });
+// Sep 8 2026 (Jeff: "I should be able to edit or delete any comment I have made anywhere also") --
+// own message only, same shape as the PUT just above (isCrewMember re-checked for the identical
+// leave-the-crew reason). Deliberately no "crew owner can delete anyone's message" branch, unlike
+// the posted-recap DELETE below which lets a post owner moderate replies on their own post -- a
+// crew has no equivalent "whose thread is this" owner concept for a chat everyone posts into
+// equally, and Jeff's own wording here is scoped to "comment I have made," not moderation of
+// others'. Add that only if he actually asks for it.
+app.delete('/api/crews/:id/messages/:messageId', auth, async (req, res) => {
+  const c = DB.crews[req.params.id];
+  if (!c) return res.status(404).json({ error: 'not found' });
+  ensureCrewShape(c);
+  if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  const m = (c.messages || []).find(x => x.id === req.params.messageId);
+  if (!m) return res.status(404).json({ error: 'not found' });
+  if (m.userId !== req.userId) return res.status(403).json({ error: 'forbidden' });
+  c.messages = c.messages.filter(x => x.id !== req.params.messageId);
+  await save(DB);
+  res.json({ ok: true });
+});
 
 // ---- Crew Challenges (Sep 2026, Jeff: "make it more fun -- both collaborative AND competitive")
 // One shared, week-long goal the whole crew works toward together (every member's finished
@@ -2166,6 +2185,24 @@ app.put('/api/sessions/:id/comments/:commentId', auth, async (req, res) => {
   c.editedAt = new Date().toISOString();
   await save(DB);
   res.json(c);
+});
+// Sep 8 2026 (Jeff: "I should be able to edit or delete any comment I have made anywhere also") --
+// own message only, same membership-tier re-check as the PUT just above and the same reasoning
+// (a departed member shouldn't keep any write access to a thread they can no longer read). No
+// session-creator moderation branch here either, matching the crew DELETE above -- Jeff's ask is
+// about his OWN comments, not clearing other people's live-chat messages.
+app.delete('/api/sessions/:id/comments/:commentId', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  const tier = sessionTier(s, req.userId);
+  if (tier !== 'member' && tier !== 'invited') return res.status(403).json({ error: 'forbidden' });
+  const c = (s.comments || []).find(x => x.id === req.params.commentId);
+  if (!c) return res.status(404).json({ error: 'not found' });
+  if (c.userId !== req.userId) return res.status(403).json({ error: 'forbidden' });
+  s.comments = s.comments.filter(x => x.id !== req.params.commentId);
+  await save(DB);
+  res.json({ ok: true });
 });
 
 // ---- Comments on a POSTED recap (Instagram-style: comment on the finished workout) ----
