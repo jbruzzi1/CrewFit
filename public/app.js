@@ -821,6 +821,12 @@ async function openSessionChat(id){
 // a second participant after the first already started it) is a harmless no-op, not a moved
 // timestamp. Awaited before navigating in, same as any other action-then-render call in this file
 // -- by the time you could plausibly back out to Home again, the write has long since landed.
+// Sep 9 2026 (Jeff: "...it should show live right away. Even if the timer was for 8:00PM and its
+// 7:30PM. It should change the time of the workout..."): the /start route moves scheduledAt to
+// the same instant as startedAt, so nothing extra is needed here -- the next time Home (or this
+// session) re-fetches, isSessionLiveNow reads Live now immediately, because "now" always
+// satisfies its own live window, and every place that prints the workout's time (sessTitle/
+// sessSub, etc.) reads the new, honest, "actually started at" time -- not the original plan.
 async function startSession(id){
   const r = await H.post(`/api/sessions/${id}/start`, {});
   if(r && r.error){ alert(r.error); return; }
