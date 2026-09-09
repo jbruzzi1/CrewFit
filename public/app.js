@@ -2466,8 +2466,8 @@ function exLogBlockHtml(s, e, o){
     </div>
     <div class="add-row">
       <button type="button" class="icon-btn ql-mic-icon" data-f="mic" aria-label="Hold to speak a set" onpointerdown="qlMicDown(event,'${e.id}')" onpointerup="qlMicUp()" onpointercancel="qlMicUp()"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-      <input data-f="w" placeholder="${myUnit()}" type="number" inputmode="decimal" step="any" oninput="updateLoadHint('${e.id}')">
-      <input data-f="r" placeholder="reps" type="number" inputmode="tel" pattern="[0-9]*">
+      <input data-f="w" placeholder="${myUnit()}" type="number" inputmode="decimal" step="any" oninput="updateLoadHint('${e.id}')" onfocus="this.select()">
+      <input data-f="r" placeholder="reps" type="number" inputmode="tel" pattern="[0-9]*" onfocus="this.select()">
       <button type="button" class="rir-toggle" data-f="rirBtn" onclick="toggleRirInput('${e.id}')" aria-label="Add reps in reserve" title="Reps in reserve (optional)">RIR</button>
       <input data-f="rir" class="hidden" placeholder="RIR" type="number" inputmode="tel" pattern="[0-9]*" style="flex:0 0 60px; padding-left:8px; padding-right:6px" title="Reps in reserve (optional)">
       <button class="add-btn" onclick="addLogSet('${e.id}')">+ Add</button>
@@ -2910,6 +2910,12 @@ async function addLogSet(exId){
     // deliberately NOT carried over: it is a per-set read on how much was left in the tank, and a
     // stale leftover number here would misrecord effort on a set it was never actually true for
     // (e.g. 2 RIR on set 1, all-out on set 3) — silently wrong is worse than asking again.
+    // Sep 9 2026 (Jeff, revisiting this: "the majority of the time we are doing different
+    // weight" -- the opposite assumption from Aug 30): rather than pick a side and reintroduce
+    // whichever friction the other case had, both fields now select-all on focus (see their
+    // onfocus="this.select()" in exLogBlockHtml). Same weight again -- tap +Add, untouched,
+    // exactly as before. Different weight -- tap the box, start typing, the old number is gone
+    // with no manual delete. Neither case pays for the other one anymore.
     if(wEl) wEl.value=w; if(rEl) rEl.value=r;
     // RIR collapses back behind its toggle too, not just blanks -- same "ask again" reasoning as
     // clearing the value itself: leaving it open and empty after a set that didn't have one typed
