@@ -538,7 +538,20 @@ async function home(opts){
   const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && !hasFinishedSession(s, ME.id));
   const byTime = (a,b) => new Date(a.scheduledAt) - new Date(b.scheduledAt);
   const openOnes = yours.filter(s => !isSessionMissed(s, ME.id)).sort(byTime);
-  const nextUp = openOnes.find(isSessionLiveNow) || openOnes.find(s => dayDiff(s.scheduledAt) >= 0) || null;
+  // Sep 9 2026 (Jeff: "I want to create a workout and it show up in what's up next until I click
+  // 'Start now' then it moves to your sessions"). Used to be `openOnes.find(isSessionLiveNow) ||
+  // ...` -- picking whichever open session looked most "live" by clock time alone. A Quick Workout
+  // is scheduled for the literal instant it's created, and any "New workout" scheduled for today
+  // becomes live the moment its time arrives -- either way that made THIS session satisfy
+  // isSessionLiveNow permanently for as long as it stayed unfinished, so it never once yielded the
+  // Next up slot to "Your sessions" no matter how long ago you actually started it. s.startedAt
+  // (set by startSession(), the /start route) is a distinct "has anyone actually begun this" fact,
+  // not a clock reading -- filtering candidates down to NOT-YET-started ones first means a started
+  // session drops out of Next-up eligibility entirely and falls through to the restRows filter
+  // below (which excludes only the current nextUp, nothing else), landing it in Your Sessions,
+  // still carrying its normal Live now/Upcoming badge there since that badge logic is untouched.
+  const notStarted = openOnes.filter(s => !s.startedAt);
+  const nextUp = notStarted.find(isSessionLiveNow) || notStarted.find(s => dayDiff(s.scheduledAt) >= 0) || null;
   // Rows: live/upcoming today first, then future plans soonest-first, then missed ones newest-first
   // (cold-review catch: missed sessions have the earliest dates, so a plain time sort let three
   // old misses push tomorrow's plan behind "See all").
@@ -652,12 +665,24 @@ async function home(opts){
     // With no friends yet the edit form's invite list is empty, so the button goes to the Friends
     // tab (add someone) instead -- cold-review catch.
     const inviteBtn = `<button class="sec" onclick="${isCreator && myFriends.length ? `editSession('${s.id}')` : `showTab('friends')`}">Invite a friend</button>`;
+    // Sep 9 2026 (Jeff: "I want to create a workout and it show up in what's up next until I click
+    // 'Start now' then it moves to your sessions"). primaryOpens is startSession() (which marks
+    // s.startedAt server-side, then opens it -- see the /start route comment in server.js) for
+    // every case that reads as "beginning" the workout: live-now (Start/Join), or scheduled later
+    // TODAY (still labeled "Start now" even before its live window -- tapping it early is a
+    // deliberate early start, same as it's always let you do). Only the genuine future-day "Open"
+    // case (dd > 0) stays a plain view -- looking at a plan for a day that hasn't arrived yet was
+    // never "starting" anything. The CARD's own tap target uses the same function as its primary
+    // button so tapping anywhere on the card behaves identically to tapping the labeled button --
+    // a card that sometimes starts the workout and sometimes merely opens it, depending on exactly
+    // where you tapped, is the kind of inconsistency that reads as broken.
+    const primaryOpens = (live || dd === 0) ? 'startSession' : 'openSession';
     const actions = live
-      ? `<button class="blue" onclick="openSession('${s.id}')">${others.length ? 'Join now' : 'Start now'}</button>${others.length ? `<button class="sec" onclick="openSessionChat('${s.id}')">Chat</button>` : inviteBtn}`
+      ? `<button class="blue" onclick="${primaryOpens}('${s.id}')">${others.length ? 'Join now' : 'Start now'}</button>${others.length ? `<button class="sec" onclick="openSessionChat('${s.id}')">Chat</button>` : inviteBtn}`
       : dd === 0
-        ? `<button class="blue" onclick="openSession('${s.id}')">Start now</button>${inviteBtn}`
-        : `<button class="sec" onclick="openSession('${s.id}')">Open</button>${inviteBtn}`;
-    html += `<div class="next-card" onclick="openSession('${s.id}')">
+        ? `<button class="blue" onclick="${primaryOpens}('${s.id}')">Start now</button>${inviteBtn}`
+        : `<button class="sec" onclick="${primaryOpens}('${s.id}')">Open</button>${inviteBtn}`;
+    html += `<div class="next-card" onclick="${primaryOpens}('${s.id}')">
       <div class="next-top"><div><div class="next-lbl">Next up · ${esc(dayLabel)}</div><div class="next-name">${esc(s.name)}</div><div class="next-when">${when}</div></div>${badge}</div>
       ${exLine}${whoLine}
       <div class="next-actions" onclick="event.stopPropagation()">${actions}</div>
@@ -787,6 +812,20 @@ async function openSessionChat(id){
   if(box){ try{ box.scrollIntoView({ block:'center' }); }catch(e){} }
 }
 
+// Sep 9 2026 (Jeff: "I want to create a workout and it show up in what's up next until I click
+// 'Start now' then it moves to your sessions"). The one place that marks a session started --
+// called by the Next up card's Start now/Join now button (and its own card tap, see
+// home()'s primaryOpens) and by createQuickWorkout right below, since dropping straight into the
+// exercise picker for a Quick Workout already IS starting it. POST /api/sessions/:id/start is
+// idempotent server-side, so calling this on an already-started session (e.g. Join now, tapped by
+// a second participant after the first already started it) is a harmless no-op, not a moved
+// timestamp. Awaited before navigating in, same as any other action-then-render call in this file
+// -- by the time you could plausibly back out to Home again, the write has long since landed.
+async function startSession(id){
+  const r = await H.post(`/api/sessions/${id}/start`, {});
+  if(r && r.error){ alert(r.error); return; }
+  openSession(id);
+}
 // v312 (Jeff, Sep 4): "get rid of the logging page and have it all on the active workout page.
 // no additional pop up page." The per-exercise log sheet (openLogSheet, and the opts.silent
 // background re-render of this screen that kept the "N sets logged" badge current underneath
@@ -3674,7 +3713,12 @@ async function createQuickWorkout(name){
     location: DRAFT.location || '',
   });
   if(r && r.error){ alert(r.error); showTab('home'); return; }
-  openSession(r.id);
+  // Sep 9 2026: a Quick Workout drops you straight into the exercise picker/logger -- there is no
+  // "later" for it to wait in, so it's marked started here, the moment it exists, rather than
+  // waiting for a Start now tap that was never going to come. Without this, backing out to Home
+  // mid-workout (or after) would still show it sitting in "Next up" labeled Start now, as if you
+  // hadn't already begun it -- see startSession()'s own comment for the full mechanism.
+  await startSession(r.id);
 }
 // Jeff, Aug 27: "add the ability to quick select a routine within quick workout" -- Quick Workout
 // used to only offer picking exercises one at a time from the library. This lets you skip that
