@@ -2446,7 +2446,7 @@ function pruneOldNotifications() {
 //   suggestedEdits: [ { id, exerciseId, proposedBy, swapTo, status } ],
 //   joinRequests: [ { id, userId, note, status } ],
 //   attendance: { [userId]: 'in'|'maybe'|'out' },
-//   logs: { [userId]: [ { exerciseId, weight, reps, set, isPr } ] },
+//   logs: { [userId]: [ { exerciseId, weight, reps, set, isPr, isSetPr } ] },
 //   comments: [ { id, userId, text, at } ],
 //   history: [ { userId, date, muscleGroups[], exercises[] } ]  // per completed session
 // }
@@ -4304,6 +4304,13 @@ app.get('/api/progress/exercise/:name', auth, async (req, res) => {
     soon:  r.soon.find(x => x.exercise === name) || null,
     pr: earnedPr
       ? { weight: inUnit(earnedPr.weight, earnedPr.unit, r.unit), reps: earnedPr.reps, unit: r.unit, at: earnedPr.at }
+      : null,
+    // Sep 9 2026: the second, independent record (see rebuildAllPrs) — most total weight moved
+    // in a single set (weight × reps), not the heaviest weight. Same explicit field pick as `pr`
+    // above rather than forwarding earnedPr wholesale, so this route's response shape stays a
+    // deliberate contract, not whatever happens to be sitting on the DB.prs record today.
+    setPr: (earnedPr && earnedPr.setWeight !== undefined)
+      ? { weight: inUnit(earnedPr.setWeight, earnedPr.setUnit, r.unit), reps: earnedPr.setReps, unit: r.unit, at: earnedPr.setAt }
       : null
   });
 });
@@ -4393,7 +4400,7 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
   // exercise and the set pointed at nothing: records started showing raw ids like "e_ycc71vos",
   // permanently, and the sets could never be reattached because re-adding mints a new id.
   const entry = { id: 'log_'+uid(), exerciseId, exerciseName: exerciseNameFor(s, exerciseId, req.userId),
-                  weight: w, reps: r, set: setNum, setType: setType || 'normal', isPr: false, at: new Date().toISOString() };
+                  weight: w, reps: r, set: setNum, setType: setType || 'normal', isPr: false, isSetPr: false, at: new Date().toISOString() };
   if (lt) entry.loadType = lt;   // omitted entirely for unambiguous lifts (barbell, cable, machine)
   if (unit !== 'lb') entry.unit = unit;   // omitted when lb, so existing data stays byte-identical
   if (rr) { entry.targetReps = rr.lo; if (rr.hi !== rr.lo) entry.targetRepsMax = rr.hi; }
@@ -4797,8 +4804,18 @@ function rebuildAllPrs() {
       // Towel Pull-Up showed 45x8 PR and 79x8 PR in one workout. Only the 79 is a record. A
       // badge that appears on almost every set stops meaning anything.
       let bestW = -1, bestR = -1, bestLog = null;
+      // Sep 9 2026, Jeff: "a set of 10 at my heaviest weight ive ever done is just as significant
+      // as a set of 2 just trying my max out on a weight." The weight record above can never
+      // recognize that — a heavier single/double always outranks it no matter how many reps a
+      // lighter set got, so a big, hard-earned set at a real (not-quite-max) weight got zero
+      // recognition. This is a SECOND, independent "best ever" search over the exact same sets,
+      // comparing total weight moved in the set (weight × reps) instead of weight alone. It runs
+      // in the same pass so a set can win neither, one, or both records without the two ever
+      // being compared against each other.
+      let bestVol = -1, bestVolR = -1, bestSetLog = null;
       for (const l of chronological) {
         l.isPr = false;                       // cleared for every set; the winner is set below
+        l.isSetPr = false;                    // same, for the weight×reps record below
         // v253 (audit finding): warm-ups and drop sets are deliberately NOT working sets (Jeff's
         // call — see WORKING_SET_TYPES/isWorkingSet above, and CLAUDE.md). The two other places
         // that decide "did this count" already skip them (search isWorkingSet(l) above), but this
@@ -4810,9 +4827,22 @@ function rebuildAllPrs() {
         const w = toLb(l.weight, l.unit), r = Number(l.reps) || 0;
         const better = r > 0 && (w > bestW || (w === bestW && r > bestR));
         if (better) { bestW = w; bestR = r; bestLog = l; }
+        // Same lb-normalized weight, but the number being compared is weight × reps. Bodyweight
+        // sets (w===0, e.g. a Pull-Up) hit the exact pitfall the comment above already names for
+        // the weight loop: volume is 0×reps=0 no matter the reps, so the FIRST bodyweight set ever
+        // logged would become an unbeatable "record" forever, and every later, harder set (more
+        // reps, same 0 weight) would never touch it. Same fix as the weight loop: tie-break on reps
+        // instead of raw volume, so among equal-volume sets (bodyweight sets always tie at 0) more
+        // reps still wins. A genuine tie (identical weight AND reps) just keeps whichever was found
+        // first, same as the weight record above.
+        const vol = r > 0 ? w * r : -1;
+        const betterVol = r > 0 && (vol > bestVol || (vol === bestVol && r > bestVolR));
+        if (betterVol) { bestVol = vol; bestVolR = r; bestSetLog = l; }
       }
       if (bestLog) {
         bestLog.isPr = true;
+        bestSetLog.isSetPr = true;            // bestSetLog always exists whenever bestLog does —
+                                               // both loops share the same isWorkingSet+reps>0 gate
         // Jeff, Aug 21: "every new first rep will be considered a PR" -- a brand-new user's very
         // first-ever session, trying several exercises for the first time each, used to post one
         // "hit a new PR" feed item per exercise even though none of them beat anything. The
@@ -4823,6 +4853,7 @@ function rebuildAllPrs() {
         // Still shown as the user's current best on their OWN profile (see profileOf's `prs`) --
         // just excluded from the celebratory feed/activity items (see groupPrsForFeed).
         const firstLog = bestLog === chronological[0];
+        const setFirstLog = bestSetLog === chronological[0];
         DB.prs[userId] = DB.prs[userId] || {};
         // v249 (audit finding): `unit` was dropped here, even though bestLog.weight is stored in
         // WHATEVER unit that specific set was logged in (kg bars move in 2.5s, lb in 5s — see the
@@ -4833,9 +4864,15 @@ function rebuildAllPrs() {
         // beatSeed check against a 90kg seed (≈198lb) because 100 < toLb(90,'kg')≈198 numerically,
         // even though 100kg genuinely beats 90kg. Every kg lifter's "Record beaten" celebration was
         // wrong on this axis, and the client (prLabel) had no unit to trust for display either.
+        // setWeight/setReps/setUnit/setAt/setFirstLog live on this SAME per-(user,exercise) object
+        // rather than a separate table — no new persistence plumbing needed, since DB.prs[userId]
+        // is already stored as one jsonb blob per user (see db.js's prs table).
         DB.prs[userId][name] = { exercise: name, weight: Number(bestLog.weight) || 0,
           reps: Number(bestLog.reps) || 0, unit: bestLog.unit || 'lb',
-          at: bestLog._performedAt || bestLog.at, firstLog };
+          at: bestLog._performedAt || bestLog.at, firstLog,
+          setWeight: Number(bestSetLog.weight) || 0, setReps: Number(bestSetLog.reps) || 0,
+          setUnit: bestSetLog.unit || 'lb', setAt: bestSetLog._performedAt || bestSetLog.at,
+          setFirstLog };
       }
     }
   }

@@ -1432,7 +1432,7 @@ async function viewPost(id, authorId, opts){
   // the same PUT/DELETE /api/sessions/:id/log/:logId already used by the live in-workout
   // "Edit set" sheet (editLogSet et al above) -- that route is keyed off req.userId's own
   // s.logs entry server-side, so this needed no server change, just this entry point.
-  const setRows = (ls, mine) => `<div class="pp-sets">${ls.map(l=>`<div class="pp-set${mine?' pp-set-mine':''}"${mine?` onclick="editPostedSet('${id}','${authorId}','${l.id}')"`:''}>${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr">PR</span>':''}</div>`).join('')}</div>`;
+  const setRows = (ls, mine) => `<div class="pp-sets">${ls.map(l=>`<div class="pp-set${mine?' pp-set-mine':''}"${mine?` onclick="editPostedSet('${id}','${authorId}','${l.id}')"`:''}>${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr">PR</span>':''}${l.isSetPr?'<span class="pp-pr">VOL</span>':''}</div>`).join('')}</div>`;
   // An approved swap replaces the exercise for the session, and openSession already titles the
   // card with the swapped-in name. This screen said the original, so the two disagreed about what
   // the lift even was. Same resolution here, so they agree.
@@ -2492,10 +2492,22 @@ function exSetRowsHtml(sid, exId, exLogs, loadType, justLoggedId){
   const rirFor = l => (l.rir!==undefined && l.rir!==null) ? ` · RIR ${l.rir}` : '';
   return rows.map(l=>{
     const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''};
+    const pop = l.id===justLoggedId ? ' pr-pop' : '';
+    // Sep 9 2026 (Jeff: "PR icon for heaviest weight for a rep and also a total volume for a
+    // set... different color and acronym"): two independent records can land on the same set, so
+    // both pills can show together. Kept both SOLID GREEN (CLAUDE.md: "green = achievements" is a
+    // closed set of three colors app-wide — a new hue per record type would break that rule on a
+    // 10px pill), differentiated by label text only. "VOL" (Jeff's own call, hard rule #9's first
+    // case -- flagged that "Volume" already means the recap tile's/crew-challenge's cumulative
+    // total across MANY sets, this badge is one single set's total instead; Jeff heard it and
+    // decided it's fine: "Volume with the crew challenge is the same as the amount of volume
+    // lifted in the recap. They mean the same thing. VOL is different for just the set... only two
+    // items really. I think VOL is okay.").
     return `<div class="pp-set pp-set-mine" onclick="editLogSet('${sid}','${exId}','${l.id}')">
       <span class="pp-set-n ${b.c}">${b.t}</span>
       <span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)}${suffixFor(l)} × ${Number(l.reps)||0} reps${rirFor(l)}</span>
-      ${l.isPr?`<span class="pp-pr${l.id===justLoggedId?' pr-pop':''}">PR</span>`:''}
+      ${l.isPr?`<span class="pp-pr${pop}">PR</span>`:''}
+      ${l.isSetPr?`<span class="pp-pr${pop}">VOL</span>`:''}
     </div>`; }).join('');
 }
 // Re-render one card's set rows from a fresh session object, in place -- nothing else on the
@@ -2942,7 +2954,9 @@ async function addLogSet(exId){
     // replay the animation on every old PR in the list. Newest `at` among my sets = this one.
     const justMine = ((s.logs&&s.logs[ME.id])||[]).filter(l=>l.exerciseId===exId);
     const newest = justMine.slice().sort((a,b)=>String(b.at).localeCompare(String(a.at)))[0];
-    renderExSets(exId, s, newest && newest.isPr ? newest.id : null);
+    // Sep 9 2026: the just-logged set can now earn a weight PR, a set-record, or both -- pop the
+    // animation whenever either fired, same "only the set that was just logged" rule as before.
+    renderExSets(exId, s, newest && (newest.isPr || newest.isSetPr) ? newest.id : null);
     // Jeff, Aug 30 -> Sep 9 2026, PROTOTYPE (see the big comment on lastSetChipHtml for the full
     // reasoning): weight/reps used to clear (pre-Aug-30), then carry the just-logged value
     // forward as an already-filled, auto-selected box (Aug 30 -> Sep 9). Both boxes now go back
@@ -3092,6 +3106,11 @@ async function showRecap(id){
       else anyBW=true;
       if(!top || w>toUser(top.weight,unitOf(top)) || (w===toUser(top.weight,unitOf(top)) && r>(Number(top.reps)||0))) top=l;
       if(l.isPr) prs.push(`${esc(nm)} — ${Number(l.weight)>0?Number(l.weight)+' '+unitOf(l):'bodyweight'} × ${r}`);
+      // Sep 9 2026: a set can also be the biggest total-weight set ever done on this lift without
+      // being the heaviest weight (see rebuildAllPrs) -- worth the same "you did something new"
+      // moment on the one screen built for celebrating, even though it's a different record than
+      // the line above. Labeled explicitly ("best set") so it isn't misread as a duplicate PR.
+      if(l.isSetPr && !l.isPr) prs.push(`${esc(nm)} — ${Number(l.weight)>0?Number(l.weight)+' '+unitOf(l):'bodyweight'} × ${r} (best set)`);
     }
     return {nm, logged, ceiling, top, range:repLabel(e), work:logged.filter(isWorking).length};
   }).filter(r=>r.work);
@@ -3145,10 +3164,12 @@ async function showRecap(id){
         const hit = l===r.top && cap && rp >= cap;
         // v236 (Jeff): the PR set's chip is FILLED green - it outranks 'top' (a PR that hit
         // the range would otherwise show only the tint) and never applies to warm-ups/drops,
-        // which cannot be PRs anyway.
-        const cls = l.isPr ? ' prfill' : (warm||drop ? ' warm' : (hit ? ' top' : ''));
+        // which cannot be PRs anyway. Sep 9 2026: a set-record (isSetPr, see rebuildAllPrs) earns
+        // the exact same filled treatment -- it's a different record, not a lesser one.
+        const isRecord = l.isPr || l.isSetPr;
+        const cls = isRecord ? ' prfill' : (warm||drop ? ' warm' : (hit ? ' top' : ''));
         const tag = warm ? 'warm-up · ' : drop ? 'drop · ' : '';
-        return `<span class="rc-chip${cls}">${tag}${w>0?`${w} ${unitOf(l)} × ${rp}`:`${rp} reps`}${l.isPr?'<span class="star">★</span>':''}</span>`;
+        return `<span class="rc-chip${cls}">${tag}${w>0?`${w} ${unitOf(l)} × ${rp}`:`${rp} reps`}${isRecord?'<span class="star">★</span>':''}</span>`;
       }).join('')}</div></div>`;
   }
   if(anyBW || anyPair || anyAdded || anySingle) h += `<div class="rc-note">${[
@@ -5535,6 +5556,7 @@ function exDetail(name){
       <div class="sheet-row"><span>Pattern</span><b>${esc(e.pattern||'—')}</b></div>
       <div class="sheet-row"><span>Suggested</span><b>${sets} × ${reps}</b></div>
       <div class="sheet-row"><span>Personal best</span><b data-f="pr" class="muted">…</b></div>
+      <div class="sheet-row"><span>Best set</span><b data-f="setpr" class="muted">…</b></div>
     </div>`;
   sheet.onclick=(e)=>{ if(e.target===sheet) closeSheet(); }; document.body.appendChild(sheet);
   requestAnimationFrame(()=>sheet.classList.add('show'));
@@ -5553,6 +5575,13 @@ function exDetail(name){
     if(!box || !r || r.error) return;
     if(r.pr){ box.textContent = prLabel(r.pr); box.classList.remove('muted'); }
     else box.textContent = 'Not logged yet';
+    // Sep 9 2026: the second, independent record (see rebuildAllPrs) -- same bail-outs as the
+    // weight-PR row just above, same fetch, just a different field off the same response.
+    const setBox = sheet.querySelector('[data-f="setpr"]');
+    if(setBox){
+      if(r.setPr){ setBox.textContent = prLabel(r.setPr); setBox.classList.remove('muted'); }
+      else setBox.textContent = 'Not logged yet';
+    }
   });
 }
 // v247: used to be document.querySelector('.sheet-back') — the FIRST .sheet-back in document
