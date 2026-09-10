@@ -4020,30 +4020,19 @@ async function createQuickWorkout(name){
   await startSession(r.id);
 }
 // Jeff, Aug 27: "add the ability to quick select a routine within quick workout" -- Quick Workout
-// used to only offer picking exercises one at a time from the library. This lets you skip that
-// entirely: pick a saved routine and it starts the workout immediately with that routine's
-// exercises, same one-tap-to-start philosophy as workoutNow() itself (see its comment above).
-async function quickPickRoutine(){
-  const { mine, shared } = await H.get('/api/templates');
-  window._TPL = { mine, shared };
-  const all = [...mine, ...shared];
-  const qRoutineRow = (t)=>`<div class="lib-item"><div style="flex:1;min-width:0"><div style="font-weight:600">${esc(t.name)}</div><div class="muted" style="font-size:12px">${plur(t.exercises.length,'exercise')}</div></div>
-    <button class="sec sm" onclick="quickUseRoutine('${t.id}')">Use</button></div>`;
-  openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Routines</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
-    <div class="card" style="margin-top:4px">${all.length ? all.map(qRoutineRow).join('') : '<div class="muted" style="padding:16px 6px">No routines saved yet. Build one from the Workouts tab, then it will show up here.</div>'}</div>
-  </div>`);
-}
-function quickUseRoutine(id){
-  const { mine, shared } = window._TPL || { mine:[], shared:[] };
-  const t = [...mine, ...shared].find(x=>x.id===id); if(!t) return;
-  closeSheet();
-  DRAFT.exercises = t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}));
-  QUICK_ADD_MODE = false; LIB_ADDMODE = false;
-  // Jeff, Aug 30: "I want to be able to name quick workouts" -- default the naming prompt to the
-  // routine's own name (it's usually exactly what you'd type anyway) but still let it be changed
-  // or cleared, same as the picked-exercises path in libDone() below.
-  promptQuickWorkoutName(t.name);
-}
+// used to only offer picking exercises one at a time from the library. Picking a saved routine
+// starts the workout immediately with that routine's exercises, same one-tap-to-start philosophy
+// as workoutNow() itself (see its comment above).
+//
+// Sep 10 2026 (Jeff, reviewing the picker this originally opened -- a bare sheet, name + exercise
+// count + Use only): "We cannot see the routine or edit. I think it would be simple to just have
+// the normal routines page show here and where you can click in to see the exercises and or edit
+// or just click use and then it builds that as the quick workout." That stripped sheet (and its
+// quickUseRoutine() Use handler) is gone -- the "Routine" button now opens the exact same
+// templatesPage()/tplView() the Workouts tab uses (list -> tap in to see every exercise, ⋯ ->
+// Edit, same as anywhere else in the app), and tplUse() below (the same Use/"Use routine" handler
+// every other entry point already shares) is what actually builds the quick workout, branching on
+// QUICK_ADD_MODE instead of always routing through the full create-flow wizard.
 async function editSession(id){
   const s = await H.get('/api/sessions/'+id);
   if(!s || s.error){ alert(s && s.error ? s.error : 'Session not found'); return; }
@@ -4170,12 +4159,42 @@ const TPL_MODE = { active:false, id:null, name:'', copy:false };   // active whi
 // top of the file), so history.back() would drop the person on the tab underneath, form gone --
 // tplUse() already returns by calling createFlow() directly, and this Back does the same.
 let TPL_FROM_CREATE = false;
+// Sep 10 2026: same gap, same fix, for the OTHER screen that isn't a history entry either -- the
+// Quick Workout exercise picker (LIB_ADDMODE + QUICK_ADD_MODE, opened by openAddExercises() below
+// via showTab('lib', true)).
+//
+// A "smarter" version of this was tried first: since the picker DOES push a plain
+// {t:'tab',tab:'lib'} entry (unlike create-flow), just call the real history.back() and have a
+// one-shot flag tell the resulting renderTabState('lib') to restore QUICK_ADD_MODE/LIB_ADDMODE
+// instead of running its normal resetTransientModes() -- avoiding the extra history entries the
+// direct-call approach below piles up on every Routine/Back round trip. It does not work: opening
+// ANY sheet while on the routines list (most reachably "+ New routine") and Cancelling it calls
+// closeSheet(), which does `history.replaceState(CURRENT_NAV_STATE, ...)` to relabel the sheet's
+// own pushed entry back to {t:'routines'} rather than actually popping it -- so the stack ends up
+// with the SAME {t:'routines'} state sitting at two adjacent positions. A single history.back()
+// then only pops the duplicate, landing right back on an identical-looking routines screen instead
+// of the picker underneath, needing a confusing SECOND Back tap to actually leave -- reproduced
+// directly (test/_debug_qwr.mjs, since deleted) before this file settled on reconstructing the
+// picker directly instead, exactly like the TPL_FROM_CREATE branch below does for createFlow():
+// correct in exactly one tap regardless of whatever sheet detours happened along the way, at the
+// cost of the same already-accepted "history stack grows a little" trade-off TPL_FROM_CREATE's own
+// comment already documents for create-flow.
+//
+// TPL_FROM_QUICK survives a New routine/Edit detour and Cancel out of it in between (TPL_MODE.active
+// etc. get reset along the way, same as always, but TPL_FROM_QUICK itself is untouched by
+// resetTransientModes() -- exactly like TPL_FROM_CREATE isn't -- and templatesPage({replace:true})'s
+// re-render after that Cancel deliberately does NOT recompute it). tplBack() (the editor's own
+// Cancel) separately restores QUICK_ADD_MODE/LIB_ADDMODE right after that same detour's reset, so a
+// direct "Use" tap works too, not just "← Back" -- see its own comment (cold-review catch: this file
+// used to only fix the Back path, leaving Use silently falling through to the wrong flow).
+let TPL_FROM_QUICK = false;
 function routinesBack(){
   if(TPL_FROM_CREATE){ TPL_FROM_CREATE = false; createFlow(); }
+  else if(TPL_FROM_QUICK){ TPL_FROM_QUICK = false; QUICK_ADD_MODE = true; openAddExercises(); }
   else history.back();
 }
 async function templatesPage(opts){
-  if(!(opts && (opts.replace || opts.fromHistory))) TPL_FROM_CREATE = !!$('wname');
+  if(!(opts && (opts.replace || opts.fromHistory))) { TPL_FROM_CREATE = !!$('wname'); TPL_FROM_QUICK = QUICK_ADD_MODE; }
   // Same gap as openAddExercises() had: "Browse templates" is also reachable mid-create (from
   // createFlow()'s form), and tplUse() returns via createFlow() too — so without stashing here,
   // browsing templates mid-create silently reverted name/visibility/date/location/length/note.
@@ -4554,7 +4573,25 @@ function tplReturnToList(){
     templatesPage({replace:true});
   }
 }
-function tplBack(){ closeSheet(); resetTransientModes(); tplReturnToList(); }
+// Cold-review catch (Sep 10 2026): Cancel out of the routine editor (New routine / Edit / Edit a
+// copy) runs resetTransientModes() to clear whatever TPL_MODE/EDITING_TPL it was mid-editing --
+// correct on its own, but it ALSO clears QUICK_ADD_MODE/LIB_ADDMODE unconditionally, same as
+// walking away via the bottom nav does. Reached from an ordinary "Edit" detour while browsing
+// Quick Workout's own "Routine" list (TPL_FROM_QUICK, see its own comment above), that silently
+// turned QUICK_ADD_MODE false while TPL_FROM_QUICK stayed true -- routinesBack()'s own explicit
+// `QUICK_ADD_MODE = true` still made "← Back" work afterward, but tplUse()'s QUICK_ADD_MODE check
+// would read false if "Use"/"Use routine" was tapped directly instead (the more natural next tap),
+// silently falling through to the full create-flow wizard instead of building the quick workout --
+// caught by fresh-eyes review, not yet by the end-to-end test. Restoring both flags right after the
+// reset, whenever this Cancel is happening mid a still-live quick-workout detour, keeps QUICK_ADD_MODE
+// accurate through the WHOLE routine-browsing side trip, not just the Back path out of it.
+function tplBack(){
+  closeSheet();
+  const wasQuick = TPL_FROM_QUICK && QUICK_ADD_MODE;
+  resetTransientModes();
+  if(wasQuick){ QUICK_ADD_MODE = true; LIB_ADDMODE = true; }
+  tplReturnToList();
+}
 function tplOpenPicker(){ openAddExercises(); }
 async function finishTemplate(){
   if(!DRAFT.exercises.length){ alert('Add at least one exercise'); return; }
@@ -4580,6 +4617,27 @@ async function finishTemplate(){
 async function tplUse(id){
   const { mine, shared } = await H.get('/api/templates');
   const t = [...mine,...shared].find(x=>x.id===id); if(!t) return;
+  // Sep 10 2026: Quick Workout's own picker (the "Routine" button in library()'s QUICK_ADD_MODE
+  // head, and now this exact list/detail screen -- see the comment above where its old stripped
+  // popup used to live) shares this same Use/"Use routine" handler with every other entry point.
+  // QUICK_ADD_MODE is still true here whenever Use was reached that way (nothing clears it until
+  // this branch does), so route it the way quickUseRoutine() used to: load just the exercises into
+  // DRAFT and prompt for a name -- NOT the fuller location/note/visibility/invite population below,
+  // since createQuickWorkout() always posts private with no invites regardless, and a Quick
+  // Workout's own default-gym location (set by workoutNow()) should stay put rather than being
+  // silently overridden by whatever location the routine happens to carry.
+  if(QUICK_ADD_MODE){
+    DRAFT = DRAFT || { exercises:[], inviteUsernames:[] };
+    DRAFT.exercises = t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}));
+    QUICK_ADD_MODE = false; LIB_ADDMODE = false; TPL_FROM_QUICK = false;
+    // Same leak this function's own non-quick branch below already guards against (see its
+    // comment): browsing here could have gone through Edit on some OTHER routine first (the
+    // routines list is fully browsable now, not a bare picker), leaving TPL_MODE pointed at it.
+    // Caught by an existing test (audit-v253-client.mjs) once tplUse() started branching here.
+    if(typeof TPL_MODE === 'object' && TPL_MODE) { TPL_MODE.active = false; TPL_MODE.id = null; TPL_MODE.name = ''; TPL_MODE.copy = false; }
+    promptQuickWorkoutName(t.name);
+    return;
+  }
   DRAFT = DRAFT || { exercises:[], inviteUsernames:[] };
   DRAFT.exercises = t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}));
   // v306 (Jeff, Sep 3): a routine can now optionally carry full-workout details too (see
@@ -5466,11 +5524,11 @@ function libDone(){
 // Jeff, Aug 30: "I want to be able to name quick workouts" -- Quick Workout always hardcoded the
 // name to the literal string "Quick Workout" (see createQuickWorkout above). This is the one place
 // both quick-workout entry points (picking exercises one at a time in libDone() above, and picking
-// a saved routine in quickUseRoutine above) funnel through on their way to actually creating the
-// session, so the prompt lives here once rather than twice. defaultName is the routine's own name
-// when coming from quickUseRoutine, or blank when coming from the picked-exercises path -- either
-// way Skip/blank falls back to the same "Quick Workout" createQuickWorkout() always used, so doing
-// nothing still behaves exactly like it did before this feature existed.
+// a saved routine via tplUse()'s QUICK_ADD_MODE branch above) funnel through on their way to
+// actually creating the session, so the prompt lives here once rather than twice. defaultName is
+// the routine's own name when coming from tplUse(), or blank when coming from the picked-exercises
+// path -- either way Skip/blank falls back to the same "Quick Workout" createQuickWorkout() always
+// used, so doing nothing still behaves exactly like it did before this feature existed.
 function promptQuickWorkoutName(defaultName){
   textEntrySheet({
     title:'Name this workout', label:'Workout name', value: defaultName||'', placeholder:'Quick Workout', confirmLabel:'Start', cancelLabel:'Skip',
@@ -5508,7 +5566,7 @@ async function library(opts){
   const head = LIB_ADDMODE
     ? `<div class="pick-head lib-head">
          <h1 style="flex:1">${QUICK_ADD_MODE?'Quick Workout':'Workouts'}</h1>
-         ${QUICK_ADD_MODE?`<button class="txt-btn" onclick="quickPickRoutine()" title="Start from a routine">Routine</button>`:''}
+         ${QUICK_ADD_MODE?`<button class="txt-btn" onclick="templatesPage()" title="Start from a routine">Routine</button>`:''}
          <button class="icon-btn" onclick="openCreateEx()" title="Create exercise">＋</button>
          <button class="blue sm" onclick="libDone()">Done (<span id="libDoneCount">${DRAFT.exercises.length}</span>)</button>
        </div>`
