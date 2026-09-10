@@ -535,7 +535,12 @@ async function home(opts){
   //     ("Training solo for now") replaces all three of the old "No ..." apologies.
   // Design constant update (see CLAUDE.md): Home's discoverability now comes from the solo line
   // and the card's own buttons, not from empty-state boxes.
-  const yours = sessions.filter(s => s.name && s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && !hasFinishedSession(s, ME.id));
+  // Sep 10 2026: dropped the `s.name &&` truthy gate -- the server now always writes a real name
+  // (falls back to "New workout"/"Quick Workout" when blank, see POST/PUT /api/sessions in
+  // server.js), and this check was never actually verifying anything about session validity --
+  // it just silently hid any session that happened to have a blank name, which is exactly how a
+  // real, successfully-created workout went missing from Home entirely (Jeff's bug report).
+  const yours = sessions.filter(s => s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && !hasFinishedSession(s, ME.id));
   const byTime = (a,b) => new Date(a.scheduledAt) - new Date(b.scheduledAt);
   const openOnes = yours.filter(s => !isSessionMissed(s, ME.id)).sort(byTime);
   // Sep 9 2026 (Jeff: "I want to create a workout and it show up in what's up next until I click
@@ -769,8 +774,9 @@ async function home(opts){
   // date to ALSO be able to override it. test/friends-workouts.mjs only ever exercised this with
   // past-dated fixtures, where dayDiff<0 made the OR's first arm false and the bug invisible.
   const friendIds = new Set(myFriends.map(f=>f.id));
-  const joinable = sessions.filter(s => s.name
-    && s.visibility === 'public'
+  // Sep 10 2026: same `s.name &&` truthy-gate removal as the "Your sessions" filter above -- see
+  // its own comment. This one hid a blank-named public workout from friends' "joinable" list too.
+  const joinable = sessions.filter(s => s.visibility === 'public'
     && friendIds.has(s.creatorId)
     && !(s.participants||[]).includes(ME.id)
     && !(Array.isArray(s.invited) && s.invited.includes(ME.id))

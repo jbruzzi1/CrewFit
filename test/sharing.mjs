@@ -216,7 +216,12 @@ console.log('\na workout name is stored trimmed');
   const s = await fetch(B + '/api/sessions', { method: 'POST', headers: u.H,
     body: JSON.stringify({ name: '   ', visibility: 'private', scheduledAt: '2026-08-12T18:00:00Z',
       exercises: [{ name: 'Row', defaultSets: 3, defaultReps: 8 }] }) }).then(x => x.json());
-  ok(s.name === '', `a name of only spaces is stored empty, not as spaces (got ${JSON.stringify(s.name)})`);
+  // Sep 10 2026 (Jeff, real bug report -- see test/blank-workout-name.mjs for the full story): a
+  // blank/whitespace-only name used to be stored as '', and home()'s own filters treated that as
+  // "this session doesn't really exist" -- so a workout created with no name was real but
+  // invisible everywhere on Home. Trimming to '' is still correct; storing '' is not any more --
+  // it now falls back to 'New workout', same default createQuickWorkout already used client-side.
+  ok(s.name === 'New workout', `a name of only spaces defaults to "New workout", not stored blank (got ${JSON.stringify(s.name)})`);
   const r = await fetch(B + '/api/sessions/' + s.id, { method: 'PUT', headers: u.H,
     body: JSON.stringify({ name: '  Push Day  ' }) });
   const after = await get(u, '/api/sessions/' + s.id);
