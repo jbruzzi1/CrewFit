@@ -2502,8 +2502,15 @@ app.post('/api/sessions', auth, async (req, res) => {
     location: capStr(location, 120),
     lengthMin: numIn(lengthMin, 1440) || null,
     creatorNote: capStr(creatorNote, 2000),
-    // trimmed: a name of "   " is truthy, so it would title the workout with a blank heading
-    name: capStr(name, 80).trim(),
+    // trimmed: a name of "   " is truthy, so it would title the workout with a blank heading.
+    // Sep 10 2026 (Jeff, real bug report): the "New workout" flow (unlike Quick Workout, which
+    // already defaults client-side to 'Quick Workout' -- see createQuickWorkout in app.js) let a
+    // blank name all the way through to here, and home()'s "Your sessions"/"joinable" filters in
+    // app.js both used `s.name` as a truthy existence check -- so the session was created for
+    // real (this whole object, with a real id) but then invisible everywhere on Home, reading as
+    // "no workout appears" even though it existed. Fixed here, once, server-side, so it holds
+    // regardless of client version: "if someone doesn't label it lets default to 'New workout'".
+    name: capStr(name, 80).trim() || 'New workout',
     exercises: ex,
     participants: [req.userId],
     invited: invites,
@@ -3206,7 +3213,10 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   ensureSessionShape(s);
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not yours' });
   const b = req.body || {};
-  if (typeof b.name === 'string') s.name = capStr(b.name, 80).trim();
+  // Sep 10 2026: same default as creation (POST /api/sessions, see its own comment) -- clearing
+  // the name on an edit and saving should not be able to drop the session out of Home's filters
+  // the same way a blank name at creation did.
+  if (typeof b.name === 'string') s.name = capStr(b.name, 80).trim() || 'New workout';
   if (b.scheduledAt) s.scheduledAt = capStr(b.scheduledAt, 40);
   if (typeof b.location === 'string') s.location = capStr(b.location, 120);
   if ('lengthMin' in b) s.lengthMin = numIn(b.lengthMin, 1440) || null;
