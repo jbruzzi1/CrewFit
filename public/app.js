@@ -1332,7 +1332,7 @@ async function openSession(id, opts){
   notesAutosize();
   // v312: every inline logger's "when to add weight" box loads after the page is on screen, so
   // it never delays the render -- same as the old sheet did for its one exercise.
-  if(canEdit) for(const e of s.exercises) refreshLogRec(e.id);
+  if(canEdit) for(const e of s.exercises) refreshLogRec(e.id, s);
   // v254 (Jeff): tapping into a screen used to leave the window wherever it happened to be
   // scrolled from the PREVIOUS screen, so a session opened after scrolling halfway down Home
   // could render already scrolled to the middle.
@@ -2653,11 +2653,20 @@ function focusLogBlock(exId){
 // correct one with no error and nothing visibly wrong. Guarded with a per-card counter stashed on
 // the element -- each call stamps the next number and only the response matching the CURRENT
 // stamp is allowed to render.
-function refreshLogRec(exId){
+function refreshLogRec(exId, s){
   const block = logBlock(exId); if(!block) return;
   const recName = block.dataset && block.dataset.rec;
   if(typeof recName !== 'string' || !recName) return;
   const mySeq = (block._recSeq = (typeof block._recSeq === 'number' ? block._recSeq : 0) + 1);
+  // Sep 10 2026 (Jeff, real bug report): "the logging page is saying 'one more set like that'
+  // before I even logged a set... If I haven't logged a set yet, it should say something that
+  // depicts what we did last time." "One more set like that" only makes sense once there IS a
+  // set today to be "one more" of -- read cold, at the top of an exercise you haven't touched
+  // yet this workout, it has nothing to point back to. `s` (the current session, already in
+  // scope at every call site below) says whether THIS exercise has a set logged today; the r.soon
+  // branch below picks its wording from that, same "state" this box is a caller for the r.ready/
+  // r.hold branches, just this one now has two versions instead of one.
+  const hasLoggedToday = !!(s && s.logs && s.logs[ME.id] && s.logs[ME.id].some(l => l.exerciseId === exId));
   H.get('/api/progress/exercise/'+encodeURIComponent(recName)).then(r=>{
     if(block._recSeq !== mySeq) return;   // superseded by a newer refresh on this same card
     if(!document.body.contains(block)) return;   // the page re-rendered or was left meanwhile
@@ -2689,10 +2698,21 @@ function refreshLogRec(exId){
     // today changes nothing, today already counts once. Jeff's call, after hearing that: keep
     // "set" (his preferred wording, simplest to read) but land the timing in the subtext instead,
     // where it was missing too -- "next time" is the one word doing the disambiguating work here.
-    else if(r.soon) box.innerHTML=`<div class="log-rec almost">
+    else if(r.soon) box.innerHTML = hasLoggedToday
+      // Already logged at least one set for this exercise today -- "one more" has something real
+      // to be "one more" of, so the original Sep 9 wording (see the comment above) stands.
+      ? `<div class="log-rec almost">
         <span class="lr-ic" aria-hidden="true">⋯</span>
         <span class="lr-t">One more set like that</span>
         <span class="lr-why">hit ${r.soon.targetRepsMax} reps at ${W(r.soon.weight)} next time and the weight goes up</span>
+      </div>`
+      // Nothing logged for this exercise yet this workout -- state the fact ("last time") instead
+      // of a comparison with no antecedent, then move the ask to the subtext (Jeff's own pick,
+      // Sep 10, from three rendered options).
+      : `<div class="log-rec almost">
+        <span class="lr-ic" aria-hidden="true">⋯</span>
+        <span class="lr-t">Last time: ${W(r.soon.weight)} × ${r.soon.reps}</span>
+        <span class="lr-why">Match that today and the weight goes up next time</span>
       </div>`;
     // Nothing to advise yet. With a seeded working weight there is still something personal to
     // say; otherwise the card stays clean -- v312: with every exercise's logger on one page, the
@@ -3007,7 +3027,7 @@ async function addLogSet(exId){
     if(rirEl){ rirEl.value=''; rirEl.classList.add('hidden'); const rirBtn=lf(exId,'rirBtn'); if(rirBtn) rirBtn.classList.remove('hidden'); }
     // Live feedback instead of a one-time prediction — see refreshLogRec's own comment. Fire-and-
     // forget: the sets list above has already updated and must not wait on this.
-    refreshLogRec(exId);
+    refreshLogRec(exId, s);
     startRest(exId);
   } finally {
     ADDLOG_BUSY = false;
@@ -3054,7 +3074,7 @@ async function saveLogSet(sid, exId, logId){
   closeSheet();
   // The PUT already returns the updated session -- paint it straight in, then let the
   // "when to add weight" box catch up on its own.
-  if(logBlock(exId)){ renderExSets(exId, s); refreshLogRec(exId); }
+  if(logBlock(exId)){ renderExSets(exId, s); refreshLogRec(exId, s); }
 }
 async function delLogSet(sid, exId, logId){
   confirmSheet('Delete set?', "The set comes off this workout — there's no undo.", 'Delete set', () => delLogSetConfirmed(sid, exId, logId));
@@ -3064,7 +3084,7 @@ async function delLogSetConfirmed(sid, exId, logId){
   if(s.error){ alert(s.error); return; }
   // confirmSheet is stacked on top of the Edit-set sheet -- both go.
   closeAllSheets();
-  if(logBlock(exId)){ renderExSets(exId, s); refreshLogRec(exId); }
+  if(logBlock(exId)){ renderExSets(exId, s); refreshLogRec(exId, s); }
 }
 let REST_TIMER=null, REST_EX=null, REST_UNTIL=0;
 // One rest timer for the whole page: starting one on a card stops whatever was ticking on another.
