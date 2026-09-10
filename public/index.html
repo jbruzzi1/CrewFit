@@ -1098,6 +1098,48 @@
     .ex-log .pp-pr.pr-pop { animation:prPop .5s cubic-bezier(.34,1.56,.64,1) both; }
     .rest { display:inline-flex; align-items:center; gap:8px; margin-top:14px; padding:8px 12px; background:#eef1f5; border-radius:999px; font-size:12px; color:var(--muted); }
     .rest b { color:var(--fg); font-size:14px; font-weight:700; }
+    /* Sep 10 2026, cold-review catch: .rest used to be a div[role=button] with a real <button
+       class="rest-x"> nested inside it (a real button inside another interactive element is an
+       invalid ARIA pattern). Now two plain sibling <button>s -- .rest-main (opens the edit popup)
+       and .rest-x (dismisses) -- so .rest itself is just a layout wrapper, not interactive. Both
+       buttons need explicit resets against the global `button{width:100%;margin:6px 0;padding:11px;
+       background:var(--green)}` default -- the plate-calculator design draft hit the exact bug of
+       forgetting this same override on a pill inside a flex row. */
+    .rest-main { flex:1; display:inline-flex; align-items:center; gap:8px; background:none; border:none; padding:0; margin:0; width:auto; font:inherit; color:inherit; text-align:left; cursor:pointer; }
+    .rest-x { flex-shrink:0; width:18px; height:18px; margin:0; padding:0; border-radius:50%; border:none; background:rgba(0,0,0,.08); color:var(--muted); font-size:9px; line-height:1; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
+    /* Sep 10 2026 (Jeff): "Is there a better design than this?" for the edit-rest-time popup --
+       asked for something smaller/simpler than a full bottom sheet, closer to the iPhone timer's
+       scroll wheel. This is a small centered card (.rest-pop), not the usual bottom sheet, holding
+       one scrollable wheel in 30-second steps (the half-minute granularity Jeff already asked for --
+       one dial beats a separate minutes field + seconds toggle for "simple"). Jeff picked the safer
+       interaction over auto-apply-on-scroll: scrolling only stages a value, nothing is set until the
+       "Set rest time" tap, so an accidental scroll can't quietly change a real rest time.
+       .center-pop overrides .sheet-back's default flex-end (bottom sheet) with a centered popup;
+       .rest-pop gets its own scale+fade transition instead of .sheet's slide-up-from-bottom, since a
+       small centered card sliding up from off-screen reads as a sheet, not a lightweight picker. */
+    .sheet-back.center-pop { align-items:center; justify-content:center; padding:20px; }
+    .rest-pop { width:min(272px, 100%); background:var(--card); border-radius:20px; padding:18px; box-sizing:border-box; box-shadow:0 12px 36px rgba(0,0,0,.22); transform:scale(.92); opacity:0; transition:transform .18s ease, opacity .18s ease; }
+    .sheet-back.show .rest-pop { transform:scale(1); opacity:1; }
+    .rest-pop-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }
+    .rest-pop-head span { font-size:15px; font-weight:700; color:var(--fg); }
+    .rest-pop-head .icon-btn { width:28px; height:28px; font-size:14px; }
+    /* The wheel: 3 rows tall (126px = 3 x 42px item height). .rw-pad top/bottom is one item-height
+       of empty space so the first and last real values can still scroll to the centered/selected
+       row -- without it they'd be stuck unable to reach the highlight band. scroll-snap-type keeps
+       a flick landing exactly on an item (no sub-row rest position), and the mask fades the top/
+       bottom rows so the wheel reads as "more above/below" the way the native iOS control does; an
+       unsupported mask just shows hard edges instead of failing, so this is safe to include. */
+    .rest-wheel { position:relative; height:126px; overflow-y:auto; scroll-snap-type:y mandatory; -webkit-overflow-scrolling:touch; margin:8px 0 16px; scrollbar-width:none; -webkit-mask-image:linear-gradient(to bottom, transparent, #000 22px, #000 calc(100% - 22px), transparent); mask-image:linear-gradient(to bottom, transparent, #000 22px, #000 calc(100% - 22px), transparent); }
+    .rest-wheel::-webkit-scrollbar { display:none; }
+    /* A filled band here (var(--line) on var(--card)) reads fine in dark but is nearly invisible in
+       light mode -- #edeff2 on #ffffff is only a couple percent of contrast. Two hairlines instead
+       of a fill is both more visible in both themes (a border reads at 1px where a wash doesn't) and
+       closer to the actual iOS picker Jeff described, which marks the selected row with hairlines,
+       not a filled pill. */
+    .rest-wheel::before { content:''; position:absolute; left:0; right:0; top:42px; height:42px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); pointer-events:none; }
+    .rw-pad { height:42px; }
+    .rw-item { position:relative; height:42px; line-height:42px; text-align:center; font-size:16px; color:var(--muted); scroll-snap-align:center; font-variant-numeric:tabular-nums; }
+    .rw-item.sel { color:var(--fg); font-weight:700; }
     .note { font-size:11px; color:var(--muted); margin-top:14px; }
     /* Load-type note under the weight box: says what the number means, and for a pair
        shows the doubled total live so the convention never has to be reasoned about. */
@@ -1455,6 +1497,7 @@
       /* -- surfaces & fills (light grays -> raised charcoal) -- */
       :where(html.theme-dark) .pp-dots:active, :where(html.theme-dark) .pp-menu button:active, :where(html.theme-dark) .lib-item:active, :where(html.theme-dark) .ex-card.log-row:active, :where(html.theme-dark) .lib-item.log-row:active, :where(html.theme-dark) .profile-set:active, :where(html.theme-dark) .mg-card:active, :where(html.theme-dark) .ex-row:active, :where(html.theme-dark) .ex-fav-btn:active, :where(html.theme-dark) .set-row:active, :where(html.theme-dark) .rc-chip, :where(html.theme-dark) .rest, :where(html.theme-dark) .load-chip, :where(html.theme-dark) .hold-ic, :where(html.theme-dark) .self-tag, :where(html.theme-dark) .empty-ic, :where(html.theme-dark) .streak, :where(html.theme-dark) .pill, :where(html.theme-dark) .chip, :where(html.theme-dark) .fav, :where(html.theme-dark) .ex-add, :where(html.theme-dark) .ex-idx, :where(html.theme-dark) .t-normal, :where(html.theme-dark) .pp-set-n, :where(html.theme-dark) .seg .chip, :where(html.theme-dark) .seg button, :where(html.theme-dark) #vis.seg, :where(html.theme-dark) .seg.wk-seg, :where(html.theme-dark) .ex-log .type-seg, :where(html.theme-dark) .sheet .type-seg, :where(html.theme-dark) .view-toggle, :where(html.theme-dark) .log-rec.soon .lr-ic, :where(html.theme-dark) .log-rec.hold .lr-ic { background:#262930; }
       :where(html.theme-dark) .missed-badge, :where(html.theme-dark) .upcoming-badge { background:#2f3238; color:#a2a7b0; }
+      :where(html.theme-dark) .rest-x { background:rgba(255,255,255,.12); }
       :where(html.theme-dark) .log-rec.hold { background:#1f2126; }
       /* Muscle diagrams are drawn on/for white - on a dark tile the gray figure dissolves
          and only the red pops (Jeff, Aug 28). The tile stays white in dark mode, like app-store
@@ -1590,6 +1633,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=407"></script>
+  <script src="app.js?v=409"></script>
 </body>
 </html>
