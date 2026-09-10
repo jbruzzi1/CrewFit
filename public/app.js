@@ -2046,11 +2046,33 @@ async function sendChat(id){
 }
 async function loadChat(s){
   const box=$('chatbox'); if(!box) return;
+  // Sep 10 2026: the icon+title+sub empty state below sits inside chatBlock's own .card (see the
+  // template in openSession/viewPost) -- a real bordered/shadowed box wrapping both the empty
+  // state AND the message input together. Jeff, after seeing it rendered: "that's too big...
+  // remove the box around the chat icon and text like the push day crew image" -- the crew chat's
+  // own empty state (app.js ~5990) renders OPEN, no card, same as every other homeEmpty() use in
+  // the app. This box only ever wraps content when there IS content -- .chat-card-open (defined
+  // next to .card in index.html) strips the card look while empty, cleared the moment real
+  // messages exist so a real thread still gets the normal boxed look.
+  const card = box.closest('.card');
   const cs=await H.get(`/api/sessions/${s.id}/comments`);
   // A refusal is not an empty thread. This reported "No comments yet" on a 403, which is a claim
   // about the workout that happens to be false.
-  if(!Array.isArray(cs)){ box.innerHTML='<div class="muted">Only people in this workout can see the chat.</div>'; return; }
-  if(!cs.length){ box.innerHTML='<div class="muted chat-empty">No messages yet — say hey.</div>'; return; }
+  if(!Array.isArray(cs)){ if(card) card.classList.remove('chat-card-open'); box.innerHTML='<div class="muted">Only people in this workout can see the chat.</div>'; return; }
+  if(!cs.length){
+    if(card) card.classList.add('chat-card-open');
+    // Sep 10 2026 (Jeff): drop the "Say hey to get the conversation started." subtitle here --
+    // "this is during a workout - so chatting will only be for workout purposes not full
+    // conversation" -- title only. Scoped to THIS box (the live workout's own Chat) only: the
+    // crew chat's empty state (app.js ~5990) and the posted-workout Comments empty state
+    // (loadPostComments, right below) both keep their own existing copy, untouched.
+    // Sep 10 2026 (Jeff): "move it to the middle now... I want to see it now that way" -- back to
+    // .home-empty's own default centered layout (dropping the text-align:left override from the
+    // first pass), same centering every other homeEmpty() use in the app already has.
+    box.innerHTML = `<div class="home-empty" style="margin:0 0 8px;padding:4px 0 2px">${ICON_CHAT}<div class="he-title">No messages yet</div></div>`;
+    return;
+  }
+  if(card) card.classList.remove('chat-card-open');
   const nm={};
   for(const c of cs){ if(!(c.userId in nm)) nm[c.userId]= await nameOf(c.userId); }
   box.innerHTML = cs.map(c=>{

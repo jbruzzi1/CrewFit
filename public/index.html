@@ -388,6 +388,13 @@
        and every other tab now matches (border = wall, shadow = light). */
     .sheet .card { border:1px solid var(--line); box-shadow:none; }  /* white-on-white: hairline, not shadow */
     .card { background:var(--card); border:none; border-radius:18px; padding:8px 14px; margin:12px 0; box-shadow:0 1px 2px rgba(20,24,31,.04), 0 8px 20px -10px rgba(20,24,31,.14); }
+    /* Sep 10 2026 (Jeff, on the live workout Chat's empty state boxed inside chatBlock's shared
+       .card): "that's too big... remove the box around the chat icon and text like the push day
+       crew image" -- the message input keeps its own bordered look either way (.chat-input has
+       its own border), only the card's own background/shadow/padding drop out, matching the "no
+       windows" rule (a card only renders when it has content). Toggled on/off the ancestor .card
+       by loadChat() in app.js -- see its own comment for why. */
+    .card.chat-card-open { background:transparent; box-shadow:none; padding:0; }
     /* Sep 6: the tap-in Notes box. display:block so its top margin collapses with the h2's like
        every card's does (an inline-block textarea stacked 12+10 = 22px under "Notes" vs 12-13px
        under every other heading -- Jeff: "too much padding from notes header to the notes box").
@@ -515,7 +522,16 @@
     .chat-row { align-items:center; }
     .chat-row > * { flex:initial; }
     .chat-input { flex:1; height:44px; padding:0 12px; border-radius:12px; border:1px solid var(--line); background:var(--card); color:var(--fg); font:inherit; font-size:14px; }
-    .chat-empty { text-align:center; font-size:12.5px; padding:10px 0 8px; }
+    /* Sep 10 2026 (Jeff, on a screenshot of a live workout's Chat section): the "No messages
+       yet -- say hey." line read wrong two ways -- centered when everything else on the screen
+       (Notes box, the message input, comment threads once they exist) sits flush left, and its
+       one-liner tone didn't match the title+sub phrasing the app already settled on for every
+       other open empty state (homeEmpty()/.he-title/.he-sub). Left-aligned here. The live workout
+       chat's own empty state (loadChat() in app.js) has since moved to that full homeEmpty()
+       icon+title+sub treatment instead of this class -- .chat-empty is now only the posted-
+       workout Comments empty state ("No comments yet -- be the first.", loadPostComments()),
+       which just needed the same alignment fix, not the copy or structural change. */
+    .chat-empty { text-align:left; font-size:12.5px; padding:10px 0 8px; }
     .chat-row .chat-send { flex:0 0 auto; height:44px; display:flex; align-items:center; justify-content:center; padding:0 18px; line-height:1; border-radius:12px; background:var(--blue); color:#fff; border:1px solid transparent; font-weight:700; }   /* Sep 7: solid, like + Add -- it is the row's one action */
     .pill { display:inline-block; background:#eef1f5; border-radius:999px; padding:3px 9px; font-size:11px; margin:3px 4px 3px 0; color:var(--muted); }
     .tag { font-size:11px; color:var(--muted); }
@@ -1574,6 +1590,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=403"></script>
+  <script src="app.js?v=404"></script>
 </body>
 </html>
