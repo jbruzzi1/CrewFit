@@ -416,17 +416,35 @@ async function home(opts){
   //     reads "0 PRs" — the stat simply isn't shown. Brand-new user: no row at all.
   const hr = new Date().getHours();
   const greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
-  const mine = sessions.filter(s => (s.history||[]).some(h => h.userId === ME.id));
+  // Sep 10 2026 (Jeff, real bug: finished a workout Wed 9/9, week-strip checkmark never showed):
+  // this used to require s.history specifically, which is ONLY written by /lock (creditFinish) --
+  // a narrower test than hasFinishedSession() (posts OR history), the definition already used
+  // everywhere else a "did I finish this" question gets asked (hiding Live-now above, and the
+  // profile's own myWorkouts list server-side). The gap: lock() below used to fire the /lock
+  // request and move straight to the Save page without checking whether that request actually
+  // succeeded -- a dropped connection (gym wifi/cell hiccup) meant the person still reached Save,
+  // still posted their recap, and the workout is genuinely done and sitting on their profile, but
+  // s.history was never written, so it fell off the ONE place still checking for it alone: this
+  // week strip. Matching hasFinishedSession() here closes the gap for good (defense in depth even
+  // though lock() below is now also fixed at the source) and needs no data migration -- Jeff's
+  // already-affected 9/9 workout already has s.posts set, so this alone puts its checkmark back.
+  const mine = sessions.filter(s => hasFinishedSession(s, ME.id));
   // "when" for a finished session: prefer my latest LOG timestamp (full ISO, converts to the
   // user's local day correctly) over history.date, which the server stamps as a UTC calendar
   // day — an 8pm ET workout lands on tomorrow's UTC date, and date-only strings can't be
-  // un-shifted client-side. Logs are visible to me on my own sessions; history.date is the
-  // fallback for sessions finished without logging any sets.
+  // un-shifted client-side. Logs are visible to me on my own sessions; history.date is the next
+  // fallback, for sessions finished without logging any sets; posts[].at (also a full ISO
+  // timestamp, see server.js's /post) is the LAST resort, for the posts-without-history gap above
+  // -- a session finished that way still has real logs almost always (sets are logged live, well
+  // before Save), so this mostly matters for an edge case (e.g. an empty quick workout posted with
+  // no sets logged at all), but skipping it would silently un-fix the mine widening just above.
   const whenDone = (s) => {
     const logAts = ((s.logs && s.logs[ME.id]) || []).map(l => l.at).filter(Boolean).sort();
     if(logAts.length) return new Date(logAts[logAts.length - 1]);
     const d = (s.history||[]).filter(h => h.userId === ME.id).map(h => h.date).sort().slice(-1)[0];
-    return d ? new Date(d + 'T12:00:00') : null;                 // noon dodges TZ edge-of-day drift
+    if(d) return new Date(d + 'T12:00:00');                       // noon dodges TZ edge-of-day drift
+    const post = s.posts && s.posts[ME.id];
+    return (post && post.at) ? new Date(post.at) : null;
   };
   const lastDone = mine
     .map(s => ({ s, when: whenDone(s) }))
@@ -3247,7 +3265,21 @@ function saveRestTimeWheel(exId){
 function confirmLogFinish(id){
   confirmSheet('Log & finish this workout?', "This locks in today's credit toward your streak and weekly volume. You can Reactivate it afterward from the ⋯ menu if you tapped by mistake or want to add more.", 'Log & Finish', () => lock(id), false);
 }
-async function lock(id){ await H.post(`/api/sessions/${id}/lock`,{localDate:localDateStr()}); showSavePage(id); }
+// Sep 10 2026 (Jeff, real bug -- see the comment on `mine` in home() for the full story): this
+// used to fire the /lock request and move straight to the Save page with no check on the
+// response, unlike every other write in this file (startSession, saveWorkout, etc. all check
+// r.error first). A dropped request (network hiccup) still landed the person on Save, which still
+// posts fine on its own separate endpoint -- so the workout looked completely done everywhere
+// except s.history was never actually written, silently losing its week-strip checkmark (now also
+// fixed at the read side) and, more importantly, its real streak/weekly-volume credit, which
+// nothing else backfills. Checking r.error here stops that from happening in the first place: the
+// person sees the real failure and can just tap Log & Finish again instead of unknowingly losing
+// credit for a workout they did finish.
+async function lock(id){
+  const r = await H.post(`/api/sessions/${id}/lock`,{localDate:localDateStr()});
+  if(r && r.error){ alert(r.error); return; }
+  showSavePage(id);
+}
 
 // The LAST screen of finishing a workout: Log & Finish -> save page (notes, photo, visibility)
 // -> here. Seen once, then gone. Jeff's call: this is a moment, not a record — the permanent copy
