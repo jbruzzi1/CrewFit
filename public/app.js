@@ -2489,7 +2489,11 @@ function exLogBlockHtml(s, e, o){
   return `<div class="ex-head"><div class="ex-main"><div class="ex-name">${o.name}</div>${target}${o.statusTag||''}${o.crewLine||''}</div>${infoBtn}</div>
     <div class="pp-sets ex-log-sets" data-f="sets">${exSetRowsHtml(s.id, e.id, o.exLogs, loadType)}</div>
     <div data-f="rec"></div>
-    <div class="seg type-seg" data-f="typeSeg" role="radiogroup" aria-label="Set type">
+    <button type="button" class="tt-pill" data-f="typePill" aria-label="Set type: ${SET_TYPES[0].label}. Tap to change." onclick="openTypeSeg('${e.id}')">
+      <span data-f="typePillLabel">${SET_TYPES[0].label}</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+    </button>
+    <div class="seg type-seg hidden" data-f="typeSeg" role="radiogroup" aria-label="Set type" tabindex="-1">
       ${SET_TYPES.map((t,i)=>`<div class="chip${i===0?' on':''}" role="radio" aria-checked="${i===0}" data-t="${t.key}" onclick="logSetType('${e.id}','${t.key}')">${t.label}</div>`).join('')}
     </div>
     <div data-f="lastRef">${lastSetChipHtml(e.id, o.exLogs)}</div>
@@ -2739,14 +2743,46 @@ function useSuggested(exId, w){
   const box=lf(exId,'rec'); if(box) box.classList.add('used');
 }
 // v313 (Jeff, Sep 4): "remove the menu for selecting what type of set it is and have them all
-// listed." The four types (Normal / Warm up / Drop / Failure) sit in one always-visible row on
-// every card, smaller than the old chips so they fit cleanly; the collapsed "Normal ▾" pill from
-// v259 is gone. The selection persists from set to set on that card (a warm-up run stays on
-// Warm up until you tap Normal) -- with the whole row on screen the current pick is never hidden,
-// which was the only reason the pill needed its loud non-Normal colors.
+// listed." The four types (Normal / Warm up / Drop / Failure) sat in one always-visible row on
+// every card from then on -- replacing an earlier collapsed "Normal ▾" pill (v259) that opened a
+// menu, which is exactly what v313 asked to be rid of.
+//
+// Sep 10 2026: reversed again, deliberately, with that history surfaced to Jeff before touching
+// anything -- his own screenshot of a two-exercise workout prompted "do we feel it's cluttered,"
+// and the always-expanded type row was the single biggest thing making every card tall regardless
+// of whether you'd even logged a set yet. Flagged the v313 comment directly ("this is close to
+// what you already asked removed once") rather than quietly rebuilding it; Jeff, after hearing
+// that: "I feel this extra tap isn't really an issue. It helps with the clutter and it's one
+// simple tap." So the pill is back, but not the exact same pill: the type-seg row itself is
+// UNCHANGED (same markup/classes) and swaps in-place instead of a separate popup/menu, and
+// logSetType collapses back to it automatically after any pick, so the current state (Normal or
+// otherwise) is always visible at a glance even collapsed -- there's no hidden non-default state
+// the old pill needed loud colors to surface.
+function openTypeSeg(exId){
+  const pill=lf(exId,'typePill'), seg=lf(exId,'typeSeg'); if(!pill||!seg) return;
+  pill.classList.add('hidden');
+  seg.classList.remove('hidden');
+  // Cold-review catch (Sep 10 2026): hiding the focused pill button drops focus to <body> with
+  // nothing to catch it. seg carries tabindex="-1" so it's programmatically focusable (not in the
+  // Tab order, just a landing spot) -- focusing it here keeps a keyboard/AT user's place instead of
+  // silently bouncing them out to the top of the document.
+  seg.focus();
+}
 function logSetType(exId, key){
   const seg=lf(exId,'typeSeg'); if(!seg) return;
+  // Only true when this collapse was triggered from within an open, focused seg (a real tap/key
+  // on a chip after openTypeSeg ran) -- NOT when logSetType is called programmatically to restore
+  // saved state (captureLogState/restoreLogState, quick-log voice parsing, addLogSet's own type
+  // read), where the seg was never opened/focused and grabbing focus would yank it away from
+  // whatever the user is actually doing (e.g. mid-type in the weight box).
+  const hadFocus = seg.contains(document.activeElement);
   seg.querySelectorAll('.chip').forEach(c=>{ const on = c.getAttribute('data-t')===key; c.classList.toggle('on', on); c.setAttribute('aria-checked', on ? 'true' : 'false'); });
+  const t=SET_TYPES.find(t=>t.key===key);
+  const pill=lf(exId,'typePill'), label=lf(exId,'typePillLabel');
+  if(label && t) label.textContent=t.label;
+  if(pill){ pill.setAttribute('aria-label', `Set type: ${t?t.label:key}. Tap to change.`); pill.classList.remove('hidden'); }
+  seg.classList.add('hidden');
+  if(hadFocus && pill) pill.focus();
 }
 // RIR (task #62) stays hidden by default, same reasoning as it resetting every set (see
 // addLogSet below): it's an occasional, deliberate read on effort, not something that should

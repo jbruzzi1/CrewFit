@@ -1093,6 +1093,20 @@
     .ex-log .type-seg { background:#eef1f5; border-radius:10px; padding:3px; gap:0; margin:8px 0 8px; }
     .ex-log .type-seg .chip { flex:1; border:none; background:transparent; border-radius:8px; padding:7px 4px; font-size:11.5px; font-weight:600; color:var(--muted); white-space:nowrap; }
     .ex-log .type-seg .chip.on { background:#fff; color:var(--blue); box-shadow:0 1px 2px rgba(0,0,0,.08); font-weight:700; }
+    /* Sep 10 2026 (Jeff, on a screenshot of his own workout page): "How do we feel about the
+       visual of the logging in this page now. Do we feel it's cluttered or proper?" -- pushed to
+       actually critique it rather than just agree: the full Normal/Warm up/Drop/Failure segmented
+       control sat fully expanded on every exercise card, all the time, even before any set was
+       logged, despite "Normal" being the pick ~90%+ of the time. Approved design (shown as a
+       mockup first, real build only after Jeff said "Let's ship this"): collapse it to a small
+       "<type> ⌄" pill by default; tapping it swaps in the exact same .type-seg control in place.
+       Picking a chip collapses back to the pill immediately, now labeled with whatever was picked
+       -- so the pill always shows the true current state at a glance, expanded only to change it. */
+    .tt-pill { display:inline-flex; align-items:center; gap:5px; background:#eef1f5; color:var(--fg);
+      border:none; border-radius:999px; padding:7px 11px 7px 13px; font-size:12px; font-weight:600;
+      margin:8px 0 8px; cursor:pointer; width:auto; }
+    :where(html.theme-dark) .tt-pill { background:#262930; }
+    .tt-pill svg { width:11px; height:11px; opacity:.55; }
     .ex-log .load-note { margin-top:8px; }
     .ex-log .rest { margin-top:10px; }
     .ex-log .pp-pr.pr-pop { animation:prPop .5s cubic-bezier(.34,1.56,.64,1) both; }
@@ -1633,6 +1647,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Friends</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=409"></script>
+  <script src="app.js?v=410"></script>
 </body>
 </html>
