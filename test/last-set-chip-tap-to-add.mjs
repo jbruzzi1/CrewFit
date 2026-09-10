@@ -28,7 +28,14 @@ const w = field(''), r = field(''), rir = field(''), rirBtn = field('');
 const typeSeg = { querySelector: (sel) => sel === '.chip.on' ? chip('normal') : null };
 const sets = { innerHTML: '' };
 const lastRef = { innerHTML: '' };
-const rest = { innerHTML: '', querySelector: (sel) => sel === '.rest' ? { onclick: null } : null };
+// Sep 10 2026: startRest() (app.js) looks up two sibling buttons inside the '.rest' element it
+// just rendered -- '.rest-main' (opens the edit popup) and '.rest-x' (dismisses). This stub keeps
+// drifting behind startRest's real shape as that markup evolves (round 1 added '.rest-x', round 2's
+// cold-review pass split the old div[role=button] into '.rest-main' + '.rest-x' siblings) -- match
+// whatever startRest actually queries for so this fake DOM doesn't lag behind it again.
+const rest = { innerHTML: '', querySelector: (sel) => sel === '.rest' ? {
+  querySelector: (s2) => (s2 === '.rest-main' || s2 === '.rest-x') ? { onclick: null } : null
+} : null };
 const rec = { innerHTML: '' };
 
 const FIELDS = { w, r, rir, rirBtn, typeSeg, sets, lastRef, rest, rec };

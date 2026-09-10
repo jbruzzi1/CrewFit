@@ -3089,6 +3089,17 @@ async function delLogSetConfirmed(sid, exId, logId){
 let REST_TIMER=null, REST_EX=null, REST_UNTIL=0;
 // One rest timer for the whole page: starting one on a card stops whatever was ticking on another.
 // `until` (ms epoch) is passed by restoreLogState so a re-render resumes the countdown where it was.
+// Sep 10 2026 (Jeff): "We should be able to edit the rest timer to what we want it do be - having
+// it be clickable and opening a pop up to put what we want it to be." Tapping the countdown used
+// to dismiss it outright; that's now its own small x (restStop) so the main tap opens
+// editRestTime's popup instead.
+// Cold-review catch (same day): the two were originally one <div role="button" tabindex="0"> with
+// a real <button class="rest-x"> nested inside it, relying on stopPropagation to keep the two taps
+// apart. A real button nested inside another interactive element is an invalid ARIA pattern (can
+// mis-target/double-announce under VoiceOver, which matters since Jeff validates on a real
+// iPhone) -- now two plain sibling <button>s instead of one interactive wrapper around another,
+// so there's nothing nested and no stopPropagation/closest() dance needed for the split. A real
+// <button> is natively Enter/Space-operable, so the old hand-rolled onkeydown is gone too.
 function startRest(exId, until){
   clearInterval(REST_TIMER);
   document.querySelectorAll('.ex-log [data-f="rest"]').forEach(el=>{ el.innerHTML=''; });
@@ -3096,9 +3107,99 @@ function startRest(exId, until){
   REST_EX = exId; REST_UNTIL = until || (Date.now() + 60*1000);
   const restLeft = ()=>{ const sec=Math.max(0, Math.round((REST_UNTIL-Date.now())/1000)); return `${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`; };
   const restStop = ()=>{ clearInterval(REST_TIMER); REST_EX=null; REST_UNTIL=0; box.innerHTML=''; };
-  box.innerHTML=`<div class="rest"><span>Rest</span><b data-f="restN">${restLeft()}</b><span>· tap to dismiss</span></div>`;
-  box.querySelector('.rest').onclick=restStop;
+  box.innerHTML=`<div class="rest">
+      <button type="button" class="rest-main" aria-label="Edit rest time">
+        <span>Rest</span><b data-f="restN">${restLeft()}</b><span>· tap to edit</span>
+      </button>
+      <button type="button" class="rest-x" aria-label="Dismiss rest timer">✕</button>
+    </div>`;
+  const restEl=box.querySelector('.rest');
+  restEl.querySelector('.rest-main').onclick=()=>editRestTime(exId);
+  restEl.querySelector('.rest-x').onclick=()=>restStop();
   REST_TIMER=setInterval(()=>{ const el=box.querySelector('[data-f="restN"]'); if(el) el.textContent=restLeft(); if(REST_UNTIL-Date.now()<=0) restStop(); },1000);
+}
+// Sep 10 2026 (Jeff, confirmed over a few rounds): tapping the running countdown opens this
+// instead of dismissing (dismiss is the timer's own small x, see startRest); the value picked
+// here only overrides the CURRENT countdown, not a new default for sets logged after this one --
+// each new rest still starts at the usual 60s unless edited again.
+//
+// Round 2 (same day): Jeff saw the first build (a full bottom sheet: a Minutes number field plus
+// a :00/:30 toggle) and asked "Is there a better design than this... tap on the timer and a small
+// 00:00 opens up and you can scroll up or down like on the iphone timer." Replaced with a small
+// centered popup (.rest-pop, not the usual .sheet) holding ONE scroll wheel in 30-second steps --
+// one dial matches "simple" better than a text field plus a separate seconds toggle, and 30s steps
+// are exactly the half-minute granularity already agreed (90s/45s rests are common), capped at
+// 60:00 ("keeping it only to allow minutes not past 60 minutes to keep it tighter"), floored at
+// :30 (a 0:00 "rest" isn't a rest). Jeff picked the safer of the two interaction options over
+// auto-apply-while-scrolling: scrolling only stages a value (REST_WHEEL_PENDING), nothing is set
+// until the "Set rest time" tap actually applies it -- so a stray scroll can't silently change a
+// real rest time out from under you.
+const REST_WHEEL_STEP = 30, REST_WHEEL_MIN = 30, REST_WHEEL_MAX = 3600, REST_ITEM_H = 42;
+const REST_WHEEL_VALUES = Array.from({length:(REST_WHEEL_MAX-REST_WHEEL_MIN)/REST_WHEEL_STEP + 1}, (_,i)=>REST_WHEEL_MIN + i*REST_WHEEL_STEP);
+function fmtRest(sec){ return `${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`; }
+let REST_WHEEL_PENDING = REST_WHEEL_MIN;
+// Cold-review catches (same day), on top of the wheel itself:
+// - The wheel had no keyboard path at all -- a scroll-only control is a real a11y regression from
+//   round 1's plain number field. #restWheel is now tabindex="0" + role="slider" with an
+//   ArrowUp/ArrowDown handler that moves one 30s step at a time (ArrowUp = less rest, matching
+//   "up the list" = earlier/smaller values), so a keyboard/Switch-Control user can tab in, arrow to
+//   a value, then tab to "Set rest time" and press it -- same staged-then-confirmed flow as a real
+//   scroll, nothing skips the confirm step.
+// - onRestWheelScroll used to re-query and re-toggle all 120 .rw-item nodes on every single scroll
+//   event, which fires at high frequency during a real momentum scroll -- real, if minor, jank risk
+//   on a slower WebView. The items are now cached once (wheel._items) and only the previous/next
+//   selected element's class is ever touched.
+// - saveRestTimeWheel now checks REST_EX still matches the exercise this popup was opened for.
+//   REST_EX/REST_UNTIL are single global state for "one rest timer for the whole page" (see
+//   startRest's comment) -- if a DIFFERENT exercise's set gets logged (and so starts ITS OWN rest
+//   timer) while this popup is still open, confirming here would silently overwrite that other,
+//   now-live timer with this popup's stale staged value. If the exercise this popup belongs to is
+//   no longer the page's active timer, the world moved on under it -- close without applying rather
+//   than clobber whatever timer is actually running now.
+function editRestTime(exId){
+  const totalSec = Math.max(REST_WHEEL_MIN, Math.min(REST_WHEEL_MAX, Math.round((REST_UNTIL - Date.now())/1000)));
+  const idx = Math.round((totalSec - REST_WHEEL_MIN) / REST_WHEEL_STEP);
+  REST_WHEEL_PENDING = REST_WHEEL_VALUES[idx];
+  const back = openSheetHtml(`
+    <div class="rest-pop" onclick="event.stopPropagation()">
+      <div class="rest-pop-head"><span>Rest time</span><button class="icon-btn" onclick="closeSheet()" aria-label="Close">✕</button></div>
+      <div class="rest-wheel" id="restWheel" tabindex="0" role="slider" aria-label="Rest time, 30 second steps"
+           aria-valuemin="${REST_WHEEL_MIN}" aria-valuemax="${REST_WHEEL_MAX}" aria-valuenow="${REST_WHEEL_PENDING}" aria-valuetext="${fmtRest(REST_WHEEL_PENDING)}"
+           onscroll="onRestWheelScroll(this)" onkeydown="onRestWheelKey(event,this)">
+        <div class="rw-pad"></div>${REST_WHEEL_VALUES.map(v=>`<div class="rw-item" data-sec="${v}">${fmtRest(v)}</div>`).join('')}<div class="rw-pad"></div>
+      </div>
+      <button class="blue" onclick="saveRestTimeWheel('${exId}')">Set rest time</button>
+    </div>`);
+  back.classList.add('center-pop');
+  const wheel = back.querySelector('#restWheel');
+  wheel._items = Array.from(wheel.querySelectorAll('.rw-item'));   // cache once -- avoid a 120-node scan on every scroll tick
+  wheel._selIdx = -1;
+  wheel.scrollTop = idx * REST_ITEM_H;   // land already-positioned, no visible scroll-in jump
+  onRestWheelScroll(wheel);              // paint the initial highlighted row without waiting for a scroll event
+}
+function onRestWheelScroll(wheel){
+  const idx = Math.max(0, Math.min(REST_WHEEL_VALUES.length-1, Math.round(wheel.scrollTop / REST_ITEM_H)));
+  REST_WHEEL_PENDING = REST_WHEEL_VALUES[idx];
+  wheel.setAttribute('aria-valuenow', REST_WHEEL_PENDING);
+  wheel.setAttribute('aria-valuetext', fmtRest(REST_WHEEL_PENDING));
+  if(idx === wheel._selIdx) return;
+  if(wheel._items){
+    if(wheel._selIdx>=0 && wheel._items[wheel._selIdx]) wheel._items[wheel._selIdx].classList.remove('sel');
+    if(wheel._items[idx]) wheel._items[idx].classList.add('sel');
+  }
+  wheel._selIdx = idx;
+}
+function onRestWheelKey(ev, wheel){
+  if(ev.key==='ArrowUp') wheel.scrollTop = Math.max(0, wheel.scrollTop - REST_ITEM_H);
+  else if(ev.key==='ArrowDown') wheel.scrollTop = Math.min((REST_WHEEL_VALUES.length-1)*REST_ITEM_H, wheel.scrollTop + REST_ITEM_H);
+  else return;
+  ev.preventDefault();
+  onRestWheelScroll(wheel);
+}
+function saveRestTimeWheel(exId){
+  closeSheet();
+  if(REST_EX !== exId) return;   // a different exercise started its own rest timer while this popup was open -- this one is stale, don't clobber it
+  startRest(exId, Date.now() + REST_WHEEL_PENDING*1000);
 }
 // Jeff, Aug 30: "I accidentally logged my work[out]... should we put an 'are you sure' style
 // button when logging instead of reactivating." Log & Finish used to fire lock() on a single tap
