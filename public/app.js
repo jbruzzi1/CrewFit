@@ -3379,7 +3379,12 @@ async function deleteSessionConfirmed(id, alreadyFinished){
   // already happened either way; only what happens next is gated.
   if(r && r.canLeave){ if(nothingNavigatedSince(epoch)) return leaveWorkout(id, alreadyFinished); return; }
   else if(r && r.error){ alert(r.error); return; }
-  else if(nothingNavigatedSince(epoch)) home();
+  // Sep 10 2026 (Jeff, real bug report -- see the comment on showTab('home') in cancelCreate()
+  // below for the full mechanism): showTab('home'), not a bare home() call -- home() only changes
+  // what's ON SCREEN, not CURRENT_NAV_STATE/the actual browser history entry, so Back after this
+  // could land on whatever screen was last actually tracked (e.g. a stale library visit from
+  // earlier in the session) instead of Home.
+  else if(nothingNavigatedSince(epoch)) showTab('home');
 }
 // v187 (Leave Workout redesign), Jeff Aug 19-20. Two doors lead here: the Leave button (any
 // non-creator participant) and Delete's canLeave fallback above (creator, when someone else's
@@ -3405,7 +3410,8 @@ async function leaveWorkoutConfirmed(id, keep){
   // whatever sheet is topmost right now, not a reference to the one this leave came from, so a
   // stale response could close an unrelated sheet the user had opened since, on top of yanking
   // them home.
-  if(nothingNavigatedSince(epoch)){ closeSheet(); home(); }
+  // Sep 10 2026: showTab('home'), not bare home() -- see cancelCreate()'s comment for why.
+  if(nothingNavigatedSince(epoch)){ closeSheet(); showTab('home'); }
 }
 // Jeff, Aug 28: "Once its posted on my page - I want to be able to delete it off my page."
 // Deliberately NOT Leave Workout above -- Leave (v187) exists specifically to KEEP your
@@ -3763,7 +3769,16 @@ async function submitSession(){
     // An interruption on every save just trains you to reflex-tap past it.
     // v252 (audit finding): home() used to fire unconditionally -- the session was still
     // created/edited either way (that write is above, unconditional), only the navigation is gated.
-    if(nothingNavigatedSince(epoch)) home();
+    // Sep 10 2026 (Jeff, real bug report): showTab('home'), not bare home() -- see cancelCreate()'s
+    // comment for the full mechanism. This is the exact site behind the reported repro: creating a
+    // workout via "+ Add exercise" leaves CURRENT_NAV_STATE parked on the library tab (that detour
+    // correctly pushes its own {t:'tab',tab:'lib'} entry via showTab('lib', true) in
+    // openAddExercises(), but libDone()'s return to createFlow() -- by design, see the comment
+    // above CURRENT_NAV_STATE's declaration -- never re-tracks anything, since create-flow
+    // deliberately doesn't get its own history step). A bare home() here rendered Home on screen
+    // but left that stale 'lib' entry as the actual top of the browser's history stack, so
+    // Start Now's own (correct) push landed right on top of it -- one Back later, Library.
+    if(nothingNavigatedSince(epoch)) showTab('home');
   } finally {
     SUBMIT_BUSY = false;
   }
@@ -3809,7 +3824,10 @@ function planDayFor(ymd){
   }
   createFlow();
 }
-function cancelCreate(){ EDITING_SESSION=null; EDITING_TPL=null; home(); }
+// Sep 10 2026: showTab('home'), not bare home() -- same fix as submitSession()'s success path
+// (see its own comment for the full mechanism/root cause). "← Cancel" is the other door out of
+// create-flow, same stale-nav-state risk if the exercise picker was visited first.
+function cancelCreate(){ EDITING_SESSION=null; EDITING_TPL=null; showTab('home'); }
 // Skips the whole create-flow wizard — no name, no schedule picker, no invite step, and (Jeff,
 // Aug 25: a tap of the button shouldn't immediately create it) no session on the server either,
 // not until you've actually picked something. Tapping "Quick Workout" drops you straight into the
@@ -7093,7 +7111,7 @@ async function doResetWorkouts(){
   if(r && r.error){ alert(r.error); return; }
   ME.workoutsCompleted = 0;
   closeSheet();
-  home();
+  showTab('home'); // Sep 10 2026: not bare home() -- see cancelCreate()'s comment for why.
 }
 function pickUnits(){
   const cur = myUnit();
