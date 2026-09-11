@@ -359,6 +359,30 @@
     .hist-swipe:last-child { border-bottom:none; }
     .hist-swipe .feed-item { border-bottom:none; }
     .hist-swipe-row { touch-action:pan-y; }
+    /* Sep 11 2026 (Activity page redesign) -- "ar-" (Activity Redesign) prefix, carried over
+       unchanged from the mockup Jeff approved (test/_verify_activity_redesign_mock.mjs, "Yes").
+       Today's PR/recap moments render as these bigger hero cards; everything else (and any
+       PR/recap older than today) renders as a compact .feed-strip row instead -- see friends(). */
+    .ar-card { background:var(--card); border-radius:18px; padding:14px 16px; margin:12px 0; box-shadow:0 1px 2px rgba(20,24,31,.04), 0 8px 20px -10px rgba(20,24,31,.14); }
+    .ar-card-top { display:flex; align-items:center; gap:10px; }
+    .ar-card-top .crew-av { width:36px; height:36px; border-radius:50%; flex:0 0 auto; font-size:13px; }
+    .ar-who { flex:1; min-width:0; font-size:14.5px; }
+    .ar-who .tag { font-size:12px; color:var(--muted); margin-top:1px; }
+    .ar-flame { color:var(--green); flex:0 0 auto; width:20px; height:20px; }
+    .ar-flame svg { width:20px; height:20px; }
+    .ar-pr-headline { font-size:19px; font-weight:800; margin:12px 0 2px; }
+    .ar-pr-sub { font-size:13px; color:var(--muted); margin-bottom:2px; }
+    .ar-pr { background:rgba(22,163,74,.08); }
+    .ar-card-bottom { display:flex; align-items:center; gap:10px; margin-top:12px; }
+    .ar-heart { display:inline-flex; align-items:center; gap:5px; background:transparent; border:none; color:var(--muted); font-size:13px; font-weight:700; padding:4px 2px; cursor:pointer; width:auto; margin:0; }
+    .ar-heart svg { width:19px; height:19px; }
+    .ar-heart.on { color:var(--blue); }
+    .ar-crew-tag { margin-left:auto; font-size:12px; color:var(--muted); font-weight:600; }
+    .ar-crew-tag-inline { font-size:12px; color:var(--muted); font-weight:600; }
+    .ar-when { margin-left:auto; flex:0 0 auto; font-size:11.5px; }
+    .ar-mini-icon { display:flex; align-items:center; justify-content:center; width:18px; height:18px; color:var(--muted); }
+    .ar-mini-icon svg { width:18px; height:18px; }
+    .feed-strip .ar-heart { margin-left:auto; }
     .muted { color:var(--muted); font-size:12px; }
     .sm-text { font-size:11px; }
     .swap-note { font-size:11px; color:var(--muted); font-weight:400; }
@@ -1645,6 +1669,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Activity</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=418"></script>
+  <script src="app.js?v=423"></script>
 </body>
 </html>

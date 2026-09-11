@@ -1402,6 +1402,11 @@ app.post('/api/crews', auth, async (req, res) => {
   const memberIds = validCrewMemberIds(req.userId, (req.body || {}).memberIds);
   const c = { id: 'crew_' + uid(), name, ownerId: req.userId, memberIds: [req.userId, ...memberIds], messages: [], createdAt: new Date().toISOString() };
   DB.crews[c.id] = c;
+  // Cold-review catch (Sep 11 2026): PUT /api/crews/:id already emits 'joined_crew' for anyone
+  // ADDED later, but founding members picked right here at creation got nothing -- the exact same
+  // real action (being put in a crew) produced a different, inconsistent result depending on which
+  // endpoint happened to add you. Same event, same shape, just for memberIds instead of `before`.
+  for (const mid of memberIds) emitFeedEvent('joined_crew', mid, { crewId: c.id, crewName: c.name, text: `joined ${c.name}` });
   await save(DB);
   // Every other "you were just put into something" flow in this app notifies (workout invite,
   // follow accepted, new follower) -- being silently dropped into a standing group chat with no
@@ -1436,6 +1441,10 @@ app.put('/api/crews/:id', auth, async (req, res) => {
     // re-submits the same roster, which the client always does alongside a name change) must not
     // re-notify people who were already in the crew, only whoever is actually new to it.
     for (const mid of c.memberIds) if (!before.has(mid)) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} added you to the crew`, link: { type: 'crew', crewId: c.id } });
+    // Sep 11 2026 (Activity page): one event per newly-added member, no heart in the UI (see
+    // friends() in app.js) -- the "New follower"-style notification above already covers the
+    // 1:1 heads-up, this is purely the Activity feed's record of it.
+    for (const mid of c.memberIds) if (!before.has(mid)) emitFeedEvent('joined_crew', mid, { crewId: c.id, crewName: c.name, text: `joined ${c.name}` });
     // A newly-added member can already have logging that falls inside a running challenge's
     // window (see checkChallengeCompletion's comment) -- check right here, not just on the next
     // workout finish, so the crew isn't left staring at a stalled 100%+ bar with no celebration.
@@ -1723,6 +1732,11 @@ function checkChallengeCompletion(c) {
   c.messages.push({ id: 'cm_' + uid(), userId: null, system: true, at: ch.completedAt,
     text: `🎉 Challenge complete! ${total}${unit} ${ch.type} as a crew.` });
   for (const mid of c.memberIds) notify(mid, { title: c.name, body: `Challenge complete: ${ch.target}${unit} ${ch.type} this week! 🎉`, link: { type: 'crew', crewId: c.id } });
+  // Sep 11 2026 (Activity page): one shared feed event, `by` left null (see notify's own system-
+  // message pattern just above) since this is the crew's win, not any one member's -- app.js
+  // shows it once per viewer who's a member, same as the crew challenge banner already does.
+  emitFeedEvent('challenge_completed', null, { crewId: c.id, crewName: c.name, challengeType: ch.type,
+    target: ch.target, total, memberIds: [...c.memberIds], text: `crushed the ${ch.type} challenge — ${total}${unit} as a crew` });
   return true;
 }
 // Called right after a workout gets credited (session lock, and a keep-leave -- see creditFinish's
@@ -1734,6 +1748,78 @@ function checkCrewChallenges(userId) {
     if (!isCrewMember(c, userId)) continue;
     ensureCrewShape(c);
     checkChallengeCompletion(c);
+  }
+}
+// Sep 11 2026 (Activity page): snapshot of `userId`'s 1-based rank in every crew challenge they're
+// currently part of, taken right before creditFinish runs. creditFinish has already updated
+// DB.sessions by the time checkCrewChallenges runs after it, so "before" cannot be recovered from
+// inside checkCrewChallenges itself -- it must be captured this early by the caller and handed to
+// emitFinishFeedEvents below. Uses crewChallengeRank (defined near emitFeedEvent), which itself
+// short-circuits to null for a crew with no running, non-custom challenge.
+function crewRanksSnapshot(userId) {
+  const snap = {};
+  for (const c of Object.values(DB.crews || {})) {
+    if (!isCrewMember(c, userId)) continue;
+    snap[c.id] = crewChallengeRank(c, userId);
+  }
+  return snap;
+}
+// Called right after a workout is actually credited (session lock, and a keep-leave -- the same
+// two moments checkCrewChallenges already hooks into), to emit whatever ephemeral Activity-page
+// feed events that credit produced. Deliberately separate from checkCrewChallenges (which only
+// cares about challenge COMPLETION) since this covers three different things: the plain "finished
+// a workout" event, a streak milestone, and a crew-challenge rank improvement.
+function emitFinishFeedEvents(s, userId, ranksBefore, localDate) {
+  // `localDate` is the CLIENT's own today (see /lock and /leave, which already thread this same
+  // value into creditFinish) -- cold-review catch: this used to default to server UTC, which is
+  // wrong for most of a day across half the globe (a real two-consecutive-local-day streak could
+  // silently fail to announce itself, or announce a day early/late) even though creditFinish and
+  // currentStreak both already had the real local date on hand right here.
+  const today = isValidLocalDateStr(localDate) ? localDate : new Date().toISOString().slice(0, 10);
+
+  // "Finished a workout" -- ephemeral, and deliberately unconditional here: whether this ends up
+  // superseded by a posted recap (or by that same session's own PR -- see GET /api/feed) is a
+  // READ-time decision, not something decided at emit time, since either can happen any time
+  // after finishing. Names the actual session (Jeff, Sep 11: several of these sitting next to each
+  // other with nothing but "completed a workout" repeated was indistinguishable) -- same `s.name ||
+  // 'a workout'` fallback the recap row above already uses, so an unnamed session still reads fine.
+  // `at`: the workout's real performed date (perfDate(s.scheduledAt, ...), same helper/convention
+  // the PR emission below already uses) -- NOT literal "now". Cold-review catch (Jeff, Sep 11): this
+  // used to always stamp "now", so a backdated workout's plain completion row could misleadingly
+  // read as having JUST happened -- exactly the v239/v247 bug class the PR emission was already
+  // built to avoid, just missed here.
+  emitFeedEvent('completed_no_recap', userId, { sessionId: s.id, text: `completed ${s.name || 'a workout'}`,
+    at: perfDate(s.scheduledAt, new Date().toISOString()) });
+
+  // Streak -- at most one per user per LOCAL day, so finishing a SECOND workout the same day
+  // doesn't re-announce the same streak number as if it were new news. currentStreak is purely
+  // computed, never persisted (see its own comment) -- "already announced today" is tracked by
+  // scanning today's own feed events rather than a stored per-user flag. `at` mirrors
+  // buildActivityFor's own already-fixed 'streak'/'completed' rows (v247, see that function's own
+  // comment) -- the credited LOCAL day turned into a real date, not "now": a streak isn't tied to
+  // one session's scheduledAt the way completed_no_recap/pr are, it's tied to the calendar day it
+  // was credited on.
+  const streak = currentStreak(userId, today);
+  if (streak >= 2) {
+    const alreadyToday = Object.values(DB.feedEvents).some(e => e.type === 'streak' && e.by === userId && e.localDate === today);
+    if (!alreadyToday) emitFeedEvent('streak', userId, { streak, localDate: today, text: `hit a ${streak}-day streak`,
+      at: new Date(today + 'T00:00:00.000Z').toISOString() });
+  }
+
+  // Crew-challenge rank change -- deliberately scoped to just these two creditFinish call sites
+  // (not every place challengeProgress could theoretically shift), the same explicit scope
+  // tradeoff checkCrewChallenges itself already makes. Only reported while the challenge is STILL
+  // running: a crew whose challenge just completed as part of this same update gets its own, more
+  // meaningful 'challenge_completed' event instead (see checkChallengeCompletion) -- showing both
+  // for the same workout would be redundant.
+  if (!ranksBefore) return;
+  for (const c of Object.values(DB.crews || {})) {
+    if (!isCrewMember(c, userId)) continue;
+    const before = ranksBefore[c.id];
+    const after = crewChallengeRank(c, userId);
+    if (before == null || after == null || after >= before) continue;   // no challenge, or rank didn't improve
+    if (!runningChallenge(c)) continue;   // completed in this same update -- that event covers it
+    emitFeedEvent('rank', userId, { crewId: c.id, crewName: c.name, rank: after, text: `moved to #${after}` });
   }
 }
 app.post('/api/crews/:id/challenge', auth, async (req, res) => {
@@ -1763,6 +1849,13 @@ app.post('/api/crews/:id/challenge', auth, async (req, res) => {
     notifyBody = `${DB.users[req.userId].displayName} started a challenge: ${ch.target}${unit} ${type} this week`;
   }
   c.challenges.push(ch);
+  // Sep 11 2026 (Activity page): "started a challenge" -- attributed to the owner who started it,
+  // no heart in the UI (see friends() in app.js) since nothing has been earned yet. Reuses
+  // notifyBody's own wording, just without the "{displayName} " prefix -- app.js prepends the
+  // actor's name itself, same as every other feed row.
+  emitFeedEvent('challenge_started', req.userId, { crewId: c.id, crewName: c.name, challengeType: ch.type,
+    target: ch.target ?? null, title: ch.title || null,
+    text: notifyBody.slice(DB.users[req.userId].displayName.length + 1) });
   await save(DB);
   for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: notifyBody, link: { type: 'crew', crewId: c.id } });
   res.json(publicCrew(c, req.userId));
@@ -1973,56 +2066,83 @@ app.get('/api/version', (req, res) => {
   res.json({ v: _appVersion });
 });
 
+// Sep 11 2026: rewritten for the Activity page redesign. Two genuinely different sources feed
+// into one merged, sorted list:
+//   - Posted recaps (`s.posts[fid]`) -- UNCHANGED mechanism, permanent, profile-visible, with
+//     their existing like count (p.reactions) now echoed here too, so the Activity page can show
+//     the heart without a second request.
+//   - DB.feedEvents -- the new ephemeral, type-tagged records (see emitFeedEvent's own long
+//     comment for the full "why", and each emission site: the /log, /lock, /leave, and crew
+//     challenge/roster routes). Deliberately includes the VIEWER'S OWN events now, not just
+//     connections' -- Jeff's mockup shows the viewer's own PR as the very first card, so this is a
+//     personal-plus-social feed, a real change from the old friends-only Home strip this replaces.
+// `completed_no_recap` is suppressed here, at READ time, whenever that same session now HAS a
+// posted recap for that user -- the recap row already covers it, and posting can happen any time
+// after the plain "finished a workout" event was emitted (see emitFinishFeedEvents' own comment).
 app.get('/api/feed', auth, async (req, res) => {
   const myConnections = connectionsOf(req.userId);
+  const feedActors = new Set([req.userId, ...myConnections]);
   const items = [];
-  const weekAgo = Date.now() - 7*24*3600*1000;
-  // PRs from friends — grouped per friend per week (see groupPrsForFeed) so one big improving
-  // week is one row, not one row per exercise, firstLog baselines never masquerade as earned
-  // PRs, and nothing older than a week lingers.
-  for (const fid of myConnections) {
-    const prs = (DB.prs && DB.prs[fid]) ? Object.values(DB.prs[fid]) : [];
-    for (const g of groupPrsForFeed(prs, weekAgo)) items.push({ ...g, by: fid });
-  }
-  // Workouts completed this week (from session history)
-  for (const fid of myConnections) {
-    let count = 0, latest = 0;
-    for (const s of Object.values(DB.sessions)) {
-      for (const h of (s.history || [])) {
-        const t = new Date(h.date).getTime();
-        if (h.userId === fid && t >= weekAgo) { count++; if (t > latest) latest = t; }
-      }
-    }
-    // v239: stamped with the latest contributing workout, not now() - a summary stamped "now"
-    // permanently outranked every recap/PR row with a real timestamp (cold-review catch)
-    if (count > 0) items.push({ type: 'completed', by: fid, at: new Date(latest).toISOString(), text: `completed ${count} workout${count>1?'s':''} this week` });
-    // Current streak
-    const streak = currentStreak(fid);
-    // v247: same fix as 'completed' just above, applied here too (it was missed the first time
-    // around) — a streak of 2+ always has a session dated today or yesterday, which is always
-    // inside this same 7-day window, so `latest` (computed just above) is already the real date
-    // of that most recent training day rather than "whenever the feed happens to be requested".
-    if (streak >= 2) items.push({ type: 'streak', by: fid, at: new Date(latest).toISOString(), text: `hit a ${streak} day workout streak` });
-  }
-  // v239: friends' posted recaps from the week - the feed's first VISUAL rows. Same
-  // visibility gate as everywhere else (canSeePostAuthor); the thumbnail is only sent when the
-  // photo has been migrated to an /uploads/ URL - a still-inline data URI would bloat the feed
-  // payload, so those rows just go without a thumb until the next boot migrates them.
-  for (const fid of myConnections) {
-    for (const s of Object.values(DB.sessions)) {
-      const p = s.posts && s.posts[fid];
-      if (!p || !p.at || !(new Date(p.at).getTime() >= weekAgo)) continue;   // NaN fails CLOSED, same as the PR path
+  const weekAgo = Date.now() - FEED_EVENT_RETENTION_DAYS * 24 * 3600 * 1000;
+
+  for (const s of Object.values(DB.sessions)) {
+    for (const fid of Object.keys(s.posts || {})) {
+      if (!feedActors.has(fid)) continue;
+      const p = s.posts[fid];
+      if (!p || !p.at || !(new Date(p.at).getTime() >= weekAgo)) continue;   // NaN fails CLOSED
       if (!canSeePostAuthor(p, fid, req.userId, s)) continue;
       const img = (p.media || []).find(m => m && m.type === 'image' && typeof m.src === 'string' && m.src.startsWith('/uploads/'));
+      const reactions = Array.isArray(p.reactions) ? p.reactions : [];
       items.push({ type: 'recap', by: fid, at: p.at, text: `finished ${s.name || 'a workout'}`,
-        sessionId: s.id, thumb: img ? img.src : null });
+        sessionId: s.id, thumb: img ? img.src : null,
+        reactCount: reactions.length, reacted: reactions.includes(req.userId) });
     }
   }
-  items.sort((a,b)=> new Date(b.at) - new Date(a.at));
-  // Home shows this as a quick-glance strip, not a full history — cap it so a house full of
-  // active friends doesn't turn it into a scroll. Nothing is lost: every friend's complete
-  // recent activity is still on their own profile page (tap their name here to get there).
-  res.json(items.slice(0, 8));
+
+  // Jeff, Sep 11 2026 ("worth changing"): a session that earns a real PR but never gets a posted
+  // recap used to show TWICE -- the PR's own hero card, plus a separate, redundant "completed a
+  // workout" row for the very same workout. A pr event is exactly as strong a signal that this
+  // workout is already covered as a posted recap is, so it supersedes completed_no_recap the same
+  // way -- keyed by (by, sessionId) since a PR always carries the session it was set in.
+  const prSessions = new Set();
+  for (const ev of Object.values(DB.feedEvents)) {
+    if (ev.type === 'pr' && ev.sessionId) prSessions.add(ev.by + '|' + ev.sessionId);
+  }
+  for (const ev of Object.values(DB.feedEvents)) {
+    if (new Date(ev.at).getTime() < weekAgo) continue;
+    let visible;
+    if (ev.by === null) {
+      visible = Array.isArray(ev.memberIds) && ev.memberIds.includes(req.userId);
+    } else if (CREW_SCOPED_FEED_TYPES.has(ev.type)) {
+      // See CREW_SCOPED_FEED_TYPES' own comment -- connected to the actor is not enough, the
+      // viewer must still actually be in the crew this event is about.
+      const crew = ev.crewId && DB.crews[ev.crewId];
+      visible = feedActors.has(ev.by) && !!crew && isCrewMember(crew, req.userId);
+    } else {
+      visible = feedActors.has(ev.by);
+    }
+    if (!visible) continue;
+    if (ev.type === 'completed_no_recap') {
+      const s = DB.sessions[ev.sessionId];
+      const p = s && s.posts && s.posts[ev.by];
+      // Cold-review catch: superseding this on the mere EXISTENCE of a recap made the whole
+      // workout vanish for every viewer once ANY recap existed, even a 'private' one this
+      // particular viewer can't see -- the real recap row above already applies canSeePostAuthor,
+      // so this fallback row must apply the exact same gate before deferring to it.
+      if (p && canSeePostAuthor(p, ev.by, req.userId, s)) continue;   // superseded by a recap THIS viewer can actually see
+      if (prSessions.has(ev.by + '|' + ev.sessionId)) continue;   // superseded by that session's own PR hero card instead
+    }
+    const reactions = Array.isArray(ev.reactions) ? ev.reactions : [];
+    items.push({ ...ev, reactCount: reactions.length, reacted: reactions.includes(req.userId) });
+  }
+
+  items.sort((a, b) => new Date(b.at) - new Date(a.at));
+  // This now powers the Activity page's own Today/This week sections, not just a Home quick-
+  // glance strip -- a materially higher cap than the old 8. Nothing is lost either way: every
+  // friend's complete recent activity is still on their own profile page (tap their name to get
+  // there), and ephemeral events age out of DB.feedEvents entirely after FEED_EVENT_RETENTION_DAYS
+  // regardless of this cap.
+  res.json(items.slice(0, 40));
 });
 
 
@@ -2381,6 +2501,66 @@ app.post('/api/push/subscribe', auth, async (req, res) => {
 // NOTIFICATION_HISTORY_DAYS (pruneOldNotifications, below) -- an in-app inbox is not meant to
 // become a permanent activity log.
 const NOTIFICATION_HISTORY_DAYS = 7;
+
+// ---- Feed events (Activity page) ----
+// Sep 11 2026: the Friends page's redesign into "Activity" (Jeff's mockup + follow-up design
+// discussion). Every persisted feed event gets a `reactions: []` array from day one, regardless
+// of type -- Jeff: "why do we think we should add more to this list - as there won't ONLY be 3
+// types of activities on this page. that we may want to like - what about workouts, etc?" --
+// which types actually SHOW a heart in the UI is a separate, purely-client decision (see
+// friends() in app.js), not baked into this data model.
+//
+// Posted recaps are DELIBERATELY NOT feed events -- they keep their existing, permanent,
+// profile-visible like mechanism (s.posts[authorId].reactions, see POST
+// /api/sessions/:id/posts/:authorId/react) exactly as before. Everything created here is
+// EPHEMERAL by design (Jeff: "liking a PR on the activity page lets the user get awarded by
+// friends seeing it - but it doesn't get stored anywhere. Only likes for workouts do and it gets
+// stored on the profile"): pruned the same NOTIFICATION_HISTORY_DAYS-style window as
+// notifications (see pruneOldFeedEvents below), never surfaced anywhere permanent, and never
+// counted toward anything on the Profile page -- Jeff removed PRs from Profile specifically to
+// avoid endless scrolling and does not want that undone.
+const FEED_EVENT_RETENTION_DAYS = 7;
+// Cold-review catch (Sep 11 2026): these three types are all really ABOUT a specific crew (they
+// carry a crewId), not just about the actor -- being CONNECTED to the actor (feedActors) is not
+// the same as being able to see that crew. Without this, a follower of the actor who isn't in the
+// crew could get e.g. a 'joined_crew'/'rank' row in their own feed, tap it, and hit crewView's
+// member-only 403 -- a dead link that also incidentally leaked the crew's name/roster change to
+// someone outside it. GET /api/feed's visibility check below requires BOTH for these three types.
+// 'challenge_completed' doesn't need this: `by` is null (crew-shared) and it already gates on a
+// memberIds snapshot taken at emit time, which is its own, already-correct answer to "who saw it".
+const CREW_SCOPED_FEED_TYPES = new Set(['rank', 'challenge_started', 'joined_crew']);
+// type is one of: 'pr' | 'streak' | 'rank' | 'challenge_started' | 'challenge_completed' |
+// 'joined_crew' | 'completed_no_recap'. `by` is the userId whose activity this is; `fields` is
+// whatever that type needs to render (see each call site below and friends() in app.js).
+function emitFeedEvent(type, by, fields) {
+  const id = 'fev_' + uid();
+  DB.feedEvents[id] = { id, type, by, at: new Date().toISOString(), reactions: [], ...fields };
+  return DB.feedEvents[id];
+}
+// Mirrors pruneOldNotifications below exactly -- GET /api/feed already filters to a recent window
+// on read, so this is pure storage hygiene, not correctness; called once at boot and every few
+// hours by a timer, same as notifications (see the boot section at the bottom of this file).
+function pruneOldFeedEvents() {
+  const cutoff = Date.now() - FEED_EVENT_RETENTION_DAYS * 86400000;
+  let removed = 0;
+  for (const id of Object.keys(DB.feedEvents)) {
+    if (new Date(DB.feedEvents[id].at).getTime() < cutoff) { delete DB.feedEvents[id]; removed++; }
+  }
+  return removed;
+}
+// Current 1-based leaderboard rank of `userId` in crew `c`'s running challenge, or null when
+// there's no running (non-custom) challenge to rank against -- a 'custom' challenge has no
+// tracked number (see challengeProgress's own short-circuit), so there is nothing to rank.
+function crewChallengeRank(c, userId) {
+  const ch = runningChallenge(c);
+  if (!ch || ch.type === 'custom') return null;
+  if (!c.memberIds.includes(userId)) return null;
+  const { perMember } = challengeProgress(c, ch);
+  const sorted = c.memberIds.filter(id => DB.users[id]).sort((a, b) => (perMember[b] || 0) - (perMember[a] || 0));
+  const idx = sorted.indexOf(userId);
+  return idx === -1 ? null : idx + 1;
+}
+
 // `opts.group` -- Sep 8 2026 (Jeff: "I want a notification for ... comments ... We don't have to
 // see multiple comments, just 'brian commented on XYZ' within notifications. or grouped
 // notifications for example '7 New Comments in XYZ Crew'"). Crew chat and in-workout chat used to
@@ -3098,8 +3278,14 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   const discard = !!(req.body && req.body.keep === false);
   // A keep-leave credits a finished workout exactly like /lock does (see creditFinish's own
   // comment), so it can just as easily push a crew challenge over its target -- checked the same
-  // way here as there.
-  if (!discard) { creditFinish(s, me, req.body && req.body.localDate); checkCrewChallenges(me); }
+  // way here as there. Same for the Activity page's own feed events (ranksBefore captured before
+  // creditFinish runs -- see emitFinishFeedEvents' own comment on why).
+  if (!discard) {
+    const ranksBefore = crewRanksSnapshot(me);
+    const credited = creditFinish(s, me, req.body && req.body.localDate);
+    checkCrewChallenges(me);
+    if (credited) emitFinishFeedEvents(s, me, ranksBefore, req.body && req.body.localDate);
+  }
 
   // v242 (Jeff's list): your logged sets now SURVIVE a keep-leave. They used to be deleted
   // unconditionally here, and since PRs, the strength trend, progression recommendations and
@@ -4554,8 +4740,44 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
   // RIR (Reps In Reserve) is optional, per set, task #62. Omitted entirely when blank rather than
   // stored as 0 - those mean different things ("didn't track it" vs. "went to failure").
   if (rir !== undefined && rir !== null && String(rir).trim() !== '') entry.rir = numIn(rir, 20);
+  // Captured BEFORE the rebuild below wipes and re-derives DB.prs from scratch -- the only way to
+  // know what the record was a moment ago, for the Activity feed's "+10 lb over last max" delta.
+  const prevPr = DB.prs[req.userId] && DB.prs[req.userId][entry.exerciseName];
   s.logs[req.userId].push(entry);
   rebuildAllPrs();
+  // Sep 11 2026 (Activity page): a real, earned PR (entry.isPr, mutated in place by
+  // rebuildAllPrs -- see its own comment on why bestLog IS this same entry object) gets an
+  // ephemeral feed event, same "!firstLog" exclusion groupPrsForFeed already applies elsewhere --
+  // a brand-new exercise's very first log is a baseline, not something anyone beat.
+  if (entry.isPr) {
+    const rec = DB.prs[req.userId] && DB.prs[req.userId][entry.exerciseName];
+    if (rec && !rec.firstLog) {
+      const assisted = loadTypeForName(entry.exerciseName) === 'assisted';
+      const prevWeightLb = prevPr ? toLb(prevPr.weight, prevPr.unit) : null;
+      const newWeightLb = toLb(rec.weight, rec.unit);
+      // Signed lb delta, always "positive = better" regardless of assisted's inverted sense (see
+      // rebuildAllPrs's own comment on why less assist is the harder set) -- app.js's display
+      // formatting decides the exact wording per `assisted`.
+      const deltaLb = prevWeightLb == null ? null
+        : Math.round((assisted ? prevWeightLb - newWeightLb : newWeightLb - prevWeightLb) * 10) / 10;
+      // headline/sub, not a single `text` -- the Activity page's PR row is a two-line hero card
+      // (bold headline + a lighter delta line), unlike every other row type here which is one
+      // plain line. weightPart mirrors groupPrsForFeed's own bodyweight-vs-weighted formatting.
+      const weightPart = rec.weight === 0 ? `${rec.reps} reps` : `${rec.weight} ${rec.unit} × ${rec.reps}`;
+      const headline = `New PR — ${weightPart}`;
+      const sub = (deltaLb != null && deltaLb > 0)
+        ? (assisted ? `${deltaLb} lb less assist than last time` : `+${deltaLb} lb over last max`)
+        : null;
+      // `at` is the PERFORMED date (entry._performedAt, stamped by rebuildAllPrs from the
+      // session's scheduledAt), not literal "now" -- logging a backdated workout must not make a
+      // week-old PR read as breaking news today, same reasoning as groupPrsForFeed's own weekAgo
+      // filter and the v239/v247 "stamped now" fixes elsewhere in this file.
+      emitFeedEvent('pr', req.userId, { sessionId: s.id, exerciseId, exerciseName: entry.exerciseName,
+        weight: rec.weight, reps: rec.reps, unit: rec.unit, assisted, deltaLb,
+        text: `hit a new PR on ${entry.exerciseName} (${weightPart})`, headline, sub,
+        at: entry._performedAt || entry.at });
+    }
+  }
   await save(DB);
   res.json(sessionView(s, req.userId));
 });
@@ -5098,8 +5320,14 @@ app.post('/api/sessions/:id/lock', auth, async (req, res) => {
   // localDate: the client's own today (YYYY-MM-DD) — see the comment on creditFinish for why.
   // This is the one true "just finished a workout" moment, so it's also where a crew challenge
   // this user belongs to notices it's been won -- checked only on an actual new credit, not a
-  // repeat /lock ping, same reasoning as the save() just below.
-  if (creditFinish(s, req.userId, req.body && req.body.localDate)) { checkCrewChallenges(req.userId); await save(DB); }
+  // repeat /lock ping, same reasoning as the save() just below. ranksBefore (Activity page) is
+  // captured before creditFinish runs -- see emitFinishFeedEvents' own comment on why it must be.
+  const ranksBefore = crewRanksSnapshot(req.userId);
+  if (creditFinish(s, req.userId, req.body && req.body.localDate)) {
+    checkCrewChallenges(req.userId);
+    emitFinishFeedEvents(s, req.userId, ranksBefore, req.body && req.body.localDate);
+    await save(DB);
+  }
   res.json(sessionView(s, req.userId));
 });
 
@@ -5264,6 +5492,29 @@ app.post('/api/sessions/:id/posts/:authorId/react', auth, async (req, res) => {
     notify(req.params.authorId, { title: 'New reaction', body: `${DB.users[req.userId].displayName} reacted to your workout`, link: { type: 'post', sessionId: s.id, authorId: req.params.authorId } });
   res.json({ reacted, count: p.reactions.length });
 });
+// ---- Reactions on an Activity-page feed event ----
+// Sep 11 2026: same toggle shape as the posts reaction just above ({reacted, count}, bare-userId-
+// array storage), for the OTHER kind of like -- an ephemeral feed event (PR, crew win, etc; see
+// the "Feed events" comment above emitFeedEvent) rather than a permanent posted recap. Visibility:
+// a shared crew event (challenge_completed, `by: null`) is reactable by any current member of that
+// crew; every other type is reactable by the actor themselves or anyone connected to them, the
+// same "can you even see this in your feed" gate GET /api/feed itself applies.
+app.post('/api/feed-events/:id/react', auth, async (req, res) => {
+  const ev = DB.feedEvents[req.params.id];
+  if (!ev) return res.status(404).json({ error: 'not found' });
+  const allowed = ev.by === null
+    ? Array.isArray(ev.memberIds) && ev.memberIds.includes(req.userId)
+    : ev.by === req.userId || connectionsOf(req.userId).includes(ev.by);
+  if (!allowed) return res.status(403).json({ error: 'forbidden' });
+  ev.reactions = Array.isArray(ev.reactions) ? ev.reactions.filter(x => typeof x === 'string') : [];
+  const i = ev.reactions.indexOf(req.userId);
+  const reacted = i === -1;
+  if (reacted) ev.reactions.push(req.userId); else ev.reactions.splice(i, 1);
+  await save(DB);
+  if (reacted && ev.by && ev.by !== req.userId)
+    notify(ev.by, { title: 'New reaction', body: `${DB.users[req.userId].displayName} reacted to your activity`, link: { type: 'profile', userId: ev.by } });
+  res.json({ reacted, count: ev.reactions.length });
+});
 // ---- Reactions on an individual COMMENT under a posted recap ----
 // Jeff, Sep 1: wants the same Instagram feel inside the comments thread itself, not just under the
 // workout. Same exact pattern as the post-level /react above, one level deeper: gated by the same
@@ -5353,6 +5604,7 @@ app.use((err, req, res, next) => {
   rebuildAllPrs();
   migrateLoadTypes();
   pruneOldNotifications();    // storage hygiene, not a schema migration -- see its own comment
+  pruneOldFeedEvents();       // same, for the Activity page's ephemeral feed events
   await save(DB);
   server = app.listen(PORT, () => console.log('CrewFit on', PORT));
   module.exports.server = server;
@@ -5416,6 +5668,13 @@ app.use((err, req, res, next) => {
   setInterval(async () => {
     try { if (pruneOldNotifications()) await save(DB); }
     catch (e) { console.error('notification history prune failed:', e && e.message); }
+  }, 6 * 60 * 60 * 1000);
+
+  // Sep 11 2026: same storage-hygiene sweep as notifications above, for the Activity page's
+  // ephemeral feed events (see pruneOldFeedEvents and the "Feed events" comment above it).
+  setInterval(async () => {
+    try { if (pruneOldFeedEvents()) await save(DB); }
+    catch (e) { console.error('feed event prune failed:', e && e.message); }
   }, 6 * 60 * 60 * 1000);
 })().catch(e => {
   console.error('FATAL during boot:', e && e.stack || e);
