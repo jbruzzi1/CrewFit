@@ -7322,6 +7322,32 @@ async function histDismiss(row, fg, id){
   try { await H.delete('/api/notifications/' + encodeURIComponent(id)); } catch(e){}
   const current = document.querySelector(`.hist-swipe[data-nid="${CSS.escape(id)}"]`);
   if(current) current.remove();
+  notifCollapseIfEmpty();
+}
+// Sep 11 2026 (Jeff: "when I clear out notifications - it leaves the slim bar where the
+// notifications used to sit... I want it to show what it used to say 'all caught up'"). histDismiss
+// above only ever removed the ONE row it was asked to -- nothing checked whether that left the
+// "Today"/"Last 7 days" card (.card.feed-strip) with no rows left in it at all. An empty .card
+// still renders its own padding/shadow with nothing inside, which is exactly the "slim bar" left
+// behind. Runs after every dismissal (cheap: a couple of querySelectorAlls on a short list, not a
+// full re-render/refetch) and does two things: removes any now-childless history card along with
+// the section header above it, then -- only if NOTHING is left anywhere on the page (no invites,
+// no follow/join requests, no history rows) -- injects the exact same "You're all caught up" empty
+// state renderNotifications() itself shows on a normal load with nothing in it, so the two paths
+// can never drift apart. Scoped to #app's own .wrap rather than a bare document-wide selector:
+// .wrap is a generic per-page wrapper class reused all over the app, but $('app').innerHTML is
+// fully replaced on every navigation, so at most one .wrap ever exists inside #app at a time.
+function notifCollapseIfEmpty(){
+  const wrap = $('app') && $('app').querySelector('.wrap');
+  if(!wrap) return;
+  wrap.querySelectorAll('.card.feed-strip').forEach(card => {
+    if(card.querySelector('.hist-swipe')) return; // still has rows -- leave it
+    const h2 = card.previousElementSibling;
+    if(h2 && h2.tagName === 'H2') h2.remove();
+    card.remove();
+  });
+  if(wrap.querySelector('.inv-banner, .req, .hist-swipe') || wrap.querySelector('.home-empty')) return;
+  wrap.insertAdjacentHTML('beforeend', homeEmpty(ICON_BELL, "You're all caught up", 'Invites and requests will show up here.'));
 }
 function histSwipeAttach(row){
   // Sep 9 cold-review note: named onHistMove/onHistUp/onHistDown rather than dragReorder()'s

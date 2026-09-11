@@ -202,6 +202,57 @@ console.log('\nthe remaining row is still perfectly normal afterward -- a plain 
   ok(!stillOnNotifications, "the surviving row's deep-link still works after a sibling row was dismissed");
 }
 
+// Sep 11 2026 (Jeff, real screenshot: "When I clear out notifications - it leaves the slim bar
+// where the notifications used to sit. I don't want that to stay... I want it to show what it
+// used to say 'all caught up'"). histDismiss above only ever removed the ONE row being dragged --
+// nothing checked whether that left the "Today"/"Last 7 days" card (.card.feed-strip) completely
+// empty, so an empty, still-padded, still-shadowed card sat there instead of the page falling back
+// to the same "You're all caught up" empty state a normal load with nothing in it shows. A fresh
+// user + a single history row (not reusing the ones above, which already share a page with other
+// state) makes this reproducible end to end: one real row, dismissed for real, on a page with
+// nothing else on it at all.
+console.log('\ndismissing the LAST notification collapses the now-empty card and shows "You\'re all caught up", not a leftover empty bar');
+{
+  const page6 = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+  await page6.goto(BASE + '/');
+  const dana = await registerAndLogin(page6, 'swd' + Math.random().toString(36).slice(2, 8));
+  const page7 = await browser.newPage();
+  await page7.goto(BASE + '/');
+  const erin = await registerAndLogin(page7, 'swe' + Math.random().toString(36).slice(2, 8));
+  await page7.evaluate(async ({ BASE, tok, id }) => {
+    await fetch(BASE + `/api/follow/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok }, body: '{}' });
+  }, { BASE, tok: erin.token, id: dana.user.id });
+  await page7.close();
+
+  await page6.evaluate(() => window.renderNotifications());
+  await page6.waitForTimeout(200);
+  const rows = await page6.$$('.hist-swipe');
+  ok(rows.length === 1, `sanity: exactly one history row for this fresh user (got ${rows.length})`);
+  ok(!!(await page6.$('.card.feed-strip')), 'sanity: the history card is present before dismissing');
+  ok(!(await page6.$('.home-empty')), 'sanity: no empty state yet -- there is still a real row on the page');
+
+  const row = rows[0];
+  const box = await row.boundingBox();
+  const startX = box.x + box.width - 10, y = box.y + box.height / 2;
+  await page6.mouse.move(startX, y);
+  await page6.mouse.down();
+  await page6.mouse.move(startX - box.width * 0.6, y, { steps: 12 });
+  await page6.mouse.up();
+  await page6.waitForTimeout(500); // histDismiss's own animation + the DELETE request
+
+  const remainingRows = await page6.$$eval('.hist-swipe', els => els.length);
+  ok(remainingRows === 0, 'the row is genuinely gone');
+  const leftoverCard = await page6.$('.card.feed-strip');
+  ok(!leftoverCard, 'the now-empty history card itself is gone too -- no leftover slim bar');
+  const leftoverHeader = await page6.$$eval('h2', els => els.map(e => e.textContent));
+  ok(!leftoverHeader.includes('Today') && !leftoverHeader.includes('Last 7 days'), `the section header above the emptied card is gone too (got ${JSON.stringify(leftoverHeader)})`);
+  const emptyState = await page6.$('.home-empty');
+  ok(!!emptyState, 'the "You\'re all caught up" empty state now renders');
+  const emptyTitle = emptyState ? await emptyState.$eval('.he-title', el => el.textContent) : '';
+  ok(emptyTitle === "You're all caught up", `it's the real empty-state copy, not a blank box (got "${emptyTitle}")`);
+  await page6.close();
+}
+
 await browser.close();
 try { srv && srv.kill(); } catch {}
 rmSync(dir, { recursive: true, force: true });
