@@ -1784,6 +1784,36 @@ async function toggleReaction(id, authorId){
     REACT_BUSY.delete(key);
   }
 }
+// Sep 11 2026 (Activity page): generic reaction toggle for the redesigned Friends/"Activity" page
+// (friends() above) -- covers BOTH kinds of feed row it renders: a posted recap (kind='recap',
+// the SAME permanent per-workout reaction toggleReaction already drives -- id=sessionId,
+// authorId=the recap's author) and an ephemeral DB.feedEvents row (kind='fev', id=the event's own
+// id, authorId unused) via the new POST /api/feed-events/:id/react endpoint. Same {reacted, count}
+// toggle shape and the same busy-guard-by-key pattern as toggleReaction/toggleCommentReaction,
+// keyed by kind+id+authorId so a recap's heart and an unrelated feed event's heart can never
+// collide even if their raw ids happened to overlap. Deliberately simpler than toggleReaction's own
+// DOM update: no "Liked by" avatar row here (the Activity page's cards only ever show a bare
+// count -- see the heart() builder in friends()), so this updates the button + its own count span
+// straight off the element it was called on, rather than looking anything up by a rebuilt id.
+let FEED_REACT_BUSY = new Set();
+async function reactFeedItem(btn, kind, id, authorId){
+  const key = kind+'|'+id+'|'+authorId;
+  if(FEED_REACT_BUSY.has(key)) return;
+  FEED_REACT_BUSY.add(key);
+  try {
+    const url = kind==='recap' ? `/api/sessions/${id}/posts/${authorId}/react` : `/api/feed-events/${id}/react`;
+    const r = await H.post(url, {});
+    if(!r || r.error){ if(r && r.error) alert(r.error); return; }
+    btn.classList.toggle('on', !!r.reacted);
+    btn.setAttribute('aria-label', r.reacted?'Remove reaction':'React');
+    const svg = btn.querySelector('svg');
+    if(svg){ svg.setAttribute('fill', r.reacted?'currentColor':'none'); svg.setAttribute('stroke-width', r.reacted?'0':'1.8'); }
+    const cnt = btn.querySelector('.ar-heart-count');
+    if(cnt) cnt.textContent = r.count || 0;
+  } finally {
+    FEED_REACT_BUSY.delete(key);
+  }
+}
 async function loadPostComments(id, authorId){
   const box=$('chatbox'); if(!box) return;
   const cs=await H.get(`/api/sessions/${id}/posts/${authorId}/comments`);
@@ -6038,13 +6068,27 @@ function avatarHtml(x, cls){
     ? `<img class="${cls}" src="${esc(x.avatar)}" alt="">`
     : `<div class="${cls}" style="background:${avatarColor(x.username)};color:#fff">${initial}</div>`;
 }
+// Sep 11 2026 (Activity page redesign) -- mini-icons the compact This-week strip uses for the
+// event types that aren't a PR or a check mark (see compactRowHtml in friends()). trophySvg and
+// joinedCrewSvg carried over unchanged from the mockup Jeff approved
+// (test/_verify_activity_redesign_mock.mjs, "Yes"). trendUpSvg/flagSvg are a follow-up (Jeff, Sep
+// 11: "minor, your call" on rank/challenge_started/challenge_completed all sharing one trophy icon
+// with no way to tell them apart at a glance) -- trophy now means only "won," rank gets its own
+// up-trend mark, challenge_started its own starting-flag mark.
+function trophySvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v4a5 5 0 0 1-10 0V4Z"/><path d="M17 5h2.5a2.5 2.5 0 0 1 0 5H17M7 5H4.5a2.5 2.5 0 0 0 0 5H7"/></svg>'; }
+function joinedCrewSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20c.6-3.6 3.3-6 6.5-6s5.9 2.4 6.5 6"/><circle cx="17.5" cy="9" r="2.4"/><path d="M15.8 14.3c2.6.4 4.6 2.5 5.1 5.7"/></svg>'; }
+function trendUpSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>'; }
+function flagSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>'; }
+let FRIENDS_TAB = 'activity';
+function setFriendsTab(t){ FRIENDS_TAB = t; friends({silent:true}); }
 async function friends(opts){
   // v254: friends() is a pure tab root (only reached via showTab, which already resets scroll/
-  // history for the tab switch) -- EXCEPT it's also re-invoked by acceptFollow/rejectFollow to
-  // quietly refresh the same list in place after an approve/reject tap. opts.silent (set by those
-  // 2) keeps the scroll-to-top below from firing on that quiet refresh -- without it, approving a
-  // request halfway down a long list would yank the screen back to the top, same class of bug
-  // openSession's opts.silent already guards against.
+  // history for the tab switch) -- EXCEPT it's also re-invoked by acceptFollow/rejectFollow (to
+  // quietly refresh the list after an approve/reject tap) and setFriendsTab (to switch the
+  // Activity/Crews segment) above. opts.silent (set by all three) keeps the scroll-to-top below
+  // from firing on that quiet refresh -- without it, approving a request or switching segments
+  // halfway down a long list would yank the screen back to the top, same class of bug openSession's
+  // opts.silent already guards against.
   // v190 (Sep 2026): "friends" retired app-wide -- followers alone decide who's connected to whom
   // now (Jeff: "remove the friends vs followers and just have followers... invite anyone that
   // follows you to workouts or vice versa"). This tab kept its name/path (still the one place
@@ -6055,46 +6099,191 @@ async function friends(opts){
   // Home; now this tab fetches it instead, same call, just relocated with the section it feeds.
   const [data, crews, feed] = await Promise.all([H.get('/api/friends'), H.get('/api/crews'), H.get('/api/feed')]);
   const f = data.friends||[]; const freq = data.followRequests||[];
-  // Named differently from home()'s own friendName() -- both are function-scoped and would never
-  // actually collide at runtime, but test/wiring.mjs's duplicate-definition check is a plain text
-  // scan, not scope-aware, so it flags same-named consts across functions as one dead definition
-  // silently winning. Distinct names sidestep the false positive instead of fighting the test.
-  const actorName = async (id) => f.find(x=>x.id===id)?.displayName || 'A friend';
-  // Same feed-item markup Home used to render (moved, not rewritten) -- .feed-lead is still a
-  // fixed 36px column so photo thumbs / check pills / PR pills all start the name at the same x.
-  let activityHtml = '';
-  if(feed.length){
-    activityHtml += `<div class="card feed-strip">`;
-    for(const ff of feed){
-      const who = await actorName(ff.by);
-      if(ff.type==='recap' && ff.sessionId){
-        const lead = ff.thumb ? `<img class="feed-thumb" src="${esc(ff.thumb)}" alt="">` : `<span class="act-chip done">✓</span>`;
-        activityHtml += `<div class="feed-item feed-recap" onclick="viewPost('${ff.sessionId}','${ff.by}')" style="cursor:pointer"><span class="feed-lead">${lead}</span><span><b>${esc(who)}</b> ${esc(ff.text)}</span></div>`;
-        continue;
+  // Sep 11 2026 (Activity page): GET /api/feed now includes the VIEWER's own activity too --
+  // deliberately widened from friends-only (see the comment on that route in server.js), so `by`
+  // can be ME.id. `f` (the friends list) never contains yourself, so a plain `f.find` lookup used
+  // to silently fall through to "A friend" for your own rows. actorOf/actorName both special-case
+  // ME.id first, the same way personOf() already does elsewhere in this file.
+  const actorOf = id => id===ME.id ? { id, displayName:'You', username: ME.username||'', avatar: ME.avatar||'' }
+    : (f.find(x=>x.id===id) || { id, displayName:'A friend', username:'', avatar:'' });
+  const actorName = id => actorOf(id).displayName;
+  // "N days ago" bucketing for the This-week strip's trailing timestamp -- distinct from fmtWhen
+  // (used elsewhere for a workout's own scheduled time, "Today, 3:45 PM") since a row that's
+  // reached this strip is, by construction, never from today (see the Today/This-week split below)
+  // -- a plain day count reads better once "today" is no longer in play.
+  const feedWhen = iso => {
+    const days = Math.round((startOfDay(new Date()) - startOfDay(new Date(iso))) / 86400000);
+    if(days<=0) return 'Today';
+    if(days===1) return 'Yesterday';
+    return `${days} days ago`;
+  };
+  const isToday = iso => startOfDay(new Date(iso)).getTime() === startOfDay(new Date()).getTime();
+  // Sep 11 2026: one reaction control, used both by the two hero card types AND the one likeable
+  // compact row (challenge_completed) -- kind picks which endpoint reactFeedItem (below, near
+  // toggleReaction) posts to: 'recap' for a real posted workout (id=sessionId, authorId=the post's
+  // author -- the SAME permanent reaction toggleReaction/viewPost already drive), 'fev' for an
+  // ephemeral DB.feedEvents row (id=the event's own id). heartFor() picks the right kind/id per
+  // item so call sites below never have to know the difference.
+  const heart = (kind, id, authorId, reacted, count) => `<button class="ar-heart${reacted?' on':''}" onclick="event.stopPropagation();reactFeedItem(this,'${kind}','${jsq(id)}','${jsq(authorId||'')}')" aria-label="${reacted?'Remove reaction':'React'}"><svg viewBox="0 0 24 24" fill="${reacted?'currentColor':'none'}" stroke="currentColor" stroke-width="${reacted?'0':'1.8'}" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><span class="ar-heart-count">${count||0}</span></button>`;
+  const heartFor = ff => ff.type==='recap'
+    ? heart('recap', ff.sessionId, ff.by, ff.reacted, ff.reactCount)
+    : heart('fev', ff.id, '', ff.reacted, ff.reactCount);
+  const checkChip = `<span class="act-chip done">✓</span>`;
+
+  // Split the feed into today's hero moments (a PR or a posted recap, TODAY only -- everything
+  // else, including an OLDER PR/recap, is "This week") vs the compact strip below it. This exact
+  // split -- these two types, today only -- is the shape Jeff already approved as a static mockup
+  // (test/_verify_activity_redesign_mock.mjs, "Yes"); this is that design wired to the real feed.
+  //
+  // Sep 11 2026 (Jeff, answering "what happens for a new user with 10+ PRs in two days"): capped
+  // to the 3 most recent -- without this, a genuinely huge day buries This week and Crews under a
+  // wall of full-size cards. `feed` already arrives newest-first, so slice(0, HERO_CARD_CAP) keeps
+  // the most RECENT ones as hero cards; anything past the cap still shows today, just as a normal
+  // compact row instead of another giant one -- nothing is hidden, only de-emphasized.
+  const HERO_CARD_CAP = 3;
+  const itemKey = ff => ff.type==='recap' ? `recap:${ff.sessionId}:${ff.by}` : `fev:${ff.id}`;
+
+  // Sep 11 2026 (Jeff, feedback on the hero-cap round above): capping the COUNT of hero cards
+  // wasn't the actual fix -- a single session with several PRs was still rendering as that many
+  // near-identical full-size cards ("New PR -- 120 lb x 5, +20 lb over last max" repeated per
+  // exercise), which is the exact repetition problem this redesign set out to solve, just bigger.
+  // ("A day where someone hits 3 PRs is a great day and worth celebrating, but it should read as
+  // one strong moment... not three copies of the same card.") Fold every PR from the same
+  // by+sessionId into ONE representative event carrying a `_prGroup` array (chronological), before
+  // the hero/rest split runs, so both the hero-card and compact-row renderers see one row per
+  // session instead of one per exercise.
+  //
+  // Cold-review fix (Sep 11 2026): the representative must be picked DETERMINISTICALLY -- always
+  // the same specific underlying feed_events row every time this renders -- not "whichever PR
+  // happened to be encountered first while walking `feed`" (feed's own sort is newest-first, and
+  // same-session PRs typically share one identical `at`, so "first encountered" was really riding
+  // on sort-stability/tie-break behavior rather than an intentional choice). Since the rep's own
+  // `id`/`reactCount`/`reacted` are what the single shared like/heart actually reads and writes
+  // (Jeff's explicit "one like for the whole card" pick, no backend change), an unstable pick
+  // could silently point the card's like at a different underlying PR on a future render than the
+  // one a viewer's tap actually landed on. Fixed by collecting the FULL group first, then
+  // explicitly choosing the chronologically-earliest PR (`at` ascending) as the rep, independent
+  // of `feed`'s own ordering -- while still placing the merged card at the position of whichever
+  // group member `feed` listed first, so the card's spot in the newest-first list is unaffected.
+  const groupPrItems = list => {
+    const groupsByKey = new Map(); // "by|sessionId" -> every real pr ff in that session
+    const slotOf = new Map();      // "by|sessionId" -> index in `out` reserved for the eventual rep
+    const out = [];
+    for (const ff of list) {
+      if (ff.type !== 'pr' || !ff.sessionId) { out.push(ff); continue; }
+      const key = ff.by + '|' + ff.sessionId;
+      if (!groupsByKey.has(key)) {
+        groupsByKey.set(key, []);
+        slotOf.set(key, out.length);
+        out.push(null); // filled in below once every member of this group has been seen
       }
-      const ic = ff.type==='pr' ? `<span class="act-chip act-pr">PR</span>` : `<span class="act-chip done">✓</span>`;
-      activityHtml += `<div class="feed-item" onclick="profileView('${ff.by}')" style="cursor:pointer"><span class="feed-lead">${ic}</span><span><b>${esc(who)}</b> ${esc(ff.text)}</span></div>`;
+      groupsByKey.get(key).push(ff);
     }
-    activityHtml += `</div>`;
+    for (const [key, group] of groupsByKey) {
+      const sorted = group.length > 1 ? [...group].sort((a, b) => new Date(a.at) - new Date(b.at)) : group;
+      out[slotOf.get(key)] = {...sorted[0], _prGroup: sorted};
+    }
+    return out;
+  };
+  const groupedFeed = groupPrItems(feed);
+
+  const heroTypes = new Set(['pr','recap']);
+  const heroEligible = groupedFeed.filter(ff => heroTypes.has(ff.type) && isToday(ff.at));
+  const heroItems = heroEligible.slice(0, HERO_CARD_CAP);
+  const heroKeys = new Set(heroItems.map(itemKey));
+  const restItems = groupedFeed.filter(ff => !heroKeys.has(itemKey(ff)));
+
+  const heroCardHtml = ff => {
+    const who = esc(actorName(ff.by));
+    if(ff.type==='pr'){
+      // Grouped (same session, multiple PRs): one strong headline instead of N repeated cards --
+      // "3 new PRs today" / the individual lifts listed in the sub-line, exactly the shape Jeff
+      // asked for ("3 new PRs today -- Front Squat, Barbell Row, Overhead Press").
+      const group = ff._prGroup && ff._prGroup.length > 1 ? ff._prGroup : null;
+      const headline = group ? `${group.length} new PRs today` : esc(ff.headline||ff.text);
+      const sub = group ? group.map(g => esc(g.exerciseName||'a lift')).join(', ') : (ff.sub ? esc(ff.sub) : '');
+      return `<div class="ar-card ar-pr" onclick="viewPost('${jsq(ff.sessionId)}','${jsq(ff.by)}')" style="cursor:pointer">
+        <div class="ar-card-top">${avatarHtml(actorOf(ff.by),'crew-av')}
+          <div class="ar-who"><b>${who}</b><div class="tag">${fmtWhen(ff.at)}${(!group && ff.exerciseName)?` · ${esc(ff.exerciseName)}`:''}</div></div>
+          <span class="ar-flame">${flameSvg()}</span>
+        </div>
+        <div class="ar-pr-headline">${headline}</div>
+        ${sub?`<div class="ar-pr-sub">${sub}</div>`:''}
+        <div class="ar-card-bottom">${heartFor(ff)}</div>
+      </div>`;
+    }
+    // recap -- no thumb baked into the hero shape (the approved mock uses the same plain checkmark
+    // regardless of whether a photo exists); tapping opens the real recap either way.
+    return `<div class="ar-card" onclick="viewPost('${jsq(ff.sessionId)}','${jsq(ff.by)}')" style="cursor:pointer">
+      <div class="ar-card-top">${avatarHtml(actorOf(ff.by),'crew-av')}
+        <div class="ar-who"><b>${who}</b> ${esc(ff.text)}<div class="tag">${fmtWhen(ff.at)}</div></div>
+        ${checkChip}
+      </div>
+      <div class="ar-card-bottom">${heartFor(ff)}</div>
+    </div>`;
+  };
+  // Every other feed row (all the ephemeral types with no heart, plus challenge_completed which
+  // does, plus any PR/recap older than today) renders as one of these compact .feed-item rows
+  // instead -- same shared shell the old single-tier feed used, .feed-lead keeping every row's
+  // leading mark at the same fixed 36px column (Jeff, Aug 28). Tap-through target follows what the
+  // row is actually ABOUT: a workout (recap/pr) opens the recap; a personal milestone with no post
+  // behind it (streak, completed-without-a-recap) opens the person's profile; anything crew-shaped
+  // (rank, challenge start/finish, a new member) opens the crew.
+  const compactRowHtml = ff => {
+    const who = esc(actorName(ff.by));
+    const when = `<span class="tag ar-when">${feedWhen(ff.at)}</span>`;
+    if(ff.type==='recap'){
+      const lead = ff.thumb ? `<img class="feed-thumb" src="${esc(ff.thumb)}" alt="">` : checkChip;
+      return `<div class="feed-item feed-recap" onclick="viewPost('${jsq(ff.sessionId)}','${jsq(ff.by)}')" style="cursor:pointer"><span class="feed-lead">${lead}</span><span><b>${who}</b> ${esc(ff.text)}</span>${when}</div>`;
+    }
+    if(ff.type==='pr'){
+      // Older (non-today) same-session PRs get the same grouped treatment as the hero card, just
+      // as one compact row instead of one per lift: "hit 3 new PRs -- Front Squat, Barbell Row,
+      // Overhead Press" rather than three separate "PR" rows for one workout.
+      const group = ff._prGroup && ff._prGroup.length > 1 ? ff._prGroup : null;
+      const body = group
+        ? `hit ${group.length} new PRs — ${group.map(g => esc(g.exerciseName||'a lift')).join(', ')}`
+        : esc(ff.text);
+      return `<div class="feed-item" onclick="viewPost('${jsq(ff.sessionId)}','${jsq(ff.by)}')" style="cursor:pointer"><span class="feed-lead"><span class="act-chip act-pr">PR</span></span><span><b>${who}</b> ${body}</span>${when}</div>`;
+    }
+    if(ff.type==='completed_no_recap'){
+      return `<div class="feed-item" onclick="profileView('${jsq(ff.by)}')" style="cursor:pointer"><span class="feed-lead">${checkChip}</span><span><b>${who}</b> ${esc(ff.text)}</span>${when}</div>`;
+    }
+    if(ff.type==='streak'){
+      return `<div class="feed-item" onclick="profileView('${jsq(ff.by)}')" style="cursor:pointer"><span class="feed-lead"><span class="ar-mini-icon">${flameSvg()}</span></span><span><b>${who}</b> ${esc(ff.text)}</span>${when}</div>`;
+    }
+    if(ff.type==='rank'){
+      const tag = ff.crewName ? ` <span class="ar-crew-tag-inline">${esc(ff.crewName)}</span>` : '';
+      return `<div class="feed-item" onclick="crewView('${jsq(ff.crewId)}')" style="cursor:pointer"><span class="feed-lead"><span class="ar-mini-icon">${trendUpSvg()}</span></span><span><b>${who}</b> ${esc(ff.text)}${tag}</span>${when}</div>`;
+    }
+    if(ff.type==='challenge_started'){
+      const tag = ff.crewName ? ` <span class="ar-crew-tag-inline">${esc(ff.crewName)}</span>` : '';
+      return `<div class="feed-item" onclick="crewView('${jsq(ff.crewId)}')" style="cursor:pointer"><span class="feed-lead"><span class="ar-mini-icon">${flagSvg()}</span></span><span><b>${who}</b> ${esc(ff.text)}${tag}</span>${when}</div>`;
+    }
+    if(ff.type==='challenge_completed'){
+      // by is null (crew-shared, see emitFeedEvent's own comment) -- the crew is the subject here,
+      // not any one member, so the bold name is crewName instead of an actor.
+      const crewName = esc(ff.crewName||'Your crew');
+      return `<div class="feed-item" onclick="crewView('${jsq(ff.crewId)}')" style="cursor:pointer"><span class="feed-lead"><span class="ar-mini-icon">${trophySvg()}</span></span><span><b>${crewName}</b> ${esc(ff.text)}</span>${heartFor(ff)}</div>`;
+    }
+    if(ff.type==='joined_crew'){
+      return `<div class="feed-item" onclick="crewView('${jsq(ff.crewId)}')" style="cursor:pointer"><span class="feed-lead"><span class="ar-mini-icon">${joinedCrewSvg()}</span></span><span><b>${who}</b> ${esc(ff.text)}</span>${when}</div>`;
+    }
+    return '';
+  };
+  let activitySection;
+  if(!heroItems.length && !restItems.length){
+    // "crew" avoided here on purpose -- this section sits on the same page as the literal "Your
+    // Crews" tab, so the app's other "Nothing from your crew yet" copy would read like it's
+    // talking about that instead. CTA focuses the search box right above rather than repeating
+    // showTab('friends') -- redundant on a page you're already on.
+    activitySection = `<h2 class="light">Activity</h2>` + homeEmpty(ICON_FEED, 'Nothing from your friends yet', 'Their finished workouts will show up here.', `<span class="he-cta" onclick="document.getElementById('fu').focus()">Find people to follow →</span>`);
   } else {
-    // "crew" avoided here on purpose -- this section now sits on the same page as the literal
-    // "Your Crews" feature, so the app's other "Nothing from your crew yet" copy would read like
-    // it's talking about that instead. CTA focuses the search box right above rather than
-    // repeating showTab('friends') -- redundant on a page you're already on.
-    activityHtml += homeEmpty(ICON_FEED, 'Nothing from your friends yet', 'Their finished workouts will show up here.', `<span class="he-cta" onclick="document.getElementById('fu').focus()">Find people to follow →</span>`);
+    activitySection = (heroItems.length ? `<h2 class="light">Today</h2>${heroItems.map(heroCardHtml).join('')}` : '')
+      + (restItems.length ? `<h2 class="light">This week</h2><div class="card feed-strip">${restItems.map(compactRowHtml).join('')}</div>` : '');
   }
   CREW_PICKER = Array.isArray(crews) ? crews : [];
-  const flame = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c1 3-1 4-2 6-1 2 0 4 2 4 1.5 0 2-1 2-2 2 1 3 3 3 5 0 3-3 5-6 5-4 0-7-3-7-7 0-4 4-8 8-11z"/></svg>';
-  const friendRows = f.length ? f.map(x=>`
-    <div class="friend-row" onclick="profileView('${x.id}')" style="cursor:pointer">
-      ${avatarHtml(x,'avatar')}
-      <div class="meta">
-        <div class="name">${esc(x.displayName||x.username)}</div>
-        <div class="handle">@${esc(x.username)}</div>
-        ${x.streak>1?`<div class="streak-pill">${flame}${x.streak} day streak</div>`:''}
-      </div>
-    </div>`).join('')
-    : homeEmpty(ICON_PEOPLE, 'No connections yet', 'Search above to find people to train with.');
+  const flame = flameSvg();
   // Sep 4 (Jeff, same ask generalized to the follow-requests list too): same
   // onclick="profileView(id)" + cursor:pointer + stopPropagation-on-the-buttons pattern as the
   // search results above -- clicking the person's name/row here now opens their profile; Accept/
@@ -6116,9 +6305,8 @@ async function friends(opts){
   const badge = pending ? `<span class="badge">${pending}</span>` : '';
   // Sep 2026 (Jeff: "make the collaboration side stronger"): a Crew is the one standing group
   // this app never had -- everything else here is either 1:1 (a connection) or scoped to a single
-  // workout's participant list. Lives in the Friends tab rather than a new nav tab of its own,
-  // same "don't add nav real estate for one more list" call homeEmpty's CTAs already make --
-  // Friends is already "who you train with," a Crew is just a saved group of them.
+  // workout's participant list. Lives in this tab rather than a new nav tab of its own, now its own
+  // Crews segment (see the .seg.wk-seg toggle below) rather than sharing scroll space with Activity.
   const crewRows = crews.length ? crews.map(c=>{
     const avs = c.members.slice(0,4).map(m=>avatarHtml(m,'crew-av')).join('');
     const more = c.members.length>4 ? `<div class="crew-av crew-av-more">+${c.members.length-4}</div>` : '';
@@ -6142,8 +6330,19 @@ async function friends(opts){
       <div class="meta"><div class="name">${esc(c.name)}</div><div class="handle">${c.members.length} member${c.members.length===1?'':'s'}</div>${challengeHint}</div>
     </div>`;
   }).join('') : '';
+  // Sep 11 2026 (Activity page redesign, Jeff's original ask starting this whole thread): the old
+  // plain "Friends" list at the bottom -- name/avatar/streak, tap to open a profile -- is REMOVED
+  // entirely, not just hidden. It duplicated the followers/following lists already on Profile, and
+  // burying the real point of this page (activity + crews) under a third scrollable list was the
+  // whole complaint. Nothing here reads or writes `f` for that old list anymore; `f` (and
+  // actorOf/actorName above) now exist purely to label feed rows and follow-request rows.
   $('app').innerHTML = `<div class="wrap">
-    <div class="h1-row"><h1>Friends</h1>${badge}</div>
+    <div class="h1-row"><h1>Activity</h1>${badge}</div>
+    <div class="seg wk-seg" style="margin-top:2px">
+      <button class="${FRIENDS_TAB==='activity'?'on':''}" onclick="setFriendsTab('activity')">Activity</button>
+      <button class="${FRIENDS_TAB==='crews'?'on':''}" onclick="setFriendsTab('crews')">Crews</button>
+    </div>
+    ${FRIENDS_TAB==='activity' ? `
     <div class="card">
       <!-- Jeff, Aug 27: "search bar text does not fit properly" -- the placeholder was getting
            clipped because a "Search" button sat next to the input eating its width, even though
@@ -6151,12 +6350,13 @@ async function friends(opts){
            did anything a keystroke hadn't already done. Dropping it gives the placeholder the
            full row and removes a genuinely redundant control at the same time. -->
       <div class="add-row">
-        <input id="fu" placeholder="Search people by name or @username" autocomplete="off" oninput="friendSearch()">
+        <input id="fu" placeholder="Search by name or @username" autocomplete="off" oninput="friendSearch()">
       </div>
       <div id="fresults"></div>
     </div>
     ${freq.length?`<h2>Follow requests</h2><div class="card" style="padding:6px 12px">${followReqRows}</div>`:''}
-    <h2 class="light">Activity</h2>${activityHtml}
+    ${activitySection}
+    ` : `
     <div class="h1-row"><h2 style="margin:0">Your Crews</h2><span class="he-cta" style="margin:0 0 0 auto" onclick="newCrewSheet()">+ New crew</span></div>
     ${crews.length ? `<div class="card" style="padding:6px 12px">${crewRows}</div>`
       // Sep 5 (Jeff, following up on the crew-row hint above): a brand-new user with zero crews
@@ -6165,8 +6365,7 @@ async function friends(opts){
       // in. Folded into the same sentence rather than a second line, matching how this empty state
       // already introduces chat ("invite and chat") in one breath.
       : homeEmpty(ICON_PEOPLE, 'No crews yet', 'Save a group of training partners to invite, chat, and run weekly challenges with.', `<span class="he-cta" onclick="newCrewSheet()">Create a crew →</span>`)}
-    <h2>Friends</h2>
-    ${f.length ? `<div class="card" style="padding:6px 12px">${friendRows}</div>` : friendRows}
+    `}
   </div>`;
   if(!silent) pageScrollTop();
 }
@@ -6792,10 +6991,12 @@ async function friendSearch(){
       // Jeff, Aug 27: "the add button or showing if your friends or not is directly under the
       // name" -- this row used a "user-row" class that had no CSS rule anywhere, so the avatar,
       // name/handle, and button just stacked as plain block boxes instead of sitting in a row.
-      // .friend-row (used two lines down for the real Friends list) is exactly this same
-      // avatar + growing name/handle + trailing control layout, already correct -- reusing it
-      // here instead of inventing new CSS. Now also clickable to the profile, same
-      // onclick="profileView(id)" + cursor:pointer pattern as the real Friends list rows below.
+      // .friend-row is exactly this same avatar + growing name/handle + trailing control layout,
+      // already correct -- reusing it here instead of inventing new CSS. (Sep 11 2026: the bottom
+      // plain Friends list that originally introduced this class was removed entirely from
+      // friends() -- see its own comment there -- but the class/CSS lives on here, still the right
+      // shape for a search result row.) Now also clickable to the profile, same
+      // onclick="profileView(id)" + cursor:pointer pattern search results have used since Aug 27.
       return `<div class="friend-row" onclick="profileView('${jsq(x.id)}')" style="cursor:pointer">${avatarHtml(x,'avatar')}<div class="meta"><div class="name">${esc(x.displayName||x.username)}</div><div class="handle">@${esc(x.username)}</div></div>${btn}</div>`;
     }).join('');
   } catch(e){ if(box) box.innerHTML=''; }

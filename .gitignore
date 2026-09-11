@@ -1,6 +1,8 @@
 node_modules
 data.json
 vapid.json
+admin-token.json
+auth-secret.json
 *.log
 .DS_Store
 uploads/
@@ -25,6 +27,9 @@ backups/
 _*.mjs
 _*.cjs
 *.tgz
+# Screenshots a scratch render-check script writes while verifying a change -- same throwaway
+# nature as the scripts above, just images instead of code.
+_verify_*_screens/
 # test/_pgtestdb.mjs is a real, load-bearing test helper (every Postgres-backed test file imports
 # it), not an agent-scratch probe — the leading underscore is a naming collision with the rule
 # above, not an indication it's throwaway. Caught once already: it was silently never committed

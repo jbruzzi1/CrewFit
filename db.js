@@ -81,6 +81,10 @@ CREATE TABLE IF NOT EXISTS reports (
   id text PRIMARY KEY,
   data jsonb NOT NULL
 );
+CREATE TABLE IF NOT EXISTS feed_events (
+  id text PRIMARY KEY,
+  data jsonb NOT NULL
+);
 CREATE TABLE IF NOT EXISTS app_state (
   key text PRIMARY KEY,
   value jsonb NOT NULL
@@ -108,7 +112,7 @@ async function ensureSchema() {
   }
 }
 
-const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, customExercises: {}, prs: {}, crews: {}, notifications: {}, reports: {} });
+const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, customExercises: {}, prs: {}, crews: {}, notifications: {}, reports: {}, feedEvents: {} });
 
 // ---- diffed writes ----
 //
@@ -139,7 +143,7 @@ const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, 
 let lastPersisted = null; // null, or { users:{}, sessions:{}, ..., singletons:{} } — each inner value id/key -> last-written JSON string
 
 function freshSnapshot() {
-  return { users: {}, sessions: {}, templates: {}, push_subs: {}, custom_exercises: {}, prs: {}, crews: {}, notifications: {}, reports: {}, singletons: {} };
+  return { users: {}, sessions: {}, templates: {}, push_subs: {}, custom_exercises: {}, prs: {}, crews: {}, notifications: {}, reports: {}, feed_events: {}, singletons: {} };
 }
 
 // Reassembles the exact in-memory shape server.js has always used, from Postgres rows. Also the
@@ -206,6 +210,13 @@ async function doLoad() {
   // append-and-eventually-resolved log rather than something a user edits directly.
   const reports = await c.query('SELECT id, data FROM reports');
   for (const row of reports.rows) { d.reports[row.id] = JSON.parse(row.data); snap.reports[row.id] = JSON.stringify(d.reports[row.id]); }
+
+  // Sep 11 2026: the Activity page's persisted feed events (PRs, streaks, crew-rank changes,
+  // challenge starts/completions, joined-crew, finished-without-a-recap) -- ephemeral, pruned the
+  // same way notifications are (see pruneOldFeedEvents in server.js), never surfaced anywhere
+  // permanent. Same one-row-per-entity JSONB shape as notifications/reports above.
+  const feedEvents = await c.query('SELECT id, data FROM feed_events');
+  for (const row of feedEvents.rows) { d.feedEvents[row.id] = JSON.parse(row.data); snap.feed_events[row.id] = JSON.stringify(d.feedEvents[row.id]); }
 
   // Small singleton bookkeeping fields server.js reads/writes directly on DB (not per-entity
   // data) — followApprovalV1 is a boot migration's "did this already run" marker (see
@@ -305,6 +316,9 @@ async function doSave(d) {
     pending.reports = bootstrapping
       ? await syncTableFull(c, 'reports', 'id', d.reports, jsonToParams, REPORTS_UPSERT_SQL)
       : await syncTableDiff(c, 'reports', 'id', d.reports, jsonToParams, REPORTS_UPSERT_SQL, base.reports);
+    pending.feed_events = bootstrapping
+      ? await syncTableFull(c, 'feed_events', 'id', d.feedEvents, jsonToParams, FEED_EVENTS_UPSERT_SQL)
+      : await syncTableDiff(c, 'feed_events', 'id', d.feedEvents, jsonToParams, FEED_EVENTS_UPSERT_SQL, base.feed_events);
 
     // Singletons: never deleted for being merely absent from `d` (unlike collections above) —
     // `d[key] === undefined` has always meant "this save() call has nothing to say about this
@@ -347,6 +361,7 @@ const PRS_UPSERT_SQL = 'INSERT INTO prs (user_id, data) VALUES ($1, $2::jsonb) O
 const CREWS_UPSERT_SQL = 'INSERT INTO crews (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
 const NOTIFICATIONS_UPSERT_SQL = 'INSERT INTO notifications (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
 const REPORTS_UPSERT_SQL = 'INSERT INTO reports (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
+const FEED_EVENTS_UPSERT_SQL = 'INSERT INTO feed_events (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
 
 // The original, pre-Sep-8 behavior, kept verbatim as the bootstrap fallback (see the comment
 // above lastPersisted): upserts every entry currently in `obj`, then deletes any DB row whose
