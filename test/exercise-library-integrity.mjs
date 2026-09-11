@@ -28,7 +28,9 @@ console.log('\nevery entry has the required shape');
 {
   const VALID_PATTERN = new Set(['push', 'pull', 'legs', 'core', 'cardio']);
   const VALID_LEVEL = new Set(['beginner', 'intermediate', 'advanced']);
-  const VALID_LOADTYPE = new Set(['pair', 'single', 'added']);
+  // Sep 11 2026: 'assisted' added for Machine-Assisted Pull-Up -- see the _note atop
+  // exercise-library.json and the assisted-aware branches in server.js (loadTypeForName).
+  const VALID_LOADTYPE = new Set(['pair', 'single', 'added', 'assisted']);
   let badShape = 0, badPattern = 0, badLevel = 0, badLoadType = 0, badMuscleGroups = 0, badEquipment = 0;
   for (const e of ex) {
     if (typeof e.name !== 'string' || !e.name) badShape++;

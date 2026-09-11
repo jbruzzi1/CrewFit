@@ -3758,10 +3758,19 @@ function sessionsForUser(userId) {
     }
     for (const name of Object.keys(byName)) {
       const sets = byName[name];
-      // the heaviest set of the session decides it; ties broken by reps
-      const top = sets.reduce((a, b) =>
-        (toLb(b.weight, b.unit) > toLb(a.weight, a.unit) ||
-         (toLb(b.weight, b.unit) === toLb(a.weight, a.unit) && (b.reps||0) > (a.reps||0))) ? b : a);
+      // The heaviest set of the session decides it; ties broken by reps -- EXCEPT for an assisted
+      // exercise (loadType==='assisted', see rebuildAllPrs' comment), where the number runs
+      // backwards: the LEAST assist is the hardest, most representative set of the session, so
+      // that direction flips too. This is what recommendationsFor() below judges "topped out"
+      // and "ready to progress" against, so getting the wrong set here would pick the wrong
+      // weight to compare and suggest from, even once that function's own +/-step is fixed.
+      const assisted = loadTypeForName(name) === 'assisted';
+      const top = sets.reduce((a, b) => {
+        const wa = toLb(a.weight, a.unit), wb = toLb(b.weight, b.unit);
+        const better = assisted ? (wb < wa || (wb === wa && (b.reps||0) > (a.reps||0)))
+                                 : (wb > wa || (wb === wa && (b.reps||0) > (a.reps||0)));
+        return better ? b : a;
+      });
       out.push({ name, when: perfDate(s.scheduledAt), top, sets });
     }
   }
@@ -3802,11 +3811,16 @@ function recommendationsFor(userId) {
     const [latest, prev] = hist;
     const lib = EX_LIB.find(x => x.name === name);
     const group = lib && ['push','pull','legs','core','cardio'].includes(lib.pattern) ? lib.pattern : 'other';
+    // Sep 11 2026: computed once here (not just inside the `ready` branch below) so `holds` and
+    // `soon` carry it too — the log sheet's "one more like that" / "match that today" copy for an
+    // assisted exercise needs to say the assist goes DOWN next time, not up, even before there's
+    // an actual `ready` suggestion to show.
+    const lessIsMore = loadTypeForName(name) === 'assisted';
     const base = { exercise: name, group, weight: inUnit(latest.top.weight, latest.top.unit, unit), unit,
                    bodyweight: !(Number(latest.top.weight) > 0),
                    reps: Number(latest.top.reps) || 0,
                    targetRepsMax: Number(latest.top.targetRepsMax) || Number(latest.top.targetReps) || null,
-                   at: latest.when };
+                   at: latest.when, lessIsMore };
     // Logged before rep targets were stamped (pre-v154): there is nothing to judge the set
     // against, so say nothing rather than render "8 of null reps last time".
     if (!base.targetRepsMax) continue;
@@ -3816,7 +3830,13 @@ function recommendationsFor(userId) {
     // switched units mid-cycle is not told their own weight changed.
     if (toppedOut(latest) && toppedOut(prev) && sameLoad(latest.top, prev.top)) {
       const step = incrementFor(name, unit);
-      ready.push(Object.assign({}, base, { suggested: base.weight + step, step }));
+      // Sep 11 2026: for an assisted exercise, topping out twice at the same assist weight means
+      // ready to REDUCE assist (harder), not add more — same inversion as everywhere else this
+      // touches. Clamped at 0 (can't assist less than "none") rather than going negative; at 0
+      // there is nothing left to suggest, so this exercise simply stops appearing in `ready` —
+      // toppedOut()/sameLoad() themselves stay untouched, only which direction counts as progress.
+      const suggested = lessIsMore ? Math.max(0, base.weight - step) : base.weight + step;
+      if (!lessIsMore || suggested < base.weight) ready.push(Object.assign({}, base, { suggested, step }));
     } else if (!toppedOut(latest)) {
       holds.push(base);
     } else {
@@ -4035,10 +4055,26 @@ function trendFor(userId) {
     const perEx = {};
     for (const l of mine) {
       if (!isWorkingSet(l)) continue;
-      const e = estMax(l);
-      if (!e) continue;                                  // bodyweight / incomplete
       const name = logExerciseName(s, l, userId);
-      if (!perEx[name] || e > perEx[name].e) perEx[name] = { e, l };
+      const assisted = loadTypeForName(name) === 'assisted';
+      const e = estMax(l);
+      // estMax() returns 0 at weight 0 -- for every OTHER loadType that means "bodyweight /
+      // incomplete, nothing to compare" and is correctly skipped. For assisted, weight 0 is not
+      // incomplete data -- it is the single BEST possible set (a full unassisted rep) -- so
+      // skipping on `!e` here would silently drop a user's best session the moment they reach it,
+      // right when it matters most. Only skip an assisted set for missing reps, not zero weight.
+      if (assisted ? !(Number(l.reps) > 0) : !e) continue;
+      // Machine-Assisted Pull-Up etc: less assist weight is the harder, more representative set,
+      // same question sessionsForUser() already answers for recommendationsFor() -- so the pick
+      // uses that same weight-ascending/reps-tiebreak comparison instead of estMax's raw score,
+      // which stays weight-ascending (bigger e = more assist = easier) and would pick the wrong
+      // set here if compared directly.
+      const w = toLb(l.weight, l.unit);
+      const cur = perEx[name];
+      const better = !cur || (assisted
+        ? (w < cur.w || (w === cur.w && (Number(l.reps) || 0) > (Number(cur.l.reps) || 0)))
+        : (e > cur.e));
+      if (better) perEx[name] = { e, l, w };
     }
     for (const name of Object.keys(perEx)) {
       const point = {
@@ -4080,14 +4116,22 @@ function trendFor(userId) {
   // row's weight range as literal-first-to-literal-last (e.g. "200 -> 180 lb") right next to the
   // now-smoothed "+10%", which self-contradicts (a lighter weight next to a green up-arrow). The
   // row has to name the session that actually produced the number beside it.
+  // `assisted` is threaded through here because it flips which end of a window/lift counts as
+  // "best": for a normal lift, best = highest est (heaviest/most reps); for an assisted lift
+  // (loadType==='assisted' -- Machine-Assisted Pull-Up today), less assist is the harder,
+  // more-improved set, so best = LOWEST est. estMax()'s own formula is left untouched (still
+  // just w*(1+r/30)) -- only which direction counts as "better" changes at each call site below.
   const TREND_SMOOTH_SESSIONS = 3;
-  const bestPointOfWindow = (points, asOfDate) => {
+  const bestPointOfWindow = (points, asOfDate, assisted) => {
     const upTo = asOfDate ? points.filter(p => p.at <= asOfDate) : points;
     if (!upTo.length) return points[0];
     const window = upTo.slice(-TREND_SMOOTH_SESSIONS);
-    return window.reduce((best, p) => (p.est > best.est ? p : best), window[0]);
+    return window.reduce((best, p) => {
+      const better = assisted ? p.est < best.est : p.est > best.est;
+      return better ? p : best;
+    }, window[0]);
   };
-  const currentEst = (points, asOfDate) => bestPointOfWindow(points, asOfDate).est;
+  const currentEst = (points, asOfDate, assisted) => bestPointOfWindow(points, asOfDate, assisted).est;
 
   // Overall stays computed from EVERY eligible lift, never just the picked/displayed subset --
   // it is a holistic "how is your training going" number, and shrinking it to whatever chips
@@ -4097,21 +4141,46 @@ function trendFor(userId) {
   const overall = !lifts.length ? [] : dates.map(d => {
     let acc = 0;
     for (const l of lifts) {
-      const cur = currentEst(l.points, d);
-      acc += (cur / l.points[0].est) * (l.points[0].est / wsum);
+      const assisted = loadTypeForName(l.name) === 'assisted';
+      const cur = currentEst(l.points, d, assisted);
+      // A normal lift's ratio is cur/start (>1 = up = good). An assisted lift's improvement is a
+      // DROP in assist weight, so the ratio is inverted (start/cur) to keep ">1 = good" true for
+      // every lift feeding this blend, regardless of loadType.
+      // cur===0 means the best set in this window was fully unassisted -- the best an assisted lift
+      // can ever be, but start/0 is a division by zero. Capped at 2 (the same "maxed out" ceiling
+      // toChip's changePct below uses, ratio 2 == +100%) instead of Infinity/NaN, which would
+      // otherwise corrupt this WHOLE user's overall blended trend, not just this one lift's line.
+      const ratio = assisted
+        ? (cur > 0 ? (l.points[0].est / cur) : (l.points[0].est > 0 ? 2 : 1))
+        : (cur / l.points[0].est);
+      acc += ratio * (l.points[0].est / wsum);
     }
     return { at: d, pct: Number(((acc - 1) * 100).toFixed(1)) };
   });
 
   const toChip = l => {
-    const bestPoint = bestPointOfWindow(l.points);
+    const assisted = loadTypeForName(l.name) === 'assisted';
+    const bestPoint = bestPointOfWindow(l.points, undefined, assisted);
+    // Same start/cur swap as the overall blend above, so changePct reads positive when an
+    // assisted lift's assist weight has genuinely dropped, not just when est happens to be higher.
+    // Same bestPoint.est===0 guard as the overall blend above (a fully-unassisted best set would
+    // otherwise divide by zero) -- capped at +100% ("maxed out") rather than Infinity/NaN.
+    const changePct = assisted
+      ? (bestPoint.est > 0 ? (l.points[0].est / bestPoint.est - 1) * 100 : (l.points[0].est > 0 ? 100 : 0))
+      : (bestPoint.est / l.points[0].est - 1) * 100;
     return {
       name: l.name, points: l.points,
-      changePct: Number(((bestPoint.est / l.points[0].est - 1) * 100).toFixed(1)),
+      changePct: Number(changePct.toFixed(1)),
       // The weight from the SAME session changePct is computed against -- not literally the most
       // recent session's weight -- so "what's driving it" never shows a lighter number next to a
       // green up-arrow (see the comment above bestPointOfWindow).
-      currentWeight: bestPoint.weight
+      currentWeight: bestPoint.weight,
+      // Sep 11 2026 (Jeff, asked before building): the per-lift Strength Trend chart plots this
+      // lift's own points, and for an assisted exercise the client flips its y-axis so the line
+      // still reads "up = improving" like every other lift, even though the underlying number
+      // (assist weight) is genuinely decreasing. Same flag name/meaning as recommendationsFor's
+      // ready-suggestion objects.
+      lessIsMore: assisted
     };
   };
   const allNames = lifts.map(l => l.name);
@@ -4162,10 +4231,20 @@ function plateausFor(userId) {
     const perEx = {};
     for (const l of mine) {
       if (!isWorkingSet(l)) continue;
-      const e = estMax(l);
-      if (!e) continue;                                  // bodyweight / incomplete -- see estMax
       const name = logExerciseName(s, l, userId);
-      if (!perEx[name] || e > perEx[name].e) perEx[name] = { e, l };
+      const assisted = loadTypeForName(name) === 'assisted';
+      const e = estMax(l);
+      // See the identical comment in trendFor() above: weight 0 is the BEST possible assisted
+      // set, not incomplete data, so it must not be excluded here the way bodyweight 0 is for
+      // every other loadType.
+      if (assisted ? !(Number(l.reps) > 0) : !e) continue;   // bodyweight / incomplete -- see estMax
+      // Same assisted-aware pick as trendFor() above -- see its comment.
+      const w = toLb(l.weight, l.unit);
+      const cur = perEx[name];
+      const better = !cur || (assisted
+        ? (w < cur.w || (w === cur.w && (Number(l.reps) || 0) > (Number(cur.l.reps) || 0)))
+        : (e > cur.e));
+      if (better) perEx[name] = { e, l, w };
     }
     for (const name of Object.keys(perEx)) {
       const at = perfDate(s.scheduledAt).slice(0, 10);
@@ -4187,9 +4266,17 @@ function plateausFor(userId) {
     if (windowPoints.length < PLATEAU_MIN_SESSIONS) continue;    // not trained enough lately
     const priorPoints = points.filter(p => p.at < windowStartStr);
     if (!priorPoints.length) continue;                           // no baseline before the window
-    const bestBefore = Math.max(...priorPoints.map(p => p.est));
-    const bestDuring = Math.max(...windowPoints.map(p => p.est));
-    if (bestDuring > bestBefore * (1 + PLATEAU_THRESHOLD)) continue;   // real progress -- not stuck
+    // Assisted (loadType==='assisted'): the "best" est in each period is the LOWEST (least
+    // assist), and real progress is bestDuring dropping below bestBefore by more than the
+    // threshold -- both inverted from the normal heaviest-wins reading, same direction flip as
+    // trendFor() above.
+    const assisted = loadTypeForName(name) === 'assisted';
+    const bestBefore = assisted ? Math.min(...priorPoints.map(p => p.est)) : Math.max(...priorPoints.map(p => p.est));
+    const bestDuring = assisted ? Math.min(...windowPoints.map(p => p.est)) : Math.max(...windowPoints.map(p => p.est));
+    const madeRealProgress = assisted
+      ? bestDuring < bestBefore * (1 - PLATEAU_THRESHOLD)
+      : bestDuring > bestBefore * (1 + PLATEAU_THRESHOLD);
+    if (madeRealProgress) continue;   // real progress -- not stuck
 
     const latest = windowPoints[windowPoints.length - 1];
     const lib = EX_LIB.find(x => x.name === name);
@@ -4286,9 +4373,15 @@ function recordsFor(userId) {
   const out = [];
   for (const name of Object.keys(earned)) {
     const e = earned[name], seed = seeds[name];
+    // Sep 11 2026: an assisted exercise's seed is a STARTING assist weight — beating it means
+    // using LESS assist than that, same inversion as rebuildAllPrs' own weight record above.
+    const assisted = loadTypeForName(name) === 'assisted';
+    const beatSeed = seed && (assisted
+      ? toLb(e.weight, e.unit) < toLb(seed.weight, seed.unit)
+      : toLb(e.weight, e.unit) > toLb(seed.weight, seed.unit));
     out.push(Object.assign({}, e, {
       source: 'earned',
-      beatSeed: !!(seed && toLb(e.weight, e.unit) > toLb(seed.weight, seed.unit)),
+      beatSeed: !!beatSeed,
       seedWeight: seed ? seed.weight : null, seedReps: seed ? seed.reps : null,
       goal: seed && seed.goal ? seed.goal : null
     }));
@@ -4828,7 +4921,21 @@ function rebuildAllPrs() {
       // normal ascending session tagged three or four sets "PR" for the same lift — Jeff's
       // Towel Pull-Up showed 45x8 PR and 79x8 PR in one workout. Only the 79 is a record. A
       // badge that appears on almost every set stops meaning anything.
-      let bestW = -1, bestR = -1, bestLog = null;
+      // Sep 11 2026, Jeff: "assisted machine pull ups - the more weight actually makes it easier
+      // and more of an assist. the less weight the better." loadType==='assisted' (see the _note
+      // atop exercise-library.json) is the ONE exercise class where the entered number runs
+      // backwards from every other lift — a counterweight/assist machine's number is how much of
+      // your own bodyweight is being taken OFF, so LESS of it is the harder, more impressive set.
+      // `assisted` below flips "better" to a lower number for this whole function's weight record;
+      // trendFor/plateausFor (search loadType==='assisted' there) get the same treatment for the
+      // same reason, and recommendationsFor flips which direction "add weight" suggests next.
+      // The weight×reps "VOLUME" record just below is deliberately SKIPPED entirely for assisted
+      // (Jeff, confirmed): less-assist-but-more-reps has no coherent "bigger number is better"
+      // meaning the way weight×reps does for every other loadType, so bestSetLog/isSetPr simply
+      // never gets set, and setPr reads null downstream (see recordsFor/GET /api/progress) exactly
+      // like it already does for any exercise with no set-PR yet.
+      const assisted = loadTypeForName(name) === 'assisted';
+      let bestW = assisted ? Infinity : -1, bestR = -1, bestLog = null;
       // Sep 9 2026, Jeff: "a set of 10 at my heaviest weight ive ever done is just as significant
       // as a set of 2 just trying my max out on a weight." The weight record above can never
       // recognize that — a heavier single/double always outranks it no matter how many reps a
@@ -4850,8 +4957,11 @@ function rebuildAllPrs() {
         if (!isWorkingSet(l)) continue;
         // compare in lb regardless of what each set was typed in
         const w = toLb(l.weight, l.unit), r = Number(l.reps) || 0;
-        const better = r > 0 && (w > bestW || (w === bestW && r > bestR));
+        const better = r > 0 && (assisted
+          ? (w < bestW || (w === bestW && r > bestR))
+          : (w > bestW || (w === bestW && r > bestR)));
         if (better) { bestW = w; bestR = r; bestLog = l; }
+        if (assisted) continue;               // no VOLUME/set-PR for assisted — see the comment above
         // Same lb-normalized weight, but the number being compared is weight × reps. Bodyweight
         // sets (w===0, e.g. a Pull-Up) hit the exact pitfall the comment above already names for
         // the weight loop: volume is 0×reps=0 no matter the reps, so the FIRST bodyweight set ever
@@ -4866,8 +4976,7 @@ function rebuildAllPrs() {
       }
       if (bestLog) {
         bestLog.isPr = true;
-        bestSetLog.isSetPr = true;            // bestSetLog always exists whenever bestLog does —
-                                               // both loops share the same isWorkingSet+reps>0 gate
+        if (bestSetLog) bestSetLog.isSetPr = true;   // never set for assisted — bestSetLog stays null
         // Jeff, Aug 21: "every new first rep will be considered a PR" -- a brand-new user's very
         // first-ever session, trying several exercises for the first time each, used to post one
         // "hit a new PR" feed item per exercise even though none of them beat anything. The
@@ -4895,9 +5004,15 @@ function rebuildAllPrs() {
         DB.prs[userId][name] = { exercise: name, weight: Number(bestLog.weight) || 0,
           reps: Number(bestLog.reps) || 0, unit: bestLog.unit || 'lb',
           at: bestLog._performedAt || bestLog.at, firstLog,
-          setWeight: Number(bestSetLog.weight) || 0, setReps: Number(bestSetLog.reps) || 0,
-          setUnit: bestSetLog.unit || 'lb', setAt: bestSetLog._performedAt || bestSetLog.at,
-          setFirstLog };
+          // bestSetLog is null for assisted (see the comment above) — the set*/VOLUME fields are
+          // simply omitted rather than written as zeros, so recordsFor()'s
+          // `earnedPr.setWeight !== undefined` check (and GET /api/progress's identical one) reads
+          // this exactly like any other exercise with no set-PR yet: setPr comes back null, no
+          // VOLUME pill renders. Object.assign lets the ternary contribute nothing at all instead
+          // of contributing undefined-valued keys, which `!== undefined` would still see as present.
+          ...(bestSetLog ? { setWeight: Number(bestSetLog.weight) || 0, setReps: Number(bestSetLog.reps) || 0,
+            setUnit: bestSetLog.unit || 'lb', setAt: bestSetLog._performedAt || bestSetLog.at,
+            setFirstLog } : {}) };
       }
     }
   }

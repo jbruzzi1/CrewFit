@@ -470,7 +470,15 @@ async function home(opts){
   // below is comparing different EXERCISES' weights against each other regardless of unit either
   // way — an existing, separate simplification (picking "best" by biggest number, not adjusted
   // per lift) this fix does not touch.
-  const best = earnedPrs.filter(p => Number(p.weight) > 0).sort((a,b) => Number(b.weight) - Number(a.weight))[0] || null;
+  // Sep 11 2026: an assisted exercise's PR (e.g. Machine-Assisted Pull-Up) is the LOWEST weight
+  // ever logged, not the highest -- letting it into this raw "biggest number wins" pool would
+  // mean it could never win (a low assist weight never beats a heavy squat) or, worse, would be
+  // misread as a light lift if it ever did. Jeff's call (recommended default, asked before
+  // building): exclude assisted PRs from this slot entirely rather than special-case the compare.
+  const libn = await libByName();
+  const best = earnedPrs
+    .filter(p => Number(p.weight) > 0 && (libn[p.exercise] || {}).loadType !== 'assisted')
+    .sort((a,b) => Number(b.weight) - Number(a.weight))[0] || null;
   const withFriends = mine.filter(s => (s.participants||[]).some(x => x && x !== ME.id)).length;
   // Sep 7 (Jeff: "do we feel like they actually add value, or is it just cool design"): week
   // streak and days-this-week are gone from this pool. Days-this-week went because the week strip
@@ -2463,9 +2471,10 @@ function unitOf(entry){ return (entry && entry.unit) || 'lb'; }
 const INCREMENTS = { lb:{upper:5, lower:10, machine:20}, kg:{upper:2.5, lower:5, machine:10} };
 
 const LOAD_LABEL = {
-  pair:   'per dumbbell',
-  single: 'total',
-  added:  'added weight',
+  pair:     'per dumbbell',
+  single:   'total',
+  added:    'added weight',
+  assisted: 'assist weight',
 };
 // The live readout beside the weight box — this is what actually removes the ambiguity,
 // because the user never has to reason about which convention the app assumed.
@@ -2475,6 +2484,10 @@ function loadHintText(loadType, w){
   if(loadType==='pair')   return n ? `= ${n*2} ${U} total, both hands` : 'weight in each hand';
   if(loadType==='single') return 'one dumbbell, total weight';
   if(loadType==='added')  return n ? `${n} ${U} on top of bodyweight` : 'weight added, not bodyweight';
+  // Sep 11 2026 (Jeff, asked before building): machine assist runs backwards from every other
+  // load type — LESS weight is the harder, more-improved set — so this stays a constant reminder
+  // rather than echoing the entered number back like the other hints do.
+  if(loadType==='assisted') return 'less assist = harder set';
   return '';
 }
 function updateLoadHint(exId){
@@ -2696,11 +2709,17 @@ function refreshLogRec(exId, s){
     const U=r.unit||'lb';
     // A pull-up or dip stores weight 0 — "at 0 lb" reads as a bug, "at bodyweight" reads as English.
     const W=w=>(Number(w)>0? `${w} ${U}` : 'bodyweight');
+    // Sep 11 2026: an assisted exercise's r.ready (see recommendationsFor, server.js) suggests
+    // LESS weight next time -- less assist is the harder set, same inversion as everywhere else
+    // this touches. lessIsMore flags that so this box points its arrow down and says "assist",
+    // not "add", while staying otherwise identical (still tappable, still fills the same input).
     if(r.ready) box.innerHTML=`<div class="log-rec up" role="button" tabindex="0"
         onclick="useSuggested('${exId}',${r.ready.suggested})"
         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();useSuggested('${exId}',${r.ready.suggested});}">
-        <span class="lr-ic" aria-hidden="true">↑</span>
-        <span class="lr-t">${r.ready.bodyweight
+        <span class="lr-ic" aria-hidden="true">${r.ready.lessIsMore?'↓':'↑'}</span>
+        <span class="lr-t">${r.ready.lessIsMore
+          ? `Try <b>${r.ready.suggested} ${U}</b> assist today`
+          : r.ready.bodyweight
           ? `Add <b>${r.ready.step} ${U}</b> today`
           : `Try <b>${r.ready.suggested} ${U}</b> today`}</span>
         <span class="lr-why">hit ${r.ready.targetRepsMax} reps at ${W(r.ready.weight)}, last 2 sessions</span>
@@ -2726,7 +2745,7 @@ function refreshLogRec(exId, s){
       ? `<div class="log-rec almost">
         <span class="lr-ic" aria-hidden="true">⋯</span>
         <span class="lr-t">One more set like that</span>
-        <span class="lr-why">hit ${r.soon.targetRepsMax} reps at ${W(r.soon.weight)} next time and the weight goes up</span>
+        <span class="lr-why">hit ${r.soon.targetRepsMax} reps at ${W(r.soon.weight)} next time and the ${r.soon.lessIsMore?'assist goes down':'weight goes up'}</span>
       </div>`
       // Nothing logged for this exercise yet this workout -- state the fact ("last time") instead
       // of a comparison with no antecedent, then move the ask to the subtext (Jeff's own pick,
@@ -2734,7 +2753,7 @@ function refreshLogRec(exId, s){
       : `<div class="log-rec almost">
         <span class="lr-ic" aria-hidden="true">⋯</span>
         <span class="lr-t">Last time: ${W(r.soon.weight)} × ${r.soon.reps}</span>
-        <span class="lr-why">Match that today and the weight goes up next time</span>
+        <span class="lr-why">Match that today and the ${r.soon.lessIsMore?'assist goes down':'weight goes up'} next time</span>
       </div>`;
     // Nothing to advise yet. With a seeded working weight there is still something personal to
     // say; otherwise the card stays clean -- v312: with every exercise's logger on one page, the
@@ -3406,7 +3425,7 @@ async function showRecap(id){
   if(next.length){
     h += `<h2>Next time</h2><div class="card">`;
     for(const n of next){
-      h += `<div class="rc-next"><div class="rc-next-ic">↑</div>
+      h += `<div class="rc-next"><div class="rc-next-ic">${n.lessIsMore?'↓':'↑'}</div>
         <div class="rc-next-m"><div class="rc-next-n">${esc(n.exercise)}</div>
           <div class="rc-next-w">${n.targetRepsMax} reps at ${n.weight>0?n.weight+' '+n.unit:'bodyweight'}, two sessions running</div></div>
         <div class="rc-next-to">${n.bodyweight?`+${n.step} ${n.unit}`:`${n.suggested} ${n.unit}`}</div></div>`;
@@ -5068,13 +5087,20 @@ function trendChart(d, U){
     <div class="muted" style="padding:20px 4px;text-align:center">Only one session for this lift so far.</div></div>`;
 
   const W=326,H=150,PL=36,PRr=12,PT=20,PB=24;
+  // Sep 11 2026 (Jeff, asked before building, picked over leaving the axis literal): an assisted
+  // lift's own numbers get lighter as you improve, so this axis is deliberately flipped -- plot
+  // v ascending top-to-bottom instead of descending -- so the line still reads "up = improving"
+  // the same way every other lift's chart does. The numbers themselves (grid labels, tooltip,
+  // head figure below) stay the real, literal assist weight -- only which pixel row each value
+  // lands on changes.
+  const lessIsMore = !isOverall && !!lift.lessIsMore;
   const vals=pts.map(p=>p.v);
   let lo=Math.min(...vals), hi=Math.max(...vals);
   if(isOverall){ lo=Math.min(0,lo)-1; hi=Math.max(hi,1)+2; }
   else { const pad=Math.max(5,(hi-lo)*0.15); lo=Math.floor((lo-pad)/5)*5; hi=Math.ceil((hi+pad)/5)*5; }
   if(hi===lo) hi=lo+1;
   const xs=i=>PL+i*(W-PL-PRr)/(pts.length-1);
-  const ys=v=>PT+(hi-v)*(H-PT-PB)/(hi-lo);
+  const ys=v=> lessIsMore ? PT+(v-lo)*(H-PT-PB)/(hi-lo) : PT+(hi-v)*(H-PT-PB)/(hi-lo);
   const step=Math.max(1,Math.round((hi-lo)/4));
   let grid='',lbl='';
   for(let g=Math.ceil(lo/step)*step; g<=hi; g+=step){
@@ -5100,7 +5126,7 @@ function trendChart(d, U){
   const drivers = isOverall ? `<div class="drv-head">What's driving it</div>${
     t.lifts.slice().sort((a,b)=>b.changePct-a.changePct).map(l=>`<div class="drv">
       <div class="drv-n">${esc(l.name)}</div>
-      <div class="drv-w">${l.points[0].weight} → ${l.currentWeight} ${U}</div>
+      <div class="drv-w">${l.points[0].weight} → ${l.currentWeight} ${U}${l.lessIsMore?' assist':''}</div>
       <div class="drv-p ${l.changePct>0.5?'up':'flat'}">${l.changePct>0.5?'▲ '+Math.round(l.changePct)+'%':'—'}</div>
     </div>`).join('')}` : '';
 
@@ -5273,11 +5299,11 @@ async function progressScreen(opts){
     readyHtml = Object.keys(byGroup).map(g => `<div class="grp">
         <div class="grp-h">${GROUP_LABEL[g]||g}</div>
         ${byGroup[g].map(r=>`<div class="rp">
-          <div class="rp-ic" aria-hidden="true">↑</div>
+          <div class="rp-ic" aria-hidden="true">${r.lessIsMore?'↓':'↑'}</div>
           <div class="rp-main"><div class="rp-name">${esc(r.exercise)}</div>
             <div class="rp-why">Hit ${r.targetRepsMax} reps at ${WL(r.weight)} · last 2 sessions</div></div>
           <div class="rp-to"><div class="rp-new">${r.bodyweight?`+${r.step} ${U}`:`${r.suggested} ${U}`}</div>
-            <div class="rp-tag">▲ +${r.step}</div></div>
+            <div class="rp-tag">${r.lessIsMore?`▼ -${r.weight-r.suggested}`:`▲ +${r.step}`}</div></div>
         </div>`).join('')}
       </div>`).join('');
   } else if(!(d.soon||[]).length && !d.holds.length){
@@ -5309,7 +5335,7 @@ async function progressScreen(opts){
       ${d.soon.map(h=>`<div class="hold">
         <div class="hold-ic almost-ic" aria-hidden="true">⋯</div>
         <div class="rp-main"><div class="rp-name">${esc(h.exercise)}</div>
-          <div class="rp-why">Hit ${h.targetRepsMax} reps at ${WL(h.weight)} next time and the weight goes up</div></div>
+          <div class="rp-why">Hit ${h.targetRepsMax} reps at ${WL(h.weight)} next time and the ${h.lessIsMore?'assist goes down':'weight goes up'}</div></div>
       </div>`).join('')}</div>`;
   }
   let holdHtml = '';
@@ -5406,7 +5432,11 @@ async function progressScreen(opts){
 
     <h2>Add weight next time</h2>
     <div class="card">${readyHtml}${soonHtml}${holdHtml}
-      ${(d.ready.length||(d.soon||[]).length||d.holds.length)?howItWorks('Add weight next time', `Reach the top of your rep range two sessions in a row <b>at the same weight</b> and the weight goes up. Warm-ups and drop sets don't count.`):''}
+      ${(d.ready.length||(d.soon||[]).length||d.holds.length)?howItWorks('Add weight next time', `Reach the top of your rep range two sessions in a row <b>at the same weight</b> and the weight goes up. Warm-ups and drop sets don't count.${
+        [...d.ready,...(d.soon||[]),...d.holds].some(x=>x.lessIsMore)
+          ? ' On an assisted machine this runs the other way — less assist is the harder set, so the number goes DOWN instead.'
+          : ''
+      }`):''}
     </div>
 
     ${plateauHtml}
