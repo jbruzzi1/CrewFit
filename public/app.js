@@ -6194,6 +6194,43 @@ function crewMemberRowHtml(f, checked){
   return `<label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap">${av}</div><div class="inv-text"><div class="name">${esc(f.displayName||f.username)}</div><div class="handle">@${esc(f.username)}</div></div></div><span class="check"><input type="checkbox" value="${esc(f.id)}" ${checked?'checked':''} onchange="toggleCrewMember(this)"><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`;
 }
 function toggleCrewMember(cb){ const id=cb.value; if(cb.checked){ if(!CREW_SHEET_MEMBERS.includes(id)) CREW_SHEET_MEMBERS.push(id);} else { CREW_SHEET_MEMBERS=CREW_SHEET_MEMBERS.filter(x=>x!==id);} }
+// Sep 11 2026 (cold-review catch on the crew-sheet empty-state fix below, confirmed by Jeff
+// testing live): the empty-member-list CTA used to assume `#fu` (the Friends page's connections
+// search box) was always already on screen underneath the sheet -- true for the two "+ New crew"
+// entry points (both live on the Friends tab itself), but newCrewSheet() has a THIRD call site:
+// crewView's own "Edit" button, reachable straight from a notification/feed deep link with no
+// Friends-tab render underneath at all. There, `document.getElementById('fu')` was null and
+// `.focus()` threw -- the sheet closed but nothing else happened, no explanation, a worse dead
+// end than the one this fix set out to close. This works from anywhere: if `#fu` is already on
+// screen, focus it immediately (instant, no flash of navigation); otherwise navigate to Friends
+// for real first (showTab, not a raw friends() call, so the nav tab highlight/back button both
+// stay correct) and poll briefly for `#fu` to exist once that render lands, since showTab() fires
+// friends() without awaiting it.
+// Round-2 cold-review catch: that poll had no epoch guard, unlike every other async handler in
+// this file (see nothingNavigatedSince/UI_EPOCH elsewhere). Without one, someone who taps this
+// CTA and then immediately taps a DIFFERENT nav tab before friends()'s own fetch resolves would
+// get their focus yanked back onto Friends a moment later, on a screen they already left --
+// active focus-stealing, not just a stale render. Capturing UI_EPOCH before navigating and
+// bailing if it's changed by the time the poll would act closes that off.
+function focusConnectionsSearch(){
+  closeSheet();
+  const already = document.getElementById('fu');
+  if(already){ already.focus(); return; }
+  showTab('friends');
+  // Captured AFTER showTab, not before -- showTab() bumps UI_EPOCH itself on every ordinary
+  // navigation ("a tab switch also counts as 'the user moved on'", its own comment), so grabbing
+  // it first would make this equality check fail unconditionally on the very next frame, bailing
+  // out every single time regardless of whether anything actually raced. This way `epoch` is the
+  // Friends navigation WE just caused; any further change means something else happened after.
+  const epoch = UI_EPOCH;
+  let tries = 0;
+  (function tryFocus(){
+    if(UI_EPOCH !== epoch) return;   // the user has already moved on -- don't steal focus back
+    const f = document.getElementById('fu');
+    if(f){ f.focus(); return; }
+    if(++tries < 40) requestAnimationFrame(tryFocus);
+  })();
+}
 // One sheet, two modes: creating (editingCrew is null) and renaming/editing membership (editingCrew
 // is the crew object) -- same fields either way, matching how the app already reuses one screen for
 // "new workout" and "edit workout" (createFlow) rather than forking a second near-duplicate.
@@ -6209,15 +6246,36 @@ async function newCrewSheet(editCrewId){
   if(editingCrew && editingCrew.error){ alert(editingCrew.error); return; }
   const friendList = (friends && friends.friends) ? friends.friends : [];
   CREW_SHEET_MEMBERS = editingCrew ? editingCrew.members.filter(m=>m.id!==editingCrew.ownerId).map(m=>m.id) : [];
-  const rows = friendList.length ? friendList.map(f=>crewMemberRowHtml(f, CREW_SHEET_MEMBERS.includes(f.id))).join('')
-    : '<div class="muted" style="padding:8px 2px">Add some connections in Friends first.</div>';
+  // Sep 11 2026 (Jeff, real bug report -- "a brand-new user with no friends yet is exactly who
+  // the onboarding tour points at that button, and for them it's a dead end with zero
+  // explanation"): this used to be one small muted caption line sitting in an otherwise-empty
+  // box -- no icon, no tap target, easy to miss, and it never said HOW to add someone. Worse, the
+  // "Create crew" button below was (and stays) fully enabled either way, so a person could tap
+  // through into a silent, empty, functionally inert solo crew with no explanation of what just
+  // happened. Jeff's call (discussed first, not built-then-shown): leave solo-crew creation
+  // allowed -- someone may genuinely want to name a crew now and add people later -- but make
+  // this empty state a real homeEmpty()-shaped prompt matching every other "nothing here yet"
+  // moment in the app, with an actual tap target instead of dead text.
+  // Copy note: the first version said "Search above", assuming the Friends page's search box was
+  // always visible underneath this sheet -- true for the two "+ New crew" entry points, but not
+  // for newCrewSheet's third call site (crewView's own Edit button, no Friends render underneath
+  // at all). Dropped "above" since it's not always true; focusConnectionsSearch() (a few dozen
+  // lines up) is what actually makes the CTA itself work from any of the three entry points, not
+  // just this wording tweak.
+  // homeEmpty() renders OPEN by design (icon/title/sub/CTA, no surrounding box -- see its own
+  // comment) -- app-wide, a card only ever wraps CONTENT, never an empty state, so the empty
+  // case skips the .card entirely instead of nesting homeEmpty inside the same boxed, scrolling
+  // 40vh member-list container built for actual rows.
+  const membersBlock = friendList.length
+    ? `<div class="card" id="crewMemberList" style="padding:6px 12px;max-height:40vh;overflow-y:auto">${friendList.map(f=>crewMemberRowHtml(f, CREW_SHEET_MEMBERS.includes(f.id))).join('')}</div>`
+    : homeEmpty(ICON_PEOPLE, 'Find a training partner first', 'Search for people to train with — or create the crew now and invite them once you have some people.', `<span class="he-cta" onclick="focusConnectionsSearch()">Find people to follow →</span>`);
   const sheet = openSheetHtml(`
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>${editingCrew?'Edit crew':'New crew'}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
       <label class="muted">Crew name</label>
       <input id="crewNameInput" placeholder="e.g. Tuesday Legs" value="${esc(editingCrew?editingCrew.name:'')}" autocomplete="off">
       <h2 style="margin-top:14px">Members</h2>
-      <div class="card" id="crewMemberList" style="padding:6px 12px;max-height:40vh;overflow-y:auto">${rows}</div>
+      ${membersBlock}
       <button class="blue" style="margin-top:14px" onclick="saveCrewSheet(${editingCrew?`'${jsq(editingCrew.id)}'`:'null'})">${editingCrew?'Save changes':'Create crew'}</button>
       ${editingCrew ? `<button class="sec" style="margin-top:8px" onclick="deleteCrewConfirm('${jsq(editingCrew.id)}')">Delete crew</button>` : ''}
     </div>`);
