@@ -253,6 +253,86 @@ console.log('\ndismissing the LAST notification collapses the now-empty card and
   await page6.close();
 }
 
+// Sep 11 2026 (cold-review catch on the fix above, before it shipped): histDismiss awaits a real
+// 280ms animation AND a network round-trip (the DELETE) before its trailing
+// notifCollapseIfEmpty() call runs -- plenty of time for a normal-speed tab tap to land first.
+// notifCollapseIfEmpty()'s "is this card empty" check only recognizes notification rows
+// (.hist-swipe); .card.feed-strip is the SAME class friends()'s own "Activity" section and
+// profileView()'s "Recent Activity" section render their real content into (see friends()'s
+// activityHtml). Without a navigation guard, dismissing a notification and then immediately
+// switching to the Activity tab would run notifCollapseIfEmpty() against THAT screen once the
+// dismiss's delayed work finally resolves -- misreading a real, populated Activity card as
+// "empty" (no .hist-swipe inside it) and stripping it out from under the user. Fixed by capturing
+// UI_EPOCH at the top of histDismiss and gating the trailing call on nothingNavigatedSince(epoch),
+// the same pattern already used throughout app.js for exactly this class of race
+// (acceptInvite/declineInvite a few hundred lines up, among others). This proves the guard
+// actually holds: a friend finishes a real workout (a real .feed-item lands in the Activity tab's
+// .card.feed-strip), then dismissing a notification and switching to Activity mid-flight must
+// leave that card and its content completely untouched.
+console.log('\ndismissing a notification, then switching tabs before it finishes, must NOT strip real content on the new tab');
+{
+  // gia is the one performing the swipe-and-switch; she needs BOTH a real dismissible
+  // notification of her own AND real friend activity waiting on the tab she switches to.
+  const page8 = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+  await page8.goto(BASE + '/');
+  const gia = await registerAndLogin(page8, 'swg' + Math.random().toString(36).slice(2, 8));
+
+  const page9 = await browser.newPage();
+  await page9.goto(BASE + '/');
+  const finn = await registerAndLogin(page9, 'swf' + Math.random().toString(36).slice(2, 8));
+
+  // gia follows finn -- makes finn a "connection" (connectionsOf), so finn's completed workout
+  // below will show up in gia's OWN /api/feed, rendered by friends() as a real .feed-item inside
+  // a real .card.feed-strip.
+  await page8.evaluate(async ({ BASE, tok, id }) => {
+    await fetch(BASE + `/api/follow/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok }, body: '{}' });
+  }, { BASE, tok: gia.token, id: finn.user.id });
+  // finn follows gia back -- a public-profile follow is a real, immediate "New follower" history
+  // entry for the person followed (gia), same mechanism the earlier tests in this file use to get
+  // a real dismissible row without inventing a fake one.
+  await page9.evaluate(async ({ BASE, tok, id }) => {
+    await fetch(BASE + `/api/follow/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok }, body: '{}' });
+  }, { BASE, tok: finn.token, id: gia.user.id });
+  // finn finishes a real workout -- this is the 'completed' row that should land in gia's feed.
+  const sid = await page9.evaluate(async ({ BASE, tok }) => {
+    const r = await fetch(BASE + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok }, body: JSON.stringify({ exercises: [{ name: 'Bench Press' }] }) });
+    const s = await r.json();
+    await fetch(BASE + `/api/sessions/${s.id}/lock`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok }, body: '{}' });
+    return s.id;
+  }, { BASE, tok: finn.token });
+  ok(!!sid, "sanity: finn has a real finished session for gia's Activity feed to show");
+  await page9.close();
+
+  await page8.evaluate(() => window.renderNotifications());
+  await page8.waitForTimeout(200);
+  const rows2 = await page8.$$('.hist-swipe');
+  ok(rows2.length >= 1, `sanity: gia has at least one real history row to dismiss (got ${rows2.length})`);
+
+  const row2 = rows2[0];
+  const box2 = await row2.boundingBox();
+  const startX2 = box2.x + box2.width - 10, y2 = box2.y + box2.height / 2;
+  await page8.mouse.move(startX2, y2);
+  await page8.mouse.down();
+  await page8.mouse.move(startX2 - box2.width * 0.6, y2, { steps: 12 });
+  await page8.mouse.up(); // synchronously kicks off histDismiss -- it's already mid-flight (past its 280ms await) by the time this resolves
+  await page8.evaluate(() => window.showTab('friends')); // the race window: switch tabs before histDismiss's delayed work resolves
+  await page8.waitForTimeout(700); // well past the 280ms animation + DELETE round-trip
+
+  const onFriends = await page8.$eval('.h1-row h1', el => el.textContent).catch(() => null);
+  ok(onFriends === 'Friends', `sanity: actually landed on the Friends/Activity tab (got ${JSON.stringify(onFriends)})`);
+  const activityCard = await page8.$('.card.feed-strip');
+  ok(!!activityCard, "the Activity tab's real feed-strip card was NOT stripped by the stale dismiss finishing after the tab switch");
+  const feedItems = await page8.$$eval('.feed-item', els => els.length);
+  ok(feedItems >= 1, `the real activity item (finn's finished workout) is still there (got ${feedItems} .feed-item rows)`);
+  // NOT a bare ".home-empty" check -- friends() legitimately renders its OWN "No crews yet"
+  // homeEmpty for a user with no crews (gia has none here), so at least one .home-empty on this
+  // page is expected and correct. What must NOT appear is notifCollapseIfEmpty's specific
+  // notifications-page empty state (bell icon, "You're all caught up") bleeding onto this screen.
+  const emptyTitles = await page8.$$eval('.home-empty .he-title', els => els.map(e => e.textContent));
+  ok(!emptyTitles.includes("You're all caught up"), `no incorrect "all caught up" empty state was injected onto the Activity tab (got empty-state titles: ${JSON.stringify(emptyTitles)})`);
+  await page8.close();
+}
+
 await browser.close();
 try { srv && srv.kill(); } catch {}
 rmSync(dir, { recursive: true, force: true });

@@ -7306,6 +7306,8 @@ let histActiveDrags = new Set();
 // notification that this call is about to delete server-side. Re-querying by id catches either
 // case: the stale original, or a freshly re-rendered stand-in, whichever currently exists.
 async function histDismiss(row, fg, id){
+  const epoch = UI_EPOCH; // captured before the animation/network awaits below -- see the
+  // nothingNavigatedSince() guard on the trailing notifCollapseIfEmpty() call for why
   row.dataset.dismissing = '1'; // re-entrancy guard -- see onHistDown's own check for why
   const h = row.getBoundingClientRect().height;
   row.style.maxHeight = h + 'px';
@@ -7322,7 +7324,16 @@ async function histDismiss(row, fg, id){
   try { await H.delete('/api/notifications/' + encodeURIComponent(id)); } catch(e){}
   const current = document.querySelector(`.hist-swipe[data-nid="${CSS.escape(id)}"]`);
   if(current) current.remove();
-  notifCollapseIfEmpty();
+  // Cold-review catch (Sep 11 2026): the ~280ms animation + a real network round-trip above is
+  // plenty of time for the user to tap away to another tab before this line runs. Without this
+  // guard, notifCollapseIfEmpty() would then run against WHATEVER screen is on-screen now -- it
+  // reuses .card.feed-strip too (friends()'s Activity section, profileView()'s Recent Activity),
+  // and its "is this card empty" check only recognizes notification rows (.hist-swipe), so a real,
+  // populated Activity/Recent-Activity card on the new screen would read as "empty" and get
+  // stripped out from under the user. Same nothingNavigatedSince(epoch) pattern used throughout
+  // this file (e.g. acceptInvite/declineInvite a few hundred lines up) for exactly this class of
+  // "async work outliving a navigation" hazard.
+  if(nothingNavigatedSince(epoch)) notifCollapseIfEmpty();
 }
 // Sep 11 2026 (Jeff: "when I clear out notifications - it leaves the slim bar where the
 // notifications used to sit... I want it to show what it used to say 'all caught up'"). histDismiss
