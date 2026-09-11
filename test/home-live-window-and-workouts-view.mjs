@@ -356,5 +356,54 @@ console.log('\nMy Workouts (profile page): defaults to List view, buttons swappe
   ok(viewSection.includes('wlist'), `the default rendered view is the List layout, not Grid (got: ${viewSection.slice(0, 200)})`);
 }
 
+console.log('\nSep 10 2026 (Jeff, real bug: finished a workout Wed 9/9, no week-strip checkmark showed): a session that only reached s.posts -- not s.history, e.g. Log & Finish\'s own /lock request silently failed -- still counts as finished everywhere Home says so');
+{
+  // No history row at all -- only s.posts, exactly the state a dropped /lock request (fixed
+  // separately below) used to leave behind. Same shape a Quick Workout or a full New Workout both
+  // reach identically -- neither path writes anything Home's OLD `mine` filter didn't already treat
+  // the same way, this fixture just proves the READ side now matches hasFinishedSession() too.
+  const postsOnlySession = {
+    id: 's-posts-only', name: 'Evening Push Day', creatorId: 'me1', participants: ['me1'], invited: [],
+    exercises: [{ id: 'e1' }], scheduledAt: minsFromNow(-45),
+    history: [], logs: {}, posts: { me1: { at: minsFromNow(-5) } },
+  };
+  vm.runInContext(`
+    H.get = (p) => Promise.resolve(
+      p === '/api/sessions' ? ${JSON.stringify([postsOnlySession])} :
+      p === '/api/feed' ? [] :
+      p === '/api/friends' ? { friends: [] } : []
+    );
+  `, ctx);
+  vm.runInContext('window.HOME_CAL_EXPANDED = undefined', ctx);
+  sink.html = '';
+  await vm.runInContext('home', ctx)({ silent: true });
+
+  // Anchored to the day cell's OWN opening tag (class="wk ..." immediately followed by its
+  // onclick), same defense as the calendar block above -- the "Share your recap" tip card links to
+  // this same session via an identical viewPost(...) call but with class="tip-card", not "wk...".
+  const cellMatch = sink.html.match(new RegExp(`<div class="(wk[^"]*)"\\s+onclick="viewPost\\('s-posts-only','me1'\\)"`));
+  ok(cellMatch !== null, 'a posts-only-finished session\'s day cell opens its recap on tap, same as a history-finished one');
+  ok(!!cellMatch && /\bdone\b/.test(cellMatch[1]), `...and carries the done class -- the checkmark actually renders (got: ${cellMatch && cellMatch[1]})`);
+  ok(!!cellMatch && /\btoday\b/.test(cellMatch[1]), `...on today's cell, matching when the recap was actually posted (got: ${cellMatch && cellMatch[1]})`);
+
+  // Same `mine` list feeds the "Last workout" line and the stat row -- both must move together with
+  // the checkmark, not just the day cell (a partial fix that only widened doneDays would silently
+  // leave these two still claiming "no workouts" right next to a checkmark saying otherwise).
+  ok(sink.html.includes('Last workout: today · Evening Push Day'), 'the "Last workout" line also counts it');
+  ok(/<div class="num">1<\/div><div class="lbl">workout logged<\/div>/.test(sink.html), 'and the "1 workout logged" home stat counts it too');
+}
+
+console.log('\nlock()\'s /lock request failing (the actual root cause above -- a dropped connection, an expired session, anything) now surfaces the error instead of silently continuing to the Save page anyway');
+{
+  const alerts = [];
+  ctx.alert = (m) => alerts.push(m);
+  vm.runInContext(`H.post = (p) => Promise.resolve(p === '/api/sessions/s-lock-fail/lock' ? { error: 'Network error' } : {});`, ctx);
+  sink.html = '';
+  const lockFn = vm.runInContext('lock', ctx);
+  await lockFn('s-lock-fail');
+  ok(alerts.length === 1 && alerts[0] === 'Network error', `the real failure is surfaced via alert() instead of being swallowed (got alerts: ${JSON.stringify(alerts)})`);
+  ok(!sink.html.includes('Save workout'), 'and the person is NOT silently carried on to the Save page -- nothing was actually finished, so nothing should look finished');
+}
+
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
 process.exit(fails ? 1 : 0);
