@@ -1306,15 +1306,18 @@ async function openSession(id, opts){
     html += crewBlock + chatBlock;
     // Two answers, weighted, in the flow. NOT a pinned bar: this page is barely longer than one
     // screen and you see it once per invite, so 68px of permanent chrome on top of the 60px nav
-    // buys nothing and crowds the reply box. Request Changes and Message Host were the same act —
-    // messaging the host — and Save This Routine was never a response at all.
-    const host = isUnknownName(nameCache[s.creatorId]) ? 'the host' : String(nameCache[s.creatorId]).split(' ')[0];
+    // buys nothing and crowds the reply box.
+    // Sep 11 2026 (Jeff): the "Message {host}" shortcut here used to sit beside Save This Routine.
+    // It never opened a private message — it just focused the same shared Chat box already
+    // rendered above, in crewBlock + chatBlock. Because this screen is barely longer than one
+    // screen (see above), that box is normally already on screen with nothing to scroll to, so the
+    // shortcut had no real job left to do and the "Message {name}" label read as a private-DM
+    // feature that doesn't exist in the app. Removed rather than relabeled; see openChat's old
+    // definition (removed same day) for the full history.
     html += `<h2>Respond</h2>
       <button class="btn-answer" onclick="acceptInvite('${s.id}')">Accept</button>
       <button class="btn-answer quiet" onclick="declineInvite('${s.id}')">Decline</button>
       <div class="answer-aside">
-        <button class="linkbtn" onclick="openChat('${s.id}')">Message ${esc(host)}</button>
-        <span class="aside-dot">·</span>
         <button class="linkbtn" onclick="saveRoutine('${s.id}')">Save this routine</button>
       </div>`;
   } else if(joinable){
@@ -1329,21 +1332,13 @@ async function openSession(id, opts){
       // refusing it, so the button here stays real and actionable; this line is only about not
       // pretending the earlier answer never happened.
       const declined = myJoinReq && myJoinReq.status==='rejected';
-      // v249 (audit finding, cold-review-caught follow-up): this used to unconditionally offer
-      // "Message {host}" here too, wired to openChat() = document.getElementById('chatInput').focus()
-      // — but #chatInput only renders when canChat is true (isCreator || isParticipant || pendingMe,
-      // above chatBlock). The first fix here just deleted the button outright, reasoning that nobody
-      // in THIS branch could have canChat true — wrong: respondHere requires !sessionHasAnyPost(s), so
-      // a genuinely INVITED person (pendingMe true, #chatInput really rendered) whose session already
-      // has a posted recap by the time they look at it lands in this joinable branch too, not
-      // respondHere, and could message the host just fine. Gating the button on canChat itself — the
-      // actual thing #chatInput's presence depends on — keeps it working for that overlap case while
-      // still removing it for the real dead-button case (never invited, never joined, canChat false).
+      // Sep 11 2026 (Jeff): the canChat-gated "Message {host}" shortcut that used to sit here
+      // (added v249, gated on canChat so it stayed correct for the genuinely-invited-but-bumped-
+      // into-this-branch overlap case) is gone along with the one in the respondHere branch above —
+      // same reasoning: it only ever focused the shared Chat box already visible above via
+      // crewBlock + chatBlock, never a private message, and read as a feature that doesn't exist.
       html += `${declined ? `<div class="muted" style="padding:0 2px 10px">${esc(host)} declined your last request — you can ask again.</div>` : ''}
-      <button class="btn-answer" onclick="requestJoin('${s.id}')">Join in?</button>
-      ${canChat ? `<div class="answer-aside">
-        <button class="linkbtn" onclick="openChat('${s.id}')">Message ${esc(host)}</button>
-      </div>` : ''}`;
+      <button class="btn-answer" onclick="requestJoin('${s.id}')">Join in?</button>`;
     }
   } else {
     html += crewBlock + chatBlock;
@@ -2060,10 +2055,6 @@ async function saveRoutine(id){
     }
   });
 }
-// v249 (audit finding): a null guard, belt-and-suspenders alongside removing the one dead call
-// site that reached this with no #chatInput on the page (see the joinable-friend-tier comment
-// above) — so a future caller added the same way fails quietly instead of throwing.
-async function openChat(id){ const el=document.getElementById('chatInput'); if(el) el.focus(); }
 async function sendChat(id){
   const t=$('chatInput').value; if(!t.trim()) return;
   const epoch=UI_EPOCH;
