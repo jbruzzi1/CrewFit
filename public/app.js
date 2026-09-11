@@ -3307,10 +3307,19 @@ async function lock(id){
 // RIGHT NOW ("Next time"), which must never appear on the saved copy.
 // fmtDate() carries a time, which reads as nonsense on a recap ("Aug 15, 12:00 AM"). The day is
 // the only part that means anything here.
+// Sep 11 2026 (real bug report): this used to slice scheduledAt down to its date-only substring
+// ("2026-09-11") and re-parse THAT at midday -- but scheduledAt is a full UTC timestamp, so that
+// substring is the UTC calendar date, not the local one. For anyone west of UTC, an evening
+// workout (e.g. 9:44 PM Eastern, already past midnight UTC) showed the recap headline as the
+// NEXT day while the very next screen (showSavePage) and Profile's history both correctly showed
+// the actual local date -- three screens, three different answers for the same session. This is
+// the exact same bug showSavePage already had and fixed in v247 (see its own comment on `when`):
+// scheduledAt already carries the real instant, so handing the FULL value to `new Date()` and
+// letting toLocaleDateString convert to the browser's own local timezone is both simpler and
+// correct -- no slicing, no fabricated midday clock time needed.
 function rcDay(v){
-  const raw = String(v||'').slice(0,10);
-  const d = new Date(raw + 'T12:00:00');            // midday, so a timezone cannot shift the date
-  return isNaN(d) ? raw : d.toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'});
+  const d = new Date(v);
+  return isNaN(d) ? String(v||'') : d.toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'});
 }
 async function showRecap(id){
   const s = await H.get('/api/sessions/'+id);

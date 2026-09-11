@@ -412,6 +412,35 @@ const ALLOWED_MEDIA = /^data:(image\/(?:png|jpeg|jpg|webp|gif)|video\/(?:mp4|web
 // and clamps to a sane, non-negative magnitude.
 const capStr = (v, max) => String(v == null ? '' : v).slice(0, max);
 const numIn = (v, max) => { const n = Number(v); return Number.isFinite(n) ? Math.min(Math.max(0, n), max) : 0; };
+// Sep 11 2026 (cold-review finding on the recap-date-mismatch fix, see rcDay() in public/app.js):
+// a session's scheduledAt is trusted as-sent once capStr trims its length, but capStr only checks
+// length, not shape -- and every screen that reads scheduledAt (this fix's rcDay, plus the
+// already-shipped fmtDate/fmtWhen) hands it straight to `new Date()`, which treats a bare date
+// ("2026-09-11", no time component) as UTC MIDNIGHT. For anyone west of UTC that is a fabricated
+// clock time on the WRONG calendar day -- the exact mirror image of the bug rcDay just had fixed
+// (that one was a fabricated UTC date built by slicing; this would be a client sending an
+// incomplete one directly). Nothing reachable today can actually trigger this: every current
+// app.js call site already builds scheduledAt via `new Date(...).toISOString()`, which always
+// includes a time (see createFlow's submitSession and createQuickWorkout). This is a
+// belt-and-suspenders guard for the future, not a fix for anything currently reachable -- a value
+// with no real time component is treated exactly like no value at all: it falls back to the
+// server's own "now", same as the existing `|| new Date().toISOString()` this replaces.
+//
+// First draft of this only accepted a full ISO-with-time string and rejected everything else --
+// which silently broke a SECOND real, pre-existing, intentionally-supported shape: a pure-digits
+// epoch number in seconds or milliseconds (see perfDate()'s own comment just below, and
+// test/workout-reminders.mjs's "DIFFERENT scheduledAt formats" case, which caught this in the
+// full suite before it ever reached Jeff). Both real shapes are accepted here unchanged; only a
+// value that is neither -- most notably a bare date -- gets the "now" fallback.
+function normalizedScheduledAt(v) {
+  const s = capStr(v, 40);
+  if (!s) return new Date().toISOString();
+  const isEpoch = /^\d+$/.test(s);
+  if (!isEpoch && !/T\d{2}:\d{2}/.test(s)) return new Date().toISOString();
+  if (isEpoch) return isNaN(new Date(Number(s) < 1e12 ? Number(s) * 1000 : Number(s))) ? new Date().toISOString() : s;
+  const d = new Date(s);
+  return isNaN(d) ? new Date().toISOString() : s;
+}
 const b64Bytes = b64 => Math.floor(String(b64 || '').length * 3 / 4);
 const mb = n => (n / 1048576).toFixed(1) + ' MB';
 app.use(express.static(path.join(__dirname, 'public')));
@@ -2493,7 +2522,7 @@ app.post('/api/sessions', auth, async (req, res) => {
   }
   const session = {
     id, creatorId: req.userId,
-    scheduledAt: capStr(scheduledAt, 40) || new Date().toISOString(),
+    scheduledAt: normalizedScheduledAt(scheduledAt),
     status: 'draft',
     // v190 (Sep 2026): binary, matching the posted-recap model -- 'public' = joinable by
     // whoever can see the creator's profile (canSeeProfile), 'private' = invite-only.
@@ -3217,7 +3246,7 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   // the name on an edit and saving should not be able to drop the session out of Home's filters
   // the same way a blank name at creation did.
   if (typeof b.name === 'string') s.name = capStr(b.name, 80).trim() || 'New workout';
-  if (b.scheduledAt) s.scheduledAt = capStr(b.scheduledAt, 40);
+  if (b.scheduledAt) s.scheduledAt = normalizedScheduledAt(b.scheduledAt);
   if (typeof b.location === 'string') s.location = capStr(b.location, 120);
   if ('lengthMin' in b) s.lengthMin = numIn(b.lengthMin, 1440) || null;
   if (typeof b.creatorNote === 'string') s.creatorNote = capStr(b.creatorNote, 2000);
