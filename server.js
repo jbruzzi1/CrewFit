@@ -1080,6 +1080,24 @@ app.post('/api/unfollow/:id', auth, async (req, res) => {
   await save(DB);
   res.json({ status: 'none', followers: target.followers.length });
 });
+// Sep 2026, Jeff: "remove followers from us on their account" -- the mirror image of
+// /api/unfollow above (that one is ME choosing to stop following SOMEONE ELSE; this one is ME
+// forcing SOMEONE ELSE to stop following ME). Deliberately one-directional: only touches
+// me.followers (they're no longer approved to see my private stuff) and target.following (they no
+// longer show me in their own following list) -- it does NOT touch me.following or
+// target.followers, so if I also follow them, that direction is untouched. Nothing here stops them
+// from sending a new follow request afterward (that's what Block is for, see blockUser above) --
+// this only ends the CURRENT follow, same as the confirm sheet tells the user on the client.
+app.post('/api/remove-follower/:id', auth, async (req, res) => {
+  const target = DB.users[req.params.id];
+  if (!target) return res.json({ ok: true });
+  const me = DB.users[req.userId]; ensureFollowArrays(me); ensureFollowArrays(target);
+  if (req.params.id === req.userId) return res.status(400).json({ error: 'cannot remove yourself' });
+  me.followers = me.followers.filter(x => x !== req.params.id);
+  target.following = target.following.filter(x => x !== req.userId);
+  await save(DB);
+  res.json({ ok: true, followers: me.followers.length });
+});
 // The target approves or rejects a pending follow request. :id is the requester.
 app.post('/api/follow-requests/:id/accept', auth, async (req, res) => {
   const me = DB.users[req.userId]; ensureFollowArrays(me);
