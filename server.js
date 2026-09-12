@@ -2532,6 +2532,22 @@ const CREW_SCOPED_FEED_TYPES = new Set(['rank', 'challenge_started', 'joined_cre
 // type is one of: 'pr' | 'streak' | 'rank' | 'challenge_started' | 'challenge_completed' |
 // 'joined_crew' | 'completed_no_recap'. `by` is the userId whose activity this is; `fields` is
 // whatever that type needs to render (see each call site below and friends() in app.js).
+//
+// Sep 12 2026 (real bug report investigation, Jeff: "Clarissa completed 2 workouts, but I only
+// see the first one"): confirmed via a real repro that a workout logged for a day more than
+// FEED_EVENT_RETENTION_DAYS ago (the session date picker supports logging a workout you forgot to
+// log earlier) produces a 'completed_no_recap'/'pr' that never shows in Activity, even seconds
+// after being logged -- because `at` is deliberately the workout's real performed date (Sep 11
+// fix, so a backdated workout doesn't misleadingly read as breaking news), and this same 7-day
+// window ALSO decides whether the row shows AT ALL, not just how recent it looks.
+//
+// A `loggedAt`-based fix (always show anything logged within the last 7 days, regardless of the
+// workout's own age) was built and then reverted here: it broke the existing, deliberately-tested
+// "a PR older than a week does not haunt the friends feed forever" behavior below (a 20-day-old
+// PR, logged just now, is SUPPOSED to stay out of the feed) -- the two behaviors directly
+// contradict each other, and which one is right is a real product call, not something to guess.
+// Asked Jeff rather than picking a threshold unilaterally. See CLAUDE_HANDOFF.md / this thread for
+// his answer before changing this again.
 function emitFeedEvent(type, by, fields) {
   const id = 'fev_' + uid();
   DB.feedEvents[id] = { id, type, by, at: new Date().toISOString(), reactions: [], ...fields };

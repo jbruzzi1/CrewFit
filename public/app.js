@@ -6107,10 +6107,10 @@ async function friends(opts){
   const actorOf = id => id===ME.id ? { id, displayName:'You', username: ME.username||'', avatar: ME.avatar||'' }
     : (f.find(x=>x.id===id) || { id, displayName:'A friend', username:'', avatar:'' });
   const actorName = id => actorOf(id).displayName;
-  // "N days ago" bucketing for the This-week strip's trailing timestamp -- distinct from fmtWhen
-  // (used elsewhere for a workout's own scheduled time, "Today, 3:45 PM") since a row that's
-  // reached this strip is, by construction, never from today (see the Today/This-week split below)
-  // -- a plain day count reads better once "today" is no longer in play.
+  // "N days ago" bucketing for a compact feed row's trailing timestamp -- distinct from fmtWhen
+  // (used elsewhere for a workout's own scheduled time, "Today, 3:45 PM"). Handles days<=0 as
+  // "Today" too: since Sep 12, a same-day compact row can render under the "Today" header
+  // (see restItemsToday below), not just under "This week" -- this stays correct either way.
   const feedWhen = iso => {
     const days = Math.round((startOfDay(new Date()) - startOfDay(new Date(iso))) / 86400000);
     if(days<=0) return 'Today';
@@ -6192,6 +6192,15 @@ async function friends(opts){
   const heroItems = heroEligible.slice(0, HERO_CARD_CAP);
   const heroKeys = new Set(heroItems.map(itemKey));
   const restItems = groupedFeed.filter(ff => !heroKeys.has(itemKey(ff)));
+  // Sep 12 (Jeff): a same-day plain completion (no PR, no recap -- e.g. `completed_no_recap`) was
+  // landing under "This week" just like a genuinely-older item, even though it happened today --
+  // that's what made a real, correctly-recorded workout look "missing" (Jeff was scanning "Today"
+  // and it wasn't there). heroTypes above is deliberately narrow (only pr/recap get the big hero
+  // treatment), but "today" vs "this week" is a separate axis from "hero vs compact" -- so split
+  // restItems by date: today's non-hero items still render compact, just grouped under "Today"
+  // (after the hero cards) instead of "This week". Only genuinely older items keep "This week".
+  const restItemsToday = restItems.filter(ff => isToday(ff.at));
+  const restItemsOlder = restItems.filter(ff => !isToday(ff.at));
 
   const heroCardHtml = ff => {
     const who = esc(actorName(ff.by));
@@ -6279,8 +6288,11 @@ async function friends(opts){
     // showTab('friends') -- redundant on a page you're already on.
     activitySection = `<h2 class="light">Activity</h2>` + homeEmpty(ICON_FEED, 'Nothing from your friends yet', 'Their finished workouts will show up here.', `<span class="he-cta" onclick="document.getElementById('fu').focus()">Find people to follow →</span>`);
   } else {
-    activitySection = (heroItems.length ? `<h2 class="light">Today</h2>${heroItems.map(heroCardHtml).join('')}` : '')
-      + (restItems.length ? `<h2 class="light">This week</h2><div class="card feed-strip">${restItems.map(compactRowHtml).join('')}</div>` : '');
+    // "Today" now covers hero cards AND today's compact rows (one feed-strip card, hero cards
+    // above it) so everything from today reads as visually together, per Jeff's pick. "This week"
+    // only appears at all once something genuinely older exists.
+    activitySection = (heroItems.length || restItemsToday.length ? `<h2 class="light">Today</h2>${heroItems.map(heroCardHtml).join('')}${restItemsToday.length ? `<div class="card feed-strip">${restItemsToday.map(compactRowHtml).join('')}</div>` : ''}` : '')
+      + (restItemsOlder.length ? `<h2 class="light">This week</h2><div class="card feed-strip">${restItemsOlder.map(compactRowHtml).join('')}</div>` : '');
   }
   CREW_PICKER = Array.isArray(crews) ? crews : [];
   const flame = flameSvg();
