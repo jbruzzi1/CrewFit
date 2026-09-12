@@ -1058,6 +1058,11 @@ app.post('/api/follow/:id', auth, async (req, res) => {
     if (!me.following.includes(target.id)) me.following.push(target.id);
     await save(DB);
     notify(target.id, { title: 'New follower', body: `${DB.users[req.userId].displayName} started following you`, link: { type: 'profile', userId: req.userId } });
+    // Sep 12 2026 (Jeff, three new Activity events): the notify() above is the private 1:1 heads-up
+    // to the person being followed; this is the separate, public Activity-feed record of it, shown
+    // to whoever is connected to the FOLLOWER (by design -- see CREW_SCOPED_FEED_TYPES' comment
+    // above, this type is intentionally not crew-scoped).
+    emitFeedEvent('started_following', req.userId, { targetId: target.id, targetName: target.displayName, text: `started following ${target.displayName}` });
     return res.json({ status: 'following' });
   }
   if (!target.followReqs.includes(req.userId)) {
@@ -1109,6 +1114,11 @@ app.post('/api/follow-requests/:id/accept', auth, async (req, res) => {
   if (from) { ensureFollowArrays(from); if (!from.following.includes(req.userId)) from.following.push(req.userId); }
   await save(DB);
   if (from) notify(fromId, { title: 'Follow request accepted', body: `${me.displayName} accepted your follow request`, link: { type: 'profile', userId: req.userId } });
+  // Sep 12 2026: the private-profile mirror of the immediate-follow emit in POST /api/follow above
+  // -- the follow only actually takes effect here (line ~1107), not when the request was sent, so
+  // this is where the Activity-feed record belongs. `by` is the follower (fromId), same as the
+  // immediate-follow path.
+  if (from) emitFeedEvent('started_following', fromId, { targetId: req.userId, targetName: me.displayName, text: `started following ${me.displayName}` });
   res.json({ ok: true });
 });
 app.post('/api/follow-requests/:id/reject', auth, async (req, res) => {
@@ -1450,6 +1460,11 @@ app.put('/api/crews/:id', auth, async (req, res) => {
   if (body.name !== undefined) {
     const name = capStr(body.name, CREW_NAME_MAX).trim();
     if (!name) return res.status(400).json({ error: 'name required' });
+    // Sep 12 2026 (Jeff, three new Activity events): guarded on an ACTUAL change -- the edit sheet
+    // always resubmits the current name alongside any membership change (see the comment above the
+    // newly-added-members notify loop just below), so an unguarded emit here would fire a spurious
+    // "renamed the crew" event on every single membership edit, not just real renames.
+    if (name !== c.name) emitFeedEvent('crew_renamed', req.userId, { crewId: c.id, crewName: name, oldName: c.name, text: `renamed the crew to "${name}"` });
     c.name = name;
   }
   if (body.memberIds !== undefined) {
@@ -1481,6 +1496,11 @@ app.post('/api/crews/:id/leave', auth, async (req, res) => {
   if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
   if (c.ownerId === req.userId) return res.status(400).json({ error: 'the owner can\'t leave -- delete the crew instead' });
   c.memberIds = c.memberIds.filter(id => id !== req.userId);
+  // Sep 12 2026 (Jeff, three new Activity events): the mirror image of 'joined_crew' above --
+  // crew-scoped (see CREW_SCOPED_FEED_TYPES), so only the remaining members see it. The person who
+  // left won't see their own row (isCrewMember(crew, viewer) is now false for them), which is fine
+  // -- this is a record for the people still in the crew, not a receipt for the person who left.
+  emitFeedEvent('left_crew', req.userId, { crewId: c.id, crewName: c.name, text: `left ${c.name}` });
   await save(DB);
   res.json({ ok: true });
 });
@@ -2546,10 +2566,16 @@ const FEED_EVENT_RETENTION_DAYS = 7;
 // someone outside it. GET /api/feed's visibility check below requires BOTH for these three types.
 // 'challenge_completed' doesn't need this: `by` is null (crew-shared) and it already gates on a
 // memberIds snapshot taken at emit time, which is its own, already-correct answer to "who saw it".
-const CREW_SCOPED_FEED_TYPES = new Set(['rank', 'challenge_started', 'joined_crew']);
+// Sep 12 2026 (Jeff, three new Activity events): 'left_crew' and 'crew_renamed' join the
+// membership-shaped types above for the exact same reason 'joined_crew' is here -- both leak a
+// crew's roster/name to anyone connected to the actor unless the viewer is independently confirmed
+// to still be a member. 'started_following' is deliberately NOT crew-scoped -- it's a person-to-
+// person event with no crew involved, gated only by feedActors like 'pr'/'streak' below.
+const CREW_SCOPED_FEED_TYPES = new Set(['rank', 'challenge_started', 'joined_crew', 'left_crew', 'crew_renamed']);
 // type is one of: 'pr' | 'streak' | 'rank' | 'challenge_started' | 'challenge_completed' |
-// 'joined_crew' | 'completed_no_recap'. `by` is the userId whose activity this is; `fields` is
-// whatever that type needs to render (see each call site below and friends() in app.js).
+// 'joined_crew' | 'completed_no_recap' | 'left_crew' | 'crew_renamed' | 'started_following'. `by`
+// is the userId whose activity this is; `fields` is whatever that type needs to render (see each
+// call site below and friends() in app.js).
 //
 // Sep 12 2026 (real bug report investigation, Jeff: "Clarissa completed 2 workouts, but I only
 // see the first one"): confirmed via a real repro that a workout logged for a day more than

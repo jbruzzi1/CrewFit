@@ -6079,6 +6079,12 @@ function trophySvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="curre
 function joinedCrewSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20c.6-3.6 3.3-6 6.5-6s5.9 2.4 6.5 6"/><circle cx="17.5" cy="9" r="2.4"/><path d="M15.8 14.3c2.6.4 4.6 2.5 5.1 5.7"/></svg>'; }
 function trendUpSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>'; }
 function flagSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>'; }
+// Sep 12 2026 (Jeff, three new Activity events): the same single-person silhouette joinedCrewSvg
+// uses for its first figure, +/- a plus or minus instead of the second person -- "started
+// following"/"left a crew" are both about ONE person's relationship changing, not two people
+// meeting, so reusing joinedCrewSvg's two-person mark here would visually claim the wrong story.
+function personPlusSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20c.6-3.6 3.3-6 6.5-6s5.9 2.4 6.5 6"/><line x1="17" y1="6" x2="17" y2="12"/><line x1="14" y1="9" x2="20" y2="9"/></svg>'; }
+function personMinusSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20c.6-3.6 3.3-6 6.5-6s5.9 2.4 6.5 6"/><line x1="14" y1="9" x2="20" y2="9"/></svg>'; }
 let FRIENDS_TAB = 'activity';
 function setFriendsTab(t){ FRIENDS_TAB = t; friends({silent:true}); }
 async function friends(opts){
@@ -6277,6 +6283,19 @@ async function friends(opts){
     }
     if(ff.type==='joined_crew'){
       return `<div class="feed-item" onclick="crewView('${jsq(ff.crewId)}')" style="cursor:pointer"><span class="feed-lead"><span class="ar-mini-icon">${joinedCrewSvg()}</span></span><span><b>${who}</b> ${esc(ff.text)}</span>${when}</div>`;
+    }
+    // Sep 12 2026 (Jeff, three new Activity events): tap target is the FOLLOWED account's profile
+    // (targetId), not the follower's own -- "who did they start following" is the useful next tap,
+    // and ff.by's own profile is already one tap away via their bolded name... except the name here
+    // isn't a link, so targetId's profile is the more useful destination either way.
+    if(ff.type==='started_following'){
+      return `<div class="feed-item" onclick="profileView('${jsq(ff.targetId)}')" style="cursor:pointer"><span class="feed-lead"><span class="ar-mini-icon">${personPlusSvg()}</span></span><span><b>${who}</b> ${esc(ff.text)}</span>${when}</div>`;
+    }
+    if(ff.type==='left_crew'){
+      return `<div class="feed-item" onclick="crewView('${jsq(ff.crewId)}')" style="cursor:pointer"><span class="feed-lead"><span class="ar-mini-icon">${personMinusSvg()}</span></span><span><b>${who}</b> ${esc(ff.text)}</span>${when}</div>`;
+    }
+    if(ff.type==='crew_renamed'){
+      return `<div class="feed-item" onclick="crewView('${jsq(ff.crewId)}')" style="cursor:pointer"><span class="feed-lead"><span class="ar-mini-icon">${editPencilSvg()}</span></span><span><b>${who}</b> ${esc(ff.text)}</span>${when}</div>`;
     }
     return '';
   };
@@ -7101,13 +7120,24 @@ function toggleTheme(){
 // than live coachmarks pinned to the real elements during actual use -- that scope call from the
 // first round stands; only the CONTENT of each card changed, not where the tour lives.
 //
-// Eight cards, in one start-to-finish story (Home -> invite friends -> accept a friend's invite
-// -> suggest a change on a workout you joined -> tap to log -> the suggested weight -> Log &
-// Finish -> the friends' feed your finished workout lands in), stepped with Back/Next rather than
-// true swipe (simpler to build and to verify with a click-based test; dots make the position
-// clear regardless). State (which card) is stashed on the sheet element itself via
-// sheetEl._wkIdx, matching the _recSeq pattern above -- only one walkthrough sheet is ever open
-// at once, so there's nothing to reset between opens.
+// Twelve cards, in one start-to-finish story: Home -> plan a workout -> routines -> invite
+// friends -> accept a friend's invite -> suggest a change on a workout you joined -> tap to log
+// -> the suggested weight -> Log & Finish -> Progress -> Activity+Crews -> Profile. Stepped with
+// Back/Next rather than true swipe (simpler to build and to verify with a click-based test; dots
+// make the position clear regardless). State (which card) is stashed on the sheet element itself
+// via sheetEl._wkIdx, matching the _recSeq pattern above -- only one walkthrough sheet is ever
+// open at once, so there's nothing to reset between opens.
+//
+// Sep 12 2026 (Jeff, full restructure): "The order should be how to use the app not crews first.
+// So home page, how to create/plan a workout, using routines and building a routine, inviting
+// friends to the workout, invites from friends on workouts, suggesting swaps or adding exercises,
+// logging sets within a workout, suggested weight, logging/completing the workout, progress page,
+// activity, profile page with posted workouts. Some of these pages in the cards can just be a
+// quick explanation on what the page is for (such as the progress page/etc)." Follow-up: "activity
+// goes with crews" -- Activity and Crews are two sub-tabs of the same Friends-tab screen, so they
+// share one card rather than two. The old 8th card ("feed", a friend's post on Home) is retired --
+// its target went stale when Friends' Activity moved off Home on Sep 7, and Activity+Crews below
+// covers the same "see what your crew is up to" job from a screen that still exists.
 //
 // Auto-opens exactly once: right after a brand-new registration succeeds (see doReg, in the auth
 // section near the top of this file), never via a persisted "seen" flag. That keeps this simple
@@ -7119,40 +7149,56 @@ function toggleTheme(){
 // render time via currentTheme(), same source of truth the rest of the app uses. hl is the
 // highlighted element's real on-screen box, captured alongside the screenshot itself (percentages
 // of the cropped image's own width/height, not the full viewport) -- see captureAround() in the
-// generator script for how these numbers were derived; they are NOT hand-guessed.
+// generator script for how these numbers were derived; they are NOT hand-guessed. The three
+// "quick explanation" cards (Progress, Activity+Crews, Profile) have NO hl at all -- Jeff's pick,
+// asked directly rather than guessed -- and walkCardHtml below skips the ring entirely when a
+// card has none, rather than this file faking zero-size coordinates for a ring that isn't there.
 const WK_CARDS = [
   { shot:'home',
     title:'Start on Home',
     body:'Plan a workout with + New workout, or jump straight in with Quick Workout — no invite or schedule required.',
-    hl:{top:30.28,left:2.56,width:94.87,height:11.82} },
-  { shot:'create',
+    hl:{top:28.2,left:0.51,width:98.97,height:14.97} },
+  { shot:'create-basic',
+    title:'Create or plan a workout',
+    body:'Name it and add exercises — or leave it blank and add exercises live once you start. Set when, where, and who can join before you save.',
+    hl:{top:59.17,left:0.51,width:98.97,height:30.73} },
+  { shot:'routines',
+    title:'Save time with routines',
+    body:'Build a routine once and reuse it anytime — tap Use to load its exercises straight into a new workout. Save any workout as a routine from the create screen.',
+    hl:{top:2.99,left:4.1,width:95.38,height:63.81} },
+  { shot:'create-invite',
     title:'Invite friends when you create a workout',
     body:"Building a workout? Check off crew members to invite them before you save — they'll get it on their end and can join in.",
-    hl:{top:46.08,left:2.05,width:95.9,height:26.13} },
+    hl:{top:41.77,left:0.51,width:98.97,height:47.17} },
   { shot:'accept',
     title:"Accepting a friend's invite",
     body:"When a crew member invites you, it shows up right on Home. Accept to join in, Decline if you can't make it — either way, no digging required.",
-    hl:{top:38.18,left:4.36,width:91.28,height:19.14} },
+    hl:{top:36.7,left:2.31,width:95.38,height:22.09} },
   { shot:'suggest',
     title:'Joined a workout? Suggest a change',
     body:"Didn't create the workout but want a different exercise? Propose a replacement or suggest adding one — the creator approves it before it changes for everyone.",
-    hl:{top:38.64,left:2.56,width:94.87,height:26.62} },
+    hl:{top:37.76,left:0.51,width:98.97,height:28.24} },
   { shot:'taplog',
     title:'Log sets right on the card',
     body:"Every exercise on the workout screen has its own weight, reps, and + Add fields built right in — no separate screen to open. Just enter a set and tap + Add.",
-    hl:{top:42.09,left:4.87,width:90.26,height:10.63} },
+    hl:{top:40.74,left:4.36,width:91.28,height:13.15} },
   { shot:'suggested',
     title:'Watch for the suggested weight',
     body:'A box on the card shows what to try next based on your recent sessions — tap it to fill the weight in for you. It keeps updating after each set you log today.',
-    hl:{top:56.31,left:7.44,width:85.13,height:14.8} },
+    hl:{top:55.6,left:4.36,width:91.28,height:17.27} },
   { shot:'finish',
     title:"Log & Finish when you're done",
     body:"This locks in your sets, counts toward your streak and weekly volume, and lets you post a recap — which is what shows up in your crew's feed.",
-    hl:{top:31.02,left:2.05,width:28.37,height:11.23} },
-  { shot:'feed',
-    title:'See what your crew is up to',
-    body:"Friends' Activity shows workouts, streaks, and PRs from people you follow — tap one to see the full workout.",
-    hl:{top:42.28,left:5.13,width:89.74,height:16.32} },
+    hl:{top:30.6,left:0.51,width:31.45,height:13.66} },
+  { shot:'progress',
+    title:'Track your progress',
+    body:'See your training volume by muscle group, PRs, and when it\'s time to add weight — all in one place.' },
+  { shot:'activity-crews',
+    title:'Activity and Crews',
+    body:"The Activity tab shows workouts, streaks and PRs from people you follow. Tap Crews to build a training crew with the people you train with." },
+  { shot:'profile',
+    title:'Your profile',
+    body:'Your posted workouts, stats and PRs live here. Make it public so anyone can follow along, or private so only people you approve can see it.' },
 ];
 function walkCardHtml(i){
   const c = WK_CARDS[i];
@@ -7160,11 +7206,15 @@ function walkCardHtml(i){
   const dots = WK_CARDS.map((_,j)=>`<span class="wk-dot${j===i?' on':''}"></span>`).join('');
   const theme = currentTheme()==='dark' ? 'dark' : 'light';
   const h = c.hl;
+  // Sep 12 2026 (Jeff, tutorial restructure): the three "quick explanation" cards (Progress,
+  // Activity+Crews, Profile) have no `hl` at all -- asked Jeff directly rather than guessing, and
+  // "full page, no highlight ring" is what he picked. Skip the ring entirely for those instead of
+  // rendering a zero-size or fake one.
   return `<div class="sheet-head"><h2>How CrewFit works</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
     <div class="wk-dots">${dots}</div>
     <div class="wk-card">
       <div class="wk-shot-wrap"><img class="wk-shot" src="onboarding/${c.shot}-${theme}.png" alt="">
-        <div class="wk-hl" style="top:${h.top}%;left:${h.left}%;width:${h.width}%;height:${h.height}%"></div></div>
+        ${h ? `<div class="wk-hl" style="top:${h.top}%;left:${h.left}%;width:${h.width}%;height:${h.height}%"></div>` : ''}</div>
       <h3 class="wk-title">${esc(c.title)}</h3>
       <p class="wk-body">${esc(c.body)}</p>
     </div>
