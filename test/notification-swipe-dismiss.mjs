@@ -318,8 +318,13 @@ console.log('\ndismissing a notification, then switching tabs before it finishes
   await page8.evaluate(() => window.showTab('friends')); // the race window: switch tabs before histDismiss's delayed work resolves
   await page8.waitForTimeout(700); // well past the 280ms animation + DELETE round-trip
 
+  // Sep 7 2026: the Friends tab's own h1 was relabeled "Activity" (see CLAUDE.md's design-constants
+  // history) -- this assertion still checked the old literal "Friends" text and had been failing
+  // ever since, undetected because it sits after vapid-persistence.mjs in npm test's `&&` chain: a
+  // stray vapid.json left in the repo root from an earlier local `node server.js` run (no DATA_DIR
+  // set) made THAT test fail first, which short-circuited the whole chain before this one ever ran.
   const onFriends = await page8.$eval('.h1-row h1', el => el.textContent).catch(() => null);
-  ok(onFriends === 'Friends', `sanity: actually landed on the Friends/Activity tab (got ${JSON.stringify(onFriends)})`);
+  ok(onFriends === 'Activity', `sanity: actually landed on the Friends/Activity tab (got ${JSON.stringify(onFriends)})`);
   const activityCard = await page8.$('.card.feed-strip');
   ok(!!activityCard, "the Activity tab's real feed-strip card was NOT stripped by the stale dismiss finishing after the tab switch");
   const feedItems = await page8.$$eval('.feed-item', els => els.length);

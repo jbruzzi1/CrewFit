@@ -74,6 +74,13 @@ console.log('since it is not inside a sheet and was never covered by an automate
 
 console.log('\na brand-new user (zero connections) taps + New crew -- real UI clicks throughout');
 {
+  // FRIENDS_TAB defaults to 'activity' (app.js) -- the Crews sub-view (and its "Create a crew"
+  // CTA) only renders after switching to it. This test predates that Activity/Crews toggle and
+  // never clicked into the Crews tab, so this click always timed out -- silently, since it sits
+  // last in npm test's `&&` chain and a stray vapid.json (fixed separately) was already short-
+  // circuiting the chain before reaching this file at all.
+  await page.click('button:has-text("Crews")');
+  await page.waitForSelector('span.he-cta:has-text("Create a crew")', { timeout: 8000 });
   await page.click('span.he-cta:has-text("Create a crew")');
   await page.waitForSelector('.sheet-head:has-text("New crew")', { timeout: 8000 });
   await page.waitForTimeout(200);
@@ -114,6 +121,10 @@ console.log('\na brand-new user (zero connections) taps + New crew -- real UI cl
   ok(afterTap.focusedId === 'fu', `focus lands on the real Friends-page search box (#fu), got "${afterTap.focusedId}"`);
 
   console.log('\nJeff\'s call: "Create crew" stays enabled and solo-crew creation still works -- this is a deliberate, discussed choice, not a regression');
+  // The focus fix above (correctly) lands back on the Activity sub-tab -- switch back to Crews to
+  // reopen "+ New crew".
+  await page.click('button:has-text("Crews")');
+  await page.waitForSelector('span.he-cta:has-text("Create a crew")', { timeout: 8000 });
   await page.click('span.he-cta:has-text("Create a crew")');
   await page.waitForSelector('.sheet-head:has-text("New crew")', { timeout: 8000 });
   const createBtn = page.locator('.sheet button.blue:has-text("Create crew")');
@@ -157,6 +168,10 @@ console.log('Friends-tab render underneath at all) must not crash when the CTA i
 console.log('\nround-2 cold-review catch: navigating away WHILE focusConnectionsSearch\'s poll is');
 console.log('still resolving must not steal focus back onto a screen the user already left');
 {
+  // The focus fix above (correctly) lands back on the Activity sub-tab -- switch back to Crews to
+  // see the crew row.
+  await page.click('button:has-text("Crews")');
+  await page.waitForSelector('.crew-row:has-text("Solo Squad")', { timeout: 8000 });
   await page.click('.crew-row:has-text("Solo Squad")');
   await page.waitForSelector('.pp-head h1:has-text("Solo Squad")', { timeout: 8000 });
   await page.click('.pp-head button:has-text("Edit")');
@@ -189,7 +204,9 @@ console.log('\nregression check: once there IS a connection, the real boxed memb
   if (followReq.error || followReq.status !== 'following') throw new Error('follow: ' + JSON.stringify(followReq));
 
   await page.click('[data-tab="friends"]');   // the race-condition check above left us on Home
-  await page.waitForSelector('#fu', { timeout: 8000 });
+  await page.waitForSelector('#fu', { timeout: 8000 });   // lands on Activity (FRIENDS_TAB unchanged since the last fix)
+  await page.click('button:has-text("Crews")');
+  await page.waitForSelector('.h1-row span.he-cta:has-text("New crew")', { timeout: 8000 });
   await page.click('.h1-row span.he-cta:has-text("New crew")');
   await page.waitForSelector('.sheet-head:has-text("New crew")', { timeout: 8000 });
   await page.waitForTimeout(300);

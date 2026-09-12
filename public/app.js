@@ -6418,6 +6418,14 @@ function focusConnectionsSearch(){
   closeSheet();
   const already = document.getElementById('fu');
   if(already){ already.focus(); return; }
+  // Sep 12 2026 (real bug found while auditing test coverage): #fu only exists when the Friends
+  // page's OWN Activity/Crews sub-toggle (FRIENDS_TAB, module-level, persists across nav) is on
+  // 'activity' -- showTab('friends') alone re-renders whichever sub-tab was already selected, so
+  // calling this while FRIENDS_TAB==='crews' (e.g. from the empty-crew "+New crew" sheet, which
+  // only opens from the Crews sub-tab, or from crewView's Edit sheet) used to close the sheet and
+  // then silently fail to focus anything -- the promised "closes and focuses search" never
+  // happened, no error, just 40 wasted animation frames. Force it back to 'activity' first.
+  FRIENDS_TAB = 'activity';
   showTab('friends');
   // Captured AFTER showTab, not before -- showTab() bumps UI_EPOCH itself on every ordinary
   // navigation ("a tab switch also counts as 'the user moved on'", its own comment), so grabbing
