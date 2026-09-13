@@ -5026,6 +5026,23 @@ const PROG_RANGES = [ {weeks:4, label:'Month'}, {weeks:13, label:'3 months'}, {w
 const VOL_SHOW_N = 5;
 let VOL_EXPANDED = false;
 function toggleVolExpanded(){ VOL_EXPANDED = !VOL_EXPANDED; progressScreen({silent:true}); }
+// Sep 13 2026 (Jeff, "I see a lot of holds for now, should we make that report collapsable? Also,
+// the same for PRs?"): same collapse-with-a-toggle idea as Volume trend above, applied to the two
+// other lists on this page with no ceiling on how long they can get. "Hold for now" grows with how
+// consistently someone trains (a lift sits there every session until it clears two-in-a-row), and
+// Personal records only ever grows, one entry per exercise ever logged a PR on -- both were
+// unbounded card real estate with no way to tuck the rest away. Holds defaults to 4 rows (Jeff's
+// own number); Personal records to 8 -- it fills up faster over the life of an account, so it gets
+// a little more room before collapsing. Unlike Volume trend's ranked-by-worst ordering, neither
+// list here has a "most important first" sort to preserve -- holds and PRs already render in the
+// server's own order (most-recent-PR-first for records; insertion order for holds) -- so collapsing
+// is a plain slice(0, N), not a re-rank.
+const HOLD_SHOW_N = 4;
+let HOLD_EXPANDED = false;
+function toggleHoldExpanded(){ HOLD_EXPANDED = !HOLD_EXPANDED; progressScreen({silent:true}); }
+const PR_SHOW_N = 8;
+let PR_EXPANDED = false;
+function togglePrExpanded(){ PR_EXPANDED = !PR_EXPANDED; progressScreen({silent:true}); }
 // "This week" vs a longer trailing average -- Jeff, Aug 31: does weekly volume need a monthly view
 // too? A strict Monday-reset snapshot looks artificially empty early in the week or after one
 // lighter week, even when the trailing month is right on target. Full separate monthly section
@@ -5370,12 +5387,16 @@ async function progressScreen(opts){
   }
   let holdHtml = '';
   if(d.holds.length){
+    const holdShown = HOLD_EXPANDED ? d.holds : d.holds.slice(0, HOLD_SHOW_N);
+    const holdShowAllLink = d.holds.length > HOLD_SHOW_N
+      ? `<div style="text-align:right;margin-top:8px"><button class="txt-btn" onclick="toggleHoldExpanded()">${HOLD_EXPANDED?'Show fewer':'Show all '+d.holds.length}</button></div>`
+      : '';
     holdHtml = `<div class="hold-sec"><div class="hold-head">Hold for now</div>
-      ${d.holds.map(h=>`<div class="hold">
+      ${holdShown.map(h=>`<div class="hold">
         <div class="hold-ic" aria-hidden="true">–</div>
         <div class="rp-main"><div class="rp-name">${esc(h.exercise)}</div>
           <div class="rp-why">${h.reps} of ${h.targetRepsMax} reps at ${WL(h.weight)} — repeat it before adding</div></div>
-      </div>`).join('')}</div>`;
+      </div>`).join('')}${holdShowAllLink}</div>`;
   }
 
   // --- plateau watch --- lifts trained regularly with no real strength gain in the trailing
@@ -5427,8 +5448,15 @@ async function progressScreen(opts){
   });
 
   const nothingYet = !d.ready.length && !d.holds.length && !d.prs.length && !d.weeks.some(w=>w.days);
+  // Used to be a silent .slice(0,10) with no way to ever see an older PR again once you passed
+  // ten records -- same collapse-with-a-toggle fix as Hold for now above, just a higher default
+  // (see the comment above HOLD_SHOW_N/PR_SHOW_N for why PRs gets more room before collapsing).
+  const prShown = PR_EXPANDED ? d.prs : d.prs.slice(0, PR_SHOW_N);
+  const prShowAllLink = d.prs.length > PR_SHOW_N
+    ? `<div style="text-align:right;margin-top:8px"><button class="txt-btn" onclick="togglePrExpanded()">${PR_EXPANDED?'Show fewer':'Show all '+d.prs.length}</button></div>`
+    : '';
   const prHtml = d.prs.length
-    ? d.prs.slice(0,10).map(p=>{
+    ? prShown.map(p=>{
         // Three states, deliberately distinct: what you typed in, what you earned, and the
         // one-off moment real work passes a number you typed. Without the separation an
         // imported history silently swallows the first-real-record moment.
@@ -5446,7 +5474,7 @@ async function progressScreen(opts){
           <div><div class="pr-n">${esc(p.exercise)}</div><div class="pr-d">${fmtDate(p.at)}</div></div>
           <div class="pr-r"><div class="pr-w">${prLabel(p)}</div>
             ${p.goal?`<div class="pr-goal">goal ${p.goal} ${U}</div>`:''}</div></div>`;
-      }).join('')
+      }).join('') + prShowAllLink
     : `<div class="muted" style="padding:8px 2px">Log a workout — your first set of any exercise is a record.</div>`;
 
   // Sep 7 (Jeff): "0 days trained this week" was a demoralizing zero-stat sitting in the most
