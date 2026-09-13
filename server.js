@@ -4232,9 +4232,16 @@ function weeksFor(userId, count, localToday) {
 // in that range, weighted a little higher for the muscles most programs bias toward) — not a
 // personal prescription, and the Progress page says so. Cardio is excluded: it isn't a
 // sets-against-a-target thing the way resistance work is.
+// Sep 13 2026 (Jeff): bumped every target up by 4 sets/week across the board -- "I want to add 4
+// sets to the total set # within the volume trend... everything increases by 4." Flat bump, same
+// relative weighting as before. This needs no separate handling for Month/3 months: volumeFor(N)
+// already returns a true PER-WEEK AVERAGE for every range (This week/Month/3 months all compare
+// against this same weekly number, never a raw multi-week sum -- see the comment above
+// volumeFor and the one above the volume/volumeAvg/volume3mo fields in GET /api/progress), so the
+// higher bar applies identically and automatically everywhere the target is shown.
 const MUSCLE_TARGETS = {
-  chest: 12, lats: 12, shoulders: 12, traps: 8, biceps: 10, triceps: 10, forearms: 6,
-  quads: 12, hamstrings: 10, glutes: 10, calves: 10, abdominals: 10
+  chest: 16, lats: 16, shoulders: 16, traps: 12, biceps: 14, triceps: 14, forearms: 10,
+  quads: 16, hamstrings: 14, glutes: 14, calves: 14, abdominals: 14
 };
 const MUSCLE_ORDER = Object.keys(MUSCLE_TARGETS);
 
