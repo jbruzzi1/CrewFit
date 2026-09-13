@@ -1464,7 +1464,24 @@ app.put('/api/crews/:id', auth, async (req, res) => {
     // always resubmits the current name alongside any membership change (see the comment above the
     // newly-added-members notify loop just below), so an unguarded emit here would fire a spurious
     // "renamed the crew" event on every single membership edit, not just real renames.
-    if (name !== c.name) emitFeedEvent('crew_renamed', req.userId, { crewId: c.id, crewName: name, oldName: c.name, text: `renamed the crew to "${name}"` });
+    if (name !== c.name) {
+      emitFeedEvent('crew_renamed', req.userId, { crewId: c.id, crewName: name, oldName: c.name, text: `renamed the crew to "${name}"` });
+      // Sep 13 2026 (Jeff, crew-notification gaps -- "what else may be a problem"): a real push/
+      // inbox notification too, not just the passive Activity-feed row above. Matches every other
+      // crew event (added to crew, challenge started/completed, chat message) already getting one --
+      // without this, a member who doesn't regularly check Activity would never learn their crew got
+      // renamed.
+      // Cold-review catch: the client always resubmits name alongside any membership edit, so this
+      // request can ALSO be dropping someone from the roster in the very same call (handled in the
+      // memberIds block below). Sending them a rename push with a live crew link, right alongside
+      // the "removed you" push with no link, is exactly the dead-tap the removal notification exists
+      // to avoid -- so this only reaches whoever actually survives THIS request's membership edit
+      // (or everyone currently in the crew, if this request doesn't touch membership at all).
+      const survivors = body.memberIds !== undefined
+        ? new Set([req.userId, ...validCrewMemberIds(req.userId, body.memberIds)])
+        : new Set(c.memberIds);
+      for (const mid of c.memberIds) if (mid !== req.userId && survivors.has(mid)) notify(mid, { title: name, body: `${DB.users[req.userId].displayName} renamed the crew to "${name}"`, link: { type: 'crew', crewId: c.id } });
+    }
     c.name = name;
   }
   if (body.memberIds !== undefined) {
@@ -1478,6 +1495,13 @@ app.put('/api/crews/:id', auth, async (req, res) => {
     // friends() in app.js) -- the "New follower"-style notification above already covers the
     // 1:1 heads-up, this is purely the Activity feed's record of it.
     for (const mid of c.memberIds) if (!before.has(mid)) emitFeedEvent('joined_crew', mid, { crewId: c.id, crewName: c.name, text: `joined ${c.name}` });
+    // Sep 13 2026 (Jeff, crew-notification gaps): the mirror case -- someone dropped from the
+    // roster (not a voluntary Leave) previously got no signal at all, the crew just silently
+    // disappeared from their list next time they opened it. No feed event -- this is a private
+    // removal, not something for anyone else to see -- and no link, since once removed they can no
+    // longer open crewView (isCrewMember 403s it), so a link here would be a guaranteed dead tap.
+    const after = new Set(c.memberIds);
+    for (const mid of before) if (!after.has(mid)) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} removed you from the crew`, link: null });
     // A newly-added member can already have logging that falls inside a running challenge's
     // window (see checkChallengeCompletion's comment) -- check right here, not just on the next
     // workout finish, so the crew isn't left staring at a stalled 100%+ bar with no celebration.
@@ -1501,6 +1525,11 @@ app.post('/api/crews/:id/leave', auth, async (req, res) => {
   // left won't see their own row (isCrewMember(crew, viewer) is now false for them), which is fine
   // -- this is a record for the people still in the crew, not a receipt for the person who left.
   emitFeedEvent('left_crew', req.userId, { crewId: c.id, crewName: c.name, text: `left ${c.name}` });
+  // Sep 13 2026 (Jeff, crew-notification gaps): a real push/inbox notification too, not just the
+  // passive Activity-feed row above -- same reasoning as crew_renamed's notify loop just above in
+  // PUT /api/crews/:id. c.memberIds has already had req.userId filtered out by this point, so this
+  // reaches exactly the people still in the crew.
+  for (const mid of c.memberIds) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} left the crew`, link: { type: 'crew', crewId: c.id } });
   await save(DB);
   res.json({ ok: true });
 });
@@ -1508,6 +1537,16 @@ app.delete('/api/crews/:id', auth, async (req, res) => {
   const c = DB.crews[req.params.id];
   if (!c) return res.status(404).json({ error: 'not found' });
   if (c.ownerId !== req.userId) return res.status(403).json({ error: 'only the owner can delete this crew' });
+  // Cold-review catch: every other crew route calls this before touching c.memberIds -- DELETE
+  // never needed to before (it only used c.ownerId), but the notify loop just below is now the
+  // first thing here that reads memberIds, so a legacy/malformed record without it would throw.
+  ensureCrewShape(c);
+  // Sep 13 2026 (Jeff, crew-notification gaps -- "what else may be a problem"): tell remaining
+  // members before the crew disappears -- previously it just vanished from their crew list with
+  // zero signal, the same silent-disappearance pattern as the kicked-member case in PUT above. No
+  // feed event and no link: the crew itself (and any crewView route to it) is gone the instant this
+  // returns, so a link here would be a guaranteed dead tap.
+  for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} deleted the crew`, link: null });
   delete DB.crews[req.params.id];
   await save(DB);
   res.json({ ok: true });
