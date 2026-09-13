@@ -2193,8 +2193,16 @@ app.get('/api/feed', auth, async (req, res) => {
     } else if (CREW_SCOPED_FEED_TYPES.has(ev.type)) {
       // See CREW_SCOPED_FEED_TYPES' own comment -- Sep 13 2026, Jeff loosened this: crew
       // membership alone is enough, connection to the actor is no longer required.
+      // Self-caught regression from that same loosening: the OLD gate required feedActors.has(ev.by)
+      // (connected to the actor), and blockUser() severs the follow connection both ways the instant
+      // you block someone -- so blocking a crew-mate used to ALSO incidentally hide their crew
+      // activity from you, purely as a side effect of that connection check. Dropping the connection
+      // requirement dropped that side effect too, silently un-blocking someone's crew activity even
+      // though the block itself is still in effect. isBlocked here restores the guarantee directly,
+      // the same way canSeeProfile/canSeePostAuthor check it explicitly rather than relying on it
+      // falling out of some other, unrelated check.
       const crew = ev.crewId && DB.crews[ev.crewId];
-      visible = !!crew && isCrewMember(crew, req.userId);
+      visible = !!crew && isCrewMember(crew, req.userId) && !isBlocked(ev.by, req.userId);
     } else {
       visible = feedActors.has(ev.by);
     }
