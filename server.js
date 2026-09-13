@@ -2152,10 +2152,10 @@ app.get('/api/feed', auth, async (req, res) => {
     if (ev.by === null) {
       visible = Array.isArray(ev.memberIds) && ev.memberIds.includes(req.userId);
     } else if (CREW_SCOPED_FEED_TYPES.has(ev.type)) {
-      // See CREW_SCOPED_FEED_TYPES' own comment -- connected to the actor is not enough, the
-      // viewer must still actually be in the crew this event is about.
+      // See CREW_SCOPED_FEED_TYPES' own comment -- Sep 13 2026, Jeff loosened this: crew
+      // membership alone is enough, connection to the actor is no longer required.
       const crew = ev.crewId && DB.crews[ev.crewId];
-      visible = feedActors.has(ev.by) && !!crew && isCrewMember(crew, req.userId);
+      visible = !!crew && isCrewMember(crew, req.userId);
     } else {
       visible = feedActors.has(ev.by);
     }
@@ -2558,19 +2558,22 @@ const NOTIFICATION_HISTORY_DAYS = 7;
 // counted toward anything on the Profile page -- Jeff removed PRs from Profile specifically to
 // avoid endless scrolling and does not want that undone.
 const FEED_EVENT_RETENTION_DAYS = 7;
-// Cold-review catch (Sep 11 2026): these three types are all really ABOUT a specific crew (they
-// carry a crewId), not just about the actor -- being CONNECTED to the actor (feedActors) is not
-// the same as being able to see that crew. Without this, a follower of the actor who isn't in the
-// crew could get e.g. a 'joined_crew'/'rank' row in their own feed, tap it, and hit crewView's
-// member-only 403 -- a dead link that also incidentally leaked the crew's name/roster change to
-// someone outside it. GET /api/feed's visibility check below requires BOTH for these three types.
-// 'challenge_completed' doesn't need this: `by` is null (crew-shared) and it already gates on a
-// memberIds snapshot taken at emit time, which is its own, already-correct answer to "who saw it".
+// Cold-review catch (Sep 11 2026): these types are all really ABOUT a specific crew (they carry a
+// crewId), not just about the actor -- so GET /api/feed's visibility check below gates them on
+// isCrewMember(crew, viewer), independent of the actor. 'challenge_completed' doesn't need this:
+// `by` is null (crew-shared) and it already gates on a memberIds snapshot taken at emit time,
+// which is its own, already-correct answer to "who saw it".
 // Sep 12 2026 (Jeff, three new Activity events): 'left_crew' and 'crew_renamed' join the
-// membership-shaped types above for the exact same reason 'joined_crew' is here -- both leak a
-// crew's roster/name to anyone connected to the actor unless the viewer is independently confirmed
-// to still be a member. 'started_following' is deliberately NOT crew-scoped -- it's a person-to-
-// person event with no crew involved, gated only by feedActors like 'pr'/'streak' below.
+// membership-shaped types above for the same reason 'joined_crew' is here. 'started_following' is
+// deliberately NOT crew-scoped -- it's a person-to-person event with no crew involved, gated only
+// by feedActors like 'pr'/'streak' below.
+// Sep 13 2026 (Jeff: "if youre in a crew we should loosen that"): originally this ALSO required
+// the viewer be connected (feedActors) to the actor, on top of crew membership -- so two crew-mates
+// who didn't follow each other missed each other's crew activity, which Jeff called out as too
+// tight once it shipped. Being in the crew is now sufficient on its own; connection to the actor is
+// no longer required for these types. (The original crewView-403-dead-link concern that started
+// this gate still holds -- isCrewMember(crew, viewer) alone still prevents a non-member from seeing
+// a row that links to a crew they can't open.)
 const CREW_SCOPED_FEED_TYPES = new Set(['rank', 'challenge_started', 'joined_crew', 'left_crew', 'crew_renamed']);
 // type is one of: 'pr' | 'streak' | 'rank' | 'challenge_started' | 'challenge_completed' |
 // 'joined_crew' | 'completed_no_recap' | 'left_crew' | 'crew_renamed' | 'started_following'. `by`
