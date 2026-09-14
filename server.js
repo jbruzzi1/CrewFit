@@ -1401,7 +1401,22 @@ function publicCrew(c, viewerId) {
   return {
     id: c.id, name: c.name, ownerId: c.ownerId, isOwner: c.ownerId === viewerId,
     createdAt: c.createdAt,
-    members: c.memberIds.filter(id => DB.users[id]).map(id => ({ ...publicUser(id), streak: currentStreak(id) })),
+    // Sep 14 2026 (Jeff, crew/notification follow-up -- "leave them in the crew... don't have
+    // access to their profile or anything"): a first pass at this (removing a blocked pair from
+    // the crew entirely) got reverted the same day -- Jeff realized that made the OWNER notice a
+    // member missing and start asking questions, exactly the awkwardness blocking is supposed to
+    // avoid, not cause. The actual fix is much smaller: leave membership, chat, and crew
+    // notifications completely untouched (nothing about the crew looks different to anyone), and
+    // rely on the block wall that already exists everywhere else in the app -- tapping into a
+    // blocked person's actual profile (PRs/streak/activity) already comes back limited via
+    // canSeeProfile()'s own isBlocked() check, with zero new code needed for that part. The one
+    // gap: this roster response has always tacked a `streak` figure onto every member unconditionally,
+    // bypassing canSeeProfile entirely (unlike the rest of a profile's detail) -- Jeff specifically
+    // asked for that one number hidden between a blocked pair too ("I'd say strip"), so it's null
+    // (never 0, which the client would read as a real "no streak" rather than "hidden" -- see
+    // crewView's `m.streak>1` check in app.js, which treats null exactly like "nothing to show,"
+    // same as it already does for a real 0-day streak).
+    members: c.memberIds.filter(id => DB.users[id]).map(id => ({ ...publicUser(id), streak: isBlocked(id, viewerId) ? null : currentStreak(id) })),
     challenge: publicChallenge(c, lastChallenge(c), viewerId),
     // Everything before the most-recent challenge, newest first -- the crew's track record. Added
     // Sep 6 (Jeff: the crew page "seemed poor and quickly done... difficult to track" -- wants to
