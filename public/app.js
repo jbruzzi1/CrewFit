@@ -5235,10 +5235,24 @@ function trendChart(d, U){
 // muscle" chip toggle AND the picker sheet entirely. There is no more "picked"/"narrowed" state --
 // every muscle just always shows as its own row here, all the time. The range picker (This
 // week/Month/3 months, see VOL_RANGES above) is now the ONLY control this section has.
+// Sep 14 2026 round 2 (Jeff, after seeing Muscle balance shipped as its own section right below
+// this one: "They just seem very similar - is there a way we can combine them?" -- both draw off
+// the exact same per-muscle set counts (Volume trend already ranks its own rows worst-first, so
+// the two often highlighted the same groups twice). Picked option 2 of 3 offered ("fold the flag
+// into Volume trend's own rows, drop the separate section") over keeping them separate or shrinking
+// Muscle balance to just a streak-length line. Folded in below: `balanceByGroup` carries the same
+// underlying fact the standalone Muscle balance card already showed Jeff ("under target 2 weeks
+// running -- N then M sets"), just relocated onto the matching row -- the caption wording itself
+// was tightened for its new context (see the comment on `flagHtml` below), which is a real,
+// undiscussed copy change, flagged to Jeff alongside the screenshots rather than silently shipped.
+// muscleBalanceFor() itself is untouched server-side -- same data, same test coverage
+// (test/progress-additions.mjs), only where it renders changed.
 function volTrendChart(d){
   const rangeInfo = VOL_RANGES.find(r=>r.key===VOL_MODE) || VOL_RANGES[0];
   const volGroups = (d[rangeInfo.field] && d[rangeInfo.field].groups) || [];
   const volByGroup = {}; for (const g of volGroups) volByGroup[g.group] = g;
+  const balanceGroups = (d.muscleBalance && d.muscleBalance.groups) || [];   // already worst-first
+  const balanceByGroup = {}; for (const g of balanceGroups) balanceByGroup[g.group] = g;
   // Cold-review catch (Aug 31, carried forward): the range toggle must NOT be gated on the CURRENT
   // range's data -- a fresh page load always starts on "This week," so a week with nothing logged
   // yet (common early in the week) would hide the other ranges entirely even when a longer window
@@ -5255,10 +5269,21 @@ function volTrendChart(d){
   const volRowHtml = g => {
     const pct = Math.min(100, Math.round(100*g.sets/g.target));
     const met = g.sets >= g.target;
+    // The flag is fixed to the same "last 2 fully-completed weeks" window regardless of which
+    // range (This week/Month/3 months) is currently selected -- same as when it lived in its own
+    // section, it isn't re-scoped by the toggle above. Cold-review catch (Sep 14 round 2): a row
+    // can show a fully green, target-met bar for the CURRENT week/range while still carrying this
+    // caption, since the flag deliberately excludes the in-progress week (see muscleBalanceFor in
+    // server.js) -- read together those could look contradictory. "the 2 weeks before this one"
+    // makes the caption name a different, earlier window on its own, without a reader needing the
+    // collapsible How it works blurb to resolve the apparent conflict.
+    const flag = balanceByGroup[g.group];
+    const flagHtml = flag ? `<div class="rp-why" style="margin-top:6px">Under target the 2 weeks before this one — ${flag.weeks[0]} then ${flag.weeks[1]} sets</div>` : '';
     return `<div class="mv-row">
       <div class="mv-top"><span class="mv-name">${MUSCLE_LABEL[g.group]||g.group}</span>
         <span class="mv-n">${g.sets}<span class="mv-of"> / ${g.target} sets${rangeInfo.suffix}</span></span></div>
       <div class="mv-track"><div class="mv-fill${met?' mv-met':''}" style="width:${pct}%"></div></div>
+      ${flagHtml}
     </div>`;
   };
 
@@ -5278,9 +5303,18 @@ function volTrendChart(d){
   // independent ranking. Pinning to This week keeps a neglected-today muscle flagged regardless of
   // how its longer-range number looks; only the displayed numbers change.
   const weekGroups = (d.volume && d.volume.groups) || [];
-  const volHasMore = volGroups.length > VOL_SHOW_N;
   const worstKeysThisWeek = weekGroups.slice().sort((a,b)=>(a.sets/a.target)-(b.sets/b.target)).map(g=>g.group);
-  const volShown = VOL_EXPANDED ? volGroups : worstKeysThisWeek.slice(0, VOL_SHOW_N).map(k=>volByGroup[k]).filter(Boolean);
+  // Sep 14 2026 round 2: a flagged group must never end up hidden behind "Show all" -- the whole
+  // point of folding Muscle balance's flag into these rows (instead of its own always-shown
+  // section) is that the flag stays visible. Its 2-completed-weeks window is INDEPENDENT of "worst
+  // this week" (a group can turn its current week around while still carrying the 2-week flag from
+  // before), so the two lists don't always overlap -- union them rather than assume they do.
+  // balanceGroups is already worst-first (see muscleBalanceFor), so appending its keys after the
+  // this-week ranking keeps both halves internally ranked, worst first.
+  const collapsedKeys = worstKeysThisWeek.slice(0, VOL_SHOW_N);
+  for (const g of balanceGroups) if (!collapsedKeys.includes(g.group)) collapsedKeys.push(g.group);
+  const volHasMore = volGroups.length > collapsedKeys.length;
+  const volShown = VOL_EXPANDED ? volGroups : collapsedKeys.map(k=>volByGroup[k]).filter(Boolean);
   // Sep 7 (Jeff): used to swap the whole row list for a generic "log some working sets" sentence
   // whenever nothing had been logged in the selected range -- but the rows AT ZERO are the point
   // of this report, not a failure state to hide. MUSCLE_ORDER always gives every group a row (see
@@ -5294,7 +5328,7 @@ function volTrendChart(d){
     ? `<div style="text-align:right;margin-top:8px"><button class="txt-btn" onclick="toggleVolExpanded()">${VOL_EXPANDED?'Show fewer':'Show all '+volGroups.length}</button></div>`
     : '';
   return `<h2>Volume trend</h2><div class="card">${volHtml}${volShowAllLink}${volModeSeg}
-    ${howItWorks('Volume trend', `${rangeInfo.note} General guideline, not a personal prescription.`)}
+    ${howItWorks('Volume trend', `${rangeInfo.note} General guideline, not a personal prescription. A row marked "Under target the 2 weeks before this one" has missed its weekly target for 2 full weeks running, regardless of the current week's own number — one slower week is normal training variation and never flagged on its own.`)}
   </div>`;
 }
 
@@ -5567,21 +5601,12 @@ async function progressScreen(opts){
       ${howItWorks('Top lifts', `Your current best on each lift, taken from your best of the last few sessions so one off day doesn't swing the number — same smoothing Strength trend uses below. Auto-picked by how often you log them; tap Edit to choose your own instead.`)}
     </div>` : '';
 
-  // Sep 14 2026 (Jeff, option 2, "Muscle balance"): see the full reasoning above muscleBalanceFor()
-  // in server.js -- flags a muscle group only after 2 FULL weeks running under its Volume trend
-  // target, never the current in-progress week, and never for an account too new for that
-  // comparison to be fair. Same render-only-if-flagged rule as Plateau watch.
-  const muscleBalance = (d.muscleBalance && d.muscleBalance.groups) || [];
-  const muscleBalanceHtml = muscleBalance.length ? `<h2>Muscle balance</h2>
-    <div class="card"><div class="hold-sec">
-      ${muscleBalance.map(g=>`<div class="hold">
-        <div class="hold-ic" aria-hidden="true">–</div>
-        <div class="rp-main"><div class="rp-name">${MUSCLE_LABEL[g.group]||g.group}</div>
-          <div class="rp-why">Under your ${g.target}-set weekly target 2 weeks running — ${g.weeks[0]} then ${g.weeks[1]} sets</div></div>
-      </div>`).join('')}
-    </div>
-    ${howItWorks('Muscle balance', 'Flags a muscle group only once it has missed its Volume trend weekly target for the last 2 full weeks in a row — one slower week is normal training variation and never flagged on its own.')}
-    </div>` : '';
+  // Sep 14 2026 round 2 (Jeff, "They just seem very similar - is there a way we can combine
+  // them?"): Muscle balance's standalone section was retired the same day it shipped -- the flag
+  // it computed now renders inline on its own Volume trend row instead (see the comment above
+  // volTrendChart/volRowHtml). muscleBalanceFor() itself is untouched; only this section's markup
+  // is gone. Deliberately NOT deleting the server function or its tests -- GET /api/progress still
+  // needs muscleBalance for volTrendChart to read from.
 
   // Sep 14 2026 (Jeff, option 3, "Goals" -- "I like 1 but I also think 2 is good", confirmed both):
   // a dedicated card summarizing every lift with a goal set, PLUS (see prHtml above) the same
@@ -5633,8 +5658,6 @@ async function progressScreen(opts){
     ${topLiftsHtml}
 
     ${volTrendChart(d)}
-
-    ${muscleBalanceHtml}
 
     <h2>Consistency</h2>
     <div class="card">
