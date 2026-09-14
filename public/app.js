@@ -5105,6 +5105,21 @@ function prLabel(p){
   return `${w} ${unitOf(p)} × ${p.reps}`;
 }
 
+// Sep 14 2026: shared by both the Goals card and the inline bar on a Personal-records row (see
+// prHtml/goalsHtml in progressScreen) so the exact same bar/caption markup is never hand-typed
+// twice -- p.goalProgress is computed once server-side (recordsFor() in server.js) specifically so
+// these two spots can never disagree about the same goal's numbers.
+function goalBarHtml(p, wrapClass){
+  if(!p.goalProgress) return '';
+  const gp = p.goalProgress;
+  const cap = gp.reached ? '<div class="beat-chip">✓ Goal reached</div>'
+    : `<div class="pr-goalcap">${gp.remaining} ${unitOf(p)} to your ${p.goal} ${unitOf(p)} goal</div>`;
+  return `<div class="${wrapClass}">
+    <div class="mv-track"><div class="mv-fill${gp.reached?' mv-met':''}" style="width:${gp.pct}%"></div></div>
+    ${cap}
+  </div>`;
+}
+
 // Strength trend chart. Single series, so no legend — the chip above names it. Selective
 // labels only (never a number on every point). Values are reachable by tap, not hover only.
 let TREND_PICK = '__overall';
@@ -5326,6 +5341,49 @@ async function saveTrendPicks(){
   progressScreen({silent:true});
 }
 
+// Sep 14 2026: the Top lifts snapshot's own picker -- same shape as the trend-picks picker just
+// above (openTrendPicker/renderTrendPicker/toggleTrendPick/saveTrendPicks), deliberately its own
+// separate selection state and save route (topLiftPicks/api/me/top-lift-picks, not a reuse of
+// trendPicks) since the two answer different questions -- see the comment above topLiftsFor() in
+// server.js. Capped at 3 to match the snapshot it feeds, not 5.
+let TOPLIFTPICK_SEL = [];
+function openTopLiftPicker(){
+  TOPLIFTPICK_SEL = (window._TOPLIFT_PICKS_SAVED || []).slice();
+  openSheetHtml(renderTopLiftPicker());
+}
+function renderTopLiftPicker(){
+  const all = window._TOPLIFT_ALL || [];
+  const rows = all.length ? all.map(name => {
+    const checked = TOPLIFTPICK_SEL.includes(name);
+    return `<label class="inv-row"><div class="inv-text"><div class="name">${esc(name)}</div></div>
+      <span class="check"><input type="checkbox" value="${esc(name)}" ${checked?'checked':''} onchange="toggleTopLiftPick(this)">
+      <span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`;
+  }).join('') : '<div class="muted">Log the same lift twice to see it here.</div>';
+  return `<div class="sheet"><div class="sheet-head"><h2>Pick lifts to show</h2></div>
+    <div class="muted" style="font-size:12.5px;padding:0 2px 10px">Choose up to 3. Leave none picked
+      and your most-trained lifts show automatically.</div>
+    <div class="card">${rows}</div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="sec" style="flex:1" onclick="closeSheet()">Cancel</button>
+      <button class="blue" style="flex:1" onclick="saveTopLiftPicks()">✓ Save</button>
+    </div></div>`;
+}
+function toggleTopLiftPick(input){
+  const name = input.value;
+  if(input.checked){
+    if(TOPLIFTPICK_SEL.length>=3){ input.checked=false; alert('You can pick up to 3.'); return; }
+    TOPLIFTPICK_SEL.push(name);
+  } else {
+    TOPLIFTPICK_SEL = TOPLIFTPICK_SEL.filter(n=>n!==name);
+  }
+}
+async function saveTopLiftPicks(){
+  const r = await H.post('/api/me/top-lift-picks', { picks: TOPLIFTPICK_SEL });
+  if(r && r.error){ alert(r.error); return; }
+  closeSheet();
+  progressScreen({silent:true});
+}
+
 async function progressScreen(opts){
   // v254: opts.silent -- setProgWeeks/setTrendPick both re-invoke this to refresh the SAME screen
   // in place after tapping a range/trend pill roughly mid-page; without silent gating the plain
@@ -5460,22 +5518,95 @@ async function progressScreen(opts){
         // Three states, deliberately distinct: what you typed in, what you earned, and the
         // one-off moment real work passes a number you typed. Without the separation an
         // imported history silently swallows the first-real-record moment.
+        // A goal's progress bar (see goalBarHtml) always supersedes the older plain "goal N lb"
+        // text below -- it carries the same info plus how close you actually are. The plain text
+        // stays as a fallback for the two cases goalProgress is deliberately null for (a
+        // bodyweight lift or an assisted exercise -- see the comment above it in recordsFor()), so
+        // a goal you set is still visible even where a percentage bar wouldn't mean anything.
+        // unitOf(p), not the page's current U -- p.goal is normalized server-side into THIS
+        // record's own unit (recordsFor()'s goalProgress comment), so it must be labeled with that
+        // same unit, not whatever unit the viewer happens to be on right now (prLabel's own v249
+        // fix, same reasoning, applied here too).
+        const goalFallback = (!p.goalProgress && p.goal) ? `<div class="pr-goal">goal ${p.goal} ${unitOf(p)}</div>` : '';
         if(p.source==='entered') return `<div class="pr pr-self">
           <div><div class="pr-n">${esc(p.exercise)} <span class="self-tag">you entered</span></div>
             <div class="pr-d">Starting best · beat it to set a record</div></div>
-          <div class="pr-r"><div class="pr-w">${prLabel(p)}</div>
-            ${p.goal?`<div class="pr-goal">goal ${p.goal} ${U}</div>`:''}</div></div>`;
+          <div class="pr-r"><div class="pr-w">${prLabel(p)}</div>${goalFallback}</div>
+          ${goalBarHtml(p,'pr-goalbar')}</div>`;
         if(p.beatSeed) return `<div class="pr pr-beat">
           <div><div class="pr-n">${esc(p.exercise)}</div>
             <div class="pr-beat-was">Beat the <b>${p.seedWeight} × ${p.seedReps}</b> you entered</div></div>
           <div class="pr-r"><div class="pr-w">${prLabel(p)}</div>
-            <div class="beat-chip">▲ Record beaten</div></div></div>`;
+            <div class="beat-chip">▲ Record beaten</div></div>
+          ${goalBarHtml(p,'pr-goalbar')}</div>`;
         return `<div class="pr">
           <div><div class="pr-n">${esc(p.exercise)}</div><div class="pr-d">${fmtDate(p.at)}</div></div>
-          <div class="pr-r"><div class="pr-w">${prLabel(p)}</div>
-            ${p.goal?`<div class="pr-goal">goal ${p.goal} ${U}</div>`:''}</div></div>`;
+          <div class="pr-r"><div class="pr-w">${prLabel(p)}</div>${goalFallback}</div>
+          ${goalBarHtml(p,'pr-goalbar')}</div>`;
       }).join('') + prShowAllLink
     : `<div class="muted" style="padding:8px 2px">Log a workout — your first set of any exercise is a record.</div>`;
+
+  // Sep 14 2026 (Jeff, "what else can we add to the progress page" -- option 1, "Top lifts"): a
+  // compact snapshot of your CURRENT best on your most-trained lifts, separate from Strength
+  // trend's line chart below (that's about direction/movement over time; this is "what are you at
+  // right now"). Same "card renders only when it has content" rule as Plateau watch -- a user with
+  // no repeated lift yet just doesn't see this section, rather than an empty/placeholder card.
+  // Stashed on window the same way trendChart already does for its own picker, so the picker sheet
+  // always reflects what was actually rendered, not a stale refetch.
+  const topLifts = d.topLifts || {lifts:[], allNames:[], picks:[]};
+  window._TOPLIFT_ALL = topLifts.allNames || [];
+  window._TOPLIFT_PICKS_SAVED = topLifts.picks || [];
+  const topLiftsHtml = topLifts.lifts.length ? `<div class="sec-head"><h2>Top lifts</h2>
+      <button class="txt-btn" style="margin-left:auto" onclick="openTopLiftPicker()" title="Pick which lifts to show">Edit</button></div>
+    <div class="card">
+      ${topLifts.lifts.map(l=>`<div class="pr">
+        <div><div class="pr-n">${esc(l.name)}</div>
+          <div class="pr-d">${l.sessions} session${l.sessions===1?'':'s'} logged</div></div>
+        <div class="pr-r"><div class="pr-w">${l.weight>0?`${l.weight} ${U}${l.lessIsMore?' assist':''} × ${l.reps}`:`${l.reps} reps`}</div></div>
+      </div>`).join('')}
+      ${howItWorks('Top lifts', `Your current best on each lift, taken from your best of the last few sessions so one off day doesn't swing the number — same smoothing Strength trend uses below. Auto-picked by how often you log them; tap Edit to choose your own instead.`)}
+    </div>` : '';
+
+  // Sep 14 2026 (Jeff, option 2, "Muscle balance"): see the full reasoning above muscleBalanceFor()
+  // in server.js -- flags a muscle group only after 2 FULL weeks running under its Volume trend
+  // target, never the current in-progress week, and never for an account too new for that
+  // comparison to be fair. Same render-only-if-flagged rule as Plateau watch.
+  const muscleBalance = (d.muscleBalance && d.muscleBalance.groups) || [];
+  const muscleBalanceHtml = muscleBalance.length ? `<h2>Muscle balance</h2>
+    <div class="card"><div class="hold-sec">
+      ${muscleBalance.map(g=>`<div class="hold">
+        <div class="hold-ic" aria-hidden="true">–</div>
+        <div class="rp-main"><div class="rp-name">${MUSCLE_LABEL[g.group]||g.group}</div>
+          <div class="rp-why">Under your ${g.target}-set weekly target 2 weeks running — ${g.weeks[0]} then ${g.weeks[1]} sets</div></div>
+      </div>`).join('')}
+    </div>
+    ${howItWorks('Muscle balance', 'Flags a muscle group only once it has missed its Volume trend weekly target for the last 2 full weeks in a row — one slower week is normal training variation and never flagged on its own.')}
+    </div>` : '';
+
+  // Sep 14 2026 (Jeff, option 3, "Goals" -- "I like 1 but I also think 2 is good", confirmed both):
+  // a dedicated card summarizing every lift with a goal set, PLUS (see prHtml above) the same
+  // p.goalProgress feeds an inline bar on that exact lift's own row in Personal records -- one
+  // number, shown in both places, never computed twice (see the comment above goalProgress in
+  // recordsFor(), server.js). Unlike Plateau watch/Muscle balance, this card does NOT hide itself
+  // when empty -- goal-setting already exists today (Settings -> Starting weights -> "+ Set a
+  // goal") but is easy to never discover; showing a real empty state with a direct link here
+  // follows the same "discoverability beats minimalism" rule the rest of the app already commits
+  // to (CLAUDE.md), the same reason "Add weight next time" above shows a worked example instead of
+  // just disappearing when it has nothing yet.
+  const goalPrs = (d.prs||[]).filter(p=>p.goalProgress);
+  const goalsHtml = `<h2>Goals</h2><div class="card">${
+    // unitOf(p), not the page's current U -- same reasoning as prLabel/goalFallback above: p.weight
+    // and p.goal are each in THIS record's own unit (server-normalized), which may not match
+    // whatever unit the viewer is on right now.
+    goalPrs.length ? goalPrs.map(p=>`<div class="mv-row">
+        <div class="mv-top"><span class="mv-name">${esc(p.exercise)}</span>
+          <span class="mv-n">${p.weight} ${unitOf(p)}<span class="mv-of"> / ${p.goal} ${unitOf(p)}</span></span></div>
+        <div class="mv-track"><div class="mv-fill${p.goalProgress.reached?' mv-met':''}" style="width:${p.goalProgress.pct}%"></div></div>
+      </div>`).join('')
+    : `<div class="empty"><div class="empty-t">No goals set yet</div>
+        <div class="empty-b">Set a target weight for any lift and track how close your current best is to it, right here.</div>
+        <button class="txt-btn" style="padding:6px 0" onclick="seedSetupScreen()">+ Set a goal</button></div>`
+  }${goalPrs.length ? howItWorks('Goals', 'Progress toward a target weight you set for a lift, from Settings → Starting weights. Updates automatically as your recorded best for that lift improves.') : ''}</div>`;
 
   // Sep 7 (Jeff): "0 days trained this week" was a demoralizing zero-stat sitting in the most
   // prominent spot on the page -- the exact thing the app already has a standing rule against
@@ -5499,7 +5630,11 @@ async function progressScreen(opts){
 
     ${plateauHtml}
 
+    ${topLiftsHtml}
+
     ${volTrendChart(d)}
+
+    ${muscleBalanceHtml}
 
     <h2>Consistency</h2>
     <div class="card">
@@ -5554,6 +5689,8 @@ async function progressScreen(opts){
     </div>
 
     ${trendChart(d,U)}
+
+    ${goalsHtml}
 
     <h2>Personal records</h2>
     <div class="card">${prHtml}</div>

@@ -49,7 +49,7 @@ const files = [
   'test/log-rec-not-yet-logged-today.mjs', 'test/rest-timer-edit.mjs', 'test/type-pill-collapse.mjs',
   'test/quick-workout-routine-page.mjs', 'test/assisted-exercise.mjs', 'test/recap-local-date.mjs',
   'test/scheduled-at-validation.mjs', 'test/crew-sheet-empty-state.mjs',
-  'test/block-crew-streak-privacy.mjs',
+  'test/block-crew-streak-privacy.mjs', 'test/progress-additions.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
