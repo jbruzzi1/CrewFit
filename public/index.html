@@ -1435,7 +1435,7 @@
        others still want the bold version). */
     .streak-hero { font-size:34px; font-weight:400; line-height:1; letter-spacing:normal; }
     .streak { display:inline-flex; align-items:center; gap:4px; background:#eef1f5; color:var(--fg); border-radius:999px; padding:4px 10px; font-size:11.5px; font-weight:600; }
-    .pr { display:flex; justify-content:space-between; align-items:center; padding:11px 2px; border-bottom:1px solid var(--line); }
+    .pr { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; padding:11px 2px; border-bottom:1px solid var(--line); }
     .pr:last-child { border-bottom:none; }
     .pr-n { font-size:14px; font-weight:600; }
     .pr-d { font-size:11px; color:var(--muted); margin-top:2px; }
@@ -1444,6 +1444,15 @@
     .pr-self { background:#fbfcfd; border-left:3px solid #dfe3e9; padding-left:9px; margin-left:-3px; border-radius:0 8px 8px 0; }
     .self-tag { font-size:9.5px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; color:var(--muted); background:#eef1f5; border-radius:5px; padding:2px 6px; margin-left:5px; vertical-align:1.5px; }
     .pr-goal { font-size:11px; color:var(--blue); font-weight:700; margin-top:2px; }
+    /* Sep 14 2026: the inline goal-progress bar added to a Personal-records row (see prHtml in
+       app.js). flex:0 0 100% on a flex-wrap:wrap parent (.pr, above) reliably drops it to its own
+       full-width line under the name/weight row regardless of either column's own width -- safer
+       than a fixed pixel offset, which would drift if either column's text ever grows. Shares the
+       same 2px-radius mv-track/mv-fill bar Volume trend already uses (see .mv-track/.mv-fill
+       below) so a bar means the same thing everywhere it appears on this page, just smaller here. */
+    .pr-goalbar { flex:0 0 100%; margin-top:8px; }
+    .pr-goalbar .mv-track { height:5px; }
+    .pr-goalcap { font-size:10.5px; color:var(--muted); margin-top:4px; }
     .pr-beat { background:rgba(6,122,6,.045); border-left:3px solid #067a06; padding-left:9px; margin-left:-3px; border-radius:0 10px 10px 0; }
     .pr-beat-was { font-size:11.5px; color:var(--muted); margin-top:3px; }
     .pr-beat-was b { color:var(--fg); font-weight:700; }
@@ -1668,6 +1677,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Activity</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=429"></script>
+  <script src="app.js?v=430"></script>
 </body>
 </html>

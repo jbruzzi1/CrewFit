@@ -4370,10 +4370,56 @@ function volumeTrendFor(userId, weeks) {
   }
   return {
     weeks: buckets.map(w => ({
-      weekOf: w.weekOf,
+      weekOf: w.weekOf, a: w.a, b: w.b,
       groups: MUSCLE_ORDER.map(g => ({ group: g, sets: w.sets[g], target: MUSCLE_TARGETS[g] }))
     }))
   };
+}
+
+// The earliest date this user has any REAL working set logged, across every session -- used below
+// to keep muscleBalanceFor() from blaming a muscle group for weeks that happened before the user
+// ever started training (a brand-new account otherwise reads every muscle as "2 weeks behind" on
+// day one, which is true of the calendar but not a fact about THEM -- same instinct as the
+// Consistency card's own "average starts at your first active week, not the window's start" fix).
+function firstLogDateFor(userId) {
+  let min = null;
+  for (const s of Object.values(DB.sessions)) {
+    const mine = s.logs && s.logs[userId];
+    if (!mine || !mine.some(isWorkingSet)) continue;
+    const at = perfDate(s.scheduledAt).slice(0, 10);
+    if (!min || at < min) min = at;
+  }
+  return min;
+}
+
+// Sep 14 2026 (Jeff, "what else can we add to the progress page" -- picked "under target 2 weeks
+// running" as the threshold): flags a muscle group only when it's missed its weekly Volume trend
+// target for the last TWO fully-completed weeks in a row -- one slow week is normal training
+// variation (Volume trend already shows that plainly, no flag needed); two in a row is a real
+// pattern worth surfacing. Deliberately looks at the last 2 COMPLETED weeks, never the current
+// in-progress one -- flagging a week that still has days left in it would be stating something
+// about the user's week before it's over (CLAUDE.md: never claim something you can't stand
+// behind), the same reasoning the Consistency bar chart already applies by outlining (not
+// judging) the current week. Suppressed entirely for a user who hasn't been training long enough
+// for both comparison weeks to be real (see firstLogDateFor) -- a brand-new account should never
+// see "behind" on muscles it hasn't had the chance to train yet.
+function muscleBalanceFor(userId) {
+  const vt = volumeTrendFor(userId, 3);
+  const [twoAgo, oneAgo] = vt.weeks;   // vt.weeks[2] is the current, in-progress week -- excluded
+  const firstLog = firstLogDateFor(userId);
+  if (!firstLog || firstLog > twoAgo.a) return { groups: [] };
+  const byGroup2 = {}; for (const g of twoAgo.groups) byGroup2[g.group] = g.sets;
+  const byGroup1 = {}; for (const g of oneAgo.groups) byGroup1[g.group] = g.sets;
+  const flagged = [];
+  for (const g of MUSCLE_ORDER) {
+    const target = MUSCLE_TARGETS[g];
+    const s2 = byGroup2[g] || 0, s1 = byGroup1[g] || 0;
+    if (s2 < target && s1 < target) flagged.push({ group: g, target, weeks: [s2, s1] });
+  }
+  // Worst first -- furthest under target across the two weeks combined, same "surface what needs
+  // attention first" instinct as Volume trend's own collapsed ranking.
+  flagged.sort((a, b) => (a.weeks[0] + a.weeks[1] - 2 * a.target) - (b.weeks[0] + b.weeks[1] - 2 * b.target));
+  return { groups: flagged };
 }
 
 // ---- Strength trend -----------------------------------------------------------------------
@@ -4394,7 +4440,13 @@ function estMax(l) {
   return (w > 0 && r > 0) ? w * (1 + r / 30) : 0;
 }
 
-function trendFor(userId) {
+// Sep 14 2026: pulled out of trendFor() unchanged (same loop, same eligibility rules) so a new
+// topLiftsFor() (the Progress-page "Top lifts" snapshot) can share this exact history instead of
+// re-deriving it with a second, independently-maintained copy of the same eligibility logic --
+// see the "delegates to the one shared rule" precedent elsewhere in this file (canSeeProfile).
+// trendFor()'s own output is unchanged by this extraction; verified via npm test before and
+// after.
+function liftHistoryFor(userId) {
   const byName = {};
   for (const s of Object.values(DB.sessions)) {
     const mine = s.logs && s.logs[userId];
@@ -4436,10 +4488,32 @@ function trendFor(userId) {
       (byName[name] = byName[name] || []).push(point);
     }
   }
-  const lifts = Object.keys(byName)
+  return Object.keys(byName)
     .map(name => ({ name, points: byName[name].sort((a, b) => a.at.localeCompare(b.at)) }))
     .filter(x => x.points.length >= 2)                   // one point is not a trend
     .sort((a, b) => b.points.length - a.points.length);  // most logged first = the default 5
+}
+
+// Also pulled out of trendFor() unchanged, for the same reason as liftHistoryFor() above --
+// topLiftsFor() needs the identical "current" smoothing (best of the trailing
+// TREND_SMOOTH_SESSIONS sessions, not literally the latest one) so its numbers never disagree
+// with what Strength trend already shows for the same lift. See the Sep 5 comment that used to
+// sit above this inside trendFor() for the full "one off day doesn't wreck the number" rationale
+// -- unchanged, just relocated.
+const TREND_SMOOTH_SESSIONS = 3;
+function bestPointOfWindow(points, asOfDate, assisted) {
+  const upTo = asOfDate ? points.filter(p => p.at <= asOfDate) : points;
+  if (!upTo.length) return points[0];
+  const window = upTo.slice(-TREND_SMOOTH_SESSIONS);
+  return window.reduce((best, p) => {
+    const better = assisted ? p.est < best.est : p.est > best.est;
+    return better ? p : best;
+  }, window[0]);
+}
+function currentEst(points, asOfDate, assisted) { return bestPointOfWindow(points, asOfDate, assisted).est; }
+
+function trendFor(userId) {
+  const lifts = liftHistoryFor(userId);
 
   // Sep 5 (Jeff: "I was having an off day and exhausted so didn't lift my heaviest ... it
   // dropped my strength trend a ton overall"): the overall % and each lift's own changePct used
@@ -4468,17 +4542,8 @@ function trendFor(userId) {
   // (loadType==='assisted' -- Machine-Assisted Pull-Up today), less assist is the harder,
   // more-improved set, so best = LOWEST est. estMax()'s own formula is left untouched (still
   // just w*(1+r/30)) -- only which direction counts as "better" changes at each call site below.
-  const TREND_SMOOTH_SESSIONS = 3;
-  const bestPointOfWindow = (points, asOfDate, assisted) => {
-    const upTo = asOfDate ? points.filter(p => p.at <= asOfDate) : points;
-    if (!upTo.length) return points[0];
-    const window = upTo.slice(-TREND_SMOOTH_SESSIONS);
-    return window.reduce((best, p) => {
-      const better = assisted ? p.est < best.est : p.est > best.est;
-      return better ? p : best;
-    }, window[0]);
-  };
-  const currentEst = (points, asOfDate, assisted) => bestPointOfWindow(points, asOfDate, assisted).est;
+  // bestPointOfWindow()/currentEst()/TREND_SMOOTH_SESSIONS themselves now live at module scope
+  // (see above liftHistoryFor) so topLiftsFor() can share them -- unchanged otherwise.
 
   // Overall stays computed from EVERY eligible lift, never just the picked/displayed subset --
   // it is a holistic "how is your training going" number, and shrinking it to whatever chips
@@ -4556,6 +4621,46 @@ function trendFor(userId) {
     : lifts.slice(0, 5);
 
   return { lifts: shown.map(toChip), overall, allNames, picks };
+}
+
+// Sep 14 2026 (Jeff, "what else can we add to the progress page" -- "Top lifts"): a compact
+// snapshot of your current best on your most-important lifts, separate from Strength trend's line
+// chart above (that's about direction/movement over time; this is just "what are you at right
+// now"). Shares liftHistoryFor()/bestPointOfWindow() with trendFor() so the two never disagree
+// about what "current" means for the same lift. Auto-picks your 3 most-logged lifts by default;
+// topLiftPicks (validated the same lazy way trendPicks is above -- a temporarily-unlogged pick
+// isn't silently dropped from what's saved, only from what's shown) lets a user override that,
+// capped at 3 -- deliberately a SEPARATE saved list from trendPicks/5, not a reuse of it: the
+// Strength trend chip picker and this snapshot answer different questions ("what do you want to
+// watch trend" vs "what do you want featured up top") and nothing requires them to match.
+function topLiftsFor(userId) {
+  const lifts = liftHistoryFor(userId);
+  const allNames = lifts.map(l => l.name);
+  const u = DB.users[userId];
+  const rawPicks = Array.isArray(u && u.topLiftPicks) ? u.topLiftPicks : [];
+  const seen = new Set();
+  const picks = [];
+  for (const name of rawPicks) {
+    if (seen.has(name) || !allNames.includes(name)) continue;
+    seen.add(name);
+    picks.push(name);
+    if (picks.length >= 3) break;
+  }
+  const shown = picks.length ? picks.map(name => lifts.find(l => l.name === name)) : lifts.slice(0, 3);
+  const toTile = l => {
+    const assisted = loadTypeForName(l.name) === 'assisted';
+    const bestPoint = bestPointOfWindow(l.points, undefined, assisted);
+    return {
+      name: l.name,
+      weight: bestPoint.weight,
+      reps: bestPoint.reps,
+      est: Math.round(bestPoint.est),
+      at: bestPoint.at,
+      sessions: l.points.length,
+      lessIsMore: assisted
+    };
+  };
+  return { lifts: shown.map(toTile), allNames, picks };
 }
 
 // A lift counts as "plateaued" only when trained enough times WITHIN the trailing window
@@ -4712,6 +4817,25 @@ app.post('/api/me/trend-picks', auth, async (req, res) => {
   res.json({ picks: clean });
 });
 
+// Same shape/rules as POST /api/me/trend-picks above, just its own separate field (topLiftPicks)
+// and a lower cap (3, matching the Top lifts snapshot it feeds -- see topLiftsFor()).
+app.post('/api/me/top-lift-picks', auth, async (req, res) => {
+  const { picks } = req.body || {};
+  if (!Array.isArray(picks)) return res.status(400).json({ error: 'picks must be an array' });
+  const seen = new Set();
+  const clean = [];
+  for (const p of picks) {
+    const name = currentExerciseName(capStr(p, 80));   // stale client, old name -- see EXERCISE_RENAMES
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    clean.push(name);
+    if (clean.length >= 3) break;
+  }
+  DB.users[req.userId].topLiftPicks = clean;
+  await save(DB);
+  res.json({ picks: clean });
+});
+
 // The record list the UI renders: earned records, plus seeded entries for lifts with none yet.
 // An earned record that has passed its seed is flagged so the UI can celebrate it once.
 function recordsFor(userId) {
@@ -4730,12 +4854,55 @@ function recordsFor(userId) {
       source: 'earned',
       beatSeed: !!beatSeed,
       seedWeight: seed ? seed.weight : null, seedReps: seed ? seed.reps : null,
-      goal: seed && seed.goal ? seed.goal : null
+      goal: seed && seed.goal ? seed.goal : null,
+      // The goal's OWN unit (whatever u.units was at seed time -- see PUT /api/me/seeds), which is
+      // not necessarily this earned record's own p.unit if the user has changed their unit
+      // preference since seeding the goal. Consumed (and stripped back off) immediately below --
+      // never part of the object this function actually returns.
+      _goalUnit: seed ? seed.unit : null
     }));
   }
   for (const name of Object.keys(seeds)) {
     if (earned[name]) continue;                       // a real record supersedes the entry
-    out.push(Object.assign({}, seeds[name], { source: 'entered' }));
+    // _goalUnit === unit here always (same seed object) -- set explicitly anyway so the
+    // normalization loop below can treat every row the same way regardless of source.
+    out.push(Object.assign({}, seeds[name], { source: 'entered', _goalUnit: seeds[name].unit }));
+  }
+  // Sep 14 2026 (Jeff, "what else can we add" -- Goals section + inline bar on this same row):
+  // progress toward a set goal, computed once here so the new Goals card and the inline bar added
+  // to this exact PR row in Personal records can never show two different numbers for the same
+  // goal. Cold-review catch: an earlier version of this compared p.weight and p.goal as raw
+  // numbers, silently assuming they were in the same unit -- true for an 'entered' seed (weight and
+  // goal come from the same object) but NOT guaranteed for an 'earned' record, whose own p.unit is
+  // whatever unit the winning LOG was typed in, independent of whatever unit was active when the
+  // goal was seeded (_goalUnit, above). A user who set a kg goal and later beat it with a lb-typed
+  // log would have silently gotten a wildly wrong pct/"reached" claim -- exactly the class of thing
+  // CLAUDE.md's "never state something about the user you can't stand behind" exists to prevent,
+  // and the same mistake prLabel's own v249 fix already corrected once elsewhere on this same
+  // object (that fix only reached p.weight's own label, never touched a goal figure).
+  //
+  // Fixed by normalizing p.goal ITSELF into this record's own unit right here, unconditionally,
+  // the moment it's read -- not just inside goalProgress's percentage math. That means every
+  // existing display of a goal number (including the plain-text "goal N lb" fallback the client
+  // already showed before today, for a bodyweight/assisted entry goalProgress deliberately skips
+  // below) is correct too, not only the two new spots this diff adds. Same toLb/inUnit approach
+  // beatSeed (above) already uses for the same class of comparison.
+  for (const p of out) {
+    p.goalProgress = null;
+    if (p.goal) {
+      const wUnit = p.unit || 'lb';
+      p.goal = Number(inUnit(p.goal, p._goalUnit || wUnit, wUnit));
+    }
+    delete p._goalUnit;
+    if (!p.goal || !(Number(p.weight) > 0)) continue;
+    if (loadTypeForName(p.exercise) === 'assisted') continue;
+    const cur = Number(p.weight), goal = Number(p.goal);
+    if (!(goal > 0)) continue;
+    p.goalProgress = {
+      pct: Math.max(0, Math.min(100, Math.round(100 * cur / goal))),
+      remaining: Math.max(0, Number((goal - cur).toFixed(1))),
+      reached: cur >= goal
+    };
   }
   return out.sort((a, b) => new Date(b.at) - new Date(a.at));
 }
@@ -4834,7 +5001,10 @@ app.get('/api/progress', auth, async (req, res) => {
     // computed/returned since Consistency's own weeksFor still needs this same `weeks` param, and
     // nothing else currently depends on removing this field. Candidate for cleanup later if truly
     // nothing else ever needs real per-week history again.
-    volumeTrend: volumeTrendFor(req.userId, weeks)
+    volumeTrend: volumeTrendFor(req.userId, weeks),
+    // Sep 14 2026 additions -- see topLiftsFor()/muscleBalanceFor() for the reasoning behind each.
+    topLifts: topLiftsFor(req.userId),
+    muscleBalance: muscleBalanceFor(req.userId)
   });
 });
 
