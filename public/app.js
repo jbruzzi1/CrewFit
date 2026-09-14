@@ -5021,6 +5021,38 @@ function closePick(){ createFlow(); }
 let PROG_WEEKS = 13;
 // Labelled the way people think about time, not in the raw week counts the API takes.
 const PROG_RANGES = [ {weeks:4, label:'Month'}, {weeks:13, label:'3 months'}, {weeks:26, label:'6 months'} ];
+// Sep 14 2026 round 3 (Jeff, on the crowded page: "The Progress page is getting crowded... this
+// pattern is close to its limit" -- his own assessment, asked "how do we fix this"): grouped the
+// page's 8 stacked sections into 3 tabs via the SAME .seg.wk-seg pill track every range toggle on
+// this page already uses, rather than inventing a new nav pattern. Grouping:
+//   Now     -- Add weight next time, Plateau watch, Top lifts -- what to act on / where you stand
+//              right now.
+//   Trends  -- Volume trend, Consistency, Strength trend -- how things are moving over time.
+//   Records -- Goals, Personal records -- the permanent scoreboard.
+// This is a real, undiscussed structural call (both the grouping and the tab labels) -- built as a
+// PREVIEW per Jeff's "build what this looks like first," not yet shipped/committed. Tab labels
+// picked to avoid colliding with the "This week" range button that already lives INSIDE the Trends
+// tab (Volume trend's own toggle) -- calling the top-level tab "This week" too would read as two
+// different things sharing one label one level apart.
+let PROG_TAB = 'now';
+// Deliberately NOT {silent:true} -- every other pill on this page (setProgWeeks/setVolMode/etc.)
+// re-renders the SAME content in place, so suppressing the scroll-to-top is right there (nothing
+// moved, no reason to yank the viewport). A tab switch replaces the entire content below the header
+// with something unrelated -- staying at whatever scroll depth "Now" happened to be at would strand
+// the reader mid-page looking at "Records" content that doesn't line up with where they were.
+// Cold-review catch (Sep 14 round 3): progressScreen() awaits a real /api/progress fetch before
+// touching the DOM at all, same as every other pill on this page -- fine for a same-content range
+// toggle, but a tab tap with zero visible response until the network round-trip finishes reads as
+// an unresponsive tap on anything slower than this sandbox's own localhost. Flip the active pill
+// synchronously first so the tap always feels instant; progressScreen()'s own re-render (which
+// rebuilds this same tab bar from PROG_TAB) then just confirms it.
+function setProgTab(t){
+  PROG_TAB = t;
+  const bar = document.getElementById('progTabBar');
+  if(bar) bar.querySelectorAll('button').forEach(b=>b.classList.toggle('on', b.dataset.tab===t));
+  progressScreen();
+}
+const PROG_TABS = [ {key:'now', label:'Now'}, {key:'trends', label:'Trends'}, {key:'records', label:'Records'} ];
 // Weekly volume meter: collapsed to the N muscle groups furthest from target by default (same
 // "6 chips, tap in for the rest" idea as Strength trend below), full 12-row list on demand.
 const VOL_SHOW_N = 5;
@@ -5274,11 +5306,16 @@ function volTrendChart(d){
     // section, it isn't re-scoped by the toggle above. Cold-review catch (Sep 14 round 2): a row
     // can show a fully green, target-met bar for the CURRENT week/range while still carrying this
     // caption, since the flag deliberately excludes the in-progress week (see muscleBalanceFor in
-    // server.js) -- read together those could look contradictory. "the 2 weeks before this one"
-    // makes the caption name a different, earlier window on its own, without a reader needing the
-    // collapsible How it works blurb to resolve the apparent conflict.
+    // server.js) -- the caption never claims anything about the current week, so it doesn't
+    // contradict a met bar above it even without repeating numbers.
+    // Sep 14 2026 round 3 (Jeff, on the real screenshot from his phone: "I feel like the text
+    // underneath is confusing and not clear"): the earlier wording ("Under target the 2 weeks
+    // before this one -- N then M sets") repeated the raw weekly counts right under a headline
+    // that already showed a very similar number, and "the 2 weeks before this one" was an awkward
+    // way to name the window. Asked which of 3 real rewrites read clearest; Jeff picked dropping
+    // the numbers entirely for the plainest read, over two options that kept them.
     const flag = balanceByGroup[g.group];
-    const flagHtml = flag ? `<div class="rp-why" style="margin-top:6px">Under target the 2 weeks before this one — ${flag.weeks[0]} then ${flag.weeks[1]} sets</div>` : '';
+    const flagHtml = flag ? `<div class="rp-why" style="margin-top:6px">Behind target 2 weeks in a row</div>` : '';
     return `<div class="mv-row">
       <div class="mv-top"><span class="mv-name">${MUSCLE_LABEL[g.group]||g.group}</span>
         <span class="mv-n">${g.sets}<span class="mv-of"> / ${g.target} sets${rangeInfo.suffix}</span></span></div>
@@ -5328,7 +5365,7 @@ function volTrendChart(d){
     ? `<div style="text-align:right;margin-top:8px"><button class="txt-btn" onclick="toggleVolExpanded()">${VOL_EXPANDED?'Show fewer':'Show all '+volGroups.length}</button></div>`
     : '';
   return `<h2>Volume trend</h2><div class="card">${volHtml}${volShowAllLink}${volModeSeg}
-    ${howItWorks('Volume trend', `${rangeInfo.note} General guideline, not a personal prescription. A row marked "Under target the 2 weeks before this one" has missed its weekly target for 2 full weeks running, regardless of the current week's own number — one slower week is normal training variation and never flagged on its own.`)}
+    ${howItWorks('Volume trend', `${rangeInfo.note} General guideline, not a personal prescription. A row marked "Behind target 2 weeks in a row" has missed its weekly target for the last 2 full weeks running, regardless of the current week's own number — one slower week is normal training variation and never flagged on its own.`)}
   </div>`;
 }
 
@@ -5639,12 +5676,7 @@ async function progressScreen(opts){
   // trained YET this week (nothingYet is false -- they have real history) now gets no subtitle
   // line at all rather than a "0" callout; nothingYet's brand-new-account copy is unchanged.
   const weekSub = nothingYet ? 'Log a workout and this fills in' : d.thisWeek>0 ? `${d.thisWeek} day${d.thisWeek===1?'':'s'} trained this week` : '';
-  $('app').innerHTML = `<div class="wrap">
-    <h1>Progress</h1>
-    ${weekSub?`<p class="sub">${weekSub}</p>`:''}
-    ${nothingYet?`<button class="blue btn-new" onclick="createFlow()">+ New workout</button>`:''}
-
-    <h2>Add weight next time</h2>
+  const nowTabHtml = `<h2>Add weight next time</h2>
     <div class="card">${readyHtml}${soonHtml}${holdHtml}
       ${(d.ready.length||(d.soon||[]).length||d.holds.length)?howItWorks('Add weight next time', `Reach the top of your rep range two sessions in a row <b>at the same weight</b> and the weight goes up. Warm-ups and drop sets don't count.${
         [...d.ready,...(d.soon||[]),...d.holds].some(x=>x.lessIsMore)
@@ -5655,11 +5687,9 @@ async function progressScreen(opts){
 
     ${plateauHtml}
 
-    ${topLiftsHtml}
+    ${topLiftsHtml}`;
 
-    ${volTrendChart(d)}
-
-    <h2>Consistency</h2>
+  const consistencyHtml = `<h2>Consistency</h2>
     <div class="card">
       <!-- Sep 2 (Jeff, on the original average-led/blue-badge-streak version): "not the biggest
            fan" of this report. Researched what comparable apps (Hevy's own "gym consistency"
@@ -5709,14 +5739,34 @@ async function progressScreen(opts){
         ${PROG_RANGES.map(r=>`<button class="${PROG_WEEKS===r.weeks?'on':''}" onclick="setProgWeeks(${r.weeks})">${r.label}</button>`).join('')}
       </div>
       ${d.weeks.some(w=>w.days)?howItWorks('Consistency', 'Each bar is one week — its height (and the number on top) is how many days you trained that week. The current week is outlined.'):''}
-    </div>
+    </div>`;
 
-    ${trendChart(d,U)}
+  const trendsTabHtml = `${volTrendChart(d)}
 
-    ${goalsHtml}
+    ${consistencyHtml}
+
+    ${trendChart(d,U)}`;
+
+  const recordsTabHtml = `${goalsHtml}
 
     <h2>Personal records</h2>
-    <div class="card">${prHtml}</div>
+    <div class="card">${prHtml}</div>`;
+
+  // Sep 14 2026 round 3: which tab's content actually renders -- the other two are computed above
+  // regardless (cheap: plain string building, no extra network calls; d already carries everything)
+  // but only PROG_TAB's own block is written into the page. Keeps setProgTab a pure "swap the body"
+  // re-render, same shape as every other silent re-render on this screen (setProgWeeks/setVolMode).
+  const tabBodyHtml = PROG_TAB==='trends' ? trendsTabHtml : PROG_TAB==='records' ? recordsTabHtml : nowTabHtml;
+  $('app').innerHTML = `<div class="wrap">
+    <h1>Progress</h1>
+    ${weekSub?`<p class="sub">${weekSub}</p>`:''}
+    ${nothingYet?`<button class="blue btn-new" onclick="createFlow()">+ New workout</button>`:''}
+
+    <div class="seg wk-seg" id="progTabBar">
+      ${PROG_TABS.map(t=>`<button class="${PROG_TAB===t.key?'on':''}" data-tab="${t.key}" onclick="setProgTab('${t.key}')">${t.label}</button>`).join('')}
+    </div>
+
+    ${tabBodyHtml}
   </div>`;
   if(!silent) pageScrollTop();
 }
