@@ -94,6 +94,49 @@ const toggleVolExpanded = vm.runInContext('toggleVolExpanded', ctx);
 const getVolExpanded = () => vm.runInContext('VOL_EXPANDED', ctx);
 const setVolMode = vm.runInContext('setVolMode', ctx);
 const getVolMode = () => vm.runInContext('VOL_MODE', ctx);
+const setProgTab = vm.runInContext('setProgTab', ctx);
+const getProgTab = () => vm.runInContext('PROG_TAB', ctx);
+
+console.log('Progress tabs (Sep 14 2026 round 3, preview build): Now/Trends/Records grouping -- Jeff, on the 8-stacked-section page: "how do we fix this"');
+{
+  // Sep 14 2026 round 3: Volume trend, Consistency, and Strength trend all moved under the new
+  // Trends tab (see the big comment above PROG_TAB in app.js) -- default landing tab is Now.
+  ok(getProgTab() === 'now', 'defaults to the "Now" tab');
+  PROGRESS_FIXTURE = baseProgress({ ready: [{ exercise: 'Bench Press', weight: 135, unit: 'lb', targetRepsMax: 8, suggested: 140, step: 5, group: 'push' }] });
+  await progressScreen({ silent: true });
+  let html = appEl.innerHTML;
+  ok(html.includes('Add weight next time'), 'Now tab shows Add weight next time');
+  ok(html.includes(`class="on" data-tab="now" onclick="setProgTab('now')"`), '"Now" pill is active by default');
+  ok(!html.includes('Volume trend') && !html.includes('Consistency') && !html.includes('Strength trend'), `Trends-tab sections do NOT render while on Now (got: ${['Volume trend', 'Consistency', 'Strength trend'].filter(s => html.includes(s)).join(', ') || 'ok'})`);
+  ok(!html.includes('Personal records'), 'Records-tab sections do NOT render while on Now');
+
+  setProgTab('trends');
+  await new Promise(r => setTimeout(r, 0));
+  ok(getProgTab() === 'trends', 'setProgTab switched to Trends');
+  html = appEl.innerHTML;
+  ok(html.includes('Volume trend') && html.includes('Consistency') && html.includes('Strength trend'), 'Trends tab shows Volume trend, Consistency, and Strength trend');
+  ok(!html.includes('Add weight next time'), 'Now-tab content is gone while on Trends');
+  ok(!html.includes('Personal records'), 'Records-tab content does not render while on Trends');
+  ok(html.includes(`class="on" data-tab="trends" onclick="setProgTab('trends')"`), '"Trends" pill is now active');
+
+  setProgTab('records');
+  await new Promise(r => setTimeout(r, 0));
+  html = appEl.innerHTML;
+  ok(html.includes('Personal records'), 'Records tab shows Personal records');
+  ok(!html.includes('Volume trend') && !html.includes('Add weight next time'), 'Now/Trends content is gone while on Records');
+  ok(html.includes(`class="on" data-tab="records" onclick="setProgTab('records')"`), '"Records" pill is now active');
+
+  setProgTab('now'); // reset for sanity, then switch to Trends below for the rest of this file
+  await new Promise(r => setTimeout(r, 0));
+  ok(getProgTab() === 'now', 'reset back to Now');
+}
+
+// Sep 14 2026 round 3: every remaining block in this file checks Volume trend, Consistency, or
+// Strength trend -- all three now live under the Trends tab (see above), so switch once here and
+// leave it there for the rest of the file. progress-additions.mjs and plateau-flagging.mjs check
+// server data / source text, not this client-rendered DOM, so they're unaffected by the tab split.
+setProgTab('trends');
+await new Promise(r => setTimeout(r, 0));
 
 function emptyGroups(overrides) {
   const base = [
