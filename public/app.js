@@ -305,6 +305,7 @@ function renderNavState(st){
   else if(st.t==='library') library({fromHistory:true});
   else if(st.t==='seeds') seedSetupScreen({fromHistory:true});
   else if(st.t==='settings') openSettings({fromHistory:true});
+  else if(st.t==='trainingFocus') trainingFocusScreen({fromHistory:true});
   else if(st.t==='blockedAccounts') blockedAccountsScreen({fromHistory:true});
   else if(st.t==='notifications') renderNotifications({fromHistory:true});
   else if(st.t==='routines') templatesPage({fromHistory:true});
@@ -2374,6 +2375,56 @@ const SEED_DEFAULTS = ['Barbell Back Squat','Conventional Deadlift','Flat Barbel
 // create-flow (see openAddExercises's comment above), so a value typed but not yet saved, and a
 // lift just picked from openSeedPicker, both survive the round trip through the library picker.
 let SEED_DRAFT = [];
+// ---- Training focus (phase) picker -- Sep 15 2026 -----------------------------------------------
+// NASM OPT Model phases, mapped onto CrewFit's own rep-range progression rule (Jeff asked for this
+// mapping, then asked to see it, then asked to build it for real). Labels/blurb/reps here are
+// display-only; the numbers that actually matter for progression live server-side in
+// TRAINING_PHASE_RANGES (server.js), which this list is kept in sync with by hand -- same
+// "duplicated small constant" pattern PLATEAU_MIN_SESSIONS already uses between the two files.
+// Saving a pick is a real POST to /api/me/training-phase (setTrainingPhase below) -- nothing here
+// is local-only anymore. ME.trainingPhase is null for anyone who has never opened this screen and
+// saved a pick; repRange() server-side behaves byte-identical to before this feature existed for
+// them until they do.
+const TRAINING_PHASES = [
+  { key:'stabilization', label:'Stabilization & Endurance', blurb:'Lighter weight, higher reps. Builds movement quality and joint stability -- also where Plateau watch below suggests cycling back to.', reps:'12-20 reps' },
+  { key:'strength_endurance', label:'Strength Endurance', blurb:'Moderate weight. Blends strength work with the stability focus from phase 1.', reps:'8-12 reps' },
+  { key:'hypertrophy', label:'Hypertrophy', blurb:'Heavier weight, minimal rest, focused on muscle size -- closest to how CrewFit’s rep ranges work today.', reps:'6-12 reps' },
+  { key:'max_strength', label:'Maximal Strength', blurb:'Heavy weight, longer rest between sets. For pure strength gains.', reps:'1-5 reps' },
+  { key:'power', label:'Power', blurb:'Paired sets: one heavy and near-max, one light and explosive. For speed and power. (CrewFit has no paired/superset target yet, so only the heavy side -- 1-5 reps -- is checked.)', reps:'1-5 reps checked' },
+];
+function trainingPhaseLabel(){
+  const p = ME && ME.trainingPhase && TRAINING_PHASES.find(x=>x.key===ME.trainingPhase);
+  return p ? p.label : 'Not set';
+}
+function trainingFocusScreen(opts){
+  const fromHistory = !!(opts && opts.fromHistory);
+  const skipNav = !!(opts && opts.skipNav);   // re-render in place after saving, no new history entry
+  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Training focus</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
+  const current = ME && ME.trainingPhase;
+  const cards = TRAINING_PHASES.map(p => `
+    <button class="phase-card${p.key===current?' on':''}" onclick="setTrainingPhase('${p.key}')">
+      <div class="phase-card-top"><div class="phase-card-name">${esc(p.label)}</div>
+        <div class="phase-card-check">${p.key===current?'✓':''}</div></div>
+      <div class="phase-card-blurb">${esc(p.blurb)}</div>
+      <div class="phase-card-reps">${esc(p.reps)}</div>
+    </button>`).join('');
+  const note = current
+    ? `Changes the rep range CrewFit checks your working sets against, starting with your next logged set. Tap a different phase to switch.`
+    : `Not set yet — CrewFit uses each exercise's own rep range until you pick one. Hypertrophy is closest to how it works today, if you're not sure.`;
+  $('app').innerHTML = `<div class="wrap">${head}
+    <div class="note" style="margin:2px 0 4px">${esc(note)}</div>
+    ${cards}
+  </div>`;
+  if(skipNav) return;
+  const st = { t:'trainingFocus' };
+  fromHistory ? landOn(st) : navigated(st);
+}
+async function setTrainingPhase(key){
+  const r = await H.post('/api/me/training-phase', { phase:key });
+  if(r.error){ alert(r.error); return; }
+  ME.trainingPhase = r.trainingPhase;
+  trainingFocusScreen({ skipNav:true });
+}
 async function seedSetupScreen(opts){
   const fromHistory = !!(opts && opts.fromHistory);
   if(!fromHistory){
@@ -5542,9 +5593,20 @@ async function progressScreen(opts){
     // the headline, same restrained tone/placement as trendChart's own cushion (a .ch-note, not a
     // color change or a hidden explainer -- the existing "How it works" toggle below still has
     // the fuller version of this same advice for anyone who wants it).
+    // Sep 15 2026: names the specific phase to drop back to (real, saved training-focus feature)
+    // instead of the old generic "a rep-range change, a deload, or swapping the exercise" advice
+    // -- matches what NASM's own OPT Model prescribes for a stalled lift. Cold-review catch: this
+    // must NOT unconditionally suggest Stabilization -- someone plateauing WHILE ALREADY in
+    // Stabilization would be told to switch to the phase they're already in, which is circular and
+    // makes no sense. Falls back to the old generic wording for that one case.
+    const stabPhase = TRAINING_PHASES[0];
+    const alreadyInStab = ME && ME.trainingPhase === stabPhase.key;
+    const plateauCushion = alreadyInStab
+      ? `Normal over time — a deload, or swapping the exercise for a bit, usually gets it moving again.`
+      : `Normal over time — try ${esc(stabPhase.label)} (${esc(stabPhase.reps)}, lighter weight) for a session or two, then cycle back up.`;
     plateauHtml = `<h2>Plateau watch</h2>
     <div class="card"><div class="hold-sec"><div class="hold-head">No change in estimated strength</div>
-      <div class="ch-note">Normal over time — a rep-range change, a deload, or swapping the exercise for a bit usually gets it moving again.</div>
+      <div class="ch-note">${plateauCushion}</div>
       ${d.plateaus.map(p=>`<div class="hold">
         <div class="hold-ic" aria-hidden="true">=</div>
         <div class="rp-main"><div class="rp-name">${esc(p.exercise)}</div>
@@ -5765,6 +5827,11 @@ async function progressScreen(opts){
     <div class="seg wk-seg" id="progTabBar">
       ${PROG_TABS.map(t=>`<button class="${PROG_TAB===t.key?'on':''}" data-tab="${t.key}" onclick="setProgTab('${t.key}')">${t.label}</button>`).join('')}
     </div>
+
+    <!-- Sep 15 2026 -- second, more visible door into trainingFocusScreen() (Jeff: a Settings row
+         alone "may get lost or unseen ... for something that's a big deal"). Lives here, above all
+         three tabs, since this is the page the phase pick actually changes the numbers on. -->
+    <button class="phase-chip" onclick="trainingFocusScreen()">Training focus: ${esc(trainingPhaseLabel())} <span class="phase-chip-arrow">›</span></button>
 
     ${tabBodyHtml}
   </div>`;
@@ -7545,6 +7612,9 @@ function openSettings(opts){
       <button class="sheet-row" onclick="toggleTheme()">Appearance <span class="row-val" id="themeVal">${currentTheme()==='dark'?'Dark':'Light'}</span></button>
       <button class="sheet-row" onclick="pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
       <button class="sheet-row" onclick="seedSetupScreen()">Starting weights</button>
+      <!-- Sep 15 2026 -- secondary door into trainingFocusScreen(); the primary, more visible one
+           is the chip on the Progress page itself (Jeff felt a Settings-only row would get lost). -->
+      <button class="sheet-row" onclick="trainingFocusScreen()">Training focus <span class="row-val">${esc(trainingPhaseLabel())}</span></button>
     </div>
     <h2>Notifications</h2>
     <div class="sheet-list">

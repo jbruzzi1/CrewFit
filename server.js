@@ -867,6 +867,9 @@ function profileOf(id, viewerId, localToday) {
     // route comment for why "on by default" is safe here.
     notifyStreakReminders: id === viewerId ? (u.notifyStreakReminders !== false) : undefined,
     notifyWorkoutReminders: id === viewerId ? (u.notifyWorkoutReminders !== false) : undefined,
+    // Self only. null (not defaulted to any phase) for anyone who hasn't saved a pick yet -- see
+    // the /api/me/training-phase route's own comment for why this must never silently default.
+    trainingPhase: id === viewerId ? (TRAINING_PHASE_KEYS.has(u.trainingPhase) ? u.trainingPhase : null) : undefined,
     // Self only — the OTHER profile's own visibility isn't a thing a viewer needs (canSeeProfile
     // already decided whether they can see the gated stuff below); the Settings screen's own
     // Private/Public toggle is the only reader of this. Public unless explicitly set to
@@ -3940,6 +3943,18 @@ app.post('/api/me/units', auth, async (req, res) => {
   res.json({ units: u });
 });
 
+// Sep 15 2026 -- see TRAINING_PHASE_RANGES/repRange()'s own comment for the full picture. Nothing
+// writes this field except an explicit save from the training-focus picker screen -- a user who
+// has never touched it stays undefined forever, so repRange() keeps behaving exactly as it always
+// has for them (Jeff: "nobody's rep targets silently change the day this ships").
+app.post('/api/me/training-phase', auth, async (req, res) => {
+  const phase = (req.body || {}).phase;
+  if (!TRAINING_PHASE_KEYS.has(phase)) return res.status(400).json({ error: 'phase must be one of: ' + [...TRAINING_PHASE_KEYS].join(', ') });
+  DB.users[req.userId].trainingPhase = phase;
+  await save(DB);
+  res.json({ trainingPhase: phase });
+});
+
 // Task #63: in-app toggle for the streak-loss push reminder. Unset (never touched) reads as ON —
 // new and existing accounts alike get the reminder by default, same call CLAUDE.md's "Lead, don't
 // just execute" made for defaulting this feature on: it is inert with no cost unless the user has
@@ -5028,7 +5043,7 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
   // PUT /api/sessions/:id rewrites them in place, so without this, editing a finished workout
   // would retroactively change whether a set hit its target.
   const exDef = s.exercises.find(x => x.id === exerciseId);
-  const rr = exDef ? repRange(exDef) : null;
+  const rr = exDef ? repRange(exDef, DB.users[req.userId] && DB.users[req.userId].trainingPhase) : null;
   // Snapshot the exercise NAME too. Everything else about a set is already frozen at log time
   // (rep target, unit, loadType) so that editing a workout later cannot rewrite history — the
   // name was the one field still resolved live, through the session's exercise list. Remove that
@@ -5116,7 +5131,32 @@ function loadTypeForName(name) {
 const WORKING_SET_TYPES = new Set(['normal', 'failure']);
 function isWorkingSet(l) { return WORKING_SET_TYPES.has(l.setType || 'normal'); }
 
-function repRange(e) {
+// Sep 15 2026 (Jeff): training-focus phases, mapped from the NASM OPT Model he asked to have
+// mapped onto CrewFit's own progression logic. A phase, when a user has picked one, overrides
+// the per-exercise defaultReps/defaultRepsMax below with one flat range for every exercise --
+// same simplification the client-side preview used, now real. Mirrored client-side in app.js's
+// own TRAINING_PHASES (labels/blurb live only there; this is the one place the actual numbers
+// that matter for progression live) -- same "duplicated small constant" pattern PLATEAU_MIN_SESSIONS
+// already uses between the two files.
+// Power is the one phase NASM itself doesn't reduce to a single range (paired heavy/explosive
+// sets) -- CrewFit has no concept of a paired/superset target, so this uses the heavy side (1-5)
+// for the progression check. A real limitation, not an oversight -- flagged to Jeff alongside this
+// build rather than silently picked.
+const TRAINING_PHASE_RANGES = {
+  stabilization: { lo: 12, hi: 20 },
+  strength_endurance: { lo: 8, hi: 12 },
+  hypertrophy: { lo: 6, hi: 12 },
+  max_strength: { lo: 1, hi: 5 },
+  power: { lo: 1, hi: 5 },
+};
+const TRAINING_PHASE_KEYS = new Set(Object.keys(TRAINING_PHASE_RANGES));
+
+function repRange(e, phase) {
+  // A user who has never opened the training-focus picker has no phase on their record at all --
+  // repRange must behave BYTE-IDENTICAL to before this feature existed for them (Jeff: "nobody's
+  // rep targets silently change the day this ships"). Only a real, saved phase pick overrides the
+  // exercise's own configured range.
+  if (phase && TRAINING_PHASE_KEYS.has(phase)) return TRAINING_PHASE_RANGES[phase];
   const lo = Number(e && e.defaultReps) || 10;
   const hiRaw = Number(e && e.defaultRepsMax);
   const hi = hiRaw && hiRaw >= lo ? hiRaw : lo;
