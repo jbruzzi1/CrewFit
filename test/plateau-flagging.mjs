@@ -213,9 +213,17 @@ console.log('client markup');
   const plateauBlockMatch = app.match(/if\(\(d\.plateaus\|\|\[\]\)\.length\)\{([\s\S]*?)howItWorks\('Plateaus'/);
   ok(!!plateauBlockMatch, 'the guarded plateau block is extractable between its if() and its How it works toggle');
   const plateauBlock = plateauBlockMatch ? plateauBlockMatch[1] : '';
-  ok(/class="ch-note">Normal over time — a rep-range change, a deload, or swapping the exercise for a bit usually gets it moving again\./.test(plateauBlock), 'the cushioning line is present, styled as a .ch-note (same tone as the Strength trend cushion)');
+  // Sep 15 2026: reworded to name the specific phase to drop back to (real training-focus
+  // feature) instead of the old generic "a rep-range change, a deload, or swapping the exercise"
+  // advice -- see TRAINING_PHASES in app.js / TRAINING_PHASE_RANGES in server.js. Cold-review
+  // catch: must NOT unconditionally suggest Stabilization -- someone already IN that phase would
+  // be told to switch to the phase they're already in, so the line is a ternary keyed on
+  // ME.trainingPhase with a generic fallback for that one case.
+  ok(/class="ch-note">\$\{plateauCushion\}<\/div>/.test(plateauBlock), 'the cushioning line renders in a .ch-note (same tone as the Strength trend cushion)');
+  ok(/try \$\{esc\(stabPhase\.label\)\} \(\$\{esc\(stabPhase\.reps\)\}, lighter weight\) for a session or two, then cycle back up/.test(plateauBlock), 'the normal case names the specific phase to cycle back to');
+  ok(/alreadyInStab/.test(plateauBlock) && /a deload, or swapping the exercise for a bit, usually gets it moving again/.test(plateauBlock), 'the already-in-that-phase case falls back to generic advice instead of a circular suggestion');
   const headIdx = plateauBlock.indexOf('hold-head');
-  const noteIdx = plateauBlock.search(/class="ch-note">Normal over time/);
+  const noteIdx = plateauBlock.search(/class="ch-note">/);
   const rowsIdx = plateauBlock.indexOf('.map(p=>');
   ok(headIdx >= 0 && noteIdx > headIdx, 'the cushioning line renders AFTER the "No change in estimated strength" headline, not before or outside it');
   ok(rowsIdx < 0 || noteIdx < rowsIdx, 'and BEFORE the per-lift row list, so it reads as context for the headline, not attached to a specific lift');
