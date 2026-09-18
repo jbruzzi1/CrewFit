@@ -102,6 +102,29 @@ console.log('switching to a different phase changes the target again');
   ok(max.targetReps === 1 && max.targetRepsMax === 5, `switched to Maximal Strength -> 1-5 (got ${JSON.stringify([max.targetReps, max.targetRepsMax])})`);
 }
 
+console.log('clearing a set phase (phase: null) returns to unset, and a set logged after clearing gets the exercise\'s own range back');
+{
+  const u = await reg('phase_e', 'pass1234', 'Phase E');
+  await post('/api/me/training-phase', { phase: 'hypertrophy' }, u.token);
+  const hyp = await logSquat(u);
+  ok(hyp.targetReps === 6 && hyp.targetRepsMax === 12, `Hypertrophy set as a baseline -> 6-12 (got ${JSON.stringify([hyp.targetReps, hyp.targetRepsMax])})`);
+
+  const cleared = await post('/api/me/training-phase', { phase: null }, u.token);
+  ok(cleared.trainingPhase === null, `clearing echoes trainingPhase: null (got ${JSON.stringify(cleared)})`);
+
+  const prof = await get('/api/profile/me', u.token);
+  ok(prof.trainingPhase === null, `GET /api/profile/me reports null again after clearing (got ${prof.trainingPhase})`);
+
+  const after = await logSquat(u);
+  ok(after.targetReps === 5 && after.targetRepsMax === undefined, `set logged AFTER clearing gets squat's own 5-rep target back, not Hypertrophy's (got ${JSON.stringify([after.targetReps, after.targetRepsMax])})`);
+
+  // The Hypertrophy-era set from before clearing is untouched -- same snapshot-at-log-time
+  // guarantee as the earlier "does not retroactively touch" case above.
+  const hypReread = await get(`/api/sessions/${hyp.sessionId}`, u.token);
+  const hypEntryNow = hypReread.logs[u.user.id][0];
+  ok(hypEntryNow.targetReps === 6 && hypEntryNow.targetRepsMax === 12, `earlier Hypertrophy-era entry, re-fetched after clearing, still shows 6-12 (got ${JSON.stringify([hypEntryNow.targetReps, hypEntryNow.targetRepsMax])})`);
+}
+
 console.log('auth required');
 {
   const r = await post('/api/me/training-phase', { phase: 'hypertrophy' }, null);

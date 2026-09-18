@@ -2409,7 +2409,7 @@ function trainingFocusScreen(opts){
       <div class="phase-card-reps">${esc(p.reps)}</div>
     </button>`).join('');
   const note = current
-    ? `Changes the rep range CrewFit checks your working sets against, starting with your next logged set. Tap a different phase to switch.`
+    ? `Changes the rep range CrewFit checks your working sets against, starting with your next logged set. Tap ${esc(TRAINING_PHASES.find(p=>p.key===current).label)} again to clear it, or tap a different phase to switch.`
     : `Not set yet — CrewFit uses each exercise's own rep range until you pick one. Hypertrophy is closest to how it works today, if you're not sure.`;
   $('app').innerHTML = `<div class="wrap">${head}
     <div class="note" style="margin:2px 0 4px">${esc(note)}</div>
@@ -2420,7 +2420,11 @@ function trainingFocusScreen(opts){
   fromHistory ? landOn(st) : navigated(st);
 }
 async function setTrainingPhase(key){
-  const r = await H.post('/api/me/training-phase', { phase:key });
+  // Sep 16 2026 -- Jeff: tapping the already-active phase card again deselects it, back to
+  // "Not set" (each exercise's own configured rep range -- the pre-feature default). Send the
+  // clear signal `null` in that case instead of re-saving the same key.
+  const clearing = key === (ME && ME.trainingPhase);
+  const r = await H.post('/api/me/training-phase', { phase: clearing ? null : key });
   if(r.error){ alert(r.error); return; }
   ME.trainingPhase = r.trainingPhase;
   trainingFocusScreen({ skipNav:true });

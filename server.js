@@ -3947,8 +3947,18 @@ app.post('/api/me/units', auth, async (req, res) => {
 // writes this field except an explicit save from the training-focus picker screen -- a user who
 // has never touched it stays undefined forever, so repRange() keeps behaving exactly as it always
 // has for them (Jeff: "nobody's rep targets silently change the day this ships").
+//
+// Sep 16 2026 -- Jeff: "I think we should be able to deselect all of them and it just goes back
+// to the default way it was prior." `phase: null` is the deliberate clear signal (tapping the
+// already-active card again, client-side -- see setTrainingPhase() in app.js), distinct from a
+// garbage/misspelled key, which is still rejected below exactly as before.
 app.post('/api/me/training-phase', auth, async (req, res) => {
   const phase = (req.body || {}).phase;
+  if (phase === null) {
+    DB.users[req.userId].trainingPhase = null;
+    await save(DB);
+    return res.json({ trainingPhase: null });
+  }
   if (!TRAINING_PHASE_KEYS.has(phase)) return res.status(400).json({ error: 'phase must be one of: ' + [...TRAINING_PHASE_KEYS].join(', ') });
   DB.users[req.userId].trainingPhase = phase;
   await save(DB);

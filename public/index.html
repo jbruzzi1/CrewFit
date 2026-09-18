@@ -424,10 +424,15 @@
     .phase-card-blurb { color:var(--muted); font-size:13px; margin-top:4px; line-height:1.4; }
     .phase-card-reps { display:inline-block; margin-top:8px; padding:3px 9px; border-radius:20px; background:var(--line); color:var(--muted); font-size:11px; font-weight:700; }
     .phase-card.on .phase-card-reps { background:var(--blue); color:#fff; }
-    /* The Progress-page entry chip -- a pill, same shape language as .seg button.on. width:auto
-       overrides the base `button{width:100%}` rule -- without it this stretches full-width. */
-    .phase-chip { display:inline-flex; width:auto; align-items:center; gap:6px; margin:10px 0 2px; padding:9px 14px; border-radius:999px; background:rgba(37,99,235,.08); border:1px solid var(--blue); color:var(--blue); font:inherit; font-size:13px; font-weight:700; cursor:pointer; }
-    .phase-chip-arrow { font-size:13px; font-weight:700; opacity:.8; }
+    /* The Progress-page entry into trainingFocusScreen(). Sep 16 2026: was a bold blue pill --
+       Jeff, from a real phone screenshot: "too loud/blue" and "the pill shape feels buttony,"
+       right after the tab bar above it. Restyled as a plain full-width row matching the app's own
+       card language (border+bg like .card, not a CTA color) -- picked from 3 rendered options,
+       Jeff chose this one because it stays as discoverable as the pill (Progress page's whole
+       reason for having this entry point at all -- see its own comment below) without reading as
+       an action button the way the pill or a plain text link both risked. */
+    .phase-chip { display:flex; width:100%; justify-content:space-between; align-items:center; gap:6px; margin:10px 0 2px; padding:13px 14px; border-radius:14px; background:var(--card); border:1px solid var(--line); color:var(--fg); font:inherit; font-size:14px; font-weight:600; cursor:pointer; }
+    .phase-chip-arrow { color:var(--muted); font-size:15px; font-weight:700; }
     /* Sep 10 2026 (Jeff, on the live workout Chat's empty state boxed inside chatBlock's shared
        .card): "that's too big... remove the box around the chat icon and text like the push day
        crew image" -- the message input keeps its own bordered look either way (.chat-input has
@@ -1585,7 +1590,8 @@
       :where(html.theme-dark) .seg .chip.on, :where(html.theme-dark) .seg button.on { background:rgba(90,139,255,.16); }
       :where(html.theme-dark) .phase-card.on { background:rgba(90,139,255,.16); }
       :where(html.theme-dark) .phase-card-reps { background:#262930; }
-      :where(html.theme-dark) .phase-chip { background:rgba(90,139,255,.16); }
+      /* .phase-chip itself needs no dark override anymore -- Sep 16 2026 restyle uses var(--card)/
+         var(--line) like any other card, which already carry their own dark-theme values. */
       /* -- blue tints -- */
       :where(html.theme-dark) .inv-banner { background:#1b2540; border-color:#2c3c63; }
       :where(html.theme-dark) .inv-actions button.sm.gray { border-color:#3a4a70; }
@@ -1697,6 +1703,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Activity</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=433"></script>
+  <script src="app.js?v=434"></script>
 </body>
 </html>
