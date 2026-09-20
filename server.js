@@ -3208,6 +3208,12 @@ function sessionView(s, viewerId) {
     id: s.id, creatorId: s.creatorId, scheduledAt: s.scheduledAt, status: s.status,
     visibility: s.visibility, name: s.name, location: seesFullPlan ? s.location : undefined,
     lengthMin: s.lengthMin,
+    // Sep 18 2026 -- Home's "Friends' workouts" swipe-to-remove (see POST /:id/hide-joinable
+    // below). A boolean, not the raw joinableHiddenBy array: nobody but the viewer themselves
+    // needs to know THEY hid it, and nobody at all needs to know who ELSE did -- same "don't leak
+    // who removed it" instinct as templates' hiddenBy/stripHidden above, just computed per-viewer
+    // instead of stripped from a shared object.
+    hiddenForMe: Array.isArray(s.joinableHiddenBy) && s.joinableHiddenBy.includes(viewerId),
     creatorNote: seesFullPlan ? s.creatorNote : undefined, equipment: s.equipment || [],
     exercises: s.exercises || [], participants: s.participants || [],
     // Whether the creator has finished their own portion — not privacy-sensitive (just a
@@ -3357,12 +3363,27 @@ app.delete('/api/sessions/:id', auth, async (req, res) => {
   // othersWithCredit, not othersWhoLogged — a partner who already left with credit kept is not
   // around to lose "logged sets" today, but the permanent record of them training here is still
   // real, and delete would erase it just as surely as if they were still a current participant.
-  const others = othersWithCredit(s, req.userId);
-  if (others.length) {
-    const names = others.map(id => (DB.users[id] && (DB.users[id].displayName || DB.users[id].username)) || 'someone');
-    return res.status(409).json({
-      error: `${names.join(' and ')} logged sets in this workout. Deleting it would erase their training history too.`,
-      othersLogged: others.length, canLeave: true });
+  const creditOthers = othersWithCredit(s, req.userId);
+  // Sep 18 2026 (Jeff, real bug report on Home's swipe-to-delete): "if we delete a workout we
+  // created and others have joined — it shouldn't delete the workout for everyone — it should just
+  // let you leave, keeping that workout active for the others who are currently still in it."
+  // othersWithCredit alone only protected participants who'd already logged something or had a
+  // history row — someone who'd merely ACCEPTED an invite and hadn't logged a single set yet was
+  // invisible to it, so deleting still wiped the workout out from under them with no warning.
+  // othersStillHere is every other CURRENT participant, logged or not (s.participants was never
+  // filtered by activity) — the same "every other current participant" set /leave's own ownership
+  // handoff below already falls back to, so this now protects the exact same people that route
+  // already knows how to hand the workout off to.
+  const othersStillHere = (s.participants || []).filter(id => id !== req.userId);
+  if (creditOthers.length || othersStillHere.length) {
+    const withCredit = creditOthers.length > 0;
+    const names = (withCredit ? creditOthers : othersStillHere)
+      .map(id => (DB.users[id] && (DB.users[id].displayName || DB.users[id].username)) || 'someone');
+    const verb = names.length === 1 ? 'is' : 'are';
+    const error = withCredit
+      ? `${names.join(' and ')} logged sets in this workout. Deleting it would erase their training history too.`
+      : `${names.join(' and ')} ${verb} still in this workout. Deleting it would remove it for them too.`;
+    return res.status(409).json({ error, othersLogged: creditOthers.length, canLeave: true });
   }
   delete DB.sessions[req.params.id];
   rebuildAllPrs();     // the records were built from sets that no longer exist
@@ -3389,7 +3410,16 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // refuses (that partner's credit blocks it), and the old narrower check here ALSO refused,
   // with no path forward at all.
   const others = othersWithCredit(s, me);
-  if (!others.length && s.creatorId === me)
+  // Sep 18 2026: this guard has the same gap DELETE's own guard just got fixed for (see the long
+  // comment on DELETE above) — othersWithCredit alone misses a participant who's genuinely still
+  // here but hasn't logged or finished anything yet. Without also checking current participants,
+  // DELETE would correctly refuse and offer canLeave (someone's still in it), but THIS route would
+  // then turn around and 400 that exact same Leave attempt with "nobody else, delete instead" —
+  // a dead end, since DELETE just said the opposite. The ownership-handoff fallback a few lines
+  // below already treats any other current participant as a legitimate heir regardless of credit,
+  // so the guard that decides whether there's anyone to hand off to has to agree with it.
+  const otherCurrentParticipants = (s.participants || []).filter(id => id !== me);
+  if (!others.length && !otherCurrentParticipants.length && s.creatorId === me)
     return res.status(400).json({ error: 'Nobody else has logged in this workout — delete it instead.' });
 
   // v187 (Leave Workout redesign), Jeff Aug 19-20: "the leave button... simply just logs the
@@ -3487,6 +3517,35 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   rebuildAllPrs();
   await save(DB);
   res.json({ ok: true, left: true });
+});
+
+// Sep 18 2026 (Jeff, on Home's swipe-to-delete): "For my friends" -- a friend's own joinable
+// workout on Home's "Friends' Workouts" list isn't yours to delete or leave, you were never in it.
+// Swiping it there can only mean one thing: stop showing ME this. Exactly the same shape as
+// POST /api/templates/:id/hide (a friend's shared routine you don't own) -- hides it from THIS
+// caller's own view only, never touches the session itself, never visible to the creator or any
+// other friend (see hiddenForMe in sessionView above, which is what actually reads this back).
+// Deliberately does NOT require the session to currently be "joinable" for this caller -- hiding
+// something that's already off your list (you joined it since, or the creator finished it) is
+// harmless and should never error; the flag simply sits unused until/unless it becomes joinable
+// again (were it ever un-finished), same as templates' hide surviving an unfriend/re-friend.
+app.post('/api/sessions/:id/hide-joinable', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  // Cold-review catch (Sep 18): the only thing this route is FOR is dismissing a session from your
+  // own joinable list, so the caller has to actually be able to see it as joinable in the first
+  // place -- same 'friend' tier sessionTier() already gives the real Friends' Workouts list (v190,
+  // public + canSeeProfile). Without this, any authenticated account could name any session id at
+  // all, including a private one they can't see, and force a write here -- same class of hole
+  // /leave's own comment above warns about ("any account could name any session id and trigger a
+  // full ... write"), and the same fix shape: check the relationship, not just that the id exists.
+  if (sessionTier(s, req.userId) !== 'friend')
+    return res.status(403).json({ error: 'not a joinable workout for you' });
+  ensureSessionShape(s);
+  s.joinableHiddenBy = s.joinableHiddenBy || [];
+  if (!s.joinableHiddenBy.includes(req.userId)) s.joinableHiddenBy.push(req.userId);
+  await save(DB);
+  res.json({ ok: true });
 });
 
 // Jeff, Aug 28: "Once its posted on my page - I want to be able to delete it off my page." This
@@ -4058,14 +4117,21 @@ app.post('/api/me/reset-workouts', auth, async (req, res) => {
     if (!isTouched) continue;
     if (isCreator) {
       const others = othersWithCredit(s, me);
-      if (!others.length) {
+      // Sep 18 2026: same gap DELETE /api/sessions/:id and POST /:id/leave were just fixed for
+      // (see their own comments) — othersWithCredit alone misses a participant who's genuinely
+      // still in this workout but hasn't logged or finished anything yet. Without also checking
+      // current participants, "reset my workouts" would hard-delete a session out from under a
+      // friend who'd merely accepted the invite, the exact silent data loss the other two routes
+      // now refuse to do.
+      const othersStillHere = (s.participants || []).filter(id => id !== me);
+      if (!others.length && !othersStillHere.length) {
         delete DB.sessions[s.id];
         sessionsDeleted++;
         continue;
       }
       const currentOthers = othersWhoLogged(s, me);
       stripUserFromSession(s, me);
-      s.creatorId = currentOthers.length ? currentOthers[0] : null;
+      s.creatorId = currentOthers.length ? currentOthers[0] : (othersStillHere.length ? othersStillHere[0] : null);
       if (s.creatorId && !s.participants.includes(s.creatorId)) s.participants.push(s.creatorId);
       sessionsHandedOff++;
     } else {

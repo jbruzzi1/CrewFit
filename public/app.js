@@ -384,6 +384,176 @@ function notifBellHtml(cls, count){
   return `<button class="${cls}" title="Notifications" aria-label="Notifications${count?`, ${count} new`:''}" onclick="renderNotifications()">${bellSvg()}${badge}</button>`;
 }
 
+// Sep 18 2026 (Jeff): "I think we should add the slide delete ability (like we have for
+// notifications) to workouts on this page." First built as a reveal-a-trash-button design -- Jeff
+// saw it rendered and corrected course twice: first toward a small floating white trash icon off a
+// shrunk bar (still didn't like it -- the shrunk bar cut off the workout's own text), then landed on
+// reusing the SAME mechanic the notification list already has and likes (histSwipeAttach below):
+// drag the row itself far enough left and it slides away, no separate button to land on or size.
+// The one real difference from notifications: deleting or leaving a SHARED workout is a much bigger
+// deal than dismissing a notification (confirmed with Jeff up front), so this doesn't commit the way
+// histDismiss does -- it pauses right as the slide finishes and opens the exact same confirm sheet
+// the in-workout "..." menu already uses for that action (deleteSession/leaveWorkout, reused
+// verbatim, not new/parallel deletion logic). Canceling that sheet -- the ✕, Cancel, a backdrop tap,
+// or the Back button, all of it -- slides the row back into place exactly like an aborted short drag
+// would, via the SHEET_CANCEL_CB hook (see confirmSheet/closeSheet's own comments below).
+// `action` is 'delete' (creator), 'leave' (non-creator participant), or 'hide-joinable' (a friend's
+// joinable workout you don't own -- removes it from just your own view; see POST
+// /api/sessions/:id/hide-joinable in server.js).
+// hasOtherStake (Sep 20 2026, Jeff "Smarter routing"): only meaningful for a 'delete' row -- whether
+// anyone besides you currently has a real stake in this workout (still a participant, or holding
+// history credit from before). See sessionHasOtherStake's own comment: deleteSession() reads this
+// straight off the row's dataset to decide whether "Delete workout?" can ever really delete, or
+// should skip straight to the real Leave flow instead of showing Delete language for an action that
+// can't actually delete.
+function swipeRowWrap(sid, action, hasFinished, innerHtml, hasOtherStake){
+  return `<div class="swipe-row" data-sid="${esc(sid)}" data-action="${action}" data-finished="${hasFinished?1:0}" data-other-stake="${hasOtherStake?1:0}">${innerHtml}</div>`;
+}
+// Sep 20 2026 (Jeff, "Smarter routing"): mirrors server.js's own DELETE /api/sessions/:id guard
+// (othersWithCredit(s, me) OR any other current participant -- see its long comment there) so the
+// client can know, before opening any sheet, whether tapping Delete could ever actually delete, or
+// is guaranteed to convert into a Leave with ownership handed off. s.history/s.participants are
+// only the full real thing here when the viewer is a full 'member' (creator or participant) --
+// every deleteSession() caller in this file is exactly that (the ⋯ menu, the recap page menu, and
+// Home's own swipe row are all rendered from the creator's own view of their own session).
+function sessionHasOtherStake(s){
+  const others = new Set();
+  for(const pid of (s.participants||[])) if(pid !== ME.id) others.add(pid);
+  for(const h of (s.history||[])) if(h && h.userId !== ME.id) others.add(h.userId);
+  return others.size > 0;
+}
+// Deliberately identical to HIST_DISMISS_RATIO (histSwipeAttach, elsewhere in this file) rather than
+// its own tuned number -- the point is that this reads as the same app behavior as the notification
+// swipe, not a second, subtly different motion.
+const HOME_SWIPE_DISMISS_RATIO = 0.32;
+let homeSwipeJustDragged = false;
+let homeSwipeActiveDrags = new Set();   // same re-render-mid-drag safety net as histActiveDrags
+function swipeRowAttach(row){
+  // Named onHomeSwipeMove/onHomeSwipeUp/onHomeSwipeDown -- see histSwipeAttach's own identical note
+  // for why these can't reuse onMove/onUp/onDown, or histSwipeAttach's own names: test/wiring.mjs's
+  // duplicate-definition check scans this whole file textually with no notion of closure scope.
+  const fg = row.querySelector('.swipe-row-fg'); if(!fg) return;
+  let startX = 0, startY = 0, dx = 0, dragging = false, width = 0;
+  const detach = () => {
+    window.removeEventListener('mousemove', onHomeSwipeMove); window.removeEventListener('mouseup', onHomeSwipeUp);
+    window.removeEventListener('touchmove', onHomeSwipeMove); window.removeEventListener('touchend', onHomeSwipeUp);
+    homeSwipeActiveDrags.delete(detach);
+  };
+  const onHomeSwipeMove = (e) => {
+    const t = e.touches ? e.touches[0] : e;
+    const mx = t.clientX - startX, my = t.clientY - startY;
+    if(!dragging){
+      if(Math.abs(mx) < 6 && Math.abs(my) < 6) return;
+      if(Math.abs(my) > Math.abs(mx)){ onHomeSwipeUp(); return; }   // a vertical scroll, not a swipe -- let it scroll
+      dragging = true;
+    }
+    if(e.cancelable) e.preventDefault();
+    dx = Math.min(0, mx);   // left only -- a real finger can overshoot right past 0, don't let the row lead it
+    fg.style.transform = `translateX(${dx}px)`;
+    // A light fade as it travels, same as histSwipeAttach -- the row itself is the only feedback
+    // needed. Bottoms out well above 0 so it doesn't look gone before release.
+    fg.style.opacity = String(Math.max(0.5, 1 - Math.abs(dx) / (width * HOME_SWIPE_DISMISS_RATIO) * 0.5));
+  };
+  const onHomeSwipeUp = () => {
+    detach();
+    if(!dragging) return;
+    homeSwipeJustDragged = true;
+    setTimeout(() => { homeSwipeJustDragged = false; }, 0);
+    if(width > 0 && -dx >= width * HOME_SWIPE_DISMISS_RATIO){
+      swipeRowConfirm(row, fg);
+    } else {
+      fg.style.transition = 'transform .18s ease-out, opacity .18s ease-out';
+      fg.style.transform = ''; fg.style.opacity = '';
+      setTimeout(() => { fg.style.transition = ''; }, 200);   // don't fight the next drag's own transform writes
+    }
+  };
+  const onHomeSwipeDown = (e) => {
+    if(row.dataset.confirming) return;   // already sliding away / a confirm sheet is open for this row -- ignore a second drag start
+    const t = e.touches ? e.touches[0] : e;
+    startX = t.clientX; startY = t.clientY; dragging = false;
+    width = fg.getBoundingClientRect().width;
+    fg.style.transition = '';
+    homeSwipeActiveDrags.add(detach);
+    window.addEventListener('mousemove', onHomeSwipeMove); window.addEventListener('mouseup', onHomeSwipeUp);
+    window.addEventListener('touchmove', onHomeSwipeMove, {passive:false}); window.addEventListener('touchend', onHomeSwipeUp);
+  };
+  fg.addEventListener('mousedown', onHomeSwipeDown); fg.addEventListener('touchstart', onHomeSwipeDown, {passive:true});
+}
+// Registered once at script-parse time, on document itself (same convention as histSwipeAttach's own
+// click listener, for the same reason -- #app's innerHTML is replaced on every render). Swallows the
+// trailing click a mouse/trackpad drag always fires on mouseup, so a drag that opened a confirm sheet
+// (or snapped back) doesn't also let that same trailing click reach the row's own onclick underneath.
+document.addEventListener('click', (e) => {
+  if(homeSwipeJustDragged){ e.stopPropagation(); e.preventDefault(); }
+}, true);
+// Slides the row the rest of the way off -- unlike histDismiss, this is NOT a commit, nothing is
+// deleted yet -- and once that motion reads as finished, opens the real action's own confirm sheet
+// via deleteSession/leaveWorkout/hideJoinable, passing resetRow as onCancel. If confirmed, that
+// action's own showTab('home') fully re-renders Home and this row's element is simply gone --
+// resetRow is never called and never needs to be. If canceled (any path -- see SHEET_CANCEL_CB's own
+// comment), resetRow slides the row back exactly like an aborted short drag would.
+function swipeRowConfirm(row, fg){
+  row.dataset.confirming = '1';
+  fg.style.transition = 'transform .2s ease-in, opacity .2s ease-in';
+  fg.style.transform = 'translateX(-100%)';
+  fg.style.opacity = '0.25';
+  const sid = row.dataset.sid, hasFinished = row.dataset.finished === '1';
+  // Jeff, Sep 20 2026 ("Smarter routing"): a creator's own row can never actually delete once
+  // anyone else has a real stake in it (see sessionHasOtherStake/swipeRowWrap's own comment, and
+  // DELETE /api/sessions/:id's matching guard in server.js) -- it always converts into a Leave with
+  // ownership handed off instead. Treat it exactly like the 'leave' action from here on, including
+  // the Sep 18 always-confirm-first protection for an already-finished row just below, rather than
+  // keeping two subtly different copies of the same "you're stepping away, someone else keeps it"
+  // branching logic.
+  const action = (row.dataset.action === 'delete' && row.dataset.otherStake === '1') ? 'leave' : row.dataset.action;
+  const resetRow = () => {
+    delete row.dataset.confirming;
+    fg.style.transition = 'transform .18s ease-out, opacity .18s ease-out';
+    fg.style.transform = ''; fg.style.opacity = '';
+    setTimeout(() => { fg.style.transition = ''; }, 200);
+  };
+  setTimeout(() => {
+    if(action === 'delete') deleteSession(sid, hasFinished, resetRow);
+    // Cold-review catch (Sep 18 2026): leaveWorkout(id, true, ...) -- alreadyFinished -- skips
+    // straight to leaveWorkoutConfirmed with NO sheet at all. That shortcut is correct for the
+    // in-workout Leave button (tapping a labeled "Leave" button already IS the deliberate choice,
+    // and there's genuinely nothing left to pick between once credit is locked in either way -- see
+    // leaveWorkout's own comment). A drag gesture is not that: Jeff's explicit ask for this feature
+    // was a real confirm sheet before ANYTHING happens, no exceptions, since a swipe is easier to
+    // trigger by accident than a deliberate button tap. So the swipe path never calls leaveWorkout()
+    // directly for an already-finished row -- it shows its own lightweight single-button confirm
+    // first, and only leaveWorkoutConfirmed() (never leaveWorkout()'s early return) runs after that.
+    // This also covers a creator row reassigned to 'leave' just above -- same protection, same
+    // reason, no exceptions for who technically created it.
+    else if(action === 'leave'){
+      if(hasFinished){
+        confirmSheet('Leave workout?', "You'll keep credit for today's sets — this just takes you off the workout going forward.", 'Leave workout', () => leaveWorkoutConfirmed(sid, true), true, resetRow);
+      } else {
+        leaveWorkout(sid, hasFinished, resetRow);
+      }
+    }
+    else if(action === 'hide-joinable') hideJoinable(sid, resetRow);
+  }, 220);
+}
+// The non-owner half, same shape as removeFromMyProfile/deleteSession above: confirmSheet wrapper,
+// a real Confirmed function, epoch guard, then a full Home refresh (matching how every other Home
+// list mutation here already ends -- deleteSessionConfirmed/leaveWorkoutConfirmed both do the
+// same). No undo toast -- unlike templates' hide/unhide pair, Jeff didn't ask for one, and the
+// confirm sheet right before it is already the deliberate safety net for this feature.
+function hideJoinable(id, onCancel){
+  confirmSheet('Remove this workout?', "This only clears it from your own Friends' workouts list — it won't affect anything for them.", 'Remove', () => hideJoinableConfirmed(id), true, onCancel);
+}
+async function hideJoinableConfirmed(id){
+  const epoch = UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/hide-joinable`, {});
+  if(r && r.error){ alert(r.error); return; }
+  if(nothingNavigatedSince(epoch)) showTab('home');
+}
+function swipeRowsInit(container){
+  homeSwipeActiveDrags.forEach(cancel => cancel());
+  container.querySelectorAll('.swipe-row').forEach(swipeRowAttach);
+}
+
 // ---- Home / sessions (Option B: split sections) ----
 async function home(opts){
   // v254: opts.silent -- declineInvite is the one caller that refreshes Home IN PLACE (dismissing
@@ -760,8 +930,15 @@ async function home(opts){
         const badge = live ? '<div class="live-badge">● Live now</div>' : upcoming ? '<div class="upcoming-badge">Upcoming</div>' : missed ? '<div class="missed-badge">Missed</div>' : '';
         const others = (s.participants||[]).filter(pid => pid !== ME.id);
         const withWho = others.length ? ` · with ${esc((() => { const f = myFriends.find(x => x.id === others[0]); const n = f ? (f.displayName || f.username || 'a friend').split(' ')[0] : 'a friend'; return others.length > 1 ? `${n} +${others.length-1}` : n; })())}` : '';
-        html += `<div class="lib-item${live?' session-live':''}" onclick="openSession('${s.id}')">
+        // Sep 18 2026: swipe-to-delete, reusing the EXACT existing action for your role in this
+        // workout -- deleteSession() (creator) or leaveWorkout() (everyone else), same as the
+        // in-workout "..." menu / Leave button, not a new/parallel deletion path. See
+        // swipeRowWrap's own comment for the gesture itself.
+        const isCreator = s.creatorId === ME.id;
+        const hasFinished = (s.history||[]).some(h=>h.userId===ME.id);
+        const rowInner = `<div class="lib-item swipe-row-fg${live?' session-live':''}" onclick="openSession('${s.id}')">
           <div>${badge}<b>${esc(s.name)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}${withWho}</div></div></div>`;
+        html += swipeRowWrap(s.id, isCreator ? 'delete' : 'leave', hasFinished, rowInner, isCreator ? sessionHasOtherStake(s) : false);
       }
       html += `</div>`;
       if(restRows.length > 3 && !showAll) html += `<div style="text-align:right;margin-top:-4px"><button class="txt-btn" onclick="window.HOME_ALL_SESSIONS=true; home({silent:true})">See all ${restRows.length}</button></div>`;
@@ -803,11 +980,16 @@ async function home(opts){
   const friendIds = new Set(myFriends.map(f=>f.id));
   // Sep 10 2026: same `s.name &&` truthy-gate removal as the "Your sessions" filter above -- see
   // its own comment. This one hid a blank-named public workout from friends' "joinable" list too.
+  // Sep 18 2026: hiddenForMe (server-computed, see sessionView in server.js) is swipe-to-remove's
+  // doing -- a friend's workout YOU dismissed from this list. Date-independent and creator-
+  // independent, same as every other check here: it's a fact about what YOU did, not about the
+  // workout itself, so it survives regardless of what else changes about it.
   const joinable = sessions.filter(s => s.visibility === 'public'
     && friendIds.has(s.creatorId)
     && !(s.participants||[]).includes(ME.id)
     && !(Array.isArray(s.invited) && s.invited.includes(ME.id))
-    && !s.creatorFinished);
+    && !s.creatorFinished
+    && !s.hiddenForMe);
   // Sep 7 (Jeff: reverting the "hide until there's content" call -- "no guessing... where things
   // would show"): always visible again, same as pre-v364, with the exact original empty copy
   // (never had a CTA of its own -- the solo-line above carries that for a zero-friend user).
@@ -816,8 +998,9 @@ async function home(opts){
     html += `<div class="card">`;
     for(const s of joinable){
       const creatorName = await friendName(s.creatorId);
-      html += `<div class="lib-item" onclick="openSession('${s.id}')">
+      const rowInner = `<div class="lib-item swipe-row-fg" onclick="openSession('${s.id}')">
         <div><b>${esc(s.name)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${esc(creatorName)} · ${fmtWhen(s.scheduledAt)}</div></div></div>`;
+      html += swipeRowWrap(s.id, 'hide-joinable', false, rowInner);
     }
     html += `</div>`;
   } else {
@@ -831,6 +1014,7 @@ async function home(opts){
   // scrolling past it at the bottom of Home.
   html += `</div>`;
   $('app').innerHTML = html;
+  swipeRowsInit($('app'));
   if(!silent) pageScrollTop();
 }
 // Sep 8: the expanded Home calendar's ‹/› buttons -- page HOME_CAL_MONTH_OFFSET and re-render in
@@ -1140,7 +1324,7 @@ async function openSession(id, opts){
   // Edit session/Delete session pair. This was two different treatments of the same two actions;
   // now it's one.
   const sessMenuItems = isCreator
-    ? `<button onclick="${myPost?`enterWorkoutEdit('${s.id}')`:`editSession('${s.id}')`}">Edit session</button><button class="danger" onclick="deleteSession('${s.id}', ${hasFinished})">Delete session</button>`
+    ? `<button onclick="${myPost?`enterWorkoutEdit('${s.id}')`:`editSession('${s.id}')`}">Edit session</button><button class="danger" onclick="deleteSession('${s.id}', ${hasFinished}, null, ${sessionHasOtherStake(s)})">Delete session</button>`
     : '';
   const sessDots = sessMenuItems ? `<button class="pp-dots" onclick="togglePostMenu('${s.id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${s.id}" style="display:none">${sessMenuItems}</div>` : '';
   let html = `<div class="wrap"><div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button>${sessDots}</div>
@@ -1575,11 +1759,13 @@ async function viewPost(id, authorId, opts){
   const postVis = post.visibility === 'public' ? 'public' : 'private';
   const postVisLabel = postVis==='public' ? 'Public' : 'Private';
   const hasFinishedPost = (s.history||[]).some(h=>h.userId===ME.id);
-  // Creator: "Edit session" (the shared exercise list) + "Delete session" (removes it for every
-  // participant) -- unchanged, exactly as it always was. Non-creator author: "Remove from my
-  // profile" instead (removeFromMyProfile below) -- erases YOUR OWN post/logs/history for this
-  // session so it's gone from your profile, without touching anyone else's. See the big comment
-  // above viewPost for the full reasoning.
+  // Creator: "Edit session" (the shared exercise list) + "Delete session". Sep 20 2026 update:
+  // Delete only genuinely deletes when the creator is the last person connected to it -- if anyone
+  // else still has a stake (current, or credited history), it converts into a Leave with ownership
+  // handed off instead (see sessionHasOtherStake/deleteSession's own comments). Non-creator author:
+  // "Remove from my profile" instead (removeFromMyProfile below) -- erases YOUR OWN post/logs/
+  // history for this session so it's gone from your profile, without touching anyone else's. See
+  // the big comment above viewPost for the full reasoning.
   // Jeff, Aug 30: "open re-activate a closed logged workout if needed" -- your own finish-credit,
   // undoable regardless of whether you're the creator (finishing is per-person, unlike the shared
   // exercise list Edit session governs), so this is gated on isAuthor/hasFinishedPost alone and
@@ -1592,7 +1778,7 @@ async function viewPost(id, authorId, opts){
   // right person -- not the session creator, who may be someone else entirely in a shared workout.
   const reportBtn = (!isCreator && !isAuthor) ? `<button onclick="openReportSheet({targetType:'post', targetUserId:'${authorId}', sessionId:'${id}', authorId:'${authorId}', label:'this workout'})">Report</button>` : '';
   const menuItems = isCreator
-    ? `<button onclick="enterWorkoutEdit('${id}')">Edit session</button>${reactivateBtn}<button class="danger" onclick="deleteSession('${id}', ${hasFinishedPost})">Delete session</button>`
+    ? `<button onclick="enterWorkoutEdit('${id}')">Edit session</button>${reactivateBtn}<button class="danger" onclick="deleteSession('${id}', ${hasFinishedPost}, null, ${sessionHasOtherStake(s)})">Delete session</button>`
     : (isAuthor ? `${reactivateBtn}<button class="danger" onclick="removeFromMyProfile('${id}')">Remove from my profile</button>` : reportBtn);
   const dots = menuItems ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none">${menuItems}</div>` : '';
   // v254 fix (Jeff, Aug 30): this in-page Back button was hardcoded to showTab('home') -- reached
@@ -3652,10 +3838,20 @@ async function saveWorkout(id){
   // shape as the rest of this cluster.
   if(nothingNavigatedSince(epoch)) showRecap(id);          // the recap is the LAST thing, after saving — notes and photos are done
 }
-async function deleteSession(id, alreadyFinished){
-  confirmSheet('Delete workout?', "This removes the workout for everyone in it — not just you. There's no undo.", 'Delete workout', () => deleteSessionConfirmed(id, alreadyFinished));
+// hasOtherStake (Sep 20 2026, Jeff "Smarter routing"): pass sessionHasOtherStake(s) whenever the
+// session object is in scope (the ⋯ menu / recap page menu both have `s` right there; Home's swipe
+// row pre-empts this function entirely for the same reason -- see swipeRowConfirm's own comment --
+// so it never actually reaches here with hasOtherStake true, but the check stays as its own
+// defense-in-depth backstop, consistent with the rest of this feature). If anyone else has a real
+// stake in this workout, Delete can never actually delete (see DELETE /api/sessions/:id's own
+// server-side guard) -- skip the Delete language entirely and go straight to the real Leave flow,
+// the exact same one a non-creator sees, rather than showing Delete language for an action that
+// can't actually delete.
+async function deleteSession(id, alreadyFinished, onCancel, hasOtherStake){
+  if(hasOtherStake) return leaveWorkout(id, alreadyFinished, onCancel);
+  confirmSheet('Delete workout?', "This deletes it for good — there's no undo.", 'Delete workout', () => deleteSessionConfirmed(id, alreadyFinished, onCancel), true, onCancel);
 }
-async function deleteSessionConfirmed(id, alreadyFinished){
+async function deleteSessionConfirmed(id, alreadyFinished, onCancel){
   const epoch=UI_EPOCH;
   const r = await H.delete(`/api/sessions/${id}`);
   // Someone else has real credit tied to this workout (current or a departed partner's history),
@@ -3670,7 +3866,7 @@ async function deleteSessionConfirmed(id, alreadyFinished){
   // navigating away mid-delete could pop the Leave-workout choice sheet on top of whatever the
   // user had moved on to, or send them home from a screen they weren't on. The delete itself
   // already happened either way; only what happens next is gated.
-  if(r && r.canLeave){ if(nothingNavigatedSince(epoch)) return leaveWorkout(id, alreadyFinished); return; }
+  if(r && r.canLeave){ if(nothingNavigatedSince(epoch)) return leaveWorkout(id, alreadyFinished, onCancel); return; }
   else if(r && r.error){ alert(r.error); return; }
   // Sep 10 2026 (Jeff, real bug report -- see the comment on showTab('home') in cancelCreate()
   // below for the full mechanism): showTab('home'), not a bare home() call -- home() only changes
@@ -3684,16 +3880,28 @@ async function deleteSessionConfirmed(id, alreadyFinished){
 // credit blocks a real delete). If you've already finished your own portion, there is nothing left
 // to choose — your credit is already locked in either way (creditFinish is idempotent) — so this
 // skips straight to leaving instead of asking a question with only one real answer.
-function leaveWorkout(id, alreadyFinished){
+function leaveWorkout(id, alreadyFinished, onCancel){
   if(alreadyFinished){ return leaveWorkoutConfirmed(id, true); }
+  // This sheet is a raw openSheetHtml, not confirmSheet -- Save/Discard are both real actions, not
+  // a single confirm/cancel pair -- so it arms SHEET_CANCEL_CB directly rather than through
+  // confirmSheet's own param. Both buttons null it out before calling leaveWorkoutConfirmed, so its
+  // own closeSheet() call at the end never mistakes a successful Save/Discard for a cancel.
+  // Cold-review catch, round 3 (Sep 18 2026): also runs confirmSheet's own stomp-guard, and tracks
+  // its element in CONFIRM_EL right alongside confirmSheet's own sheets -- see
+  // stompPendingSwipeSheet's comment for why this needs to be symmetric with confirmSheet(), not
+  // just guard against a second leaveWorkout() call. dismissConfirm()/runConfirmCb() are never
+  // wired to this sheet's own buttons (they call closeSheet()/leaveWorkoutConfirmed directly), so
+  // CONFIRM_EL pointing here doesn't change what tapping any of ITS OWN buttons does.
+  stompPendingSwipeSheet();
+  SHEET_CANCEL_CB = onCancel || null;
   const inner = `<div class="sheet"><div class="sheet-head"><h2>Leave workout</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
     <div class="muted" style="padding:0 2px 14px">You have sets logged here today that you haven't finished yet.</div>
     <div class="sheet-list">
-      <button class="sheet-row" onclick="leaveWorkoutConfirmed('${id}', true)">Save today's sets</button>
-      <button class="sheet-row red" onclick="leaveWorkoutConfirmed('${id}', false)">Discard today's sets</button>
+      <button class="sheet-row" onclick="SHEET_CANCEL_CB=null; leaveWorkoutConfirmed('${id}', true)">Save today's sets</button>
+      <button class="sheet-row red" onclick="SHEET_CANCEL_CB=null; leaveWorkoutConfirmed('${id}', false)">Discard today's sets</button>
     </div>
   </div>`;
-  openSheetHtml(inner);
+  CONFIRM_EL = openSheetHtml(inner);
 }
 async function leaveWorkoutConfirmed(id, keep){
   const epoch=UI_EPOCH;
@@ -4500,6 +4708,17 @@ async function tplEditCopy(id){
 // confirm can never be confused with dismissing whatever sheet it may be stacked on top of, e.g.
 // deleting a set from the edit sheet.
 let CONFIRM_CB = null, CONFIRM_EL = null;
+// Sep 18 2026 (Home's swipe-to-remove, see swipeRowConfirm's own comment): fires once, the next
+// time the topmost sheet closes WITHOUT the caller's action having gone through -- any of: the ✕, a
+// Cancel button, a backdrop tap, or the Back button. Set by whoever opens a sheet they need to know
+// about a cancel for (confirmSheet's optional onCancel param; leaveWorkout sets it directly, since
+// its own sheet isn't built through confirmSheet), and read by BOTH dismissConfirm() and closeSheet()
+// so it fires no matter which of those two actually removes the sheet -- confirmSheet's own ✕/
+// Cancel/backdrop go through dismissConfirm(), but the popstate handler above calls closeSheet(true)
+// for ANY open sheet regardless of type, bypassing dismissConfirm() entirely for a confirm sheet
+// dismissed via the Back button. Any codepath that's about to actually SUCCEED nulls this first (see
+// runConfirmCb, and the Save/Discard buttons in leaveWorkout) so it can never fire for that outcome.
+let SHEET_CANCEL_CB = null;
 // v254: this closes CONFIRM_EL directly rather than via closeSheet() (see the comment above), so
 // it needs its own copy of closeSheet()'s history.replaceState fixup -- the confirm sheet always
 // pushed its own {t:'sheet'} entry (via openSheetHtml), and that entry has to be collapsed away
@@ -4510,11 +4729,33 @@ function dismissConfirm(){ const el = CONFIRM_EL; CONFIRM_CB = null; CONFIRM_EL 
     const wasOnlySheet = document.querySelectorAll('.sheet-back').length===1;
     el.classList.remove('show'); setTimeout(()=>el.remove(),200);
     if(wasOnlySheet) history.replaceState(CURRENT_NAV_STATE, '', location.href);
-  } }
-function runConfirmCb(){ const cb = CONFIRM_CB; dismissConfirm(); if(cb) cb(); }
+  }
+  if(SHEET_CANCEL_CB){ const cb = SHEET_CANCEL_CB; SHEET_CANCEL_CB = null; cb(); }
+}
+function runConfirmCb(){ const cb = CONFIRM_CB; SHEET_CANCEL_CB = null; dismissConfirm(); if(cb) cb(); }
+// Cold-review catch, round 3 (Sep 18 2026): CONFIRM_EL now tracks whichever swipe-armed sheet is
+// currently showing, not only ones opened through confirmSheet() -- leaveWorkout() (its raw
+// openSheetHtml sheet, Save/Discard) registers itself here too. Round 2's fix (see confirmSheet's
+// old comment, now folded into this shared helper) only stomped a STALE confirmSheet-vs-confirmSheet
+// collision, because CONFIRM_EL was only ever set by confirmSheet itself -- so a confirmSheet() call
+// while leaveWorkout's sheet was still open (row A leave, row B delete/hide-joinable dragged within
+// the same ~220ms dispatch window -- or the reverse order) silently dropped row A's SHEET_CANCEL_CB
+// without firing it, AND left its DOM node stacked invisibly behind the new sheet: row A stayed
+// permanently slid away and undraggable, and its stale sheet could resurface once the new one
+// closed. Both confirmSheet() and leaveWorkout() now call this, unconditionally, before opening
+// their own sheet, so whichever one of them (or neither) opened the currently-showing sheet, it
+// gets torn down and its row properly reset the same way.
+function stompPendingSwipeSheet(){
+  if(!CONFIRM_EL) return;
+  const wasOnlySheet = document.querySelectorAll('.sheet-back').length===1;
+  CONFIRM_EL.remove(); CONFIRM_CB = null; CONFIRM_EL = null;
+  if(wasOnlySheet) history.replaceState(CURRENT_NAV_STATE, '', location.href);
+  if(SHEET_CANCEL_CB){ const oldCancel = SHEET_CANCEL_CB; SHEET_CANCEL_CB = null; oldCancel(); }
+}
 // danger=false renders the action without red — for confirms that are choices, not destruction
 // (declining an invite is not framed as destructive, same as the invite banner's Decline).
-function confirmSheet(title, body, label, cb, danger=true){
+// onCancel (Sep 18 2026): optional, fires via SHEET_CANCEL_CB -- see that variable's own comment.
+function confirmSheet(title, body, label, cb, danger=true, onCancel){
   // v250 (audit finding): a double-tap on whatever opens this -- very easy on a touchscreen,
   // especially a scary destructive button -- used to call confirmSheet() twice before the first
   // sheet's own onclick was even relevant, stacking two confirm sheets and overwriting
@@ -4524,17 +4765,13 @@ function confirmSheet(title, body, label, cb, danger=true){
   // Cancel/Delete buttons called dismissConfirm()/runConfirmCb() against already-null globals and
   // did nothing. Not a brief fade-race like closeSheet()'s: nothing was ever closing the first
   // sheet, so it sat there fully visible and fully tappable-looking, permanently dead, with no way
-  // out but reloading. If one is already open, remove it immediately (no fade -- there's nothing to
-  // animate away FROM, the new one is about to cover the same spot) so at most one confirm sheet's
-  // buttons are ever wired to the live globals.
-  if(CONFIRM_EL){
-    // same fixup as dismissConfirm() -- the OLD confirm's pushed entry must be collapsed before
-    // the new one (below) pushes its own, or the two stack up into one extra phantom 'sheet' entry.
-    const wasOnlySheet = document.querySelectorAll('.sheet-back').length===1;
-    CONFIRM_EL.remove(); CONFIRM_CB = null; CONFIRM_EL = null;
-    if(wasOnlySheet) history.replaceState(CURRENT_NAV_STATE, '', location.href);
-  }
+  // out but reloading. If one is already open (from confirmSheet OR leaveWorkout -- see
+  // stompPendingSwipeSheet's own comment), remove it immediately (no fade -- there's nothing to
+  // animate away FROM, the new one is about to cover the same spot) so at most one swipe-armed
+  // sheet's buttons are ever wired to the live globals.
+  stompPendingSwipeSheet();
   CONFIRM_CB = cb;
+  SHEET_CANCEL_CB = onCancel || null;
   CONFIRM_EL = openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>${title}</h2><button class="sec sm" onclick="dismissConfirm()">✕</button></div>
     ${body ? `<div class="muted" style="padding:0 2px 14px; font-size:13px; line-height:1.5">${body}</div>` : ''}
     <div class="sheet-list">
@@ -6275,6 +6512,11 @@ function closeSheet(fromPopstate){
   const l=document.querySelectorAll('.sheet-back'); const s=l[l.length-1];
   if(s){ s.classList.remove('show'); setTimeout(()=>s.remove(),200); }
   if(s && !fromPopstate && l.length===1) history.replaceState(CURRENT_NAV_STATE, '', location.href);
+  // Sep 18 2026: the popstate handler above calls closeSheet(true) for ANY open sheet, including a
+  // confirm sheet -- bypassing dismissConfirm() (and its own SHEET_CANCEL_CB check) entirely for a
+  // Back-button dismissal. Checking it here too, not just in dismissConfirm(), is what makes Back
+  // count as a real cancel for Home's swipe-to-remove (see SHEET_CANCEL_CB's own comment).
+  if(SHEET_CANCEL_CB){ const cb = SHEET_CANCEL_CB; SHEET_CANCEL_CB = null; cb(); }
 }
 // For the couple of call sites (saveLogSet, delLogSetConfirmed) that are about to replace
 // EVERYTHING currently open with one freshly-reloaded sheet — closeSheet() alone would only take

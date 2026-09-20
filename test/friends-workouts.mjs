@@ -154,5 +154,20 @@ console.log('\nmissing creatorFinished (older session shape, or the member/reade
   ok(html.includes('No Field Yet'), 'a session shape missing creatorFinished still shows while past-dated (fails open, not hidden)');
 }
 
+console.log('\nSep 18 2026: hiddenForMe (Home\'s swipe-to-remove, server-computed per-viewer) keeps a dismissed workout out, independent of everything else the filter checks');
+{
+  const dismissed = base({ name: 'I Swiped This Away', scheduledAt: daysAgo(1), creatorFinished: false, hiddenForMe: true });
+  const notDismissed = base({ name: 'Still In My List', scheduledAt: daysAgo(1), creatorFinished: false, hiddenForMe: false });
+  const noFieldAtAll = base({ name: 'Never Touched It', scheduledAt: daysAgo(1), creatorFinished: false });
+  delete noFieldAtAll.hiddenForMe;
+  const html = await renderJoinable([dismissed, notDismissed, noFieldAtAll]);
+  const rows = html.split('lib-item').slice(1);
+  const rowFor = name => rows.find(r => r.includes(name)) || '';
+
+  ok(rowFor('I Swiped This Away') === '', 'a workout with hiddenForMe:true stays out of the list even though it would otherwise qualify');
+  ok(rowFor('Still In My List') !== '', 'hiddenForMe:false is an ordinary candidate, unaffected');
+  ok(rowFor('Never Touched It') !== '', 'a session shape missing hiddenForMe entirely (older/legacy) fails open, same convention as creatorFinished above');
+}
+
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
 process.exit(fails ? 1 : 0);

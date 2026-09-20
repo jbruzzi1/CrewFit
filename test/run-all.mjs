@@ -50,7 +50,7 @@ const files = [
   'test/quick-workout-routine-page.mjs', 'test/assisted-exercise.mjs', 'test/recap-local-date.mjs',
   'test/scheduled-at-validation.mjs', 'test/crew-sheet-empty-state.mjs',
   'test/block-crew-streak-privacy.mjs', 'test/progress-additions.mjs',
-  'test/training-phase.mjs',
+  'test/training-phase.mjs', 'test/hide-joinable.mjs', 'test/swipe-delete-home.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

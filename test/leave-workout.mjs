@@ -434,6 +434,66 @@ console.log('\nJeff, Aug 20 (cold-review catch): the "remove it from your profil
      "the partner's own credit — the reason Delete was refused in the first place — is untouched");
 }
 
+console.log('\nSep 18 2026 (Jeff, real bug report on Home\'s swipe-to-delete): a participant who has merely JOINED and logged NOTHING yet must also block a hard delete, not just one who already has credit');
+{
+  // Before this fix, DELETE's guard was othersWithCredit() alone -- someone who accepted an invite
+  // but hadn't logged a single set yet (workout not started, or just hasn't gotten to it) was
+  // invisible to that check, so the creator's delete went through as a REAL delete and silently
+  // wiped the workout out from under a participant who was still genuinely in it. Jeff: "if we
+  // delete a workout we created and others have joined — it shouldn't delete the workout for
+  // everyone — it should just let you leave, keeping that workout active for the others who are
+  // currently still in the workout."
+  const joinedOnlySession = await post('/api/sessions', {
+    name: 'Fresh Invite', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Overhead Press' }],
+    inviteUsernames: [], visibility: 'private',
+  }, creator.token);
+  await fetch(B + '/api/sessions/' + joinedOnlySession.id, {
+    method: 'PUT', headers: { ...J, Authorization: 'Bearer ' + creator.token },
+    body: JSON.stringify({ inviteUsernames: ['leave_partner'] }),
+  }).then(r => r.json());
+  await post('/api/sessions/' + joinedOnlySession.id + '/accept', {}, participant.token);
+  // Nobody -- not the creator, not the partner -- has logged a single set here yet.
+
+  const deleteAttempt3 = await fetch(B + '/api/sessions/' + joinedOnlySession.id, { method: 'DELETE', headers: { Authorization: 'Bearer ' + creator.token } });
+  const deleteBody3 = await deleteAttempt3.json();
+  ok(deleteAttempt3.status === 409, `a hard delete is now refused even though nobody has logged anything (got ${deleteAttempt3.status})`);
+  ok(deleteBody3.canLeave === true, 'and the same Leave fallback is offered');
+  ok(/still in this workout/i.test(deleteBody3.error || ''), `the message reflects "still in it", not "logged sets" -- accurate for this case (got ${JSON.stringify(deleteBody3.error)})`);
+  const dbMid3 = await readDb(testDb.url);
+  ok(!!dbMid3.sessions[joinedOnlySession.id], 'the session was NOT deleted');
+  ok((dbMid3.sessions[joinedOnlySession.id].participants || []).includes(participant.user.id),
+     'the partner is still a participant, completely untouched by the refused delete attempt');
+
+  // Drive it through the server-round-trip fallback path end to end (deleteSession called with no
+  // 4th arg, same as if the caller had no way to know in advance) -- get redirected into the
+  // Keep/Discard sheet, choose Discard (nothing to keep either way here). Sep 20 2026 note: real
+  // callers (the ⋯ menu, the recap page menu, Home's own swipe row) now all pre-compute
+  // sessionHasOtherStake(s) and skip straight to the Leave sheet without ever showing Delete
+  // language at all ("Smarter routing" -- see deleteSession's/swipeRowConfirm's own comments in
+  // app.js, and test/swipe-delete-home.mjs's matching real-swipe-gesture coverage of THAT path).
+  // This block deliberately calls deleteSession with only 2 args to keep exercising the
+  // defense-in-depth server round trip itself, not the now-primary client shortcut.
+  const ctx3 = makeCtx();
+  vm.runInContext(`TOKEN = ${JSON.stringify(creator.token)}; ME = ${JSON.stringify(creator.user)};`, ctx3);
+  sink.html = '';
+  await vm.runInContext('deleteSession', ctx3)(joinedOnlySession.id, false);
+  ok(sink.html.includes('Delete workout?'), 'the same Delete-workout sheet opens first, same as always');
+  sink.html = '';
+  await vm.runInContext('deleteSessionConfirmed', ctx3)(joinedOnlySession.id, false);
+  ok(sink.html.includes('Save today\'s sets') && sink.html.includes('Discard today\'s sets'),
+     'tapping Delete redirects into the real Keep/Discard sheet instead of silently deleting');
+  sink.html = '';
+  await vm.runInContext('leaveWorkoutConfirmed', ctx3)(joinedOnlySession.id, false);
+
+  const dbAfter3 = await readDb(testDb.url);
+  const finalJoinedOnly = dbAfter3.sessions[joinedOnlySession.id];
+  ok(!!finalJoinedOnly, 'the workout still exists -- it was never actually deleted');
+  ok(!(finalJoinedOnly.participants || []).includes(creator.user.id), 'the creator is now gone as a participant (they left, not deleted it)');
+  ok((finalJoinedOnly.participants || []).includes(participant.user.id), 'the partner is still right there, workout intact for them');
+  ok(finalJoinedOnly.creatorId === participant.user.id,
+     `ownership transferred to the remaining current participant, exactly like a real Leave does (got ${finalJoinedOnly.creatorId})`);
+}
+
 console.log('\nand the delete-fallback for an ALREADY-finished creator still just leaves cleanly, no duplicate credit');
 {
   const finSession = await post('/api/sessions', {
