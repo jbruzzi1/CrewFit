@@ -120,6 +120,30 @@ console.log('\na workout Jeff CREATED where Brian also logged real sets is hande
   ok(brianCanEdit.status === 200, 'Brian, the new owner, can edit the workout that is now his');
 }
 
+console.log('\nSep 18 2026 (cold-review catch): a workout Jeff created where Brian has JOINED but logged NOTHING yet is also handed off, not deleted — the same gap DELETE /api/sessions/:id and POST /leave were just fixed for');
+{
+  // Before this fix, this loop's own guard was `othersWithCredit(s, me)` alone -- a friend who'd
+  // merely accepted the invite and hadn't logged a single set yet was invisible to it, so "reset my
+  // workouts" hard-deleted the session out from under them, silently, the exact same class of data
+  // loss the other two routes now refuse to do.
+  const joinedOnly = await post('/api/sessions', {
+    name: 'Pull Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Lat Pulldown' }],
+    inviteUsernames: ['reset_brian'], visibility: 'private',
+  }, jeff.token);
+  await post('/api/sessions/' + joinedOnly.id + '/accept', {}, brian.token);
+  // Neither Jeff nor Brian has logged a single set here.
+
+  const r = await post('/api/me/reset-workouts', { confirm: true }, jeff.token);
+  ok(r.sessionsHandedOff >= 1, `handed off, not counted among the deletions (got sessionsDeleted=${r.sessionsDeleted}, sessionsHandedOff=${r.sessionsHandedOff})`);
+
+  const db = await readDb(testDb.url);
+  const s = db.sessions[joinedOnly.id];
+  ok(!!s, "the workout still exists -- Brian's invite-acceptance was never a hard delete");
+  ok(s.creatorId === brian.user.id, 'ownership passed to Brian, the one remaining current participant, even with zero credit to go on');
+  ok(!(s.participants || []).includes(jeff.user.id), 'Jeff is off the participant list');
+  ok((s.participants || []).includes(brian.user.id), 'Brian is still a participant, now the owner');
+}
+
 console.log("\na workout Jeff only JOINED (Brian's, not his) is left completely alone for Brian — reset only strips Jeff's own trace");
 {
   const briansSession = await post('/api/sessions', {
