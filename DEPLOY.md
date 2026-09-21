@@ -22,99 +22,6 @@ Watch a run: **github.com/jbruzzi1/CrewFit → Actions**. Green tick = live.
 Until that secret exists the deploy step skips itself with a warning rather than failing, so
 adding the workflow first is safe.
 
-## ONE-TIME: moving the database from data.json to Postgres
-
-*(Do this once, before merging the Postgres-backed code to `main`. Delete this section once it's
-done — it won't be needed again. If you're reading this and it's still here, the cutover to
-Postgres has not happened yet and the app is still running on the old file-based code.)*
-
-**Why:** the app used to keep everything in one shared file (`data.json`) on the volume. It now
-keeps everything in a real Postgres database instead — safer writes, no more "one giant file is
-the whole database," and the exact incident described at the top of `test/data-safety.mjs` (a
-copy of production silently going from 377 users to 0 on a single boot) becomes structurally
-impossible. The app code, tests, and this migration tool are already built and fully verified —
-`npm test` passes end-to-end, including a live simulated "restore after data loss" drill. This is
-the one remaining step: moving the *real* live data over.
-
-**Everything below is safe to do while the OLD code is still live and serving Jeff/Brian** — it
-does not touch `data.json` or interrupt the running app. The new code only starts actually using
-Postgres once you merge/push it in the last step.
-
-### 1. Create the Postgres database
-```
-export PATH="$HOME/.fly/bin:$PATH"
-fly postgres create --name spotmeapp-db --region iad --initial-cluster-size 1 --vm-size shared-cpu-1x --volume-size 10
-```
-If it asks anything interactively, accept the defaults — at this app's size (dozens of users) the
-smallest option is more than enough. It'll take a minute or two.
-
-### 2. Attach it to the app
-```
-fly postgres attach spotmeapp-db --app spotmeapp
-```
-This sets a `DATABASE_URL` secret on `spotmeapp` and restarts the currently-running machine —
-completely safe, the OLD code that's live right now doesn't read that variable at all.
-
-**Copy the `DATABASE_URL=postgres://...` line this prints — you'll need it in step 4.** (If you
-lose it, `fly ssh console --app spotmeapp` then `echo $DATABASE_URL` will show it again once the
-new code is deployed — but easiest to just save it now.)
-
-### 3. Pull a fresh copy of the live data
-```
-fly ssh sftp get /data/data.json ./live-backup.json --app spotmeapp
-```
-Same command as the old "pull a copy before anything risky" step used to be. Do this right before
-step 4 so it's as current as possible.
-
-### 4. Run the migration
-In one terminal tab, open a tunnel to the new database (leave this running):
-```
-fly proxy 15432:5432 -a spotmeapp-db
-```
-In a **second** terminal tab, from this project folder:
-```
-cd /Users/jeffbruzzi/fitness-app
-```
-Take the `DATABASE_URL` you copied in step 2 and swap only the host/port to
-`localhost:15432` (keep the username, password, and database name exactly as printed — they're
-after `postgres://` and before/after the `@`). Then:
-```
-DATABASE_URL="postgres://<user>:<password>@localhost:15432/<dbname>" node scripts/migrate-to-postgres.mjs ./live-backup.json
-```
-You should see something like:
-```
-Migrating ./live-backup.json -> postgres://***@localhost:15432/spotmeapp
-  users=... sessions=... templates=... pushSubs=... customExercises=... prs=...
-Migration verified: every collection's row counts AND content match on read-back.
-```
-**If it instead prints `FATAL: ... username collision(s) ...`**, stop — do not proceed to step 5.
-Send me that output; it means two accounts differ only by capitalization (this has happened once
-before, see `server.js`'s `migrateMergeDuplicateBrian`) and need a real decision about which
-account is the one to keep before anything is written to Postgres. Nothing is written when this
-happens — it's safe to leave the app exactly as it is while that gets sorted out.
-
-If anything else goes wrong, the tool is safe to just re-run from scratch (it fully re-syncs
-every table from the file each time) — nothing gets corrupted by trying again.
-
-### 5. Deploy the new code
-Push/merge the Postgres branch to `main` as usual — GitHub Actions runs `npm test`, then deploys
-only if it passes.
-
-### 6. Verify
-```
-curl -s https://spotmeapp.fly.dev/healthz
-```
-Should show `"ok":true` and a `users` count matching what step 4 printed.
-
-### Rollback
-If anything looks wrong after the deploy (wrong counts, app won't boot), the old file-based code
-is one command away — `data.json` on the volume hasn't been touched by any of this:
-```
-git revert --no-edit HEAD && git push origin main
-```
-That puts the previous version back live, reading `/data/data.json` exactly as it always did.
-Postgres just sits there unused; nothing about this rollback loses data either way.
-
 ## If a deploy goes wrong
 
 **Bad code shipped.** Revert it and let the pipeline redeploy the previous version:
@@ -224,9 +131,9 @@ fly deploy
 
 ## Notes
 - The volume `spotmeapp_data` is referenced in `fly.toml` (`[mounts]`). Since the Postgres
-  cutover (see "ONE-TIME" section above) the live database itself lives in Postgres, not on this
-  volume — the volume now holds uploaded photos/videos and the per-boot JSON snapshot backups
-  used for recovery (see "If a deploy goes wrong" above).
+  cutover, the live database itself lives in Postgres, not on this volume — the volume now holds
+  uploaded photos/videos and the per-boot JSON snapshot backups used for recovery (see "If a
+  deploy goes wrong" above).
 - To push an update later: `fly deploy` again from this folder.
 - Web Push (invite/join notifications) needs VAPID keys — the server auto-generates them on
   first run and stores them in /data (the volume), so they persist.
