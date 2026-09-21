@@ -1,0 +1,137 @@
+{
+  "routines": [
+    {
+      "id": "starter_push_day",
+      "name": "Push Day",
+      "split": "Push/Pull/Legs",
+      "exercises": [
+        { "name": "Flat Barbell Bench Press" },
+        { "name": "Incline Dumbbell Bench Press" },
+        { "name": "Seated Dumbbell Shoulder Press" },
+        { "name": "Cable Fly" },
+        { "name": "Dumbbell Lateral Raise" },
+        { "name": "Rope Pushdown" }
+      ]
+    },
+    {
+      "id": "starter_pull_day",
+      "name": "Pull Day",
+      "split": "Push/Pull/Legs",
+      "exercises": [
+        { "name": "Pull-Up" },
+        { "name": "Barbell Row" },
+        { "name": "Lat Pulldown" },
+        { "name": "Seated Cable Row" },
+        { "name": "Barbell Curl" },
+        { "name": "Dumbbell Hammer Curl" }
+      ]
+    },
+    {
+      "id": "starter_leg_day",
+      "name": "Leg Day",
+      "split": "Push/Pull/Legs",
+      "exercises": [
+        { "name": "Barbell Back Squat" },
+        { "name": "Barbell Romanian Deadlift" },
+        { "name": "Leg Press" },
+        { "name": "Walking Lunge" },
+        { "name": "Leg Extension" },
+        { "name": "Lying Leg Curl" },
+        { "name": "Standing Calf Raise" }
+      ]
+    },
+    {
+      "id": "starter_upper_body",
+      "name": "Upper Body",
+      "split": "Upper/Lower",
+      "exercises": [
+        { "name": "Flat Barbell Bench Press" },
+        { "name": "Barbell Row" },
+        { "name": "Seated Dumbbell Shoulder Press" },
+        { "name": "Lat Pulldown" },
+        { "name": "Dumbbell Lateral Raise" },
+        { "name": "Barbell Curl" },
+        { "name": "Rope Pushdown" }
+      ]
+    },
+    {
+      "id": "starter_lower_body",
+      "name": "Lower Body",
+      "split": "Upper/Lower",
+      "exercises": [
+        { "name": "Barbell Back Squat" },
+        { "name": "Barbell Romanian Deadlift" },
+        { "name": "Leg Press" },
+        { "name": "Walking Lunge" },
+        { "name": "Leg Extension" },
+        { "name": "Lying Leg Curl" },
+        { "name": "Standing Calf Raise" }
+      ]
+    },
+    {
+      "id": "starter_full_body",
+      "name": "Full Body",
+      "split": "Full Body",
+      "exercises": [
+        { "name": "Barbell Back Squat" },
+        { "name": "Flat Barbell Bench Press" },
+        { "name": "Barbell Row" },
+        { "name": "Barbell Overhead Press" },
+        { "name": "Barbell Romanian Deadlift" },
+        { "name": "Plank" }
+      ]
+    },
+    {
+      "id": "starter_chest_day",
+      "name": "Chest Day",
+      "split": "Body-part split",
+      "exercises": [
+        { "name": "Flat Barbell Bench Press" },
+        { "name": "Incline Barbell Bench Press" },
+        { "name": "Flat Dumbbell Bench Press" },
+        { "name": "Cable Fly" },
+        { "name": "Chest Dip" },
+        { "name": "Push-Up" }
+      ]
+    },
+    {
+      "id": "starter_back_day",
+      "name": "Back Day",
+      "split": "Body-part split",
+      "exercises": [
+        { "name": "Pull-Up" },
+        { "name": "Barbell Row" },
+        { "name": "Lat Pulldown" },
+        { "name": "Seated Cable Row" },
+        { "name": "Straight-Arm Pulldown" },
+        { "name": "Barbell Shrug" }
+      ]
+    },
+    {
+      "id": "starter_shoulders_day",
+      "name": "Shoulders Day",
+      "split": "Body-part split",
+      "exercises": [
+        { "name": "Barbell Overhead Press" },
+        { "name": "Seated Dumbbell Shoulder Press" },
+        { "name": "Dumbbell Lateral Raise" },
+        { "name": "Cable Rear Delt Fly" },
+        { "name": "Face Pull" },
+        { "name": "Dumbbell Front Raise" }
+      ]
+    },
+    {
+      "id": "starter_arms_day",
+      "name": "Arms Day",
+      "split": "Body-part split",
+      "exercises": [
+        { "name": "Barbell Curl" },
+        { "name": "Dumbbell Hammer Curl" },
+        { "name": "EZ-Bar Preacher Curl" },
+        { "name": "Rope Pushdown" },
+        { "name": "EZ-Bar Skull Crusher" },
+        { "name": "Close-Grip Bench Press" }
+      ]
+    }
+  ]
+}

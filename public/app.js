@@ -4541,8 +4541,29 @@ function routinesBack(){
   else if(TPL_FROM_QUICK){ TPL_FROM_QUICK = false; QUICK_ADD_MODE = true; openAddExercises(); }
   else history.back();
 }
+// Sep 21 2026 (Jeff, after seeing the first version: "Do we think we should make the list look
+// better instead of just a scrollable field with all of them listed" -- picked "Collapsible
+// groups by split" over a flat list with sub-headers or a "see all" truncation): the 10 starter
+// routines render as 4 tappable group cards (one per split), collapsed by default, instead of one
+// long scroll. Which keys are currently open, same "persists across re-renders" pattern as
+// VOL_EXPANDED/PROFILE_SHOWS_BACK above -- a Set rather than a single bool because groups expand
+// independently of each other (opening Body-part split shouldn't close Push/Pull/Legs).
+let STARTER_EXPANDED = new Set();
+function toggleStarterGroup(key){
+  if(STARTER_EXPANDED.has(key)) STARTER_EXPANDED.delete(key); else STARTER_EXPANDED.add(key);
+  // silent: this is an in-place redraw of the SAME screen (like toggleVolExpanded's own
+  // progressScreen({silent:true}) call) -- it must not push/replace a history entry or scroll to
+  // top, or expanding a group would yank the page back up and cost a Back tap to undo.
+  templatesPage({silent:true});
+}
 async function templatesPage(opts){
-  if(!(opts && (opts.replace || opts.fromHistory))) { TPL_FROM_CREATE = !!$('wname'); TPL_FROM_QUICK = QUICK_ADD_MODE; }
+  // opts.silent (Sep 21 2026, added for toggleStarterGroup): an in-place redraw of this SAME
+  // screen, same meaning as progressScreen's own opts.silent -- must not re-run the create-flow-
+  // draft stash below either, for the identical reason opts.replace/opts.fromHistory already don't:
+  // $('wname') never exists on the routines page itself, so re-running this unstashed would zero
+  // out TPL_FROM_CREATE/TPL_FROM_QUICK the instant someone expands a starter-routine group while
+  // they'd arrived here mid-create, breaking routinesBack()'s return trip.
+  if(!(opts && (opts.replace || opts.fromHistory || opts.silent))) { TPL_FROM_CREATE = !!$('wname'); TPL_FROM_QUICK = QUICK_ADD_MODE; }
   // Same gap as openAddExercises() had: "Browse templates" is also reachable mid-create (from
   // createFlow()'s form), and tplUse() returns via createFlow() too — so without stashing here,
   // browsing templates mid-create silently reverted name/visibility/date/location/length/note.
@@ -4567,8 +4588,8 @@ async function templatesPage(opts){
     if($('dt')) DRAFT._dt = $('dt').value;
   }
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
-  const { mine, shared } = await H.get('/api/templates');
-  window._TPL = { mine, shared };
+  const { mine, shared, starter } = await H.get('/api/templates');
+  window._TPL = { mine, shared, starter };
   // Jeff, Aug 28: "I want to be able to delete friend shared routines having that option also."
   // Your own routines keep Edit + a real Delete (erases the row for everyone -- server-owner-
   // gated). A friend's shared routine gets Remove instead of Delete -- same word Jeff would use,
@@ -4591,10 +4612,33 @@ async function templatesPage(opts){
   const row = (t)=>`<div class="lib-item tpl-row" onclick="tplView('${t.id}')"><div style="flex:1;min-width:0"><div class="tpl-name">${esc(t.name)}</div><div class="muted tpl-meta">${tplPreview(t)}</div></div>
     <button class="txt-btn" onclick="event.stopPropagation(); tplUse('${t.id}')">Use</button></div>`;
   const section = (list)=>`<div class="card tpl-list">${list.map(row).join('')}</div>`;
+  // Sep 21 2026 (Jeff: "Do we think we should make the list look better instead of just a
+  // scrollable field with all of them listed" -> picked collapsible groups by split): grouped by
+  // t.split -- the exact 4 categories Jeff picked when this feature was first scoped
+  // (Push/Pull/Legs, Upper/Lower, Full Body, Body-part split) -- in first-seen order from the
+  // server's own array, not a hardcoded label list that could drift from starter-routines.json.
+  // Each group is its OWN floating card (the app's existing "no windows" card language), starting
+  // as a single tappable header row and expanding in place to the same row() markup every other
+  // routine list uses -- nothing new to teach tplView/tplUse, they still just get a flat starter
+  // array from the API; this grouping is presentation-only.
+  const bySplit = {}; const splitOrder = [];
+  for(const t of (starter||[])){ const k = t.split || 'More'; if(!bySplit[k]){ bySplit[k]=[]; splitOrder.push(k); } bySplit[k].push(t); }
+  const chevSvg = (expanded)=>`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto;color:var(--muted);transition:transform .15s;transform:rotate(${expanded?90:0}deg)"><path d="M9 6l6 6-6 6"/></svg>`;
+  const groupCard = (key)=>{
+    const list = bySplit[key];
+    const expanded = STARTER_EXPANDED.has(key);
+    const head = `<div class="lib-item" style="cursor:pointer" onclick="toggleStarterGroup('${esc(key)}')" aria-expanded="${expanded}">
+      <div style="flex:1;min-width:0;font-weight:600;font-size:15px">${esc(key)}</div>
+      <div style="display:flex;align-items:center;gap:8px;flex:0 0 auto"><span class="muted" style="font-size:12.5px">${plur(list.length,'routine')}</span>${chevSvg(expanded)}</div>
+    </div>`;
+    return `<div class="card tpl-list">${head}${expanded?list.map(row).join(''):''}</div>`;
+  };
+  const starterHtml = splitOrder.map(groupCard).join('');
   $('app').innerHTML = `<div class="wrap tpl-page">
     <div class="pp-head tpl-head">${backLinkHtml('routinesBack()')}<button class="blue sm" onclick="tplNew()">+ New routine</button></div>
     <h1 class="tpl-h1">Routines</h1>
     ${mine.length?section(mine):homeEmpty(ICON_LIST, 'No routines yet', 'Build one with + New routine, or save a finished workout as a routine.')}
+    ${(starter&&starter.length)?`<div class="lib-cat">Starter routines</div>`+starterHtml:''}
     ${shared.length?`<div class="lib-cat">Shared by friends</div>`+section(shared):''}</div>`;
   // v304: templatesPage() becomes a real page in the nav-history stack (navigated()/landOn(),
   // same as followList/profileView/openSettings) now that tplView() sits a level below it and
@@ -4607,10 +4651,17 @@ async function templatesPage(opts){
   // a stale routines entry) instead of pushing a fresh one. Without it, backing out of the editor
   // after opening it from tplView would leave a dead, already-deleted routineView entry sitting
   // one Back press away.
-  const st = {t:'routines'};
-  if(opts && opts.replace){ landOn(st); history.replaceState(st, '', location.href); }
-  else if(opts && opts.fromHistory){ landOn(st); }
-  else navigated(st);
+  // silent skips ALL of push/replace/landOn -- toggleStarterGroup redraws this exact screen in
+  // place, so CURRENT_NAV_STATE, the history stack, and the scroll position all stay exactly as
+  // they already were (matching progressScreen's own silent branch, which skips its pageScrollTop
+  // the same way -- see its comment).
+  if(opts && opts.silent){ /* no-op: in-place redraw only */ }
+  else {
+    const st = {t:'routines'};
+    if(opts && opts.replace){ landOn(st); history.replaceState(st, '', location.href); }
+    else if(opts && opts.fromHistory){ landOn(st); }
+    else navigated(st);
+  }
 }
 // The detail screen Jeff asked for: tap a routine on the list, see every exercise it has, with
 // the same ⋯ menu (Edit / Delete, or Edit a copy / Remove for a friend's shared routine) the
@@ -4619,8 +4670,8 @@ async function templatesPage(opts){
 // same header, so viewing a routine before starting it doesn't cost an extra trip back.
 async function tplView(id, opts){
   const fromHistory = !!(opts && opts.fromHistory);
-  const { mine, shared } = await H.get('/api/templates');
-  const t = [...mine, ...shared].find(x=>x.id===id);
+  const { mine, shared, starter } = await H.get('/api/templates');
+  const t = [...mine, ...shared, ...(starter||[])].find(x=>x.id===id);
   // Gone (deleted, or a friend un-shared it) since the list was last drawn -- e.g. a stale link
   // via Back/Forward. Nothing to show; land back on the list rather than stranding on a dead page.
   if(!t){ templatesPage({replace:true}); return; }
@@ -4628,7 +4679,12 @@ async function tplView(id, opts){
   const menuItems = isOwner
     ? `<button onclick="tplEdit('${id}')">Edit</button><button class="danger" onclick="tplDelete('${id}')">Delete</button>`
     : `<button onclick="tplEditCopy('${id}')">Edit a copy</button><button class="danger" onclick="tplHide('${id}')">Remove</button>`;
-  const dots = `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">⋯</button><div class="pp-menu" id="ppMenu-${id}" style="display:none">${menuItems}</div>`;
+  // Sep 21 2026: a starter routine isn't owned by anyone and can't be hidden/edited-in-place (see
+  // the comment above STARTER_TEMPLATES in server.js) -- no ⋯ menu at all for one, just Back +
+  // Use routine. The pp-dots-wrap span itself is omitted, not just left with empty contents --
+  // .pp-right is a flex row with `gap:8px`, so an empty-but-present span would still cost 8px of
+  // dead space before the Use routine button.
+  const dots = t.starter ? '' : `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">⋯</button><div class="pp-menu" id="ppMenu-${id}" style="display:none">${menuItems}</div>`;
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
   // Sep 7: the primary action moves up into the header (Jeff, v304: "I like having the save
   // buttons at the top") -- Back on the left, ⋯ + "Use routine" on the right, same as New workout's
@@ -4636,7 +4692,7 @@ async function tplView(id, opts){
   $('app').innerHTML = `<div class="wrap">
     <div class="pp-head tpl-head">
       ${backLinkHtml('history.back()')}
-      <div class="pp-right"><span class="pp-dots-wrap">${dots}</span><button class="blue sm" onclick="tplUse('${id}')">Use routine</button></div>
+      <div class="pp-right">${dots?`<span class="pp-dots-wrap">${dots}</span>`:''}<button class="blue sm" onclick="tplUse('${id}')">Use routine</button></div>
     </div>
     <h1 class="tpl-h1" style="margin-bottom:4px">${esc(t.name)}</h1>
     <div class="muted" style="font-size:13px;margin:0 2px 14px">${tplSubtitle(t)}${t.ownerName?` · from ${esc(t.ownerName)}`:''}</div>
@@ -4992,8 +5048,8 @@ async function finishTemplate(){
   if(nothingNavigatedSince(epoch)) tplReturnToList();
 }
 async function tplUse(id){
-  const { mine, shared } = await H.get('/api/templates');
-  const t = [...mine,...shared].find(x=>x.id===id); if(!t) return;
+  const { mine, shared, starter } = await H.get('/api/templates');
+  const t = [...mine,...shared,...(starter||[])].find(x=>x.id===id); if(!t) return;
   // Sep 10 2026: Quick Workout's own picker (the "Routine" button in library()'s QUICK_ADD_MODE
   // head, and now this exact list/detail screen -- see the comment above where its old stripped
   // popup used to live) shares this same Use/"Use routine" handler with every other entry point.
