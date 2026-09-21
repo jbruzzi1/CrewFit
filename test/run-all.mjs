@@ -51,7 +51,7 @@ const files = [
   'test/scheduled-at-validation.mjs', 'test/crew-sheet-empty-state.mjs',
   'test/block-crew-streak-privacy.mjs', 'test/progress-additions.mjs',
   'test/training-phase.mjs', 'test/hide-joinable.mjs', 'test/swipe-delete-home.mjs',
-  'test/profile-back-button.mjs',
+  'test/profile-back-button.mjs', 'test/starter-routines.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

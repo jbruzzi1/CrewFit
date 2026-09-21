@@ -412,6 +412,50 @@ const ALLOWED_MEDIA = /^data:(image\/(?:png|jpeg|jpg|webp|gif)|video\/(?:mp4|web
 // and clamps to a sane, non-negative magnitude.
 const capStr = (v, max) => String(v == null ? '' : v).slice(0, max);
 const numIn = (v, max) => { const n = Number(v); return Number.isFinite(n) ? Math.min(Math.max(0, n), max) : 0; };
+
+// ---- Starter routines (Sep 21 2026, Jeff: "I want to update the routines page with default
+// routines that new users and already created users can choose from... I think having a library
+// to choose from (maybe all of the above) is good? Not just a select two or so.") ------------
+//
+// These are pre-made routines every user can browse and use, not owned by anyone. Two shapes
+// were considered: (A) seed a real "system" user account owning real DB.templates rows, so every
+// existing routine mechanic (view/use/hide/edit-copy) works unmodified -- but that fake account
+// would need auditing into every user-enumeration surface in this large, interconnected app
+// (search, friend suggestions, follow flows) to make sure it never leaks in as a "person" to
+// follow or message, and DB.templates rows are meant to be owned by a real user (ownerId is read
+// all over: connectionsOf gating on GET, hide/unhide, PUT's ownership check). (B) static
+// reference data, the same convention as exercise-library.json -- no fake account, no new surface
+// to audit, and it fits what Jeff actually described (a browsable library to pick from, nothing
+// about hiding/editing individual starters). Went with (B).
+//
+// Built LAZILY (first call, then cached) rather than eagerly at module-eval time like EX_LIB
+// above. Each exercise in starter-routines.json is just {name}; withDefaults is what turns that
+// into the same {name, defaultSets, defaultReps, defaultRepsMax} shape a real saved routine's
+// exercises have -- but withDefaults' own body reaches for capStr/numIn (consts a bit further
+// down this file) and currentExerciseName (which reaches for EXERCISE_RENAMES, a const much
+// further down still, near the exercise-rename migration). Building this list up front tried
+// twice and broke the server's own boot both times -- first on capStr/numIn, then again on
+// EXERCISE_RENAMES, each a "Cannot access before initialization" thrown at require() time,
+// nothing conditional about it, the server refusing to boot at all until fixed. A function most of
+// this file's other lazy/derived values don't need is the one guaranteed-safe way to depend on
+// consts declared anywhere else in this same file without caring about load order: by the time
+// anything actually CALLS this (the first real request), the whole module has finished
+// evaluating, so every const it reaches into is long since initialized. The result never changes
+// between calls (starter-routines.json isn't user data), so it's computed once and reused.
+const STARTER_FILE = path.join(__dirname, 'starter-routines.json');
+let _STARTER_TEMPLATES = null;
+function starterTemplates() {
+  if (!_STARTER_TEMPLATES) {
+    _STARTER_TEMPLATES = JSON.parse(fs.readFileSync(STARTER_FILE, 'utf8')).routines.map(r => ({
+      id: r.id,
+      name: r.name,
+      split: r.split,
+      starter: true,
+      exercises: r.exercises.map(withDefaults),
+    }));
+  }
+  return _STARTER_TEMPLATES;
+}
 // Sep 11 2026 (cold-review finding on the recap-date-mismatch fix, see rcDay() in public/app.js):
 // a session's scheduledAt is trusted as-sent once capStr trims its length, but capStr only checks
 // length, not shape -- and every screen that reads scheduledAt (this fix's rcDay, plus the
@@ -2284,7 +2328,10 @@ app.get('/api/templates', auth, async (req, res) => {
   // are owner-only elsewhere in this file. It stays on `mine` rows (own routines) untouched.
   res.json({ mine: mine.map(stripHidden),
     shared: friendT.map(t => { const { invited, ...rest } = stripHidden(t);
-      return { ...rest, ownerName: (DB.users[t.ownerId] && (DB.users[t.ownerId].displayName || DB.users[t.ownerId].username)) || '' }; }) });
+      return { ...rest, ownerName: (DB.users[t.ownerId] && (DB.users[t.ownerId].displayName || DB.users[t.ownerId].username)) || '' }; }),
+    // Sep 21 2026: the pre-made library (see starterTemplates() above). Static, same array for
+    // every caller, not filtered by connections/hidden -- these aren't owned by anyone.
+    starter: starterTemplates() });
 });
 // The non-owner half of "delete a routine": hides it from MY list, never touches the owner's
 // row. See the comment above GET /api/templates for why this can't just be DELETE /:id.
