@@ -347,10 +347,15 @@ console.log("\nin-page '← Back' buttons use real history.back(), not a hardcod
   // press right after land back on the followers/following list instead of leaving the profile
   // (same duplicate-entry shape as the swapCancel bug above). All three now just call
   // history.back(), replaying the same real pop the hardware/gesture Back button already uses.
+  // Sep 20 2026: the '← Back' pill (button class="sec sm" onclick="history.back()") every one of
+  // these sites used to render inline was replaced app-wide by the shared backLinkHtml() helper
+  // (Jeff: "Maybe we do the rest of the back buttons like this style") -- same history.back() call
+  // underneath, just built once instead of duplicated per call site. Assert the helper call is
+  // there with the right argument, not the literal button markup it used to spell out inline.
   const backButtonSites = [
-    { label: 'openSession (session detail header)', re: /class="pp-head"><button class="sec sm" onclick="history\.back\(\)">.*\$\{sessDots\}/ },
-    { label: 'viewPost (posted recap header)', re: /class="pp-head"><button class="sec sm" onclick="history\.back\(\)">.*\$\{dots\}/ },
-    { label: 'followList (followers/following header)', re: /const backBtn = `<div class="pp-head"><button class="sec sm" onclick="history\.back\(\)">/ },
+    { label: 'openSession (session detail header)', re: /class="pp-head">\$\{backLinkHtml\('history\.back\(\)'\)\}\$\{sessDots\}/ },
+    { label: 'viewPost (posted recap header)', re: /class="pp-head">\$\{backLinkHtml\('history\.back\(\)'\)\}\$\{dots\}/ },
+    { label: 'followList (followers/following header)', re: /const backBtn = `<div style="margin:0 0 10px">\$\{backLinkHtml\('history\.back\(\)'\)\}<\/div>`/ },
   ];
   for (const site of backButtonSites) {
     ok(site.re.test(SRC), `${site.label} Back button calls history.back()`);

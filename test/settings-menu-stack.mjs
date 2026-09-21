@@ -137,7 +137,7 @@ console.log('openSettings() renders Settings as a full page in #app, not a sheet
 
   const inner = idEls.get('app').innerHTML;
   ok(/<h1[^>]*>Settings<\/h1>/.test(inner), 'renders a Settings <h1>');
-  ok(/<button class="sec sm" onclick="history\.back\(\)">← Back<\/button>/.test(inner), 'and a Back button using history.back() -- not closeSheet(), Settings has no sheet to close');
+  ok(/<button onclick="history\.back\(\)" aria-label="Back"[^>]*>.*?Back<\/button>/.test(inner), 'and a Back button using history.back() -- not closeSheet(), Settings has no sheet to close');
 
   for (const h of ['Profile', 'Preferences', 'Notifications', 'Help', 'Danger zone']) {
     ok(new RegExp(`<h2>${h}</h2>`).test(inner), `section header "${h}" present`);

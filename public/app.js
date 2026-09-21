@@ -266,6 +266,10 @@ async function doReg(){ try {
 // screen that WAS tracked, same as tapping Cancel does today -- not a regression, just not (yet)
 // its own step in the stack.
 let CURRENT_NAV_STATE = {t:'tab', tab:'home'};
+// Sep 20 2026: whether the currently-rendered profileView() screen should show its own "← Back"
+// button -- see the long comment inside profileView where this is set. Lives here, not as a local
+// inside profileView, because it has to survive across that function's own silent re-renders.
+let PROFILE_SHOWS_BACK = false;
 function navigated(state){
   CURRENT_NAV_STATE = state;
   pageScrollTop();
@@ -1327,7 +1331,7 @@ async function openSession(id, opts){
     ? `<button onclick="${myPost?`enterWorkoutEdit('${s.id}')`:`editSession('${s.id}')`}">Edit session</button><button class="danger" onclick="deleteSession('${s.id}', ${hasFinished}, null, ${sessionHasOtherStake(s)})">Delete session</button>`
     : '';
   const sessDots = sessMenuItems ? `<button class="pp-dots" onclick="togglePostMenu('${s.id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${s.id}" style="display:none">${sessMenuItems}</div>` : '';
-  let html = `<div class="wrap"><div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button>${sessDots}</div>
+  let html = `<div class="wrap"><div class="pp-head">${backLinkHtml('history.back()')}${sessDots}</div>
     <h1 class="sess-date">${sessTitle(s)}</h1>
     <div class="muted sess-meta">${sessSub(s)}${vis} · ${who}</div>
     ${facts?`<div class="tag">${facts}</div>`:''}
@@ -1786,7 +1790,7 @@ async function viewPost(id, authorId, opts){
   // wherever you actually tapped in from. history.back() replays the same real browser-history
   // pop the hardware/gesture Back button already uses, landing on whatever screen pushed the
   // entry below this one (see viewPost's own navigated()/landOn() call just below this template).
-  const html = `<div class="wrap">\n    <div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button>${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}${((s.logs&&s.logs[ME.id])||[]).length ? '<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap one of your sets to edit it.</div>' : ''}\n    ${notesBlock}\n    <h2>Comments</h2><div class="card">${likedRow}<div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
+  const html = `<div class="wrap">\n    <div class="pp-head">${backLinkHtml('history.back()')}${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}${((s.logs&&s.logs[ME.id])||[]).length ? '<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap one of your sets to edit it.</div>' : ''}\n    ${notesBlock}\n    <h2>Comments</h2><div class="card">${likedRow}<div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
   $('app').innerHTML = html;
   notesAutosize();
   if(!silent){ const st={t:'post', id, authorId}; fromHistory ? landOn(st) : navigated(st); }
@@ -2585,7 +2589,7 @@ function trainingPhaseLabel(){
 function trainingFocusScreen(opts){
   const fromHistory = !!(opts && opts.fromHistory);
   const skipNav = !!(opts && opts.skipNav);   // re-render in place after saving, no new history entry
-  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Training focus</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
+  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Training focus</h1>${backLinkHtml('history.back()')}</div>`;
   const current = ME && ME.trainingPhase;
   const cards = TRAINING_PHASES.map(p => `
     <button class="phase-card${p.key===current?' on':''}" onclick="setTrainingPhase('${p.key}')">
@@ -2686,7 +2690,7 @@ function renderSeedSetup(){
         : `<button class="txt-btn" style="padding:6px 0" onclick="seedOpenGoal(${i})">+ Set a goal</button>`}
     </div>`).join('');
   $('app').innerHTML = `<div class="wrap">
-    <div class="pp-head"><h1 style="margin:0;flex:1">Starting weights</h1><button class="sec sm" onclick="history.back()">← Back</button></div>
+    <div class="pp-head"><h1 style="margin:0;flex:1">Starting weights</h1>${backLinkHtml('history.back()')}</div>
     <div class="muted" style="font-size:13px;margin:2px 2px 14px">Already lifting these? Enter what you're working with now so Progress starts from where you actually are, not from zero.</div>
     ${rows}
     <button class="sec" style="width:100%;margin:2px 0 18px" onclick="seedAddAnother()">+ Add another lift</button>
@@ -4588,7 +4592,7 @@ async function templatesPage(opts){
     <button class="txt-btn" onclick="event.stopPropagation(); tplUse('${t.id}')">Use</button></div>`;
   const section = (list)=>`<div class="card tpl-list">${list.map(row).join('')}</div>`;
   $('app').innerHTML = `<div class="wrap tpl-page">
-    <div class="pp-head tpl-head"><button class="sec sm" onclick="routinesBack()">← Back</button><button class="blue sm" onclick="tplNew()">+ New routine</button></div>
+    <div class="pp-head tpl-head">${backLinkHtml('routinesBack()')}<button class="blue sm" onclick="tplNew()">+ New routine</button></div>
     <h1 class="tpl-h1">Routines</h1>
     ${mine.length?section(mine):homeEmpty(ICON_LIST, 'No routines yet', 'Build one with + New routine, or save a finished workout as a routine.')}
     ${shared.length?`<div class="lib-cat">Shared by friends</div>`+section(shared):''}</div>`;
@@ -4631,7 +4635,7 @@ async function tplView(id, opts){
   // Back / Create workout row. Nothing left dangling under the list.
   $('app').innerHTML = `<div class="wrap">
     <div class="pp-head tpl-head">
-      <button class="sec sm" onclick="history.back()">← Back</button>
+      ${backLinkHtml('history.back()')}
       <div class="pp-right"><span class="pp-dots-wrap">${dots}</span><button class="blue sm" onclick="tplUse('${id}')">Use routine</button></div>
     </div>
     <h1 class="tpl-h1" style="margin-bottom:4px">${esc(t.name)}</h1>
@@ -4885,7 +4889,7 @@ async function templateExercises(){
   // reached. "+ Add exercise" stays where it is, right after the list it adds to.
   $('app').innerHTML = `<div class="wrap create-flow">
     <div class="pp-head tpl-head" style="margin-bottom:14px">
-      <button class="sec sm" onclick="tplBack()">← Back</button>
+      ${backLinkHtml('tplBack()')}
       <button class="blue sm" onclick="finishTemplate()">✓ ${TPL_MODE.id?'Save changes':(TPL_MODE.copy?'Save as my routine':'Create routine')}</button>
     </div>
     ${nameField}
@@ -7145,7 +7149,7 @@ async function crewView(crewId, opts){
       : '';
     return `<div class="crew-msg"${isOwn?' style="display:flex;align-items:flex-start;gap:2px;position:relative"':''}><span style="flex:1"><b>${esc(from?(from.displayName||from.username):UNKNOWN_NAME)}</b> ${esc(m.text)}${editedTag}</span>${dots}</div>`;
   }).join('') : '';
-  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">${esc(c.name)}</h1>${c.isOwner?`<button class="sec sm" onclick="newCrewSheet('${jsq(c.id)}')">Edit</button>`:''}<button class="sec sm" onclick="history.back()">← Back</button></div>`;
+  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">${esc(c.name)}</h1>${c.isOwner?`<button class="sec sm" onclick="newCrewSheet('${jsq(c.id)}')">Edit</button>`:''}${backLinkHtml('history.back()')}</div>`;
   // Sep 6 (Jeff: the "No messages yet" box "seems poorly done... a box showing where potential
   // chat would be"). A plain muted line boxed inside a bordered/shadowed card contradicts the
   // app's own "no windows" rule -- a card only ever renders when it has content, an empty section
@@ -7331,7 +7335,7 @@ async function challengeView(crewId, challengeId, opts){
   if(!ch){ crewView(crewId, {silent:true}); return; }
   const isCustom = ch.type==='custom';
   const isRunning = !ch.completed && !ch.expired;
-  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">${esc(c.name)} challenge</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
+  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">${esc(c.name)} challenge</h1>${backLinkHtml('history.back()')}</div>`;
   // A custom goal never completes (no target to hit -- see checkChallengeCompletion) so its only
   // two states are "running" and "ended"; the numeric fell-short/complete banners don't apply.
   const banner = isCustom
@@ -7483,7 +7487,7 @@ async function newChallengeView(crewId, opts){
   if(c && c.error){ alert(c.error); return; }
   CHAL_MODE = 'auto'; CHAL_TYPE = 'workouts';
   const n = c.members.length;
-  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Start a challenge</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
+  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Start a challenge</h1>${backLinkHtml('history.back()')}</div>`;
   $('app').innerHTML = `<div class="wrap">
     ${head}
     <div class="muted" style="font-size:12.5px;margin:8px 0 16px">Set a shared goal for the crew — everyone's own logging counts toward it, all week.</div>
@@ -7641,6 +7645,20 @@ function editPencilSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="c
 // so it stays legible at the same 14px .cmt-delete-btn svg sizing as the pencil beside it.
 function trashSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>'; }
 function gearSvg(){ return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>'; }
+// Sep 20 2026 (Jeff, after the profileView Back button redesign landed): "Maybe we do the rest of
+// the back buttons like this style" -- rolling the same lighter chevron+text link out to every
+// other "← Back" in the app, replacing the bordered/filled .sec.sm pill those used. Pulled into one
+// shared helper (was a local inside profileView first) precisely BECAUSE it's about to be reused
+// at a dozen call sites with different surrounding layouts -- one definition means a future spacing
+// or alignment tweak happens once, not once per screen and inevitably drifting between them.
+// `onclickExpr` is a raw JS expression string (most sites: 'history.back()'; a few custom ones:
+// 'routinesBack()', 'tplBack()') -- kept as a plain string, same pattern as every other inline
+// onclick built by string concatenation throughout this file (see swipeRowWrap, deleteSession's
+// call sites, etc.), not a new convention introduced here.
+function backLinkHtml(onclickExpr){
+  const chevron = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto"><path d="M15 18l-6-6 6-6"/></svg>';
+  return `<button onclick="${onclickExpr}" aria-label="Back" style="display:inline-flex;align-items:center;gap:3px;background:none;border:none;padding:4px 2px;margin:0;width:auto;color:var(--blue);font-weight:600;font-size:14px;line-height:1;cursor:pointer">${chevron}Back</button>`;
+}
 // v230: dark is the app's DEFAULT look; this device-local switch is the only way to go light
 // (the app deliberately does not follow the phone's setting - Jeff's call, Aug 28). The <head>
 // inline script stamps html.theme-dark from the same localStorage key before first paint.
@@ -7833,7 +7851,7 @@ function openSettings(opts){
   // .sheet-head already uses for a sheet's own title+action row (h2 pinned to flex:1 so it eats
   // the remaining space, pushing the button to the far right) -- title stays put on the left,
   // Back moves to the right with real breathing room between them, no new CSS needed.
-  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Settings</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
+  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Settings</h1>${backLinkHtml('history.back()')}</div>`;
   $('app').innerHTML = `<div class="wrap">${head}
     <h2>Profile</h2>
     <div class="sheet-list">
@@ -7926,7 +7944,7 @@ async function renderNotifications(opts){
   // this page, not the silent in-place refreshes the accept/decline handlers below trigger after
   // their own action -- those are the same visit, already covered by this call.
   if(!silent) H.post('/api/notifications/seen', {}).catch(()=>{});
-  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Notifications</h1><button class="sec sm" onclick="history.back()">← Back</button></div>`;
+  const head = `<div class="pp-head"><h1 style="margin:0;flex:1">Notifications</h1>${backLinkHtml('history.back()')}</div>`;
   // Same .inv-banner/.inv-card markup as the Home banner (see home() above) -- same feature,
   // same look, just reachable from a second place now.
   const invitesHtml = invites.length ? `<h2>Workout invites</h2><div class="inv-banner">` + invites.map(iv => `
@@ -8336,6 +8354,49 @@ async function profileView(id, opts){
          <input id="av" type="file" accept="image/*" style="display:none" onchange="uploadAvatar(this)">
        </label>`
     : avatar;
+  // Sep 20 2026 (Jeff, real bug report): "no way to go back after clicking on someone's profile
+  // -- click one person's page, then followers, click another, I'm stuck at the end with no way
+  // back a page or a few pages." profileView is a real pushState navigation (see navigated() above
+  // and the comment on profileView itself) so history.back() already walks it correctly one hop at
+  // a time -- the bug is that this screen never rendered anything to actually TAP for that. Every
+  // other drill-down screen in the app (followList right below, viewPost, crewView, challengeView,
+  // library's muscle screens, ...) renders its own "← Back" bar; profileView was the one screen in
+  // this whole pattern that didn't. That's invisible on desktop Chrome (edge-swipe/Alt+Left still
+  // works) and easy to miss testing this sandbox's browser for the same reason, but on an iPhone
+  // there is no equivalent gesture once this is added to the Home Screen as a standalone PWA (no
+  // browser chrome at all) -- a screen with no on-screen Back is a dead end, exactly what Jeff hit.
+  // First attempt at this gated on plain `isMe` -- wrong, caught in cold review: `id===ME.id` does
+  // NOT mean "reached via the Me tab." Exactly the same multi-hop drill-down Jeff reported can
+  // resolve to your OWN id -- you show up in a mutual's followers/following list, or in an activity
+  // feed row about someone who just followed you (see the comment a few lines up: "NOT gated on
+  // id===ME.id... plenty of genuine navigations here can legitimately resolve to id===ME.id"). That
+  // version hid the Back button in exactly that case, stranding the user on their own profile
+  // mid-chain -- Jeff's same bug, just recursing onto themselves. The real distinction is not WHOSE
+  // profile this is, it's HOW this render was reached: `meScreen()` below is the one and only
+  // legitimate "this IS the Me tab, no Back needed" case, and it now says so explicitly via
+  // opts.tabRoot rather than this function inferring it from id. PROFILE_SHOWS_BACK persists across
+  // a silent re-render (toggleFollow/block/editBio/etc., none of which pass tabRoot) so those don't
+  // make an already-visible Back button disappear, or conjure one into a screen that never had one.
+  if(opts && opts.tabRoot) PROFILE_SHOWS_BACK = false;
+  else if(!silent) PROFILE_SHOWS_BACK = true;
+  // Sep 20 2026, Jeff (after seeing the first version rendered): "Can we do a simpler button than
+  // the full regular back button? The padding from the profile picture to the button is too
+  // close." The bordered/filled .sec.sm pill (the one every other "← Back" in this app uses,
+  // right above followList's own h1) reads as too heavy sitting directly above the round 84px
+  // avatar here, with barely any room under it. Plain text + a small margin underneath instead --
+  // lighter, and it actually buys the avatar more breathing room since there's no button box edge.
+  // Round 2 (Jeff, after that version): "Can we make it look a little better - I like the idea.
+  // The arrow doesn't line up either." The "←" glyph used before is a text character, not an icon
+  // -- its vertical metrics come from the font and don't reliably center against the "Back" text
+  // next to it (worse in a bold weight). Swapped for a real SVG chevron, same stroke-based style as
+  // every other icon in this app (gearSvg() etc.), sized to the text's own cap-height and laid out
+  // with the button itself as a flex row (align-items:center) so the icon centers against the text
+  // by actual box geometry, not by hoping a glyph's baseline lines up. display:inline-flex kept
+  // (not block/width:100%) so the button's own hit box stays exactly as wide as its visible
+  // content -- same "don't make the tap target bigger than what's drawn" reasoning as its old text-
+  // only version. Pulled out into the shared backLinkHtml() helper (see its own comment, near
+  // gearSvg() above) once Jeff asked for the same style everywhere else too.
+  const backBtn = PROFILE_SHOWS_BACK ? `<div style="margin:0 0 10px">${backLinkHtml('history.back()')}</div>` : '';
   const settingsBtn = isMe ? `<button class="profile-set" title="Settings" onclick="openSettings()">${gearSvg()}</button>` : '';
   // Sep 4 (Jeff, corrected same day): bell sits left of the settings gear -- same round
   // transparent .profile-set button, positioned via .profile-notif (see the CSS comment on
@@ -8435,6 +8496,7 @@ async function profileView(id, opts){
   // reordered in the markup below and the fallback flipped.
   const wview = (window.__wview||'list');
   $('app').innerHTML = `<div class="wrap">
+    ${backBtn}
     <div class="profile-head">
       ${avatarBlock}
       <div class="pinfo">
@@ -8475,7 +8537,11 @@ async function followList(id, kind, opts){
   // a hardware/gesture Back press right after landed you back on THIS followers/following list
   // instead of actually leaving the profile. history.back() pops instead of pushing, so it can't
   // create that duplicate (same fix shape as backToSessionAfterSwapPicker).
-  const backBtn = `<div class="pp-head"><button class="sec sm" onclick="history.back()">← Back</button></div>`;
+  // Sep 20 2026 (measured while rendering the app-wide back-button sweep): the bare .pp-head
+  // wrapper has no margin-bottom, and the <h1> right after it only carries its own 4px top margin
+  // (h1{margin:4px 0 2px}) -- so this Back button sat a mere 4px above "Followers"/"Following",
+  // uncomfortably tight for the same reason profileView's own Back needed a 10px buffer. Same fix.
+  const backBtn = `<div style="margin:0 0 10px">${backLinkHtml('history.back()')}</div>`;
   if(!Array.isArray(list)){
     $('app').innerHTML = `<div class="wrap">${backBtn}<h1>${title}</h1>
       <div class="card muted" style="text-align:center;padding:20px">This list is private.</div>
@@ -8586,7 +8652,7 @@ async function blockedAccountsScreen(opts){
       <button class="sm sec" onclick="unblockUser('${x.id}')">Unblock</button>
     </div>`).join('')
     : `<div class="muted" style="padding:14px 2px;text-align:center">No blocked accounts.</div>`;
-  $('app').innerHTML = `<div class="wrap"><div class="pp-head"><h1 style="margin:0;flex:1">Blocked accounts</h1><button class="sec sm" onclick="history.back()">← Back</button></div>
+  $('app').innerHTML = `<div class="wrap"><div class="pp-head"><h1 style="margin:0;flex:1">Blocked accounts</h1>${backLinkHtml('history.back()')}</div>
     <div class="card" style="padding:6px 12px">${rows}</div>
   </div>`;
   const st={t:'blockedAccounts'}; fromHistory ? landOn(st) : navigated(st);
@@ -8869,7 +8935,7 @@ async function applyCrop(type){
 }
 // v254: silent -- this is the 'me' tab's render target (via showTab/renderTabState), which already
 // owns the nav push/scroll/UI_EPOCH bump for the tab switch. See profileView's own comment.
-function meScreen(){ profileView(ME.id, {silent:true}); }
+function meScreen(){ profileView(ME.id, {silent:true, tabRoot:true}); }
 function logout(){ localStorage.removeItem('crewfit_token'); TOKEN=''; ME=null; $('nav').classList.add('hidden'); authScreen(); }
 
 // ---- Push ----

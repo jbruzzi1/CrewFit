@@ -108,9 +108,9 @@ console.log('tapping into the routine shows every exercise AND the owner Edit/De
 
 console.log('real Back from the routine detail, then real Back from the routines list, lands you right back in the Quick Workout picker');
 {
-  await page.click('button:has-text("← Back")'); // detail -> list
+  await page.click('button[aria-label="Back"]'); // detail -> list
   await page.waitForSelector('.tpl-page', { timeout: 8000 });
-  await page.click('button:has-text("← Back")'); // list -> quick workout picker
+  await page.click('button[aria-label="Back"]'); // list -> quick workout picker
   await page.waitForSelector('.pick-head h1', { timeout: 8000 });
   const h1 = await page.$eval('.pick-head h1', el => el.textContent.trim());
   ok(h1 === 'Quick Workout', `back on the real Quick Workout picker, not a plain Workouts tab (got ${JSON.stringify(h1)})`);
@@ -182,9 +182,9 @@ console.log('detouring into Edit on a routine, then Cancel, still resumes the re
   await page.waitForSelector('#tplNameEdit, input', { timeout: 8000 });
   // Cancel out of the editor -- whatever its real Cancel/Back control is.
   const cancelBtn = await page.$('button:has-text("Cancel")');
-  if (cancelBtn) await cancelBtn.click(); else await page.click('button:has-text("← Back")');
+  if (cancelBtn) await cancelBtn.click(); else await page.click('button[aria-label="Back"]');
   await page.waitForSelector('.tpl-page', { timeout: 8000 });
-  await page.click('button:has-text("← Back")'); // list -> should rebuild the quick workout picker
+  await page.click('button[aria-label="Back"]'); // list -> should rebuild the quick workout picker
   await page.waitForSelector('.pick-head h1', { timeout: 8000 });
   const h1 = await page.$eval('.pick-head h1', el => el.textContent.trim());
   ok(h1 === 'Quick Workout', `survives an Edit/Cancel detour -- still the real Quick Workout picker (got ${JSON.stringify(h1)})`);
@@ -207,7 +207,7 @@ console.log('cold-review catch: tapping "Use" DIRECTLY after an Edit/Cancel deto
   await page.click('.pp-menu button:has-text("Edit")');
   await page.waitForSelector('#tplNameEdit, input', { timeout: 8000 });
   const cancelBtn = await page.$('button:has-text("Cancel")');
-  if (cancelBtn) await cancelBtn.click(); else await page.click('button:has-text("← Back")');
+  if (cancelBtn) await cancelBtn.click(); else await page.click('button[aria-label="Back"]');
   await page.waitForSelector('.tpl-page', { timeout: 8000 });
   // Straight to Use on the list row -- no Back tap first.
   const postPromise = page.waitForResponse(r => r.url().includes('/api/sessions') && r.request().method() === 'POST');
@@ -245,7 +245,7 @@ console.log('repeated Routine -> Back cycling stays correct and bounded (a known
   for (let i = 0; i < 3; i++) {
     await page.click('.pick-head button:has-text("Routine")');
     await page.waitForSelector('.tpl-row', { timeout: 8000 });
-    await page.click('button:has-text("← Back")');
+    await page.click('button[aria-label="Back"]');
     await page.waitForSelector('.pick-head h1', { timeout: 8000 });
     const h1 = await page.$eval('.pick-head h1', el => el.textContent.trim());
     ok(h1 === 'Quick Workout', `round trip ${i + 1}: Back correctly lands on the picker in exactly one tap`);
@@ -272,7 +272,7 @@ console.log('cold-review catch: tapping "← Back" immediately after Cancel on t
   await page.waitForSelector('#tplName', { timeout: 5000 });
   await page.click('.sheet button:has-text("Cancel")');
   // No wait here -- back-to-back with Cancel, deliberately inside the fade window.
-  await page.click('button:has-text("← Back")');
+  await page.click('button[aria-label="Back"]');
   await page.waitForSelector('.pick-head h1', { timeout: 8000 });
   const h1 = await page.$eval('.pick-head h1', el => el.textContent.trim());
   ok(h1 === 'Quick Workout', `real Back landed on the Quick Workout picker, not swallowed by the fading sheet backdrop (got ${JSON.stringify(h1)})`);
