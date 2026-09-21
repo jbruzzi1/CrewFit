@@ -36,10 +36,10 @@ Jeff was burned (Aug 15, 2026: an agent deployed a profile thumbnail redesign **
   of `db.js`). `DATABASE_URL` is a required Fly secret (set via `fly postgres attach`) — the app
   refuses to boot without it, or if it's unreachable (loud `FATAL during boot:` in `fly logs`,
   never a silent empty database).
-- **One-time cutover runbook (create the Postgres cluster, attach it, migrate the live
-  `data.json`, deploy, verify, rollback plan): see `DEPLOY.md`'s "ONE-TIME: moving the database
-  from data.json to Postgres" section.** That section is deleted once the cutover is done — if
-  it's gone, the cutover already happened and this whole paragraph is historical.
+- **The one-time data.json→Postgres cutover is done** (its runbook lived in `DEPLOY.md` as a
+  "ONE-TIME" section, deleted Sep 21 2026 per its own stated rule once the cutover completed).
+  `scripts/migrate-to-postgres.mjs` still exists and is documented below as the incident-recovery
+  tool — that's a separate, ongoing use, not leftover migration scaffolding.
 - The migration tool is `scripts/migrate-to-postgres.mjs` — reuses `db.js`'s own
   save()/load()/ensureSchema() (one source of truth for "how a DB object becomes Postgres rows"),
   refuses to write anything if the source file has a case-insensitive username collision
@@ -206,13 +206,14 @@ never touch real data even by accident.
 - **Before pushing for real user growth / an app-store launch, revisit the Postgres write
   pattern.** Flagged during the Aug 2026 data.json→Postgres migration (§2.5); Jeff asked to keep
   this on record for when he asks about getting real users on the app:
-  - Every one of the ~50 `save(DB)` call sites in `server.js` (inherited unchanged from the old
-    file-based design, on purpose, to keep this migration's risk low) re-syncs the ENTIRE database
-    on every single write — every user row, every session row, every table, upserted, on every
-    save. One person logging one set today does a full write pass over the whole DB. Invisible at
-    a few dozen users; an O(total data) cost per write that slows down for EVERYONE as the user
-    base grows. This is the real scaling ceiling — not the choice of Postgres itself. Fix: convert
-    the highest-traffic call sites to targeted single-row/entity writes instead of whole-DB resyncs.
+  - ~~Every one of the ~50 `save(DB)` call sites in `server.js` re-syncs the ENTIRE database on
+    every single write.~~ **Fixed Sep 8 2026** — `db.js`'s `save()` was rewritten to do diffed
+    writes: it keeps an in-memory `lastPersisted` snapshot of what was last actually written and
+    only sends rows that genuinely changed, not a full whole-DB resync every time. Proved via
+    Postgres's own `xmin` column (`test/db-diff-writes.mjs` — an unchanged save() issues zero
+    writes, confirmed at the row-version level, not just by reasoning about the code). This note
+    is left struck through rather than deleted, same as the plaintext-PINs note below, so the
+    scaling risk isn't reintroduced as "still open" by a future skim of this section.
   - `db.js` holds one single Postgres connection for the whole app (no pooling) — every request
     from every user serializes through one TCP socket. Fine at today's traffic, a bottleneck at
     real scale. Fix: real connection pooling.
@@ -247,10 +248,11 @@ never touch real data even by accident.
   deleted, since it was flagged as a real risk to fix "before there are real users" and this
   confirms it actually was.
 - **Two things can only be confirmed on a real iPhone**, never in headless Chromium: the v160 bottom-nav fix, and that the green "Try X lb today" box actually responds to a thumb.
-- **A paused bug hunt** left `_bughunt_api.mjs`, `_bughunt_api2.mjs`, `_bughunt_front.cjs` untracked in the repo. Jeff paused it; pick it up or delete them.
 - **Profile tab + New workout creation** still haven't had the v140 "open it up" visual pass — the main remaining consistency gap. (Workouts tab is done as of v144/v145.)
-- `confirm()` / `prompt()` native dialogs on Accept/Decline/Save-Routine work on iPhone but a custom modal is polish.
-- "Request Changes" / "Save This Routine" from pending Respond menu re-render but keep Accept/Decline (correct, but native `prompt()` UX).
+- ~~`confirm()` / `prompt()` native dialogs on Accept/Decline/Save-Routine work on iPhone but a
+  custom modal is polish.~~ Done — every confirmation in the app now goes through the in-app
+  `confirmSheet()` (see CLAUDE.md's design constants). A full grep of `public/app.js` turns up
+  zero remaining `confirm(`/`prompt(` calls.
 
 ## 12. COMMANDS
 - Tests: `npm test` (run it before AND after touching progression / PRs / units / the log sheet)

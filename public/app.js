@@ -5363,8 +5363,6 @@ function addEx(name, el){
   }
   if(el){ const on=DRAFT.exercises.find(e=>e.name===name); el.classList.toggle('ex-on', !!on); el.querySelector('.ex-add').textContent = on?'✓':'+'; }
 }
-function closePick(){ createFlow(); }
-
 
 // ---- Progress tab ------------------------------------------------------------------------
 // Design + rationale: _design/progress/README.md. "Add weight next time" is computed server
