@@ -456,16 +456,20 @@ console.log('\nsaveWorkoutEdit: the REAL Save-changes-button function had the id
     `the save still goes through with the exercise data read BEFORE navigation, not an empty/lost list (got ${JSON.stringify(putBody.exercises)})`);
 }
 
-console.log('\nsaveWorkoutEdit: the friend-set-detach confirm sheet must still navigate on an ordinary, instant "Save anyway" tap (v252 cold-review catch)');
+console.log('\nsaveWorkoutEdit: the friend-set-removal choice sheet must still navigate on an ordinary, instant "Ask everyone to confirm" tap (v252 cold-review catch)');
 {
-  // The bug the first cold-review pass caught: openSheetHtml (which confirmSheet goes through)
-  // bumps UI_EPOCH itself the moment the "Save changes? N friends logged sets..." sheet opens --
-  // same as any other navigation. The first version of this fix threaded saveWorkoutEdit's
-  // PRE-sheet epoch through to saveWorkoutEditConfirmed, so nothingNavigatedSince compared it
-  // against a UI_EPOCH that had already moved past it by the time the sheet even existed --
-  // permanently false, not a race, so "Save anyway" would never reopen the recap even here, with
-  // no navigation at all beyond the sheet itself. This needs a session with a real removed exercise
-  // and another user's log against it, so the "touched" list is non-empty and this branch actually
+  // The bug the first cold-review pass caught: openSheetHtml (which openRemovalChoiceSheet goes
+  // through, same as confirmSheet does) bumps UI_EPOCH itself the moment the "Remove this
+  // exercise? N friends logged sets..." sheet opens -- same as any other navigation. The first
+  // version of this fix threaded saveWorkoutEdit's PRE-sheet epoch through to
+  // saveWorkoutEditConfirmed, so nothingNavigatedSince compared it against a UI_EPOCH that had
+  // already moved past it by the time the sheet even existed -- permanently false, not a race, so
+  // "Ask everyone to confirm" would never reopen the recap even here, with no navigation at all
+  // beyond the sheet itself. Sep 23 2026: this sheet is no longer confirmSheet's generic single-
+  // callback shape (see openRemovalChoiceSheet's own comment for why -- it now offers a real
+  // second choice, "Just for me"), so the tap is simulated by calling removalChoiceAsk() directly,
+  // not the old generic runConfirmCb(). This needs a session with a real removed exercise and
+  // another user's log against it, so the "touched" list is non-empty and this branch actually
   // runs (the default stand-in session has neither).
   pending.clear(); alertLog.length = 0;
   sessionGetOverride = {
@@ -487,7 +491,7 @@ console.log('\nsaveWorkoutEdit: the friend-set-detach confirm sheet must still n
   // that later, separate chain run to completion before checking viewPost.
   await saveDone;
 
-  vm.runInContext('runConfirmCb()', ctx); // taps "Save anyway" IMMEDIATELY, no navigation at all
+  vm.runInContext('removalChoiceAsk()', ctx); // taps "Ask everyone to confirm" IMMEDIATELY, no navigation at all
   await new Promise(r => setTimeout(r, 0)); // let saveWorkoutEditConfirmed's own GET resolve, issuing the PUT
   pending.get('/api/sessions/sess1')();
   await new Promise(r => setTimeout(r, 0));
@@ -495,7 +499,7 @@ console.log('\nsaveWorkoutEdit: the friend-set-detach confirm sheet must still n
   await new Promise(r => setTimeout(r, 0)); // let the POST's own resolution chain reach the final viewPost() call
 
   const after = calls();
-  ok(after.viewPost === before.viewPost + 1, `viewPost DOES fire after an instant "Save anyway" with no real navigation (before ${before.viewPost}, after ${after.viewPost})`);
+  ok(after.viewPost === before.viewPost + 1, `viewPost DOES fire after an instant "Ask everyone to confirm" with no real navigation (before ${before.viewPost}, after ${after.viewPost})`);
   sessionGetOverride = null;
 }
 

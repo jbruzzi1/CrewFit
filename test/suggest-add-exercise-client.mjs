@@ -236,8 +236,17 @@ console.log('\n=== approve/reject controls: creator sees them, a non-creator par
   vm.runInContext(`ME = {id:'me1', displayName:'Me'};`, ctx);
 }
 
-console.log('\n=== multiple pending add-suggestions all render (editByEx[undefined]-bucket regression check) ===');
+console.log('\n=== multiple pending add-suggestions BOTH exist and are reachable (editByEx[undefined]-bucket regression check) ===');
 {
+  // Sep 23 2026 (Jeff, bug #3: "layered suggestions instead of list view"): 2+ pending suggestions
+  // no longer render simultaneously as separate full-width cards -- they render as a stacked deck,
+  // one card visible at a time (see openSession's pendingEdits/SUGG_STATE block, and
+  // test/suggestion-stack.mjs for the full behavior). The regression this block actually guards
+  // against -- a shared editByEx[undefined] bucket silently swallowing EVERY add-suggestion the
+  // moment there's more than one -- is still just as real under the new design, it just shows up
+  // differently: both must still exist in the rendered deck, one as the front card and the other
+  // reachable by paging to it, rather than both being simultaneously visible.
+  const gotoSuggestion = vm.runInContext('gotoSuggestion', ctx);
   SESSION_DB.sess1 = baseSession({
     creatorId: 'host1', participants: ['host1', 'me1'],
     exercises: [{ id: 'ex1', name: 'Bench Press', defaultSets: 3, defaultReps: 8 }],
@@ -248,8 +257,13 @@ console.log('\n=== multiple pending add-suggestions all render (editByEx[undefin
   });
   vm.runInContext(`ME = {id:'host1', displayName:'Host'};`, ctx);
   await openSession('sess1');
-  ok(/Lateral Raise/.test(appEl.innerHTML) && /Face Pull/.test(appEl.innerHTML),
-    `BOTH pending add-suggestions render, not just one (a shared editByEx[undefined] bucket would hide all but treat the array as truthy and skip every one -- got: ${appEl.innerHTML.includes('Lateral Raise')}/${appEl.innerHTML.includes('Face Pull')})`);
+  ok(/Lateral Raise/.test(appEl.innerHTML), `the front card shows the first-proposed suggestion (got: ${appEl.innerHTML.includes('Lateral Raise')})`);
+  ok(!/Face Pull/.test(appEl.innerHTML), 'the second one is not ALSO on screen -- it is behind the front card, not lost');
+  ok(/sugg-dot/.test(appEl.innerHTML), 'paging dots are present (2 pending -> a real deck, not a shared-bucket empty render)');
+  await gotoSuggestion('sess1', 1);
+  ok(/Face Pull/.test(appEl.innerHTML),
+    `paging to index 1 reaches the SECOND pending add-suggestion -- a shared editByEx[undefined] bucket would have swallowed it entirely rather than just leaving it a page away (got: ${appEl.innerHTML.includes('Face Pull')})`);
+  ok(!/Lateral Raise/.test(appEl.innerHTML), 'and the first one is off-screen now, not duplicated');
   vm.runInContext(`ME = {id:'me1', displayName:'Me'};`, ctx);
 }
 

@@ -463,6 +463,22 @@
     .pp-photo-dots { display:flex; gap:6px; justify-content:center; margin-top:8px; }
     .pp-photo-dots .pp-dot { width:6px; height:6px; border-radius:50%; background:#cfd4da; transition:background .15s; }
     .pp-photo-dots .pp-dot.on { background:var(--blue); }
+    /* Sep 23 2026 (Jeff, bug #3: "layered suggestions instead of list view"): a shallow card deck
+       for 2+ pending swap/add suggestions on a workout -- one full card up front, the next couple
+       peeking out below it for depth, so several suggestions read as "more to look at" instead of
+       a wall of identical cards. --d (1 or 2, set inline per peek div) drives how far back/narrow/
+       faded each one reads. Paired with .sugg-dots below (same dot language as .pp-photo-dots)
+       so anyone -- not just whoever's deciding -- can page through without approving/rejecting. */
+    .sugg-stack { position:relative; margin:12px 0 0; }
+    .sugg-stack .sugg-front { position:relative; z-index:3; margin:0; }
+    .sugg-peek { position:absolute; left:calc(var(--d) * 9px); right:calc(var(--d) * 9px); bottom:calc(var(--d) * -6px); height:14px; border-radius:0 0 16px 16px; background:var(--card); box-shadow:0 1px 2px rgba(20,24,31,.04), 0 8px 20px -10px rgba(20,24,31,.14); opacity:calc(1 - var(--d) * 0.26); z-index:calc(3 - var(--d)); }
+    /* margin-top clears the deepest peek (2 layers * 6px = 12px below the front card's own
+       bottom edge, see .sugg-peek's --d formula) with room to spare, so the "N of M" row never
+       sits under the peeking card edges behind it. */
+    .sugg-meta { display:flex; align-items:center; justify-content:center; gap:10px; margin:18px 0 4px; }
+    .sugg-dots { display:flex; gap:6px; }
+    .sugg-dot { width:6px; height:6px; border-radius:50%; background:#cfd4da; transition:background .15s; cursor:pointer; }
+    .sugg-dot.on { background:var(--blue); }
     .pp-ex { display:flex; justify-content:space-between; align-items:center; padding:11px 4px; border-bottom:1px solid var(--line); }
     .pp-ex:last-child { border-bottom:none; }
     .pp-ex-name { font-size:14px; font-weight:600; color:var(--fg); }
@@ -1589,6 +1605,8 @@
       :where(html.theme-dark) .pr-self { background:#1f2126; border-color:#2b2e34; }
       :where(html.theme-dark) .rc-chip.warm { background:transparent; border-color:#3a3e46; color:#8a8f98; }
       :where(html.theme-dark) .pp-photo-dots .pp-dot { background:#3a3e46; }
+      :where(html.theme-dark) .sugg-dot { background:#3a3e46; }
+      :where(html.theme-dark) .sugg-peek { box-shadow:0 1px 2px rgba(0,0,0,.35), 0 8px 20px -10px rgba(0,0,0,.55); }
       :where(html.theme-dark) .fav.pending { border-color:#3a3e46; }
       :where(html.theme-dark) .fav-pending-dot { background:#1c1e22; }
       :where(html.theme-dark) .fav-pending-dot svg { color:#6f747d; }
@@ -1713,6 +1731,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Activity</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=442"></script>
+  <script src="app.js?v=445"></script>
 </body>
 </html>

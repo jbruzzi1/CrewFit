@@ -141,7 +141,7 @@ console.log('\na never-invited viewer of a public session (joinable) still gets 
   ok(!hasMessageButton(sink.html), 'no "Message" button for this tier');
 }
 
-console.log('\na genuinely invited person bumped into the joinable branch (host already posted) also gets no "Message" button, even though they can chat');
+console.log('\nSep 23 2026 fix: a genuinely invited person is NOT bumped out of respondHere just because the host already posted -- they still get Accept/Decline (and still no "Message" button)');
 {
   const host3 = await reg('mbr_host3', 'pass1234', 'Host3');
   const invitee3 = await reg('mbr_invitee3', 'pass1234', 'Invitee3');
@@ -160,10 +160,11 @@ console.log('\na genuinely invited person bumped into the joinable branch (host 
   const ctx3 = makeCtx();
   vm.runInContext(`TOKEN = ${JSON.stringify(invitee3.token)}; ME = ${JSON.stringify(invitee3.user)};`, ctx3);
   sink.html = '';
-  chatInputPresent = true; // pendingMe still true here -> canChat true, #chatInput still renders
+  chatInputPresent = true; // respondHere -> canChat true, #chatInput still renders
   await vm.runInContext('openSession', ctx3)(s3.id);
-  ok(sink.html.includes('Join in?'), 'still lands on the "Join in?" screen (sessionHasAnyPost bumped them out of respondHere)');
-  ok(!hasMessageButton(sink.html), 'no "Message" button here either, even though this tier can genuinely chat');
+  ok(sink.html.includes('Accept') && sink.html.includes('Decline'), 'a real pending invite still lands on Accept/Decline, regardless of what the host already posted (Jeff bug report, Sep 23 2026)');
+  ok(!sink.html.includes('Join in?'), 'does NOT fall through to "Join in?" -- that flow never clears s.invited, which is the whole bug');
+  ok(!hasMessageButton(sink.html), 'no "Message" button here either');
 }
 
 try { srv && srv.kill(); } catch {}

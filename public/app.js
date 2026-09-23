@@ -1129,11 +1129,21 @@ async function openSession(id, opts){
     if(!ed.exerciseId) continue;
     (editByEx[ed.exerciseId] = editByEx[ed.exerciseId] || []).push(ed);
   }
+  // Sep 23 2026: pending exercise-removal requests (bug #2 fix), keyed by exerciseId same as
+  // editByEx above -- s.pendingRemovals only ever hands back entries this viewer has a real stake
+  // in (creator sees all; a required approver sees just their own asks; see sessionView in
+  // server.js), so there is never more than one relevant entry per exercise to worry about here.
+  const removalByEx = {};
+  for(const pr of (s.pendingRemovals||[])){
+    if(pr.status !== 'pending') continue;
+    removalByEx[pr.exerciseId] = pr;
+  }
   // pre-resolve proposer display names (await only at top level, not inside .map)
   const nameCache = {};
   const nameOfCached = async (id) => { if(!(id in nameCache)) nameCache[id] = await nameOf(id); return nameCache[id]; };
   for(const ed of s.suggestedEdits){ await nameOfCached(ed.proposedBy); }
   for(const j of s.joinRequests){ await nameOfCached(j.userId); }
+  for(const pr of (s.pendingRemovals||[])){ await nameOfCached(pr.proposedBy); for(const uid of (pr.requiredApprovals||[])) await nameOfCached(uid); }
   for(const pid of s.participants){ await nameOfCached(pid); }
   // ...and for anyone who logged sets here, who may no longer be a participant (they left)
   for(const pid of Object.keys(s.logs||{})){ if((s.logs[pid]||[]).length) await nameOfCached(pid); }
@@ -1143,8 +1153,14 @@ async function openSession(id, opts){
   // v312: when you can log, every card carries its own logger (exLogBlockHtml) -- the load-type
   // tag ("per dumbbell" / "added weight") comes from the library, looked up by name once here.
   const LIBN = canEdit ? await libByName() : {};
+  // Sep 23 2026 (bug #2 follow-up): exercises this viewer personally hid (see /hide-for-me) never
+  // show up on their own card list -- s.exercises itself, and everyone else's card list, are
+  // completely untouched, same as a personal swap. Only the live workout view respects this; the
+  // shared exercise-list EDIT form (renderWorkoutEdit) still shows everything, since managing the
+  // shared plan is a different thing from personally not wanting to see one lift.
+  const myHidden = new Set(s.myHiddenExerciseIds || []);
   // my variation view (each exercise = its own card tile; swap suggestion nested inside)
-  const myEx = s.exercises.map(e=>{
+  const myEx = s.exercises.filter(e=>!myHidden.has(e.id)).map(e=>{
     const v = s.variations[e.id] && s.variations[e.id][ME.id];
     // find an approved swap for this exercise (option 1: exercise becomes swapTo + muted "swapped by X")
     const approved = (editByEx[e.id]||[]).find(ed=>ed.status==='approved');
@@ -1228,6 +1244,28 @@ async function openSession(id, opts){
       }
       // approved/rejected swaps: no residual row (approved becomes the exercise name above; rejected leaves original)
     }
+    // Sep 23 2026 (bug #2 fix): a pending removal request on this exercise. Three viewers, three
+    // different things to show -- the creator (who asked) sees who they're still waiting on, plus
+    // a way to withdraw it; a required approver who hasn't answered yet gets the actual
+    // Approve/Decline choice; one who already said yes sees that they're just waiting on the rest.
+    // Nobody else (no stake in this exercise's removal) ever sees this row at all, matching
+    // sessionView's own filtering.
+    const pr = removalByEx[e.id];
+    if(pr){
+      const proposerName = nameCache[pr.proposedBy] || 'The organizer';
+      if(isCreator){
+        const waitingOn = pr.requiredApprovals.filter(uid=>!pr.approvals.includes(uid))
+          .map(uid=>{ const n = nameCache[uid]; return n==='You' ? 'you' : (isUnknownName(n)?'someone':String(n).split(' ')[0]); });
+        sub += `<div class="req"><div class="rc">Removing ${esc(e.name)} — waiting on ${esc(waitingOn.join(', '))} to confirm</div>
+          <div class="ra"><button class="sm no" onclick="cancelRemoval('${s.id}','${pr.id}')">Cancel request</button></div></div>`;
+      } else if(pr.requiredApprovals.includes(ME.id) && !pr.approvals.includes(ME.id)){
+        const mySets = ((s.logs && s.logs[ME.id])||[]).filter(l=>l.exerciseId===e.id).length;
+        sub += `<div class="req"><div class="rc">${esc(proposerName.split(' ')[0])} wants to remove ${esc(e.name)} — you have ${mySets} set${mySets===1?'':'s'} logged on it</div>
+          <div class="ra"><button class="sm ok" onclick="approveRemoval('${s.id}','${pr.id}')">Approve</button><button class="sm no" onclick="declineRemoval('${s.id}','${pr.id}')">Decline</button></div></div>`;
+      } else if(pr.requiredApprovals.includes(ME.id)){
+        sub += `<div class="req"><div class="rc">You approved removing ${esc(e.name)}</div><div class="ra"><span class="tag">waiting on the rest</span></div></div>`;
+      }
+    }
     return `<div class="${cls}${canEdit?' ex-log':''}"${canEdit?` data-sid="${s.id}" data-ex="${e.id}" data-load="${esc((LIBN[e.name] && LIBN[e.name].loadType) || '')}" data-rec="${pendingSwap?'':esc(recExName)}"`:''}>${head}${sub}</div>`;
   }).join('');
   // suggested edits: swaps whose target exercise no longer exists, PLUS -- v262b -- every
@@ -1246,29 +1284,60 @@ async function openSession(id, opts){
   // no longer exists"). liveExIds is the actual thing that determines whether the myEx loop above
   // would have rendered this edit inline: only when e.id (a REAL, current exercise) matches it.
   const liveExIds = new Set(s.exercises.map(e => e.id));
-  let edits = '';
+  // Sep 23 2026 (Jeff: "layered suggestions instead of list view" -- bug #3 from the original
+  // three-bug list): this used to render every pending suggestion here as its own full-width card,
+  // stacked top-to-bottom -- fine for one, but a group of several people each suggesting a swap or
+  // an add-exercise meant scrolling a wall of near-identical cards. Split into pendingEdits (still
+  // need a decision) and decidedHtml (already-approved, muted "swapped by X" lines -- these are
+  // just a record, not something to page through, so they stay flat as before).
+  const pendingEdits = [];
+  let decidedHtml = '';
   for(const ed of s.suggestedEdits){
     if(ed.exerciseId && liveExIds.has(ed.exerciseId)) continue; // already shown inline above (a swap on a still-existing exercise)
     // An approved add is now a real exercise with its own card in the list above -- nothing more
     // to say about it here. An approved swap has no such card of its own (it renamed an existing
     // one), so it still falls through to the muted "swapped by X" line below.
     if(ed.type==='add' && ed.status==='approved') continue;
-    const byName = nameCache[ed.proposedBy] || ed.proposedBy;
-    if(ed.status==='pending'){
-      if(ed.type==='add'){
-        edits += `<div class="card"><div class="req"><div class="rc">${byName==='You' ? 'You suggested adding' : esc(byName)+' suggests adding'} ${esc(ed.swapTo)}</div>`;
-      } else {
-        edits += `<div class="card"><div class="req"><div class="rc">${byName==='You' ? 'You suggested' : esc(byName)+' suggests'} → ${esc(ed.swapTo)}</div>`;
-      }
-      if(isCreator) edits += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
-      else edits += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
-      edits += `</div></div>`;
-    } else if(ed.status==='approved'){
+    if(ed.status==='pending') pendingEdits.push(ed);
+    else if(ed.status==='approved'){
       // option 1: no residual pill — just show the agreed swap, muted "swapped by X"
+      const byName = nameCache[ed.proposedBy] || ed.proposedBy;
       const disp = (byName||'?').split(' ')[0];
-      edits += `<div class="card"><div class="req"><div class="rc">${esc(ed.swapTo)} <span class="swap-note">· swapped by ${esc(disp)}</span></div></div></div>`;
+      decidedHtml += `<div class="card"><div class="req"><div class="rc">${esc(ed.swapTo)} <span class="swap-note">· swapped by ${esc(disp)}</span></div></div></div>`;
     }
     // rejected: nothing shown
+  }
+  // The actual content of one pending suggestion's card -- shared between the plain single-card
+  // path (nothing to page through, so no stack chrome) and the stacked-deck path below.
+  const pendingCardInner = (ed) => {
+    const byName = nameCache[ed.proposedBy] || ed.proposedBy;
+    const head = ed.type==='add'
+      ? `${byName==='You' ? 'You suggested adding' : esc(byName)+' suggests adding'} ${esc(ed.swapTo)}`
+      : `${byName==='You' ? 'You suggested' : esc(byName)+' suggests'} → ${esc(ed.swapTo)}`;
+    const actions = isCreator
+      ? `<button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button>`
+      : `<span class="tag">waiting on creator</span>`;
+    return `<div class="req"><div class="rc">${head}</div><div class="ra">${actions}</div></div>`;
+  };
+  let edits;
+  if(pendingEdits.length <= 1){
+    // Nothing to page through -- one card (or none) is just a card, same as it always rendered.
+    edits = (pendingEdits.length ? `<div class="card">${pendingCardInner(pendingEdits[0])}</div>` : '') + decidedHtml;
+  } else {
+    // 2+ pending suggestions: a shallow deck, one card visible at a time, the next 1-2 peeking out
+    // behind it for depth. Deciding the front card (approve/reject already re-renders this whole
+    // screen, see approve()/reject() above) naturally reveals the next; dots below page through
+    // without deciding anything, for a non-creator who's just browsing what's been proposed.
+    if(SUGG_STATE.sessionId !== s.id) SUGG_STATE = { sessionId: s.id, idx: 0 };
+    if(SUGG_STATE.idx > pendingEdits.length - 1) SUGG_STATE.idx = pendingEdits.length - 1;
+    if(SUGG_STATE.idx < 0) SUGG_STATE.idx = 0;
+    const idx = SUGG_STATE.idx;
+    const peekN = Math.min(2, pendingEdits.length - idx - 1);
+    let peekHtml = '';
+    for(let p = peekN; p >= 1; p--) peekHtml += `<div class="sugg-peek" style="--d:${p}"></div>`;
+    const dots = pendingEdits.map((_, i) => `<span class="sugg-dot${i===idx?' on':''}" onclick="gotoSuggestion('${s.id}',${i})" aria-label="Suggestion ${i+1} of ${pendingEdits.length}"></span>`).join('');
+    edits = `<div class="sugg-stack">${peekHtml}<div class="card sugg-front">${pendingCardInner(pendingEdits[idx])}</div></div>
+      <div class="sugg-meta"><span class="muted" style="font-size:12px">${idx+1} of ${pendingEdits.length}</span><div class="sugg-dots">${dots}</div></div>` + decidedHtml;
   }
   // join requests (creator only)
   let jr = '';
@@ -1436,7 +1505,17 @@ async function openSession(id, opts){
   // longer is: a friend-visible session now shows up here for people who were never invited at
   // all, and this used to hand them Accept/Decline anyway — tapping either did nothing useful,
   // since there was no invite on file to answer.
-  const respondHere = !isCreator && !sessionHasAnyPost(s) && !isParticipant
+  // Sep 23 2026 (Jeff, real bug report): this used to also require !sessionHasAnyPost(s) -- meant
+  // to stop offering Accept/Decline on a workout that's effectively already wrapped up. In a live
+  // group workout that backfires: the moment ANY other participant posts their own recap (which
+  // can happen minutes into a session), sessionHasAnyPost flips true for EVERYONE viewing it,
+  // including someone still-invited who hasn't even opened the invite yet -- so a still-live,
+  // still-open invite silently lost its Accept/Decline screen and fell through to "Join in?" (if
+  // public -- a different flow, gated on the creator approving a join request, that never touches
+  // s.invited) or a dead end with no actionable button at all (if private). Whether YOU were asked
+  // and haven't answered has nothing to do with how fast someone else finished their own sets --
+  // drop the check entirely so a real pending invite always resolves to Accept/Decline.
+  const respondHere = !isCreator && !isParticipant
     && Array.isArray(s.invited) && s.invited.includes(ME.id);
   // The other door in: a friend-visible workout you can see but were never asked into. "Join in?"
   // instead of Accept/Decline — you're the one asking here, not answering. Uses the same
@@ -1477,18 +1556,24 @@ async function openSession(id, opts){
   // clear s.invited) — exclude anyone already in participants so they never show as both
   // joined AND still-pending at once.
   const invitedIds = (isCreator || isParticipant) ? (Array.isArray(s.invited) ? s.invited.filter(p=>p!==ME.id && !s.participants.includes(p)) : []) : [];
-  const favChip = (pid, pending) => {
+  // Sep 23 2026 (bug #2 follow-up): the creator can now remove a current participant outright --
+  // built specifically so a removal request stuck waiting on someone inactive has a real way out
+  // besides "wait forever" or withdraw the ask entirely (see /participants/:pid/remove's own
+  // comment). Only ever offered to the creator, and never on their own chip -- Delete/Leave are
+  // already the right tools for the creator's own exit.
+  const favChip = (pid, pending, removable) => {
     const known = !isUnknownName(nameCache[pid]);
     const label = known ? String(nameCache[pid]) : 'A friend';
     const av = `<div class="fav-av" style="background:${avatarColor(label)};color:#fff">${esc(label[0])}</div>`;
-    if(!pending) return `<div class="fav">${av}<span>${esc(label)}</span></div>`;
+    const removeBtn = removable ? `<button class="linkbtn" style="padding:2px 4px" title="Remove from workout" onclick="event.stopPropagation();confirmRemoveParticipant('${s.id}','${pid}',${JSON.stringify(label)})">✕</button>` : '';
+    if(!pending) return `<div class="fav">${av}<span>${esc(label)}</span>${removeBtn}</div>`;
     return `<div class="fav pending"><div class="fav-av-wrap">${av}<div class="fav-pending-dot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div></div><span>${esc(label)}</span></div>`;
   };
   const invitedBlock = invitedIds.length
     ? `<div class="crew-invited-label">Invited · waiting to respond</div><div class="chips mini">${invitedIds.map(pid=>favChip(pid,true)).join('')}</div>`
     : '';
   const crewBlock = (joinedIds.length || invitedIds.length)
-    ? `<h2>Who's in</h2>${joinedIds.length?`<div class="chips mini">${joinedIds.map(pid=>favChip(pid,false)).join('')}</div>`:''}${invitedBlock}`
+    ? `<h2>Who's in</h2>${joinedIds.length?`<div class="chips mini">${joinedIds.map(pid=>favChip(pid,false,isCreator)).join('')}</div>`:''}${invitedBlock}`
     : '';
 
   if(respondHere){
@@ -1601,9 +1686,15 @@ async function viewPost(id, authorId, opts){
   const isAuthor = authorId===ME.id;
   const post = s.posts[authorId] || {};
   const media = (post.media && post.media.length) ? post.media : [];
-  // resolve collaborator display names (participants excluding creator)
+  // resolve collaborator display names (participants excluding the recap's OWN author).
+  // Sep 23 2026 (found while verifying the "only my sets" fix just below): this used to exclude
+  // s.creatorId specifically, from back when the creator's post was the only recap that existed.
+  // Now every participant gets their own post (s.posts[authorId] per author), so on anyone OTHER
+  // than the creator's own recap this listed them as one of their OWN training partners --
+  // "with @Jeff" rendering right on Jeff's own page. Exclude the actual author of THIS recap,
+  // whoever that is, not a hardcoded creatorId.
   const nm = {};
-  for(const pid of s.participants){ if(pid!==s.creatorId) nm[pid]= await nameOf(pid); }
+  for(const pid of s.participants){ if(pid!==authorId) nm[pid]= await nameOf(pid); }
   // names for EVERYONE who logged here — including the creator, and including anyone who has
   // since left the workout. Their sets are still part of what happened that day.
   const logNames = {};
@@ -1616,21 +1707,27 @@ async function viewPost(id, authorId, opts){
   const parts = known.map(n => '@' + esc(String(n).split(' ')[0]));
   if(unknown) parts.push(`${unknown} other${unknown>1?'s':''}`);
   const collab = parts.length ? `<div class="pp-collab">with ${parts.join(', ')}</div>` : '';
-  // THE SHARED RESULT. This used to read s.logs[s.creatorId] and nothing else, so a training
-  // partner's sets were stored, counted toward their own PRs, and displayed to precisely nobody.
+  // THIS RECAP IS ONE PERSON'S — authorId's. This used to read s.logs[s.creatorId] only, then
+  // (v242) was widened to show EVERY participant's sets on every single recap, so a training
+  // partner's work was stored and actually displayed somewhere. Sep 23 2026 (Jeff, real
+  // complaint): with 4-5 people in a workout, that meant every one of their own posted recaps
+  // repeated the whole group's full set-by-set detail — a lot of extra scrolling for information
+  // that's already the live shared log sheet's job (and that screen has always shown only YOUR
+  // OWN sets per exercise, even mid-group-workout — see openSession's exLogs. The posted recap
+  // was the one screen out of step with that). A recap is already a per-author post
+  // (s.posts[authorId], each participant gets their own), so it now shows only the recap's own
+  // author's sets — the "with @X, @Y" line above already says who else was part of it, so that
+  // context isn't lost, just the rep-by-rep repetition of everyone else's numbers.
   //
-  // Who sees whose: if you were IN the workout you see everyone in it; if you are an outside
-  // viewer you see the creator's sets, plus (v242) any author whose RECAP is visible to you —
-  // the server only sends an outside viewer a person's logs when that person's own recap
+  // Who sees it at all: if you were IN the workout you see it; if you are an outside viewer you
+  // see it when the author is the creator, or (v242) when that author's own RECAP is visible to
+  // you — the server only sends an outside viewer a person's logs when that person's own recap
   // visibility admits them (sessionView), so a visible post here is precisely "they published
-  // this to me". That per-author publish gate is what made widening beyond the creator safe;
-  // it used to be creator-only because the old server handed every participant's logs to any
-  // friend of the creator. Departed members' sets are stored but not sent unless posted.
+  // this to me".
   const inTheWorkout = (s.participants||[]).includes(ME.id) || s.creatorId === ME.id;
-  const logged = Object.keys(s.logs||{})
-    .filter(pid => (s.logs[pid]||[]).length && (inTheWorkout || pid === s.creatorId
-      || pid === ME.id || (s.posts && s.posts[pid] && !s.posts[pid].hidden)))
-    .sort((x,y) => (x===s.creatorId ? -1 : y===s.creatorId ? 1 : String(logNames[x]||'').localeCompare(String(logNames[y]||''))));
+  const logged = ((s.logs[authorId]||[]).length && (inTheWorkout || authorId === s.creatorId
+      || authorId === ME.id || (s.posts && s.posts[authorId] && !s.posts[authorId].hidden)))
+    ? [authorId] : [];
   // v249 (audit finding): "No sets logged" below used to fire whenever nobody's VISIBLE sets
   // landed on this exercise — but a departed participant's recap can be hidden from this viewer
   // by their own privacy setting (Only me / Friends) while their sets are still real, still
@@ -1667,11 +1764,23 @@ async function viewPost(id, authorId, opts){
       // ONLY when a swap actually happened. Editing a workout keeps exercise ids and can change
       // names, so without this guard fixing a typo permanently annotated your own sets with the
       // misspelling — on solo workouts too.
-      const theirs = approvedFor[e.id] ? ls.find(l => l.exerciseName && l.exerciseName !== heading) : null;
+      // Sep 23 2026 (Jeff, real question: "if I make a swap but Brian kept the original, how does
+      // this work... on the logged workout on my profile?"): confirmed a real gap -- this guard
+      // only ever checked approvedFor[e.id], a GROUP-approved swap. A personal "just me" swap
+      // (s.variations[e.id][pid], reason:'self') never touches approvedFor, so someone who
+      // personally swapped this exercise while everyone else kept the original had their sets
+      // silently grouped under the ORIGINAL exercise's heading with no note at all -- reading as
+      // if they'd done the original lift, when they'd actually done a different one. A personal
+      // swap on file for THIS pid now counts as a real swap too, same as a group-approved one.
+      const realSwap = approvedFor[e.id] || (s.variations[e.id] && s.variations[e.id][pid] && s.variations[e.id][pid].swapTo);
+      const theirs = realSwap ? ls.find(l => l.exerciseName && l.exerciseName !== heading) : null;
       const note = theirs ? `<span class="pp-who-note">logged as ${esc(theirs.exerciseName)}</span>` : '';
-      // Label when it is not obvious whose these are: more than one person logged THIS lift, or
-      // the one person who did is not you. A lone "YOU" over your own sets is noise.
-      const needLabel = logged.length > 1 && (pid !== ME.id || logged.some(o => o !== pid && (s.logs[o]||[]).some(l => l.exerciseId===e.id)));
+      // Sep 23 2026: now that `logged` is always just [authorId] (see above), there's never more
+      // than one person's block on a card, so the old "more than one person logged this" branch
+      // of the ambiguity check can never fire. What's left is still real: viewing someone ELSE's
+      // recap (a training partner's own posted page) should still say whose sets these are — a
+      // lone "YOU" over your own sets is still noise, so that half stays.
+      const needLabel = pid !== ME.id;
       const nmRaw = pid===ME.id ? 'You' : logNames[pid];
       const label = needLabel ? esc(isUnknownName(nmRaw) ? 'Someone' : String(nmRaw).split(' ')[0]) : '';
       const who = (label || note) ? `<div class="pp-who">${[label, note].filter(Boolean).join(' ')}</div>` : '';
@@ -2441,6 +2550,17 @@ function undoMySwap(id, exerciseId, backTo){
   }, false);
 }
 
+// Sep 23 2026 (Jeff, bug #3: "layered suggestions instead of list view"): which pending
+// suggestion is currently at the front of the stacked deck (see openSession's pendingEdits/
+// SUGG_STATE block above). Keyed to a sessionId, same "reset when you land on a different session"
+// idea as PROG_TAB's own tab state -- looking at a DIFFERENT workout's suggestions should always
+// start at the front, not wherever a previous session's deck happened to be left.
+let SUGG_STATE = { sessionId: null, idx: 0 };
+function gotoSuggestion(id, i){
+  SUGG_STATE = { sessionId: id, idx: i };
+  return openSession(id, {quiet:true});
+}
+
 // ---- The collaborate half: five buttons that called functions nobody ever wrote ----
 // Approve/Reject on a suggested swap, Approve/Reject on a join request, and the door into the
 // swap picker. Every server endpoint below already existed, worked and was tested; the other half
@@ -2468,6 +2588,41 @@ async function rejectJoin(id, reqId){
   const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/join/${reqId}/reject`, {});
   if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
+}
+// Sep 23 2026 (bug #2 fix): the three actions on a pending exercise-removal request -- a required
+// approver's yes/no, and the creator's own way to withdraw one that's stalled. Same shape as
+// approve/reject and approveJoin/rejectJoin just above.
+async function approveRemoval(id, reqId){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/removal/${reqId}/approve`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
+}
+async function declineRemoval(id, reqId){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/removal/${reqId}/decline`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
+}
+async function cancelRemoval(id, reqId){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/removal/${reqId}/cancel`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
+}
+// Sep 23 2026 (bug #2 follow-up): remove a participant outright (creator only). Real confirm
+// sheet first, same as every other consequential action in this app (Delete workout, Leave) --
+// never a bare browser confirm().
+function confirmRemoveParticipant(id, pid, label){
+  confirmSheet(`Remove ${label}?`, `${label} will no longer be part of this workout. Their already-logged sets stay saved -- this only takes them off the workout going forward.`, 'Remove', () => removeParticipantConfirmed(id, pid));
+}
+async function removeParticipantConfirmed(id, pid){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/participants/${pid}/remove`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
+}
+// Undoes a "just for me" hide (see openRemovalChoiceSheet) from inside the edit form.
+async function unhideExerciseForMe(id, exId){
+  const r = await H.post(`/api/sessions/${id}/exercises/${exId}/unhide-for-me`, {});
+  if(r && r.error){ alert(r.error); return; }
+  if(EDITING_ID===id) renderWorkoutEdit(r);
 }
 // Opens the Workouts library in "pick a replacement" mode. library() already renders a
 // "Pick replacement" header when SWAP_MODE is set, and tapping an exercise there already calls
@@ -4006,6 +4161,25 @@ function renderWorkoutEdit(s){
   window.__saveVis = vis;
   const media = (myPost && Array.isArray(myPost.media)) ? myPost.media : [];
   window.__saveMedia = media.map(m=>({ type:m.type, src:m.src }));
+  // Sep 23 2026 (bug #2 fix): an exercise mid-removal-request is still a real row here (it's still
+  // genuinely in s.exercises -- see PUT /api/sessions/:id's own comment for why), so without this
+  // it would look untouched, as if the earlier Remove never registered. A quiet note is enough;
+  // Remove still works normally here (it just re-targets the same still-pending request, per the
+  // server's own dedupe -- no second ask goes out).
+  const pendingRemovalNote = (e) => {
+    const pr = (s.pendingRemovals||[]).find(p => p.exerciseId === e.id && p.status === 'pending');
+    if(!pr) return '';
+    const left = pr.requiredApprovals.length - pr.approvals.length;
+    return `<div class="fineprint">Removal pending — waiting on ${left} ${left===1?'person':'people'} to confirm</div>`;
+  };
+  // Sep 23 2026 (bug #2 follow-up): the one place to undo a "just for me" hide -- there's no
+  // separate hidden-items screen, but the edit form already lists every exercise regardless of
+  // hide state (see myEx's own filter, which is the only thing that actually respects it), so a
+  // quiet note + Unhide right here is enough; nothing is stranded.
+  const hiddenNote = (e) => {
+    if(!(s.myHiddenExerciseIds||[]).includes(e.id)) return '';
+    return `<div class="fineprint">Hidden from your own workout view <button class="linkbtn" style="padding:0 0 0 4px" onclick="unhideExerciseForMe('${s.id}','${e.id}')">Unhide</button></div>`;
+  };
   const exRows = s.exercises.map(e=>`
     <div class="card inex-row" data-ex="${e.id}">
       <div class="inex-top"><input class="inex-name" id="inex-name-${e.id}" value="${esc(e.name)}" oninput="markDirty()">
@@ -4013,6 +4187,7 @@ function renderWorkoutEdit(s){
       <div class="inex-meta"><label class="muted">Sets</label><input class="inex-num" id="inex-sets-${e.id}" type="number" min="1" value="${e.defaultSets}" oninput="markDirty()">
         <label class="muted">Reps</label><input class="inex-num" id="inex-reps-${e.id}" type="number" min="1" value="${e.defaultReps}" oninput="markDirty()">
         <span class="muted">to</span><input class="inex-num" id="inex-repsmax-${e.id}" type="number" min="1" placeholder="—" value="${e.defaultRepsMax||''}" oninput="markDirty()"></div>
+      ${pendingRemovalNote(e)}${hiddenNote(e)}
     </div>`).join('');
   $('app').innerHTML = `<div class="wrap edit-mode">
     <!-- Jeff, Sep 1: "add a save button on the top right when editing a workout. Scrolling to
@@ -4082,6 +4257,60 @@ function removeInex(id){ const el=document.querySelector('.inex-row[data-ex="'+i
 // race would just reopen one level down, after THIS function's own await. So the exercises/notes
 // read here are now passed straight through instead, and saveWorkoutEditConfirmed only falls back
 // to reading the DOM itself when called with nothing supplied (which no longer happens from here).
+// Sep 23 2026 (bug #2 fix, follow-up): a raw openSheetHtml, not confirmSheet -- like leaveWorkout's
+// own Save/Discard sheet, both real choices here are genuine actions, not a single confirm/cancel
+// pair. Wired via inline onclick attributes (same as leaveWorkout's sheet), not a post-hoc
+// el.querySelector(...).onclick assignment -- this repo's test harness drives the app through a
+// minimal hand-rolled DOM mock (see test/stale-save-race.mjs), whose own element.querySelector is
+// a permanent stub that always returns null; inline attributes are what every other sheet in this
+// file already relies on being testable through. REMOVAL_CHOICE is the closure these two handlers
+// read from, the same shape CONFIRM_CB is for confirmSheet's own single-callback case.
+// "Ask everyone" sends the exact same save as before (minus the touched exercises, which PUT now
+// holds back pending approval); "Just for me" restores every touched exercise back into the save
+// (so PUT never treats it as removed at all, and no approval request ever opens) and instead marks
+// each one hidden from just this viewer's own card list.
+let REMOVAL_CHOICE = null;
+function openRemovalChoiceSheet(id, exercises, notes, name, s, touched){
+  stompPendingSwipeSheet();
+  REMOVAL_CHOICE = { id, exercises, notes, name, s, touched };
+  const names = touched.map(t=>t.name).join(', ');
+  const themPlural = touched.length===1 ? 'them' : 'everyone';
+  const inner = `<div class="sheet"><div class="sheet-head"><h2>Remove ${touched.length===1?'this exercise':'these exercises'}?</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="muted" style="padding:0 2px 14px; font-size:13px; line-height:1.5">${esc(plur(touched.length,'friend'))} logged sets on: ${esc(names)}. You can ask ${themPlural} to confirm removing it for the group, or just stop seeing it yourself — the shared workout stays exactly as it is for everyone else either way.</div>
+    <div class="sheet-list">
+      <button class="sheet-row" onclick="removalChoiceAsk()">Ask ${themPlural} to confirm</button>
+      <button class="sheet-row" onclick="removalChoiceJustMe()">Just for me</button>
+      <button class="sheet-row" onclick="closeSheet()">Cancel</button>
+    </div>
+  </div>`;
+  CONFIRM_EL = openSheetHtml(inner);
+}
+function removalChoiceAsk(){
+  const st = REMOVAL_CHOICE; REMOVAL_CHOICE = null;
+  if(!st) return;
+  closeSheet();
+  saveWorkoutEditConfirmed(st.id, st.exercises, st.notes, st.name);
+}
+function removalChoiceJustMe(){
+  const st = REMOVAL_CHOICE; REMOVAL_CHOICE = null;
+  if(!st) return;
+  closeSheet();
+  hideForMeAndSave(st.id, st.exercises, st.notes, st.name, st.s, st.touched);
+}
+// See the comment above putWorkoutExercises/finishWorkoutEditSave for why this writes the real
+// exercise list FIRST (via putWorkoutExercises, not the all-in-one saveWorkoutEditConfirmed) and
+// only hides second: the write either fully succeeds or fully doesn't, with nothing left half-done
+// if hiding fails partway through afterward. Hiding still runs BEFORE the final notes/photos/
+// navigation step (finishWorkoutEditSave), so the screen the user lands on already reflects the
+// hidden exercise, same as before this fix -- only the failure ordering changed, not the happy path.
+async function hideForMeAndSave(id, exercises, notes, name, s0, touched){
+  const epoch = UI_EPOCH;
+  const restored = [...exercises, ...touched.map(t => (s0.exercises||[]).find(e=>e.id===t.id)).filter(Boolean)];
+  const s = await putWorkoutExercises(id, restored, name);
+  if(!s) return;
+  for(const t of touched){ const r = await H.post(`/api/sessions/${id}/exercises/${t.id}/hide-for-me`, {}); if(r&&r.error){ alert(r.error); return; } }
+  await finishWorkoutEditSave(id, s, notes, epoch);
+}
 async function saveWorkoutEdit(id){
   const rows=[...document.querySelectorAll('.inex-row')];
   const exercises=rows.map(r=>{ const eid=r.dataset.ex;
@@ -4096,31 +4325,27 @@ async function saveWorkoutEdit(id){
   const epoch=UI_EPOCH;
   const s = await H.get('/api/sessions/'+id);
   if(!s||s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
-  // Friend-set warning: exercises removed (or id changed) that ANY other user logged sets against
+  // Friend-set warning: exercises removed (or id changed) that ANY other user logged sets against.
+  // Sep 23 2026 (bug #2 fix): this used to warn, then remove it anyway on "Save anyway" -- the
+  // server itself no longer lets that happen (PUT /api/sessions/:id keeps a contested exercise in
+  // place and opens a real approval request instead, see its own comment). The creator now gets a
+  // real second option too (Jeff's own follow-up ask): hide it from just their own view instead of
+  // asking the group at all, since a lot of the time that's genuinely all they actually wanted.
   const origIds=(s.exercises||[]).map(e=>e.id);
   const newIds=exercises.map(e=>e.id);
-  const removed=origIds.filter(x=>!newIds.includes(x));
-  const touched=[];
-  for(const rid of removed){
+  const removedIds=origIds.filter(x=>!newIds.includes(x));
+  const touched=[]; // {id, name}
+  for(const rid of removedIds){
     const ex=(s.exercises||[]).find(e=>e.id===rid);
     const who=Object.keys(s.logs||{}).filter(pid=>pid!==ME.id && (s.logs[pid]||[]).some(l=>l.exerciseId===rid));
-    if(who.length) touched.push((ex&&ex.name)||'exercise');
+    if(who.length) touched.push({ id: rid, name: (ex&&ex.name)||'exercise' });
   }
   if(touched.length){
-    // The confirm sheet itself is a UI action, not the write -- if the user has already moved on
-    // while this fetch was in flight, popping "Save changes?" over whatever they're doing now
-    // would be a barge-in with no context, so it's gated the same as any other stale navigation.
-    // The write it would lead to hasn't happened yet and still needs the user's explicit tap.
-    // v252 cold-review catch: epoch is deliberately NOT passed through into the confirm callback
-    // here -- openSheetHtml (which confirmSheet calls) bumps UI_EPOCH itself the instant the sheet
-    // opens, same as any other navigation, so reusing this function's own pre-sheet epoch would
-    // make saveWorkoutEditConfirmed's final nothingNavigatedSince check compare against a value
-    // that's already one behind by the time the sheet even exists -- permanently false, not a race,
-    // so "Save anyway" would never reopen the recap even on an instant tap with no real navigation.
-    // Every other *Confirmed function fed by a confirmSheet (deleteSessionConfirmed,
-    // deletePhotoConfirmed, etc.) captures its own fresh epoch at the moment its confirm button
-    // actually fires, for the same reason -- this now matches that.
-    if(nothingNavigatedSince(epoch)) confirmSheet('Save changes?', esc(plur(touched.length,'friend')) + ' logged sets on: ' + esc(touched.join(', ')) + '. Saving detaches those sets.', 'Save anyway', () => saveWorkoutEditConfirmed(id, exercises, notes, name));
+    // The sheet itself is a UI action, not the write -- if the user has already moved on while
+    // this fetch was in flight, popping it over whatever they're doing now would be a barge-in
+    // with no context, so it's gated the same as any other stale navigation. The write it would
+    // lead to hasn't happened yet and still needs the user's explicit tap.
+    if(nothingNavigatedSince(epoch)) openRemovalChoiceSheet(id, exercises, notes, name, s, touched);
     return;
   }
   // No conflict to confirm -- this IS the explicit write the user asked for, so it goes through
@@ -4140,6 +4365,38 @@ async function saveWorkoutEdit(id){
 // compare the epoch to itself and always pass, even though the actual Save tap is now stale. Falls
 // back to reading the DOM and capturing its own epoch only if called with nothing supplied, so
 // nothing else that might call this directly is broken by the change.
+// Split out of saveWorkoutEditConfirmed (Sep 23 2026, cold-review catch) so hideForMeAndSave below
+// can do the real exercise-list write FIRST and hide-for-me SECOND, instead of the other way
+// around -- hide-for-me used to run before the write, so a failure partway through hiding left
+// some exercises quietly hidden with the actual edit (name/sets/notes/everything else on the
+// form) never saved at all, and nothing to roll back. Writing first means the thing the user
+// actually tapped Save for either fully succeeds or fully doesn't; hide-for-me is comparatively
+// low-stakes (personal-only, instantly undoable via Unhide) and safe to layer on after.
+// Returns the freshly-fetched pre-edit session (`s`) on success, or null (having already alerted)
+// on failure -- the caller uses `s` both to decide the post-save navigation target (finishWorkoutEditSave)
+// and, in hideForMeAndSave's case, to look up the touched exercises' full original objects.
+async function putWorkoutExercises(id, exercises, name){
+  const s = await H.get('/api/sessions/'+id);
+  if(!s||s.error){ alert(s&&s.error?s.error:'Session not found'); return null; }
+  // The workout's name, editable here since Aug 30 -- falls back to whatever was already saved
+  // (s.name) only when name itself is missing entirely (the untouched-DOM fallback above, or a
+  // stray direct call with nothing supplied), never just because it was typed blank -- an
+  // intentionally cleared name is a real choice (sessTitle() already falls back to the date when
+  // blank) and must actually save as blank, not silently snap back to the old name.
+  const r1=await H.put('/api/sessions/'+id,{ name:(typeof name==='string' ? name : s.name), scheduledAt:s.scheduledAt, visibility:s.visibility, exercises, invited:(s.invited||[]), location:s.location, lengthMin:s.lengthMin, creatorNote:s.creatorNote });
+  if(r1&&r1.error){ alert(r1.error); return null; }
+  return s;
+}
+// The notes/photos/visibility post-write, plus navigation -- the part every edit save ends with
+// regardless of which exercises path (plain save, or hide-for-me) got it here.
+async function finishWorkoutEditSave(id, s, notes, epoch){
+  const r2=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'private' });
+  if(r2&&r2.error){ alert(r2.error); return false; }
+  INLINE_DIRTY=false; EDITING_ID=null;
+  // v254: quiet/silent, same reasoning as exitWorkoutEdit() -- edit mode was never pushed to history.
+  if(nothingNavigatedSince(epoch)){ if(s.posts && s.posts[ME.id]) viewPost(id, ME.id, {silent:true}); else openSession(id, {quiet:true}); }
+  return true;
+}
 async function saveWorkoutEditConfirmed(id, exercisesIn, notesIn, nameIn, epochIn){
   const epoch = (typeof epochIn === 'number') ? epochIn : UI_EPOCH;
   let exercises = exercisesIn, notes = notesIn, name = nameIn;
@@ -4154,21 +4411,10 @@ async function saveWorkoutEditConfirmed(id, exercisesIn, notesIn, nameIn, epochI
     notes=(document.getElementById('saveNotes')||{}).value;
     name=((document.getElementById('editWName')||{}).value||'').trim();
   }
-  if(!exercises.length){ alert('Add at least one exercise'); return; }
-  const s = await H.get('/api/sessions/'+id);
-  if(!s||s.error){ alert(s&&s.error?s.error:'Session not found'); return; }
-  // The workout's name, editable here since Aug 30 -- falls back to whatever was already saved
-  // (s.name) only when name itself is missing entirely (the untouched-DOM fallback above, or a
-  // stray direct call with nothing supplied), never just because it was typed blank -- an
-  // intentionally cleared name is a real choice (sessTitle() already falls back to the date when
-  // blank) and must actually save as blank, not silently snap back to the old name.
-  const r1=await H.put('/api/sessions/'+id,{ name:(typeof name==='string' ? name : s.name), scheduledAt:s.scheduledAt, visibility:s.visibility, exercises, invited:(s.invited||[]), location:s.location, lengthMin:s.lengthMin, creatorNote:s.creatorNote });
-  if(r1&&r1.error){ alert(r1.error); return; }
-  const r2=await H.post(`/api/sessions/${id}/post`,{ notes, media: window.__saveMedia||[], visibility: window.__saveVis||'private' });
-  if(r2&&r2.error){ alert(r2.error); return; }
-  INLINE_DIRTY=false; EDITING_ID=null;
-  // v254: quiet/silent, same reasoning as exitWorkoutEdit() -- edit mode was never pushed to history.
-  if(nothingNavigatedSince(epoch)){ if(s.posts && s.posts[ME.id]) viewPost(id, ME.id, {silent:true}); else openSession(id, {quiet:true}); }
+  if(!exercises.length){ alert('Add at least one exercise'); return false; }
+  const s = await putWorkoutExercises(id, exercises, name);
+  if(!s) return false;
+  return finishWorkoutEditSave(id, s, notes, epoch);
 }
 
 // ---- Create flow ----
@@ -7988,6 +8234,12 @@ async function renderNotifications(opts){
   const invites = (data && data.invites) || [];
   const followRequests = (data && data.followRequests) || [];
   const joinRequests = (data && data.joinRequests) || [];
+  // Sep 23 2026 (cold-review catch): a pending exercise-removal request this viewer is a required
+  // approver for (see openSession's own removalByEx for the in-session version of this same data)
+  // -- surfaced here too, same as joinRequests, so missing the one push notification that opened
+  // it doesn't strand it forever. approveRemoval/declineRemoval are the exact same functions the
+  // in-session Approve/Decline buttons already call (see their own definitions).
+  const removals = (data && data.removals) || [];
   const history = (data && data.history) || [];
   // Sep 5 (Jeff: a push for something that already happened -- someone followed you, a reaction,
   // an accepted invite -- showed nothing here, and he asked for past notifications to show for a
@@ -8032,6 +8284,15 @@ async function renderNotifications(opts){
         <div class="ra">
           <button class="sm ok" onclick="notifApproveJoin('${jr.sessionId}','${jr.reqId}')">Approve</button>
           <button class="sm no" onclick="notifRejectJoin('${jr.sessionId}','${jr.reqId}')">Reject</button>
+        </div>
+      </div>`).join('') + `</div>` : '';
+  const removalsHtml = removals.length ? `<h2>Removal requests</h2><div class="card" style="padding:6px 12px">` + removals.map(rm => `
+      <div class="req">
+        ${avatarHtml(rm.from,'av')}
+        <div class="rc"><b>${esc(rm.from.displayName||rm.from.username)}</b> wants to remove <i>${esc(rm.exerciseName)}</i> from <i>${esc(rm.sessionName)}</i> — you have sets logged on it</div>
+        <div class="ra">
+          <button class="sm ok" onclick="notifApproveRemoval('${rm.sessionId}','${rm.reqId}')">Approve</button>
+          <button class="sm no" onclick="notifDeclineRemoval('${rm.sessionId}','${rm.reqId}')">Decline</button>
         </div>
       </div>`).join('') + `</div>` : '';
   // Past notifications -- read-only, no action row (unlike the three sections above, there's
@@ -8102,9 +8363,9 @@ async function renderNotifications(opts){
       ${historyToday.length ? `<h2 class="light">Today</h2><div class="card feed-strip">${historyToday.map(historyRow).join('')}</div>` : ''}
       ${historyEarlier.length ? `<h2 class="light">Last 7 days</h2><div class="card feed-strip">${historyEarlier.map(historyRow).join('')}</div>` : ''}` : '';
   // Discoverability rule (CLAUDE.md): never hide an empty state -- render it open, not a blank page.
-  const empty = (!invites.length && !followRequests.length && !joinRequests.length && !history.length)
+  const empty = (!invites.length && !followRequests.length && !joinRequests.length && !removals.length && !history.length)
     ? homeEmpty(ICON_BELL, "You're all caught up", 'Invites and requests will show up here.') : '';
-  $('app').innerHTML = `<div class="wrap">${head}${invitesHtml}${followHtml}${joinHtml}${historyHtml}${empty}</div>`;
+  $('app').innerHTML = `<div class="wrap">${head}${invitesHtml}${followHtml}${joinHtml}${removalsHtml}${historyHtml}${empty}</div>`;
   if(history.length) historySwipeInit($('app'));
   if(!silent){ const st = { t:'notifications' }; fromHistory ? landOn(st) : navigated(st); }
 }
@@ -8318,6 +8579,18 @@ async function notifApproveJoin(id, reqId){
 async function notifRejectJoin(id, reqId){
   const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/join/${reqId}/reject`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
+}
+// Same pipeline as approveRemoval/declineRemoval (openSession, above) -- refreshes this screen
+// instead of the session detail screen.
+async function notifApproveRemoval(id, reqId){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/removal/${reqId}/approve`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
+}
+async function notifDeclineRemoval(id, reqId){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/removal/${reqId}/decline`, {});
   if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
 }
 // Task #64, Jeff Aug 21: "Can you delete all of my workouts and history to let me start over?"
