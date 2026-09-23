@@ -144,6 +144,37 @@ console.log('\na join request rejected, then a stale approve on the same request
   ok(!(after.participants || []).includes(bob.user.id), `bob is still not a participant -- not silently added by the stale approve (got ${JSON.stringify(after.participants)})`);
 }
 
+console.log('\nSep 23 2026 (Jeff, real bug report): someone who was DIRECTLY INVITED, but ends up joining via a join request instead (see the respondHere fix in app.js for how that happens), must not stay stuck in s.invited once approved -- that left Home showing a real participant as still-invited indefinitely, until they separately also hit Accept');
+{
+  const host = await reg('sec_gh5', 'pass1234', 'sec_gh5');
+  const bob = await reg('sec_gb5', 'pass1234', 'sec_gb5');
+  await post('/api/follow/' + bob.user.id, {}, host.token);
+  await post('/api/follow-requests/' + host.user.id + '/accept', {}, bob.token);
+  await post('/api/follow/' + host.user.id, {}, bob.token);
+  await post('/api/follow-requests/' + bob.user.id + '/accept', {}, host.token);
+  const s = await post('/api/sessions', {
+    name: 'Already Posted Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Row' }],
+    inviteUsernames: ['sec_gb5'], visibility: 'public',
+  }, host.token);
+  ok((s.invited || []).includes(bob.user.id), `bob starts out genuinely invited (got ${JSON.stringify(s.invited)})`);
+
+  // Bob answers via the join-request door instead of /accept -- exactly what app.js's "Join in?"
+  // button calls.
+  const joined = await post('/api/sessions/' + s.id + '/join', {}, bob.token);
+  ok(joined.requested, `bob requests to join (got ${JSON.stringify(joined)})`);
+  const asHost = await get('/api/sessions/' + s.id, host.token);
+  const reqId = asHost.joinRequests.find(j => j.userId === bob.user.id).id;
+
+  const approved = await post('/api/sessions/' + s.id + '/join/' + reqId + '/approve', {}, host.token);
+  ok((approved.participants || []).includes(bob.user.id), `bob is added as a participant (got ${JSON.stringify(approved.participants)})`);
+  ok(!(approved.invited || []).includes(bob.user.id), `bob is no longer listed as invited -- approving a join request clears it same as /accept does (got ${JSON.stringify(approved.invited)})`);
+
+  const bobHome = await get('/api/sessions', bob.token);
+  const mine = bobHome.find(x => x.id === s.id);
+  ok((mine.participants || []).includes(bob.user.id), `from bob's own Home fetch, he is a participant`);
+  ok(!(mine.invited || []).includes(bob.user.id), `and Home no longer shows him a stale invite for a workout he is already in`);
+}
+
 try { srv && srv.kill(); } catch {}
 rmSync(DIR, { recursive: true, force: true });
 await testDb.drop();

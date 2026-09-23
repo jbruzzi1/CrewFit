@@ -2025,11 +2025,32 @@ app.get('/api/notifications', auth, async (req, res) => {
     .filter(id => DB.users[id])
     .map(id => ({ type: 'follow', from: publicUser(id) }));
   const joinRequests = [];
+  // Sep 23 2026 (cold-review catch): pendingRemovals is notified with { history: false } (see PUT
+  // /api/sessions/:id), same as invites/followRequests/joinRequests above -- but unlike those
+  // three, nothing reconstructed it here, so a required approver who missed or dismissed that one
+  // push notification had no other way to ever discover a removal was waiting on their sign-off.
+  // Given the whole point of this feature is that a removal now genuinely REQUIRES their approval,
+  // a request that can go unnoticed indefinitely defeated it. Same shape as joinRequests below:
+  // scan every session, surface only entries this viewer is actually a required (still undecided)
+  // approver for.
+  const removals = [];
   for (const s of Object.values(DB.sessions)) {
-    if (s.creatorId !== req.userId) continue;
-    for (const j of (s.joinRequests || [])) {
-      if (j.status !== 'pending' || !DB.users[j.userId]) continue;
-      joinRequests.push({ type: 'join', sessionId: s.id, reqId: j.id, sessionName: s.name || 'Workout', note: j.note || '', from: publicUser(j.userId) });
+    // joinRequests are creator-only to answer, same as before -- but a removal's required
+    // approver is a REGULAR PARTICIPANT, essentially never the creator (see PUT /api/sessions/:id:
+    // requiredApprovals explicitly excludes req.userId, the proposer), so this second loop must
+    // not be gated behind the same creator-only check the join-request one above needs.
+    if (s.creatorId === req.userId) {
+      for (const j of (s.joinRequests || [])) {
+        if (j.status !== 'pending' || !DB.users[j.userId]) continue;
+        joinRequests.push({ type: 'join', sessionId: s.id, reqId: j.id, sessionName: s.name || 'Workout', note: j.note || '', from: publicUser(j.userId) });
+      }
+    }
+    for (const pr of (s.pendingRemovals || [])) {
+      if (pr.status !== 'pending') continue;
+      if (!(pr.requiredApprovals || []).includes(req.userId)) continue;
+      if ((pr.approvals || []).includes(req.userId)) continue;
+      if (!DB.users[pr.proposedBy]) continue;
+      removals.push({ type: 'removal', sessionId: s.id, reqId: pr.id, sessionName: s.name || 'Workout', exerciseName: pr.exerciseName, from: publicUser(pr.proposedBy) });
     }
   }
   const cutoff = Date.now() - NOTIFICATION_HISTORY_DAYS * 86400000;
@@ -2040,7 +2061,7 @@ app.get('/api/notifications', auth, async (req, res) => {
     .map(n => ({ type: 'history', id: n.id, title: n.title, body: n.body, at: n.createdAt, link: n.link || null }));
   const seenAt = me.notificationsSeenAt ? new Date(me.notificationsSeenAt).getTime() : 0;
   const unseenHistory = history.filter(n => new Date(n.at).getTime() > seenAt).length;
-  res.json({ invites, followRequests, joinRequests, history, count: invites.length + followRequests.length + joinRequests.length + unseenHistory });
+  res.json({ invites, followRequests, joinRequests, removals, history, count: invites.length + followRequests.length + joinRequests.length + removals.length + unseenHistory });
 });
 // Stamps "I have now looked at the notifications page" -- called by renderNotifications() in
 // app.js when it actually lands on the page, deliberately NOT by GET /api/notifications itself
@@ -3061,6 +3082,15 @@ function ensureSessionShape(s) {
   s.suggestedEdits = objArray(s.suggestedEdits);
   if (!isObj(s.variations)) s.variations = {};
   s.joinRequests = objArray(s.joinRequests);
+  // Sep 23 2026 (Jeff, real bug report -> design confirmed with him): removing an exercise other
+  // participants have already logged sets against no longer happens on the creator's one-tap Save
+  // alone -- it needs every one of them to actually sign off first, so an honest accident can't
+  // wipe out someone's logged work. See PUT /api/sessions/:id and the two /removal/:reqId routes.
+  s.pendingRemovals = objArray(s.pendingRemovals);
+  // Sep 23 2026: per-exercise "hide from just my own view" (bug #2 follow-up) -- { exerciseId:
+  // [userIds who hid it] }, the same personal, doesn't-touch-the-shared-plan shape s.variations
+  // already uses for a personal swap.
+  if (!isObj(s.hiddenFor)) s.hiddenFor = {};
   s.history = objArray(s.history);
   if (!isObj(s.posts)) s.posts = {};
   if (!isObj(s.draftNotes)) s.draftNotes = {};
@@ -3129,6 +3159,16 @@ function sessionTier(s, viewerId) {
   // with credit kept. Checked LAST, after every stronger tier — a still-mutual friend viewing a
   // friends-visible session they left should keep getting 'friend' (and everything that comes
   // with it), never get quietly downgraded to this narrower shape.
+  // Sep 23 2026 (bug #2 follow-up, kick-a-participant): the exact same class of bug the comment
+  // above describes, for someone the CREATOR removed rather than someone who left on their own.
+  // Kicking deliberately never calls creditFinish (see /participants/:pid/remove's own comment --
+  // crediting a full workout finish on someone's behalf when they were only removed, maybe after
+  // one exercise, would overclaim what they actually did), so a kicked person has real s.logs but
+  // no s.history row, and without this line they'd hit the identical "forbidden" dead end on data
+  // that is explicitly supposed to survive for them (Jeff: "they just keep the sets they've
+  // logged"). Scoped to genuinely having logged something here, not merely having been kicked --
+  // someone removed before logging a single set has nothing of their own left to look at.
+  if (s.logs && Array.isArray(s.logs[viewerId]) && s.logs[viewerId].length) return 'alumni';
   if ((s.history || []).some(h => h.userId === viewerId)) return 'alumni';
   return 'stranger';
 }
@@ -3227,12 +3267,23 @@ function sessionView(s, viewerId) {
     // above (in the rare case they've also filed their own request).
     const joinRequests = (s.creatorId === viewerId) ? (s.joinRequests || [])
       : (s.joinRequests || []).filter(j => j.userId === viewerId);
+    // Same "creator sees everything, everyone else sees only their own stake in it" rule as
+    // joinRequests above: the creator needs the full list to track status/cancel; a required
+    // approver needs to see the ones asking THEM to weigh in; someone with no stake in a given
+    // request (didn't log sets on that exercise) never sees it at all.
+    const pendingRemovals = (s.creatorId === viewerId) ? (s.pendingRemovals || [])
+      : (s.pendingRemovals || []).filter(p => (p.requiredApprovals || []).includes(viewerId));
     // Same "yourself and nobody else" rule as joinRequests just above -- draftNotes is scratch,
     // own-eyes-only scribbling mid-workout, not a recap anyone else in the session gets to read.
     // `draftNotes: undefined` overrides the raw s.draftNotes object the spread below would
     // otherwise leak (every participant's draft, keyed by their id) with just your own string.
     const myDraftNotes = (s.draftNotes && s.draftNotes[viewerId]) || '';
-    return Object.assign({}, s, { posts, logs, joinRequests, draftNotes: undefined, myDraftNotes });
+    // Same "yourself and nobody else" rule again -- a plain per-exerciseId array of every hidden
+    // exercise YOU chose to hide. `hiddenFor: undefined` overrides the raw s.hiddenFor object the
+    // spread below would otherwise leak (who ELSE has personally hidden what is nobody else's
+    // business, same instinct as everything above).
+    const myHiddenExerciseIds = Object.keys(s.hiddenFor || {}).filter(exId => (s.hiddenFor[exId] || []).includes(viewerId));
+    return Object.assign({}, s, { posts, logs, joinRequests, pendingRemovals, draftNotes: undefined, myDraftNotes, hiddenFor: undefined, myHiddenExerciseIds });
   }
   if (tier === 'stranger') return null;
 
@@ -3381,7 +3432,17 @@ function othersWithCredit(s, meId) {
 // everything, forever) rather than just falling back like a merely-missing one does.
 function creditFinish(s, userId, localDate) {
   if (s.history.some(h => h.userId === userId)) return false;
-  const exNames = s.exercises.map(e => {
+  // Sep 23 2026 (Jeff, real question: "does removing from his view hide anything underneath that
+  // may be missed or an issue with logging and completing?"): confirmed a real gap -- an exercise
+  // someone hid from just their OWN view (hide-for-me) was still counted in here, since this used
+  // to map over every one of s.exercises with no per-viewer filter. Tapping Log & Finish after
+  // hiding an exercise silently wrote it into that person's PERMANENT history record anyway --
+  // "Leg Press" showing up in someone's history when they explicitly said not for me and never
+  // logged a single set on it. Filtered out here the same way myHiddenExerciseIds already filters
+  // it out of their own live card list (app.js) -- CLAUDE.md's own rule: never state something
+  // about the user's history you can't stand behind.
+  const hidden = new Set(Object.keys(s.hiddenFor || {}).filter(exId => (s.hiddenFor[exId] || []).includes(userId)));
+  const exNames = s.exercises.filter(e => !hidden.has(e.id)).map(e => {
     const v = s.variations[e.id] && s.variations[e.id][userId];
     return v ? v.swapTo : e.name;
   });
@@ -3566,6 +3627,97 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   res.json({ ok: true, left: true });
 });
 
+// Sep 23 2026 (Jeff, follow-up to the removal-approval fix above): the creator's way to resolve a
+// removal request stuck waiting on someone inactive -- kick them, which drops their vote
+// requirement from any pending request instead of leaving the creator with only "wait forever" or
+// "withdraw the request". Deliberately always keeps the removed person's logged sets, same as
+// Leave's "keep my credit" path (Jeff: "they just keep the sets they've logged, I feel that's the
+// best scenario") -- but unlike Leave, nothing here synthesizes a finish/history credit on their
+// behalf (creditFinish is never called): they didn't choose to end their workout, someone else
+// removed them, and CLAUDE.md's own rule against stating something about a user you can't stand
+// behind applies just as much to "you finished this" as to anything else. Their sets stay
+// attributed to them, still feed their own PRs, they just won't show a completed-workout credit
+// for it unless they'd already earned one before this.
+app.post('/api/sessions/:id/participants/:pid/remove', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only the creator can remove someone' });
+  const target = req.params.pid;
+  if (target === req.userId) return res.status(400).json({ error: 'use Leave or Delete for yourself' });
+  if (!(s.participants || []).includes(target)) return res.status(400).json({ error: 'not a current participant' });
+  s.participants = s.participants.filter(x => x !== target);
+  s.invited = (s.invited || []).filter(x => x !== target);
+  // Same "only your own stuff, only while pending" cleanup Leave already does for these two --
+  // see /leave's own comments for why an approved swap stays but a still-pending one does not, and
+  // why a stale approved join request has to go with them.
+  s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === target && e.status === 'pending'));
+  s.joinRequests = (s.joinRequests || []).filter(j => j.userId !== target);
+  if (s.attendance) delete s.attendance[target];
+  // The actual point of this route: drop their vote requirement from anything still waiting on
+  // them, and let it resolve if that was the last one needed -- the whole reason "kick" is a real
+  // answer to a removal request stuck on someone inactive, not just a way to get rid of them.
+  const resolvedNow = [];
+  for (const pr of s.pendingRemovals) {
+    if (pr.status !== 'pending') continue;
+    if (!pr.requiredApprovals.includes(target)) continue;
+    pr.requiredApprovals = pr.requiredApprovals.filter(x => x !== target);
+    pr.approvals = pr.approvals.filter(x => x !== target);
+    if (pr.requiredApprovals.length && pr.requiredApprovals.every(uid_ => pr.approvals.includes(uid_))) {
+      pr.status = 'approved';
+      s.exercises = s.exercises.filter(e => e.id !== pr.exerciseId);
+      resolvedNow.push(pr);
+    } else if (!pr.requiredApprovals.length) {
+      // They were the ONLY person this was waiting on -- nobody else has a stake in it, same as
+      // if the exercise had never had anyone else's sets on it to begin with.
+      pr.status = 'approved';
+      s.exercises = s.exercises.filter(e => e.id !== pr.exerciseId);
+      resolvedNow.push(pr);
+    }
+  }
+  await save(DB);
+  const hostName = DB.users[s.creatorId] ? DB.users[s.creatorId].displayName : 'The organizer';
+  notify(target, { title: 'Removed from workout', body: `${hostName} removed you from ${s.name}. Your logged sets are still saved.`, link: { type: 'session', sessionId: s.id } });
+  for (const pr of resolvedNow) {
+    notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } }, { push: false });
+  }
+  res.json(sessionView(s, req.userId));
+});
+
+// Sep 23 2026 (Jeff, same follow-up): the other half -- an owner who wants an exercise gone from
+// THEIR OWN workout without asking anyone's permission, because it never touches the shared plan
+// at all. Purely personal: s.exercises, everyone else's cards, and the group approval flow above
+// are completely untouched -- this just adds the caller to that one exercise's hidden-for list, so
+// their own view (myEx in app.js) filters it out of what THEY see, the same "for just me" shape
+// swap suggestions already offer non-creators (see /variation).
+app.post('/api/sessions/:id/exercises/:exId/hide-for-me', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  if (!(s.participants || []).includes(req.userId) && s.creatorId !== req.userId)
+    return res.status(403).json({ error: 'not in this workout' });
+  if (!s.exercises.find(e => e.id === req.params.exId)) return res.status(404).json({ error: 'exercise not found' });
+  if (!Array.isArray(s.hiddenFor[req.params.exId])) s.hiddenFor[req.params.exId] = [];
+  if (!s.hiddenFor[req.params.exId].includes(req.userId)) s.hiddenFor[req.params.exId].push(req.userId);
+  await save(DB);
+  res.json(sessionView(s, req.userId));
+});
+app.post('/api/sessions/:id/exercises/:exId/unhide-for-me', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  // Sep 23 2026 (cold-review catch): hide-for-me (just above) checks real membership before
+  // letting someone touch s.hiddenFor -- this route was missing the same check. Not actually
+  // exploitable (it only ever removes the CALLER's own id from the array, and sessionView still
+  // gates the response itself by tier), but a stranger calling this got a 200 instead of the same
+  // 403 hide-for-me would give them, which is a real inconsistency for anyone auditing this route.
+  if (!(s.participants || []).includes(req.userId) && s.creatorId !== req.userId)
+    return res.status(403).json({ error: 'not in this workout' });
+  if (Array.isArray(s.hiddenFor[req.params.exId])) s.hiddenFor[req.params.exId] = s.hiddenFor[req.params.exId].filter(x => x !== req.userId);
+  await save(DB);
+  res.json(sessionView(s, req.userId));
+});
+
 // Sep 18 2026 (Jeff, on Home's swipe-to-delete): "For my friends" -- a friend's own joinable
 // workout on Home's "Friends' Workouts" list isn't yours to delete or leave, you were never in it.
 // Swiping it there can only mean one thing: stop showing ME this. Exactly the same shape as
@@ -3675,10 +3827,61 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
     // v253 (audit finding, see isPlainExercise above) -- a non-object element would have
     // thrown, both at `e.id` right below and inside withDefaults, returning a generic 500.
     if (!b.exercises.every(isPlainExercise)) return res.status(400).json({ error: 'invalid exercise' });
-    s.exercises = b.exercises.map((e, i) => Object.assign({
+    // Sep 23 2026 (Jeff, real bug report): dropping an exercise from this list used to detach it
+    // (and every OTHER participant's already-logged sets on it) from the shared workout the instant
+    // the creator hit Save, on nothing but their own one-tap edit -- the client warns them first
+    // (see saveWorkoutEdit's "Saving detaches those sets" confirm), but that's still the creator's
+    // call alone, and Jeff explicitly asked for real sign-off instead: "the owner shouldn't just be
+    // able to delete workouts others have added sets [to] -- this could be accidentally done."
+    // Fixed here, not just in the client, so it holds no matter what UI reaches this route: an
+    // exercise anyone OTHER than the creator has logged sets on doesn't actually leave s.exercises
+    // just because it's missing from this PUT -- it's kept exactly as-is (still logs normally,
+    // still visible to everyone) and a pendingRemovals entry is opened instead, requiring every one
+    // of those participants to approve (see the two /removal/:reqId routes below) before it's
+    // actually removed. One decline cancels the whole request and the exercise stays; the creator
+    // can also withdraw it via /removal/:reqId/cancel if it stalls. Everything else in this same
+    // save -- renames, reorders, additions, and any removal nobody else has logged against --
+    // applies immediately, exactly as before; only a removal with a real stake for someone else
+    // waits.
+    const newIds = new Set(b.exercises.filter(e => e && e.id).map(e => e.id));
+    const removedIds = s.exercises.map(e => e.id).filter(id => !newIds.has(id));
+    // Sep 23 2026 (cold-review catch): a pendingRemovals entry stays 'pending' until someone
+    // explicitly approves/declines/cancels it -- but the creator changing their mind (re-editing
+    // and saving with the contested exercise back in the list, without ever tapping cancel on the
+    // still-open request) used to leave that stale request sitting there anyway. If a required
+    // approver later approved it, unaware the creator had already kept the exercise, this route's
+    // own exercises rebuild below would put it back in (it's a kept id, in `incoming`) while
+    // /removal/:reqId/approve independently filtered it back OUT -- whichever ran last silently
+    // won, and the approver's own understanding of what they'd just agreed to was already wrong
+    // either way. An id the creator is keeping can never legitimately still have an open request.
+    for (const kid of newIds) {
+      const stale = s.pendingRemovals.find(p => p.exerciseId === kid && p.status === 'pending');
+      if (stale) stale.status = 'cancelled';
+    }
+    const blocked = [];
+    for (const rid of removedIds) {
+      const requiredApprovals = Object.keys(s.logs || {})
+        .filter(uid_ => uid_ !== req.userId && (s.logs[uid_] || []).some(l => l.exerciseId === rid));
+      if (!requiredApprovals.length) continue;
+      const exOld = s.exercises.find(e => e.id === rid);
+      let pr = s.pendingRemovals.find(p => p.exerciseId === rid && p.status === 'pending');
+      if (!pr) {
+        pr = { id: 'rm_' + uid(), exerciseId: rid, exerciseName: exOld ? exOld.name : 'Exercise',
+               proposedBy: req.userId, requiredApprovals, approvals: [], status: 'pending' };
+        s.pendingRemovals.push(pr);
+        for (const uid_ of requiredApprovals) {
+          notify(uid_, { title: 'Remove exercise?', body: `${DB.users[req.userId].displayName} wants to remove ${pr.exerciseName} from ${s.name} — you have sets logged on it`, link: { type: 'session', sessionId: s.id } }, { history: false });
+        }
+      }
+      blocked.push(pr);
+    }
+    const blockedIds = new Set(blocked.map(p => p.exerciseId));
+    const stillPending = s.exercises.filter(e => blockedIds.has(e.id));
+    const incoming = b.exercises.map((e, i) => Object.assign({
       id: (e.id && s.exercises.find(x => x.id === e.id)) ? e.id : 'e_' + uid(),
       order: i,
     }, withDefaults(e)));
+    s.exercises = [...incoming, ...stillPending.map((e, i) => Object.assign({}, e, { order: incoming.length + i }))];
   }
   if (Array.isArray(b.inviteUsernames)) {
   const invites = [];
@@ -3697,6 +3900,64 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   s.invited = invites;
   }
   s.updatedAt = new Date().toISOString();
+  await save(DB);
+  res.json(sessionView(s, req.userId));
+});
+
+// Sep 23 2026: the sign-off side of the exercise-removal gate set up in PUT /api/sessions/:id
+// above. A required approver saying yes; once every one of them has, the exercise actually leaves
+// s.exercises for the first time. Same double-tap/stale-tab guard as suggest/join's own
+// approve+reject pairs (v252) -- once a request is no longer 'pending', nothing here touches it
+// again.
+app.post('/api/sessions/:id/removal/:reqId/approve', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  const pr = s.pendingRemovals.find(p => p.id === req.params.reqId);
+  if (!pr) return res.status(404).json({ error: 'not found' });
+  if (!(pr.requiredApprovals || []).includes(req.userId)) return res.status(403).json({ error: 'not yours to approve' });
+  if (pr.status !== 'pending') return res.status(400).json({ error: 'already decided' });
+  if (!pr.approvals.includes(req.userId)) pr.approvals.push(req.userId);
+  const allIn = pr.requiredApprovals.every(uid_ => pr.approvals.includes(uid_));
+  if (allIn) {
+    pr.status = 'approved';
+    s.exercises = s.exercises.filter(e => e.id !== pr.exerciseId);
+    notify(s.creatorId, { title: 'Removal approved', body: `Everyone signed off — ${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } });
+  }
+  await save(DB);
+  res.json(sessionView(s, req.userId));
+});
+
+// A single no cancels the whole request outright, not just that one person's slot -- unanimous
+// consent is the whole point (Jeff: "the owner shouldn't just be able to delete... this could be
+// accidentally done"), so one real objection is enough to keep the exercise exactly where it was.
+app.post('/api/sessions/:id/removal/:reqId/decline', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  const pr = s.pendingRemovals.find(p => p.id === req.params.reqId);
+  if (!pr) return res.status(404).json({ error: 'not found' });
+  if (!(pr.requiredApprovals || []).includes(req.userId)) return res.status(403).json({ error: 'not yours to decide' });
+  if (pr.status !== 'pending') return res.status(400).json({ error: 'already decided' });
+  pr.status = 'declined';
+  await save(DB);
+  const who = DB.users[req.userId] ? DB.users[req.userId].displayName : 'Someone';
+  notify(s.creatorId, { title: 'Removal declined', body: `${who} said no — ${pr.exerciseName} stays in ${s.name}`, link: { type: 'session', sessionId: s.id } });
+  res.json(sessionView(s, req.userId));
+});
+
+// The creator's own way out if a request stalls waiting on someone (inactive, missed the
+// notification, whatever) -- withdraws it outright rather than leaving it pending forever. The
+// exercise was never actually touched while pending, so there's nothing to undo.
+app.post('/api/sessions/:id/removal/:reqId/cancel', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  const pr = s.pendingRemovals.find(p => p.id === req.params.reqId);
+  if (!pr) return res.status(404).json({ error: 'not found' });
+  if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator can cancel' });
+  if (pr.status !== 'pending') return res.status(400).json({ error: 'already decided' });
+  pr.status = 'cancelled';
   await save(DB);
   res.json(sessionView(s, req.userId));
 });
@@ -3986,6 +4247,15 @@ app.post('/api/sessions/:id/join/:reqId/approve', auth, async (req, res) => {
   if (jr.status !== 'pending') return res.status(400).json({ error: 'already decided' });
   jr.status = 'approved';
   if (!s.participants.includes(jr.userId)) s.participants.push(jr.userId);
+  // Sep 23 2026 (Jeff, real bug report): someone directly invited AND approved through a separate
+  // join request (see the respondHere fix in app.js for how they end up on this path despite
+  // already having a real invite on file) became a genuine participant here but stayed in
+  // s.invited forever -- /accept is the only other route that ever clears it, and nothing routes
+  // an approved-join-request user through /accept. Home kept showing them a stale "invite" for a
+  // workout they were already in, on top of (correctly) showing it under Your Sessions. Mirrors
+  // /accept's own invited-array cleanup so "became a participant" always implies "no longer
+  // invited," regardless of which door they came in through.
+  if (Array.isArray(s.invited) && s.invited.includes(jr.userId)) s.invited = s.invited.filter(x => x !== jr.userId);
   await save(DB);
   notify(jr.userId, { title: 'Join approved', body: `${DB.users[s.creatorId].displayName} approved your join request`, link: { type: 'session', sessionId: s.id } });
   // Sep 8 2026 (Jeff: a "test workout" where Brian requested to join and Jeff approved him left
@@ -5184,6 +5454,17 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
   // know what the record was a moment ago, for the Activity feed's "+10 lb over last max" delta.
   const prevPr = DB.prs[req.userId] && DB.prs[req.userId][entry.exerciseName];
   s.logs[req.userId].push(entry);
+  // Sep 23 2026 (cold-review catch): requiredApprovals is captured once, when a removal request
+  // first opens (PUT /api/sessions/:id) -- someone who logs a set on the SAME exercise afterward,
+  // while the request is still pending, was never asked for their own sign-off, so the exercise
+  // could be removed without ever having their consent even though they now have a real stake in
+  // it too (their own logged sets survive either way, per the design -- this is purely about
+  // making sure their vote is actually asked for). Widen the still-open request the moment they
+  // log, the same way it would have been sized if they'd already had this set in when it opened.
+  const openPr = s.pendingRemovals.find(p => p.status === 'pending' && p.exerciseId === exerciseId);
+  if (openPr && openPr.proposedBy !== req.userId && !openPr.requiredApprovals.includes(req.userId)) {
+    openPr.requiredApprovals.push(req.userId);
+  }
   rebuildAllPrs();
   // Sep 11 2026 (Activity page): a real, earned PR (entry.isPr, mutated in place by
   // rebuildAllPrs -- see its own comment on why bestLog IS this same entry object) gets an

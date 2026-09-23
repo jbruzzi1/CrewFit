@@ -52,6 +52,8 @@ const files = [
   'test/block-crew-streak-privacy.mjs', 'test/progress-additions.mjs',
   'test/training-phase.mjs', 'test/hide-joinable.mjs', 'test/swipe-delete-home.mjs',
   'test/profile-back-button.mjs', 'test/starter-routines.mjs',
+  'test/exercise-removal-approval.mjs', 'test/viewpost-swap-attribution.mjs',
+  'test/recap-shows-own-sets-only.mjs', 'test/suggestion-stack.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
