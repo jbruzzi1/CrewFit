@@ -689,7 +689,12 @@ async function home(opts){
   if(pending.length){
     html += `<div class="inv-banner">`;
     for(const s of pending){
-      const creatorName = await friendName(s.creatorId);
+      // Sep 23 2026 (audit finding): used to always resolve the CURRENT s.creatorId -- if
+      // ownership hands off while this invite is still pending (the creator leaves -- see
+      // server.js's /leave), that silently credited the invite to the new owner instead of
+      // whoever actually sent it. s.invitedById (server-computed) is the real inviter; falls back
+      // to s.creatorId for invites from before that field existed, same as it always did.
+      const creatorName = await friendName(s.invitedById || s.creatorId);
       // The row is TAPPABLE. It had no handler at all, so a pending invite could only be accepted
       // or declined blind — there was no way to look at the workout first, and tapping it did
       // nothing: no spinner, no error, nothing. That is the bug Jeff reported on Aug 17.
@@ -1693,8 +1698,16 @@ async function viewPost(id, authorId, opts){
   // than the creator's own recap this listed them as one of their OWN training partners --
   // "with @Jeff" rendering right on Jeff's own page. Exclude the actual author of THIS recap,
   // whoever that is, not a hardcoded creatorId.
+  // Sep 23 2026 (audit finding): this used to iterate s.participants -- the CURRENT roster -- every
+  // single time this recap is opened, so someone who genuinely trained this session but later left
+  // (even choosing to keep their credit) or was kicked silently vanished from an already-posted
+  // recap's "with @X" line, even though their sets are still saved and the recap itself never
+  // changed. post.trainedWith (server-set, snapshotted once when this recap was first posted -- see
+  // the comment on POST /api/sessions/:id/post) is who was actually there; falls back to the old
+  // live-participants behavior only for a recap posted before that field existed.
+  const collabIds = Array.isArray(post.trainedWith) ? post.trainedWith : (s.participants||[]).filter(pid=>pid!==authorId);
   const nm = {};
-  for(const pid of s.participants){ if(pid!==authorId) nm[pid]= await nameOf(pid); }
+  for(const pid of collabIds){ if(pid!==authorId) nm[pid]= await nameOf(pid); }
   // names for EVERYONE who logged here — including the creator, and including anyone who has
   // since left the workout. Their sets are still part of what happened that day.
   const logNames = {};

@@ -54,6 +54,7 @@ const files = [
   'test/profile-back-button.mjs', 'test/starter-routines.mjs',
   'test/exercise-removal-approval.mjs', 'test/viewpost-swap-attribution.mjs',
   'test/recap-shows-own-sets-only.mjs', 'test/suggestion-stack.mjs',
+  'test/participant-departure-cleanup.mjs', 'test/recap-trained-with-and-invite-banner.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

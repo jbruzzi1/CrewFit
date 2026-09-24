@@ -2018,9 +2018,17 @@ app.post('/api/crews/:id/challenge', auth, async (req, res) => {
 // badge count and must not clear it before the page is ever opened).
 app.get('/api/notifications', auth, async (req, res) => {
   const me = DB.users[req.userId]; ensureFollowArrays(me);
+  // Sep 23 2026 (audit finding): `from` used to always be publicUser(s.creatorId) -- the CURRENT
+  // owner, not whoever actually sent the invite. Once ownership hands off (see the invitedBy
+  // comment on PUT /api/sessions/:id and on session creation), that silently credited the invite to
+  // someone who may never have sent it. s.invitedBy[req.userId] is the real inviter when this
+  // invite was created/edited after the field existed; older invites have no entry there and keep
+  // the old creatorId fallback exactly as before.
   const invites = Object.values(DB.sessions)
-    .filter(s => Array.isArray(s.invited) && s.invited.includes(req.userId) && DB.users[s.creatorId])
-    .map(s => ({ type: 'invite', sessionId: s.id, sessionName: s.name || 'Workout', exerciseCount: (s.exercises || []).length, from: publicUser(s.creatorId) }));
+    .filter(s => Array.isArray(s.invited) && s.invited.includes(req.userId))
+    .map(s => ({ s, fromId: (s.invitedBy && s.invitedBy[req.userId]) || s.creatorId }))
+    .filter(({ fromId }) => DB.users[fromId])
+    .map(({ s, fromId }) => ({ type: 'invite', sessionId: s.id, sessionName: s.name || 'Workout', exerciseCount: (s.exercises || []).length, from: publicUser(fromId) }));
   const followRequests = (me.followReqs || [])
     .filter(id => DB.users[id])
     .map(id => ({ type: 'follow', from: publicUser(id) }));
@@ -2490,7 +2498,14 @@ app.post('/api/sessions/:id/comments', auth, async (req, res) => {
   // app.js (Jeff: "if brian commented in our ... workout - it brings me to see his comments").
   const who = DB.users[req.userId].displayName;
   const wkName = s.name || 'Workout';
-  for (const pid of s.participants) if (pid !== req.userId) notify(pid, { title: 'New message', body: `${who}: ${text.slice(0,40)}`, link: { type: 'session-chat', sessionId: s.id } },
+  // Sep 23 2026 (audit finding): this used to only notify s.participants, but the tier check three
+  // lines above this route (and on the GET right above it) already lets a pending, not-yet-accepted
+  // invitee ('invited' tier) read AND post into this exact same thread — so an invited-but-not-
+  // accepted person could post into the chat and then never hear about any reply to it, only
+  // finding out by manually reopening the session. Notify everyone who can actually see this
+  // thread, not just current participants.
+  const recipients = new Set([...(s.participants || []), ...(s.invited || [])]);
+  for (const pid of recipients) if (pid !== req.userId) notify(pid, { title: 'New message', body: `${who}: ${text.slice(0,40)}`, link: { type: 'session-chat', sessionId: s.id } },
     { group: { key: `session:${s.id}:chat`, singularBody: `${who} commented on ${wkName}`, pluralBody: n => `${n} new comments on ${wkName}` } });
   res.json(sessionView(s, req.userId));
 });
@@ -2919,6 +2934,12 @@ app.post('/api/sessions', auth, async (req, res) => {
     exercises: ex,
     participants: [req.userId],
     invited: invites,
+    // Sep 23 2026 (audit finding): who actually sent each invite, captured once here and left
+    // alone -- see the comment above the invite-list rewrite in PUT /api/sessions/:id for why this
+    // exists. At creation time the inviter is always the creator, but it won't stay that way if
+    // ownership later hands off (see /leave, /remove-mine), so it has to be its own fact, not
+    // re-derived from s.creatorId on every read.
+    invitedBy: Object.fromEntries(invites.map(fid => [fid, req.userId])),
     variations: {},
     suggestedEdits: [],
     joinRequests: [],
@@ -3074,6 +3095,11 @@ const objArray = a => !Array.isArray(a) ? []
 function ensureSessionShape(s) {
   if (!Array.isArray(s.participants)) s.participants = [];   // participants and invited are id STRINGS,
   if (!Array.isArray(s.invited)) s.invited = [];             // not objects — array-checked, never element-cleaned
+  // Sep 23 2026 (audit finding): { inviteeId: inviterId }, set once when someone is invited and left
+  // alone after that -- see the comment above the invite-list rewrite in PUT /api/sessions/:id for
+  // why. Older sessions/invites predating this field simply have no entry here; every read site
+  // falls back to s.creatorId for those, same as before this existed.
+  if (!isObj(s.invitedBy)) s.invitedBy = {};
   s.exercises = objArray(s.exercises);
   if (!isObj(s.logs)) s.logs = {};
   else for (const uid of Object.keys(s.logs)) s.logs[uid] = objArray(s.logs[uid]);  // each user's set list
@@ -3283,7 +3309,16 @@ function sessionView(s, viewerId) {
     // spread below would otherwise leak (who ELSE has personally hidden what is nobody else's
     // business, same instinct as everything above).
     const myHiddenExerciseIds = Object.keys(s.hiddenFor || {}).filter(exId => (s.hiddenFor[exId] || []).includes(viewerId));
-    return Object.assign({}, s, { posts, logs, joinRequests, pendingRemovals, draftNotes: undefined, myDraftNotes, hiddenFor: undefined, myHiddenExerciseIds });
+    // Sep 23 2026 (cold-review catch): this Object.assign spreads the raw session, so s.invitedBy
+    // -- who invited WHOM, for every invitee, not just the viewer's own -- went out unredacted to
+    // every current member. Same "yourself and nobody else" rule as draftNotes/hiddenFor right
+    // above, and the exact instinct the non-member `view` object's own invitedById already follows
+    // (see its comment: "nobody else's business"). A member who is also still separately invited
+    // (edge case, but s.invited/s.participants are independent arrays) gets their own entry back
+    // the same scoped way; everyone else's is stripped.
+    const myInvitedById = (Array.isArray(s.invited) && s.invited.includes(viewerId))
+      ? ((s.invitedBy && s.invitedBy[viewerId]) || s.creatorId) : undefined;
+    return Object.assign({}, s, { posts, logs, joinRequests, pendingRemovals, draftNotes: undefined, myDraftNotes, hiddenFor: undefined, myHiddenExerciseIds, invitedBy: undefined, invitedById: myInvitedById });
   }
   if (tier === 'stranger') return null;
 
@@ -3324,6 +3359,13 @@ function sessionView(s, viewerId) {
     // you", the Respond block, and being able to suggest a swap before accepting all vanished.
     // Everyone else who was asked and has not answered is a fact about them, not about you.
     invited: (Array.isArray(s.invited) && s.invited.includes(viewerId)) ? [viewerId] : [],
+    // Sep 23 2026 (audit finding): who actually invited YOU specifically -- see the invitedBy
+    // comment on PUT /api/sessions/:id and on session creation for why this can no longer be
+    // assumed to be s.creatorId. Same "yourself and nobody else" shape as `invited` just above:
+    // the client gets a single resolved id for its own invite, not the whole map of who invited
+    // everyone else (nobody else's business, same instinct as suggestedEdits/comments below).
+    invitedById: (Array.isArray(s.invited) && s.invited.includes(viewerId))
+      ? ((s.invitedBy && s.invitedBy[viewerId]) || s.creatorId) : undefined,
     // who proposed swapping what is a conversation between the people in the workout — a stranger
     // reading a public recap was never one of them (v250: this used to include 'reader' too).
     suggestedEdits: tier === 'invited' ? (s.suggestedEdits || []) : [],
@@ -3411,6 +3453,37 @@ function othersWithCredit(s, meId) {
   const ids = new Set(othersWhoLogged(s, meId));
   for (const h of (s.history || [])) if (h.userId !== meId) ids.add(h.userId);
   return [...ids];
+}
+
+// Sep 23 2026 (audit finding): the kick route below (POST .../participants/:pid/remove) is the
+// only departure path that ever let go of a REQUIRED vote a departing person still held on a
+// pending exercise-removal. /leave, /remove-mine and stripUserFromSession (used by
+// /me/reset-workouts) all let someone erase their own participation in a workout without this
+// cleanup, so a fully departed person stayed a standing, undiscoverable-except-via-notifications
+// required approver forever -- and unlike a stuck-on-someone-inactive vote, the creator had no way
+// to force THIS one, since you can't kick someone who already left. Same "drop their vote, let it
+// resolve if that was the last one needed" behavior the kick route already had, now shared by every
+// departure route. Returns the pendingRemovals that got auto-resolved so callers can notify.
+function dropRequiredApprover(s, target) {
+  const resolvedNow = [];
+  for (const pr of (s.pendingRemovals || [])) {
+    if (pr.status !== 'pending') continue;
+    if (!pr.requiredApprovals.includes(target)) continue;
+    pr.requiredApprovals = pr.requiredApprovals.filter(x => x !== target);
+    pr.approvals = pr.approvals.filter(x => x !== target);
+    if (pr.requiredApprovals.length && pr.requiredApprovals.every(uid_ => pr.approvals.includes(uid_))) {
+      pr.status = 'approved';
+      s.exercises = s.exercises.filter(e => e.id !== pr.exerciseId);
+      resolvedNow.push(pr);
+    } else if (!pr.requiredApprovals.length) {
+      // They were the ONLY person this was waiting on -- nobody else has a stake in it, same as
+      // if the exercise had never had anyone else's sets on it to begin with.
+      pr.status = 'approved';
+      s.exercises = s.exercises.filter(e => e.id !== pr.exerciseId);
+      resolvedNow.push(pr);
+    }
+  }
+  return resolvedNow;
 }
 
 // Record ONE user's own completion of this workout — a history row scoped to them alone. Used by
@@ -3622,8 +3695,17 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
     s.creatorId = currentOthers.length ? currentOthers[0] : (s.participants.length ? s.participants[0] : null);
     if (s.creatorId && !s.participants.includes(s.creatorId)) s.participants.push(s.creatorId);
   }
+  // Sep 23 2026 (audit finding): leaving used to never let go of a still-required removal-approval
+  // vote -- see dropRequiredApprover's own comment above othersWithCredit for why that left a
+  // departed person as a permanent, unresolvable required approver on a pending exercise removal.
+  const resolvedRemovals = dropRequiredApprover(s, me);
   rebuildAllPrs();
   await save(DB);
+  if (s.creatorId) {
+    for (const pr of resolvedRemovals) {
+      notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } }, { push: false });
+    }
+  }
   res.json({ ok: true, left: true });
 });
 
@@ -3657,24 +3739,9 @@ app.post('/api/sessions/:id/participants/:pid/remove', auth, async (req, res) =>
   // The actual point of this route: drop their vote requirement from anything still waiting on
   // them, and let it resolve if that was the last one needed -- the whole reason "kick" is a real
   // answer to a removal request stuck on someone inactive, not just a way to get rid of them.
-  const resolvedNow = [];
-  for (const pr of s.pendingRemovals) {
-    if (pr.status !== 'pending') continue;
-    if (!pr.requiredApprovals.includes(target)) continue;
-    pr.requiredApprovals = pr.requiredApprovals.filter(x => x !== target);
-    pr.approvals = pr.approvals.filter(x => x !== target);
-    if (pr.requiredApprovals.length && pr.requiredApprovals.every(uid_ => pr.approvals.includes(uid_))) {
-      pr.status = 'approved';
-      s.exercises = s.exercises.filter(e => e.id !== pr.exerciseId);
-      resolvedNow.push(pr);
-    } else if (!pr.requiredApprovals.length) {
-      // They were the ONLY person this was waiting on -- nobody else has a stake in it, same as
-      // if the exercise had never had anyone else's sets on it to begin with.
-      pr.status = 'approved';
-      s.exercises = s.exercises.filter(e => e.id !== pr.exerciseId);
-      resolvedNow.push(pr);
-    }
-  }
+  // (Sep 23 2026: this logic is now shared with every OTHER departure route -- see
+  // dropRequiredApprover's own comment above othersWithCredit.)
+  const resolvedNow = dropRequiredApprover(s, target);
   await save(DB);
   const hostName = DB.users[s.creatorId] ? DB.users[s.creatorId].displayName : 'The organizer';
   notify(target, { title: 'Removed from workout', body: `${hostName} removed you from ${s.name}. Your logged sets are still saved.`, link: { type: 'session', sessionId: s.id } });
@@ -3787,12 +3854,28 @@ app.post('/api/sessions/:id/remove-mine', auth, async (req, res) => {
   // I was still here.
   s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === me && e.status === 'pending'));
   if (s.creatorId === me) {
+    // Sep 23 2026 (audit finding): this used to be othersWhoLogged(s, me) alone with no fallback --
+    // the exact gap /leave's own v253 fix already closed (see the long comment on /leave's identical
+    // line). A participant who accepted an invite but hasn't logged anything yet is still genuinely
+    // CURRENT and a legitimate heir; without this fallback the workout went permanently ownerless
+    // (creatorId: null) the moment the creator tapped "Remove from my profile," even though someone
+    // real was still sitting right there in s.participants. The comment above this route already
+    // claimed this "mirrors /leave exactly" -- now it actually does.
     const currentOthers = othersWhoLogged(s, me);
-    s.creatorId = currentOthers.length ? currentOthers[0] : null;
+    s.creatorId = currentOthers.length ? currentOthers[0] : (s.participants.length ? s.participants[0] : null);
     if (s.creatorId && !s.participants.includes(s.creatorId)) s.participants.push(s.creatorId);
   }
+  // Sep 23 2026 (audit finding, same as /leave above): drop any still-required removal-approval
+  // vote this route was about to erase every OTHER trace of -- see dropRequiredApprover's own
+  // comment above othersWithCredit.
+  const resolvedRemovals = dropRequiredApprover(s, me);
   rebuildAllPrs();
   await save(DB);
+  if (s.creatorId) {
+    for (const pr of resolvedRemovals) {
+      notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } }, { push: false });
+    }
+  }
   res.json({ ok: true, removed: true });
 });
 
@@ -3897,6 +3980,18 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   if (dropped.length) {
     s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(dropped.includes(e.proposedBy) && e.status === 'pending'));
   }
+  // Sep 23 2026 (audit finding): "X invited you" (Home's banner and the Notifications page) used to
+  // resolve the inviter as whoever CURRENTLY owns the workout, not whoever actually sent the invite
+  // -- s.invited was always just a bare list of ids with no memory of who put someone on it. That
+  // reads fine right up until ownership hands off (creator leaves -- see /leave), at which point
+  // every invite still awaiting an answer silently switched to crediting the NEW owner, someone who
+  // may not even know that invite was sent. Preserve the true inviter for anyone who was already on
+  // the list (this route rewrites s.invited wholesale on every save, so without this an untouched
+  // re-save of the same invite list would otherwise look like a fresh call to Object.fromEntries and
+  // reset it); only newly-added names get credited to the person editing this list right now, since
+  // they genuinely are the one sending it.
+  for (const fid of invites) if (!s.invitedBy[fid]) s.invitedBy[fid] = req.userId;
+  for (const fid of Object.keys(s.invitedBy)) if (!invites.includes(fid)) delete s.invitedBy[fid];
   s.invited = invites;
   }
   s.updatedAt = new Date().toISOString();
@@ -4392,6 +4487,13 @@ function stripUserFromSession(s, userId) {
   // could still be approved later and rewrite logged sets attributed to a user this function just
   // erased every other trace of. An approved one stays — it was settled before the reset.
   s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === userId && e.status === 'pending'));
+  // Sep 23 2026 (audit finding, same as /leave and /remove-mine): reset-workouts is the third
+  // route that erases someone's participation without ever letting go of a still-required
+  // removal-approval vote they held -- see dropRequiredApprover's own comment above
+  // othersWithCredit. No notification here (this helper runs inside a loop over every touched
+  // session and reset-workouts doesn't notify per-session for anything else it does either, e.g.
+  // the ownership handoff just above its own call site) -- the vote cleanup itself is the fix.
+  dropRequiredApprover(s, userId);
 }
 
 // Scoped to req.userId ONLY — never a body param, so this can never be pointed at anyone else,
@@ -6174,13 +6276,26 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   // (cold-review catch, once notes started saving themselves while typing) and could drag a
   // last-month workout into this week's challenge. A recap is posted once; edits are edits.
   const existingAt = s.posts[req.userId] && typeof s.posts[req.userId].at === 'string' ? s.posts[req.userId].at : null;
+  // Sep 23 2026 (audit finding): the "with @X, Y" collaborator line on a posted recap (viewPost in
+  // app.js) used to rebuild itself from the CURRENT s.participants on every single view, instead of
+  // who was actually training alongside this author when they posted -- so someone who genuinely
+  // trained that session but later left (even choosing to keep their credit) or was kicked silently
+  // vanished from a recap that was already posted, understating who was really there. Snapshot it
+  // once, same "posted once, edits are edits" precedent `at` above already set for this exact
+  // reason -- re-saving notes/a photo later must not reset it, and a departure afterward must not be
+  // able to rewrite history either. A legacy recap with no snapshot yet (existingTrainedWith null)
+  // takes one the first time it's touched again after this shipped -- better late than never, and
+  // it only ever moves it from "recomputed live, always" to "fixed as of now," never worse.
+  const existingTrainedWith = (s.posts[req.userId] && Array.isArray(s.posts[req.userId].trainedWith))
+    ? s.posts[req.userId].trainedWith : null;
   s.posts[req.userId] = {
     at: existingAt || new Date().toISOString(),
     notes: String(notes || '').slice(0, 2000),
     media: cleanMedia,
     visibility: vis,
     comments: existingComments,
-    reactions: existingReactions
+    reactions: existingReactions,
+    trainedWith: existingTrainedWith || (s.participants || []).filter(pid => pid !== req.userId)
   };
   // Cold-review catch (Sep 4): a real post now exists with its own notes -- including possibly
   // blank, if that's what the person actually typed/left. A leftover draft from before they
