@@ -620,9 +620,21 @@ function auth(req, res, next) {
 // SEPARATE middleware from auth() above, not layered on top of it: reviewing reports is an
 // operator action, not a logged-in-user action, and requiring both would mean the token holder
 // also needs a live CrewFit login token, which is one more thing to keep valid for no benefit.
+// Sep 24 2026 audit round 4 (low finding): this was a plain `!==` string compare, unlike every
+// other secret comparison in this file (the PIN check, session-token HMAC, media-token HMAC all
+// explicitly use timingSafeEqual with a "constant time" comment) -- and had no rate limit at all,
+// unlike /api/login and /api/register just above. A remote attacker with unlimited attempts and
+// response-time measurements could in principle guess ADMIN_TOKEN byte-by-byte and gain access to
+// real users' report identities plus the ability to resolve moderation reports. Same fix as
+// everywhere else in this file: timingSafeEqual (length-checked first, since it throws on a
+// length mismatch rather than returning false) and a per-IP rate limit, same shape as /api/login.
 function adminAuth(req, res, next) {
-  const t = req.headers['x-admin-token'] || '';
-  if (!ADMIN_TOKEN || t !== ADMIN_TOKEN) return res.status(401).json({ error: 'unauthorized' });
+  const ip = clientIp(req);
+  if (ip && overLimit('admin:' + ip, 20, 60 * 1000))
+    return res.status(429).json({ error: 'Too many attempts. Please wait a minute.' });
+  const t = String(req.headers['x-admin-token'] || '');
+  const a = Buffer.from(t), b = Buffer.from(String(ADMIN_TOKEN || ''));
+  if (!ADMIN_TOKEN || a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'unauthorized' });
   next();
 }
 
@@ -1117,8 +1129,19 @@ app.post('/api/me/avatar', auth, async (req, res) => {
   const b64 = data.split(',')[1];
   if (b64Bytes(b64) > MEDIA_MAX_PHOTO) return res.status(413).json({ error: `That image is too large (limit ${mb(MEDIA_MAX_PHOTO)}).` });
   const fname = `avatar_${req.userId}.${ext}`;
-  fs.writeFileSync(path.join(UPLOAD_DIR, fname), Buffer.from(b64, 'base64'));
   const u = DB.users[req.userId];
+  // Sep 24 2026 audit round 4 (low finding, storage hygiene only -- no security impact, since
+  // avatars are meant to be public and req.userId comes from the auth token, never client input):
+  // the old avatar file was never cleaned up when a re-upload lands under a DIFFERENT extension
+  // (e.g. a PNG-sourced crop first, later a JPEG-sourced one) -- `avatar_<id>.png` and
+  // `avatar_<id>.jpg` would both sit in UPLOAD_DIR forever, only one of them ever referenced.
+  // Same-extension re-uploads already self-cleaned by simply overwriting the one file. Best-effort
+  // unlink: nothing here should fail the request over a leftover file that's merely unreferenced.
+  const prevPath = u.avatar ? path.join(UPLOAD_DIR, path.basename(u.avatar)) : null;
+  fs.writeFileSync(path.join(UPLOAD_DIR, fname), Buffer.from(b64, 'base64'));
+  if (prevPath && path.basename(prevPath) !== fname) {
+    try { fs.unlinkSync(prevPath); } catch (e) {}
+  }
   u.avatar = `/uploads/${fname}`;
   await save(DB);
   res.json({ avatar: u.avatar });
@@ -1556,9 +1579,38 @@ function publicCrew(c, viewerId) {
 // invite eligibility already uses (connectionsOf), so this can't become a way to add a stranger
 // to a group thread. Silently drops any id that isn't (a real connection and) a real user, rather
 // than erroring, so a stale id in the client's picker state can't block create/rename.
-function validCrewMemberIds(ownerId, requested) {
+// Sep 24 2026 audit round 4 (medium finding): `existingMemberIds` is new -- previously this
+// filtered EVERY submitted id against the owner's CURRENT connections, with no distinction
+// between "a brand-new person being added" (should require a live connection, same as always)
+// and "someone already in the crew" (should never need to still be a mutual connection just to
+// stay put). The crew-edit sheet always resends every current member's id whether or not the
+// owner touched membership at all (see the "always resubmits" comments in PUT /api/crews/:id
+// below), and its picker only lists live connections -- so if the owner had simply unfollowed a
+// member since (an everyday, unrelated action, no block involved), that member's id was still in
+// the resubmitted list but silently failed this filter, and a totally unrelated save (a rename,
+// or adding someone else) kicked them out with a "removed you from the crew" push the owner never
+// chose to send. Existing members now pass through regardless of current connection status --
+// the connection requirement still applies in full to anyone NOT already a member, exactly as
+// before.
+// Sep 24 2026 audit round 4 (low finding): used to end with `.slice(0, CREW_MAX_MEMBERS - 1)`,
+// silently truncating an over-the-cap submission with no error at all -- unlike every other cap
+// in this codebase (custom exercises, etc.), which returns an explicit 400 instead of quietly
+// dropping data. At a full crew, adding one more member here could silently drop an arbitrary
+// EXISTING member instead (order-dependent on iteration order) rather than rejecting the add or
+// telling the owner they're at the limit. No longer slices -- callers now check the returned
+// length against CREW_MAX_MEMBERS themselves and return a real error, same as everywhere else.
+function validCrewMemberIds(ownerId, requested, existingMemberIds) {
   const allowed = new Set(connectionsOf(ownerId));
-  return [...new Set((Array.isArray(requested) ? requested : []).filter(id => allowed.has(id)))].slice(0, CREW_MAX_MEMBERS - 1);
+  // Sep 24 2026 cold-review catch (round 4 audit): existingMemberIds (passed as c.memberIds)
+  // always includes the owner's own id, so without this exclusion a client that resubmits the
+  // owner's id in requested/body.memberIds could slip it past the filter via already.has() even
+  // though allowed never included it -- every call site then does
+  // [req.userId, ...validCrewMemberIds(...)] with no dedup of its own, so the owner could end up
+  // listed twice in c.memberIds (double-counted PRs in challengeProgress, doubled roster row in
+  // publicCrew, and a correctly-sized crew wrongly rejected by the member cap). Excluding
+  // ownerId here restores the pre-existing invariant that this function never returns it.
+  const already = new Set((Array.isArray(existingMemberIds) ? existingMemberIds : []).filter(id => id !== ownerId));
+  return [...new Set((Array.isArray(requested) ? requested : []).filter(id => id !== ownerId && (allowed.has(id) || already.has(id))))];
 }
 
 app.get('/api/crews', auth, async (req, res) => {
@@ -1568,6 +1620,9 @@ app.post('/api/crews', auth, async (req, res) => {
   const name = capStr((req.body || {}).name, CREW_NAME_MAX).trim();
   if (!name) return res.status(400).json({ error: 'name required' });
   const memberIds = validCrewMemberIds(req.userId, (req.body || {}).memberIds);
+  // Sep 24 2026 audit round 4: see the comment on validCrewMemberIds above -- was a silent
+  // truncation, now a real error before the crew is ever created.
+  if (memberIds.length > CREW_MAX_MEMBERS - 1) return res.status(400).json({ error: `a crew is limited to ${CREW_MAX_MEMBERS} members` });
   const c = { id: 'crew_' + uid(), name, ownerId: req.userId, memberIds: [req.userId, ...memberIds], messages: [], createdAt: new Date().toISOString() };
   DB.crews[c.id] = c;
   // Cold-review catch (Sep 11 2026): PUT /api/crews/:id already emits 'joined_crew' for anyone
@@ -1597,6 +1652,13 @@ app.put('/api/crews/:id', auth, async (req, res) => {
   ensureCrewShape(c);
   if (c.ownerId !== req.userId) return res.status(403).json({ error: 'only the owner can edit this crew' });
   const body = req.body || {};
+  // Sep 24 2026 audit round 4: validated and returned FIRST, before the name block below can
+  // mutate/notify anything -- checking this down inside the memberIds block (its natural spot)
+  // would let a name change (and its own notify/feed-event side effects) go through and then
+  // fail on memberIds in the same request, leaving a half-applied edit. Fail closed, before
+  // anything is touched.
+  if (body.memberIds !== undefined && validCrewMemberIds(req.userId, body.memberIds, c.memberIds).length > CREW_MAX_MEMBERS - 1)
+    return res.status(400).json({ error: `a crew is limited to ${CREW_MAX_MEMBERS} members` });
   if (body.name !== undefined) {
     const name = capStr(body.name, CREW_NAME_MAX).trim();
     if (!name) return res.status(400).json({ error: 'name required' });
@@ -1618,15 +1680,20 @@ app.put('/api/crews/:id', auth, async (req, res) => {
       // to avoid -- so this only reaches whoever actually survives THIS request's membership edit
       // (or everyone currently in the crew, if this request doesn't touch membership at all).
       const survivors = body.memberIds !== undefined
-        ? new Set([req.userId, ...validCrewMemberIds(req.userId, body.memberIds)])
+        ? new Set([req.userId, ...validCrewMemberIds(req.userId, body.memberIds, c.memberIds)])
         : new Set(c.memberIds);
+      // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted. See
+      // the Sep 14 2026 comment on publicCrew(): crew notifications are deliberately left
+      // untouched by a block, unlike the crew's Activity-feed row for the same event (which does
+      // filter by isBlocked -- the feed is a profile-adjacent surface, closer to the streak/
+      // leaderboard carve-outs, not a push/inbox notification).
       for (const mid of c.memberIds) if (mid !== req.userId && survivors.has(mid)) notify(mid, { title: name, body: `${DB.users[req.userId].displayName} renamed the crew to "${name}"`, link: { type: 'crew', crewId: c.id } });
     }
     c.name = name;
   }
   if (body.memberIds !== undefined) {
     const before = new Set(c.memberIds);
-    c.memberIds = [req.userId, ...validCrewMemberIds(req.userId, body.memberIds)];
+    c.memberIds = [req.userId, ...validCrewMemberIds(req.userId, body.memberIds, c.memberIds)];
     // Only the newly-added members, not everyone -- an edit that touches just the name (or
     // re-submits the same roster, which the client always does alongside a name change) must not
     // re-notify people who were already in the crew, only whoever is actually new to it.
@@ -1669,6 +1736,9 @@ app.post('/api/crews/:id/leave', auth, async (req, res) => {
   // passive Activity-feed row above -- same reasoning as crew_renamed's notify loop just above in
   // PUT /api/crews/:id. c.memberIds has already had req.userId filtered out by this point, so this
   // reaches exactly the people still in the crew.
+  // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
+  // reason as crew_renamed's notify loop above (crew notifications deliberately untouched by a
+  // block; see the Sep 14 2026 comment on publicCrew()).
   for (const mid of c.memberIds) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} left the crew`, link: { type: 'crew', crewId: c.id } });
   await save(DB);
   res.json({ ok: true });
@@ -1686,6 +1756,9 @@ app.delete('/api/crews/:id', auth, async (req, res) => {
   // zero signal, the same silent-disappearance pattern as the kicked-member case in PUT above. No
   // feed event and no link: the crew itself (and any crewView route to it) is gone the instant this
   // returns, so a link here would be a guaranteed dead tap.
+  // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
+  // reason as crew_renamed's notify loop above (crew notifications deliberately untouched by a
+  // block; see the Sep 14 2026 comment on publicCrew()).
   for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} deleted the crew`, link: null });
   delete DB.crews[req.params.id];
   await save(DB);
@@ -1696,6 +1769,13 @@ app.get('/api/crews/:id/messages', auth, async (req, res) => {
   if (!c) return res.status(404).json({ error: 'not found' });
   ensureCrewShape(c);
   if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
+  // Sep 24 2026 audit round 4: a first draft of this round block-filtered crew chat the same way
+  // session chat already is -- reverted. See the Sep 14 2026 comment on publicCrew() above:
+  // membership, chat, and crew notifications are DELIBERATELY left untouched by a block ("nothing
+  // about the crew looks different to anyone") after an earlier attempt at hiding things here made
+  // the owner notice a missing member and start asking questions -- the opposite of what blocking
+  // is supposed to protect against. Only per-member profile-detail numbers (the roster's `streak`
+  // field, the challenge leaderboard's `count`) are hidden; the shared chat thread itself is not.
   res.json(c.messages);
 });
 app.post('/api/crews/:id/messages', auth, async (req, res) => {
@@ -1723,6 +1803,9 @@ app.post('/api/crews/:id/messages', auth, async (req, res) => {
   // scrolled to the actual messages, not just somewhere on the crew page above them -- see
   // openCrewChat() in app.js.
   const who = DB.users[req.userId].displayName;
+  // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
+  // reason as the read side above (see the Sep 14 2026 comment on publicCrew()): crew chat
+  // notifications are deliberately left untouched by a block.
   for (const pid of c.memberIds) if (pid !== req.userId) notify(pid, { title: c.name, body: `${who}: ${text.slice(0, 40)}`, link: { type: 'crew-chat', crewId: c.id } },
     { group: { key: `crew:${c.id}:chat`, singularBody: `${who} commented in ${c.name}`, pluralBody: n => `${n} new comments in ${c.name}` } });
   res.json(m);
@@ -2082,6 +2165,10 @@ app.post('/api/crews/:id/challenge', auth, async (req, res) => {
     target: ch.target ?? null, title: ch.title || null,
     text: notifyBody.slice(DB.users[req.userId].displayName.length + 1) });
   await save(DB);
+  // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
+  // reason as the other crew-lifecycle notify loops (crew notifications deliberately untouched by
+  // a block; see the Sep 14 2026 comment on publicCrew()). GET /api/feed's own challenge_started
+  // event stays filtered, unchanged -- only this push/inbox notification is reverted.
   for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: notifyBody, link: { type: 'crew', crewId: c.id } });
   res.json(publicCrew(c, req.userId));
 });
@@ -2135,7 +2222,11 @@ app.get('/api/notifications', auth, async (req, res) => {
     // not be gated behind the same creator-only check the join-request one above needs.
     if (s.creatorId === req.userId) {
       for (const j of (s.joinRequests || [])) {
-        if (j.status !== 'pending' || !DB.users[j.userId]) continue;
+        // Sep 24 2026 audit round 4 (low finding): the actual approve action already 400s with
+        // {error:'blocked'} for a since-blocked requester (see /join/:reqId/approve), but this
+        // listing still showed their identity and free-text note here regardless -- a visible
+        // leak through a surface that's supposed to fail closed.
+        if (j.status !== 'pending' || !DB.users[j.userId] || isBlocked(j.userId, req.userId)) continue;
         joinRequests.push({ type: 'join', sessionId: s.id, reqId: j.id, sessionName: s.name || 'Workout', note: j.note || '', from: publicUser(j.userId) });
       }
     }
@@ -2143,7 +2234,9 @@ app.get('/api/notifications', auth, async (req, res) => {
       if (pr.status !== 'pending') continue;
       if (!(pr.requiredApprovals || []).includes(req.userId)) continue;
       if ((pr.approvals || []).includes(req.userId)) continue;
-      if (!DB.users[pr.proposedBy]) continue;
+      // Sep 24 2026 audit round 4 (low finding): same shape as joinRequests above -- the proposer's
+      // identity leaked into this listing even when blocked.
+      if (!DB.users[pr.proposedBy] || isBlocked(pr.proposedBy, req.userId)) continue;
       removals.push({ type: 'removal', sessionId: s.id, reqId: pr.id, sessionName: s.name || 'Workout', exerciseName: pr.exerciseName, from: publicUser(pr.proposedBy) });
     }
   }
@@ -4113,7 +4206,10 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
         pr = { id: 'rm_' + uid(), exerciseId: rid, exerciseName: exOld ? exOld.name : 'Exercise',
                proposedBy: req.userId, requiredApprovals, approvals: [], status: 'pending' };
         s.pendingRemovals.push(pr);
-        for (const uid_ of requiredApprovals) {
+        // Sep 24 2026 audit round 4: same missing block check as the crew-lifecycle notify loops
+        // fixed above -- sessionView's own suggestedEdits/logs are already block-filtered for a
+        // blocked co-participant, but this proposal notification had no equivalent check.
+        for (const uid_ of requiredApprovals) if (!isBlocked(req.userId, uid_)) {
           notify(uid_, { title: 'Remove exercise?', body: `${DB.users[req.userId].displayName} wants to remove ${pr.exerciseName} from ${s.name} — you have sets logged on it`, link: { type: 'session', sessionId: s.id } }, { history: false });
         }
       }
@@ -4222,7 +4318,8 @@ app.post('/api/sessions/:id/removal/:reqId/approve', auth, async (req, res) => {
   if (allIn) {
     pr.status = 'approved';
     s.exercises = s.exercises.filter(e => e.id !== pr.exerciseId);
-    notify(s.creatorId, { title: 'Removal approved', body: `Everyone signed off — ${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } });
+    // Sep 24 2026 audit round 4: same missing block check as the removal-request notify above.
+    if (!isBlocked(req.userId, s.creatorId)) notify(s.creatorId, { title: 'Removal approved', body: `Everyone signed off — ${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } });
   }
   await save(DB);
   res.json(sessionView(s, req.userId));
@@ -4242,7 +4339,8 @@ app.post('/api/sessions/:id/removal/:reqId/decline', auth, async (req, res) => {
   pr.status = 'declined';
   await save(DB);
   const who = DB.users[req.userId] ? DB.users[req.userId].displayName : 'Someone';
-  notify(s.creatorId, { title: 'Removal declined', body: `${who} said no — ${pr.exerciseName} stays in ${s.name}`, link: { type: 'session', sessionId: s.id } });
+  // Sep 24 2026 audit round 4: same missing block check as the removal-request notify above.
+  if (!isBlocked(req.userId, s.creatorId)) notify(s.creatorId, { title: 'Removal declined', body: `${who} said no — ${pr.exerciseName} stays in ${s.name}`, link: { type: 'session', sessionId: s.id } });
   res.json(sessionView(s, req.userId));
 });
 
@@ -4268,6 +4366,14 @@ app.post('/api/sessions/:id/accept', auth, async (req, res) => {
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   if (!Array.isArray(s.invited) || !s.invited.includes(req.userId)) return res.status(403).json({ error: 'not invited' });
+  // Sep 24 2026 audit round 4 (same gap as the join-request approve fix a round earlier, same
+  // fix): the invite itself was sent before any block existed, but nothing re-checked block at
+  // THIS moment -- the actual moment membership is granted. Either side could have blocked the
+  // other in between, and Accept would still happily make them a full participant (chat, shared
+  // log sheet, everything). Refuse rather than silently letting a blocked relationship become
+  // co-participants; the invite itself just sits there unaccepted (matching /join's own behavior
+  // when canSeeProfile already fails block-aware, before a request can even be filed).
+  if (isBlocked(s.creatorId, req.userId)) return res.status(400).json({ error: 'blocked' });
   s.invited = s.invited.filter(x => x !== req.userId);
   if (!s.participants.includes(req.userId)) s.participants.push(req.userId);
   await save(DB);
@@ -4376,14 +4482,17 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
   // decides. An "add" stays host-only, as before.
   const who = DB.users[req.userId].displayName;
   const hostName = DB.users[s.creatorId] ? DB.users[s.creatorId].displayName : 'the host';
+  // Sep 24 2026 audit round 4: neither notify below checked block -- sessionView's own
+  // suggestedEdits are already block-filtered for a blocked co-participant, but proposing one
+  // had no equivalent check on who gets told about it.
   if (type === 'add') {
-    notify(s.creatorId, { title: 'Exercise suggested', body: `${who} suggested adding ${edit.swapTo}`, link: { type: 'session', sessionId: s.id } });
+    if (!isBlocked(req.userId, s.creatorId)) notify(s.creatorId, { title: 'Exercise suggested', body: `${who} suggested adding ${edit.swapTo}`, link: { type: 'session', sessionId: s.id } });
   } else {
     const fromEx = s.exercises.find(e => e.id === edit.exerciseId);
     const fromName = fromEx ? fromEx.name : 'an exercise';
     const everyone = new Set([s.creatorId, ...s.participants]);
     for (const uid_ of everyone) {
-      if (uid_ === req.userId || !DB.users[uid_]) continue;
+      if (uid_ === req.userId || !DB.users[uid_] || isBlocked(req.userId, uid_)) continue;
       notify(uid_, uid_ === s.creatorId
         ? { title: 'Swap requested', body: `${who} wants to swap ${fromName} → ${edit.swapTo} for everyone. Your call.`, link: { type: 'session', sessionId: s.id } }
         : { title: 'Swap requested', body: `${who} wants to swap ${fromName} → ${edit.swapTo} for everyone — ${hostName} decides.`, link: { type: 'session', sessionId: s.id } });
@@ -4449,7 +4558,8 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
     const newEx = Object.assign({ id: 'e_' + uid(), order: s.exercises.length }, withDefaults({ name: edit.swapTo }));
     s.exercises.push(newEx);
     await save(DB);
-    notify(edit.proposedBy, { title: 'Exercise added', body: `${DB.users[s.creatorId].displayName} added ${edit.swapTo} to the workout`, link: { type: 'session', sessionId: s.id } });
+    // Sep 24 2026 audit round 4: same missing block check as the propose-side notifies above.
+    if (!isBlocked(req.userId, edit.proposedBy)) notify(edit.proposedBy, { title: 'Exercise added', body: `${DB.users[s.creatorId].displayName} added ${edit.swapTo} to the workout`, link: { type: 'session', sessionId: s.id } });
     return res.json(sessionView(s, req.userId));
   }
   // Sep 6 (Jeff: "if brian suggests a swap and I approve it - that swaps the exercise for us both,
@@ -4501,8 +4611,9 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
   const proposerName = DB.users[edit.proposedBy] ? DB.users[edit.proposedBy].displayName : 'Someone';
   // edit.proposedBy is added explicitly: /suggest lets someone still holding an invite propose
   // ("I'll come if we swap Barbell Row"), and they aren't in s.participants yet (cold-review catch).
+  // Sep 24 2026 audit round 4: same missing block check as the propose-side notifies above.
   for (const uid_ of new Set([...s.participants, edit.proposedBy])) {
-    if (uid_ === s.creatorId || !DB.users[uid_]) continue;
+    if (uid_ === s.creatorId || !DB.users[uid_] || isBlocked(req.userId, uid_)) continue;
     notify(uid_, uid_ === edit.proposedBy
       ? { title: 'Swap approved', body: `${hostName} approved your swap: ${fromName || 'the exercise'} → ${edit.swapTo}, for everyone`, link: { type: 'session', sessionId: s.id } }
       : { title: 'Workout changed', body: `${hostName} approved ${proposerName}'s swap: ${fromName || 'the exercise'} → ${edit.swapTo}`, link: { type: 'session', sessionId: s.id } });
@@ -4522,7 +4633,9 @@ app.post('/api/sessions/:id/suggest/:editId/reject', auth, async (req, res) => {
   if (edit.status !== 'pending') return res.status(400).json({ error: 'already decided' });
   edit.status = 'rejected';
   await save(DB);
-  if (edit.type !== 'add') {
+  // Sep 24 2026 audit round 4: same missing block check as the propose/approve-side notifies
+  // above.
+  if (edit.type !== 'add' && !isBlocked(req.userId, edit.proposedBy)) {
     const ex = s.exercises.find(x => x.id === edit.exerciseId);
     notify(edit.proposedBy, { title: 'Swap not approved', body: `${DB.users[s.creatorId].displayName} kept ${ex ? ex.name : 'the exercise'}. You can still swap it for just you.`, link: { type: 'session', sessionId: s.id } });
   }
@@ -5231,8 +5344,24 @@ function liftHistoryFor(userId) {
     for (const name of Object.keys(perEx)) {
       const point = {
         at: perfDate(s.scheduledAt).slice(0, 10),
+        // est is always Epley-scored off toLb() inside estMax() above, regardless of what unit
+        // this particular set was typed in -- it is canonically a POUNDS number internally, used
+        // that way for every comparison in this file (bestPointOfWindow, currentEst, the overall
+        // ratio blend below). It carries no meaningful "source unit" of its own the way weight
+        // does; see the Sep 24 2026 audit-round-4 fix at trendFor()/topLiftsFor() below, which
+        // converts it into the viewer's current display unit only at the point it's returned to
+        // the client -- never here, where other internal math still depends on it staying lb.
         est: Math.round(perEx[name].e),
+        // Sep 24 2026 audit round 4 (cold-review finding): weight is stored/returned in whatever
+        // unit the winning set was actually TYPED in -- exactly like every other raw logged
+        // weight in this file (see the big comment above toLb/inUnit). Without a unit tag riding
+        // along, trendFor()/topLiftsFor() had no way to know whether this number needed
+        // converting before being shown under the viewer's CURRENT unit, and were sending it
+        // straight through unconverted -- a kg-preference user logging in kg the whole time never
+        // noticed, but anyone who ever logged the same lift in the other unit (or switched
+        // preference) got a raw lb number displayed with a "kg" label bolted on, off by ~2.2x.
         weight: Number(perEx[name].l.weight) || 0,
+        unit: perEx[name].l.unit || 'lb',
         // The REAL reps performed, never the rir-adjusted count -- estMax() alone applies the
         // rir bump to the score. Client and this point both need what actually happened.
         reps: Number(perEx[name].l.reps) || 0
@@ -5267,6 +5396,11 @@ function currentEst(points, asOfDate, assisted) { return bestPointOfWindow(point
 
 function trendFor(userId) {
   const lifts = liftHistoryFor(userId);
+  // Sep 24 2026 audit round 4: the unit every number below gets displayed in. All the ratio/
+  // smoothing math above and below stays in liftHistoryFor()'s canonical lb points, untouched --
+  // this only controls the final conversion applied in toChip(), right before each lift's points/
+  // currentWeight leave this function for the client.
+  const displayUnit = (DB.users[userId] && DB.users[userId].units) || 'lb';
 
   // Sep 5 (Jeff: "I was having an off day and exhausted so didn't lift my heaviest ... it
   // dropped my strength trend a ton overall"): the overall % and each lift's own changePct used
@@ -5334,12 +5468,31 @@ function trendFor(userId) {
       ? (bestPoint.est > 0 ? (l.points[0].est / bestPoint.est - 1) * 100 : (l.points[0].est > 0 ? 100 : 0))
       : (bestPoint.est / l.points[0].est - 1) * 100;
     return {
-      name: l.name, points: l.points,
+      name: l.name,
+      // Sep 24 2026 audit round 4 (HIGH finding, cold-review): l.points was being handed to the
+      // client as-is -- raw weight in whatever unit each set was typed in, and an `est` that is
+      // ALWAYS lb-scaled internally (see the comment in liftHistoryFor above) -- while the client
+      // (trendChart in app.js) prints both under the viewer's CURRENT unit with no conversion of
+      // its own. A kg-preference user got their own lb-scored est displayed as "kg" (off by
+      // ~2.2x, e.g. a 110kg squat read as a 283 "kg" estimated max instead of ~128), and anyone
+      // who ever logged the same lift in the other unit got the same mislabeling on the raw
+      // weight tooltip. Converted here, once, right before this leaves the function -- every
+      // internal comparison above (bestPointOfWindow, changePct, the overall blend) already ran
+      // against the untouched lb-canonical points, so this can't affect any of that math.
+      points: l.points.map(p => ({
+        at: p.at,
+        est: Math.round(inUnit(p.est, 'lb', displayUnit)),
+        weight: inUnit(p.weight, p.unit || 'lb', displayUnit),
+        unit: displayUnit,
+        reps: p.reps,
+        rir: p.rir
+      })),
       changePct: Number(changePct.toFixed(1)),
       // The weight from the SAME session changePct is computed against -- not literally the most
       // recent session's weight -- so "what's driving it" never shows a lighter number next to a
-      // green up-arrow (see the comment above bestPointOfWindow).
-      currentWeight: bestPoint.weight,
+      // green up-arrow (see the comment above bestPointOfWindow). Now unit-converted too (same
+      // fix as points above -- bestPoint.weight/unit are the untouched raw values).
+      currentWeight: inUnit(bestPoint.weight, bestPoint.unit || 'lb', displayUnit),
       // Sep 11 2026 (Jeff, asked before building): the per-lift Strength Trend chart plots this
       // lift's own points, and for an assisted exercise the client flips its y-axis so the line
       // still reads "up = improving" like every other lift, even though the underlying number
@@ -5390,6 +5543,9 @@ function topLiftsFor(userId) {
   const lifts = liftHistoryFor(userId);
   const allNames = lifts.map(l => l.name);
   const u = DB.users[userId];
+  // Sep 24 2026 audit round 4: same unit-conversion gap as trendFor() above, same fix -- see the
+  // comment on toTile below.
+  const displayUnit = (u && u.units) || 'lb';
   const rawPicks = Array.isArray(u && u.topLiftPicks) ? u.topLiftPicks : [];
   const seen = new Set();
   const picks = [];
@@ -5405,9 +5561,14 @@ function topLiftsFor(userId) {
     const bestPoint = bestPointOfWindow(l.points, undefined, assisted);
     return {
       name: l.name,
-      weight: bestPoint.weight,
+      // Sep 24 2026 audit round 4 (cold-review finding): bestPoint.weight/est are the raw
+      // liftHistoryFor() values (weight in whatever unit that set was typed in; est always
+      // lb-scaled) -- the client's Top-lifts tile prints both straight under the viewer's current
+      // unit with no conversion of its own (`${l.weight} ${U}`), same gap as trendFor() above.
+      weight: inUnit(bestPoint.weight, bestPoint.unit || 'lb', displayUnit),
       reps: bestPoint.reps,
-      est: Math.round(bestPoint.est),
+      est: Math.round(inUnit(bestPoint.est, 'lb', displayUnit)),
+      unit: displayUnit,
       at: bestPoint.at,
       sessions: l.points.length,
       lessIsMore: assisted
