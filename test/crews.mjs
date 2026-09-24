@@ -186,17 +186,48 @@ console.log('\nleaving vs. deleting: a member can leave, the owner cannot (must 
   ok(gone.error === 'not found', 'and it is actually gone afterward');
 }
 
-console.log('\nmembership is deduped and capped, never silently duplicated or unbounded');
+console.log('\nmembership is deduped, and an over-the-cap request is REJECTED, never silently truncated');
 {
+  // Sep 24 2026 audit round 4 (low finding, cold-review of round 3): this used to silently
+  // `.slice(0, 19)` an over-the-cap memberIds list with no error at all -- unlike every other cap
+  // in this codebase, which returns an explicit 400. At a full crew, adding one more member could
+  // silently drop an arbitrary EXISTING member (order-dependent) instead of rejecting the add.
+  // Updated to assert the new, correct behavior: over-cap is a real error, and dedup still applies
+  // when a request is genuinely within the cap but repeats ids.
   const owner = await reg('crewowner7');
   const pals = [];
   for (let i = 0; i < 25; i++) pals.push(await reg('crewbig' + i + '7'));
   for (const p of pals) await connect(owner, p);
   const ids = pals.map(p => p.id);
-  const c = await post(owner, '/api/crews', { name: 'Huge', memberIds: [...ids, ...ids] }).then(x => x.json());
-  ok(c.members.length <= 20, `capped at a sane crew size, not 26 (got ${c.members.length})`);
+  const overCap = await post(owner, '/api/crews', { name: 'Huge', memberIds: [...ids, ...ids] }).then(x => x.json());
+  ok(overCap.error && /limit/i.test(overCap.error), `25 unique members (owner + 25 = 26, over the 20-member cap) is refused with a real error, not silently truncated (got ${JSON.stringify(overCap)})`);
+
+  const atCapIds = ids.slice(0, 19);
+  const c = await post(owner, '/api/crews', { name: 'Just Right', memberIds: [...atCapIds, ...atCapIds] }).then(x => x.json());
+  ok(c.members.length === 20, `exactly at the cap (owner + 19) still works, deduped from a doubled list (got ${c.members && c.members.length})`);
   const unique = new Set(c.members.map(m => m.id));
   ok(unique.size === c.members.length, 'no duplicate members even though the request repeated every id twice');
+}
+
+console.log('\nediting a crew never duplicates the owner, even if their own id is resubmitted in memberIds');
+{
+  // Sep 24 2026 cold-review catch (round 4 audit): validCrewMemberIds() gained an
+  // existingMemberIds param so an already-member stays valid even after unfollowing. But
+  // existingMemberIds (passed as c.memberIds) always includes the owner's own id, so without
+  // excluding ownerId explicitly, a direct PUT that resubmits the owner's own id in memberIds
+  // could slip it past the filter and get it duplicated into c.memberIds (every call site does
+  // [req.userId, ...validCrewMemberIds(...)] with no dedup of its own) -- doubling the owner's
+  // roster row and PR-challenge credit, and possibly tripping the member cap for a legitimately-
+  // sized crew. Not reachable via the shipped client (which filters the owner out of its own
+  // picker state), but reachable by anyone calling the API directly as the owner.
+  const owner = await reg('crewowner8'), pal = await reg('crewpal8');
+  await connect(owner, pal);
+  const c = await post(owner, '/api/crews', { name: 'Self Resubmit', memberIds: [pal.id] }).then(x => x.json());
+
+  const edited = await put(owner, `/api/crews/${c.id}`, { memberIds: [pal.id, owner.id] }).then(x => x.json());
+  const ownerCount = edited.members.filter(m => m.id === owner.id).length;
+  ok(ownerCount === 1, `the owner appears exactly once even after resubmitting their own id in memberIds (got ${ownerCount})`);
+  ok(edited.members.length === 2, `member count stays correct, not inflated by a phantom owner duplicate (got ${edited.members.length})`);
 }
 
 console.log('\ncrew challenges: only the owner can start one, and only when none is already running');
