@@ -491,6 +491,40 @@ app.use(express.static(path.join(__dirname, 'public')));
 // User-uploaded avatars live in the persistent volume so they survive redeploys.
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+// Sep 24 2026 (audit finding): mints the short-lived media-viewer token app.js's mediaSrc() rides
+// on every recap-photo/video URL (see the long comment on signMediaToken above).
+app.get('/api/media-token', auth, (req, res) => res.json({ token: signMediaToken(req.userId) }));
+// Sep 24 2026 (audit finding): gates recap media specifically -- every file this app ever writes
+// under a 'post_' prefix (POST /api/sessions/:id/post, and the legacy 'post_mig_' migration
+// above) belongs to exactly one post, and this looks up which one and re-runs the exact same
+// canSeePostAuthor check the API itself uses before letting the static handler below serve it.
+// Avatars (avatar_<userId>.ext) and anything else under UPLOAD_DIR fall straight through
+// untouched -- they were never part of this finding, and this app's avatars are meant to be
+// visible to anyone who can already see the profile.
+app.get('/uploads/:fname', (req, res, next) => {
+  const fname = req.params.fname;
+  if (!/^post_/.test(fname)) return next();
+  const payload = verifyMediaToken(req.query.tok);
+  if (!payload) return res.status(401).end();
+  const src = '/uploads/' + fname;
+  for (const s of Object.values(DB.sessions)) {
+    for (const [authorId, p] of Object.entries(s.posts || {})) {
+      if (p && Array.isArray(p.media) && p.media.some(m => m && m.src === src)) {
+        if (!canSeePostAuthor(p, authorId, payload.v, s)) return res.status(403).end();
+        return next();
+      }
+    }
+  }
+  // Cold-review catch: this used to `next()` here on the assumption an untracked file "shouldn't
+  // happen" -- it does. POST /api/sessions/:id/post fully REPLACES a post's media array on every
+  // save (deletePhoto in app.js resaves without the removed photo), and remove-mine/reset-workouts
+  // delete a whole post object outright -- none of those ever unlink the physical file, so a
+  // removed photo's file becomes untracked by any post and, without this, fell straight through
+  // to the unauthenticated static handler below: LESS protected than a photo still attached to a
+  // visible post, exactly backwards. Fail closed instead -- a file no longer tracked as any post's
+  // media isn't servable to anyone, full stop.
+  return res.status(404).end();
+});
 app.use('/uploads', express.static(UPLOAD_DIR));
 
 // Logins are SIGNED, not remembered. They used to be a random string held in a plain object in
@@ -522,6 +556,38 @@ function signToken(userId) {
   const body = b64u(JSON.stringify({ u: userId, t: Date.now() }));
   const sig = b64u(crypto.createHmac('sha256', AUTH_SECRET).update(body).digest());
   return body + '.' + sig;
+}
+// Sep 24 2026 (audit finding): recap media was served from /uploads with no auth at all and no
+// link back to canSeePostAuthor -- once a viewer had a photo's URL (from normal viewing, browser
+// cache, or just copying the link), blocking the poster, being removed from the session, or the
+// poster flipping the recap to 'private' all correctly gated the API, but the raw file kept
+// serving forever, to anyone, logged in or not. A plain <img>/<video> src can't carry the normal
+// header-based bearer token (see auth() above), so this is a second, purpose-scoped, short-lived
+// signed token instead -- reused AUTH_SECRET (rotating it also invalidates every outstanding
+// media token, same as it does main login tokens). It only attests WHO is asking; the actual
+// canSeePostAuthor check is re-run fresh on every single request in the /uploads/:fname route
+// below, not baked into the token, so a block/removal/visibility-change still takes effect
+// immediately even against a cached URL.
+const MEDIA_TOKEN_TTL_MS = 7 * 24 * 3600 * 1000;
+function signMediaToken(viewerId) {
+  const body = b64u(JSON.stringify({ v: viewerId, t: Date.now() }));
+  const sig = b64u(crypto.createHmac('sha256', AUTH_SECRET).update('media:' + body).digest());
+  return body + '.' + sig;
+}
+function verifyMediaToken(token) {
+  if (typeof token !== 'string' || token.indexOf('.') < 0) return null;
+  const [body, sig] = token.split('.');
+  if (!body || !sig) return null;
+  const want = b64u(crypto.createHmac('sha256', AUTH_SECRET).update('media:' + body).digest());
+  const a = Buffer.from(sig), b = Buffer.from(want);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  let payload;
+  try { payload = JSON.parse(Buffer.from(body.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')); }
+  catch (e) { return null; }
+  if (!payload || !payload.v || !payload.t) return null;
+  if (Date.now() - payload.t > MEDIA_TOKEN_TTL_MS) return null;
+  if (!DB.users[payload.v]) return null;
+  return payload;
 }
 function userIdFromToken(token) {
   if (typeof token !== 'string' || token.indexOf('.') < 0) return null;
@@ -871,7 +937,19 @@ function profileOf(id, viewerId, localToday) {
       // not agreed to be listed anywhere, and "invited" is not a fact about the workout, it is a
       // fact about them.
       const inIt = (id === viewerId) || ['member', 'invited'].includes(sessionTier(s, viewerId));
-      const others = inIt ? new Set((s.participants||[]).filter(x=>x && x!==id)) : new Set();
+      // Sep 24 2026 (audit finding): this used to rebuild itself from the LIVE s.participants on
+      // every view, the exact bug the Sep 23 trainedWith snapshot fixed on the full recap
+      // (viewPost) but never got ported to this Profile-tab tile preview -- same session, same
+      // posted recap, two different "who trained with them" answers depending which screen you're
+      // on. A departed training partner vanished from this tile while still correctly showing on
+      // the full recap; worse, if someone else later joined the same session object, they'd show
+      // up here as a collaborator despite never having trained it. Use the raw post's own
+      // trainedWith snapshot (independent of whether THIS viewer is allowed to see the post's
+      // content) when one exists; only fall back to live participants for a workout that hasn't
+      // been posted yet, where no snapshot exists at all.
+      const rawPost = s.posts && s.posts[id];
+      const trainedWithIds = rawPost && Array.isArray(rawPost.trainedWith) ? rawPost.trainedWith : null;
+      const others = inIt ? new Set((trainedWithIds || (s.participants||[])).filter(x=>x && x!==id)) : new Set();
       const collaborators = [...others].map(uid=>DB.users[uid]).filter(Boolean).map(u=>({username:u.username, name:u.displayName||u.username}));
       return {
         id: s.id,
@@ -1830,9 +1908,17 @@ function publicChallenge(c, ch, viewerId) {
     };
   }
   const { total, perMember } = challengeProgress(c, ch);
+  // Sep 24 2026 (audit finding): this tacked a personal "count" number onto every member
+  // unconditionally, the same shape of leak the roster's `streak` field had (see the isBlocked
+  // fix on `members` above, Sep 14 2026 -- "Jeff specifically asked for that one number hidden
+  // between a blocked pair too"). That fix never got ported to this sibling leaderboard, so a
+  // blocked pair in the same crew could still see each other's exact weekly challenge count and
+  // rank here even though the roster's own streak correctly reads null for them. Sort by the
+  // real count first (rank order itself isn't the sensitive part), then null the number out for
+  // a blocked pair on the way out.
   const leaderboard = c.memberIds.filter(id => DB.users[id])
-    .map(id => ({ ...publicUser(id), count: perMember[id] || 0 }))
-    .sort((a, b) => b.count - a.count);
+    .sort((a, b) => (perMember[b] || 0) - (perMember[a] || 0))
+    .map(id => ({ ...publicUser(id), count: isBlocked(id, viewerId) ? null : (perMember[id] || 0) }));
   const completed = !!ch.completedAt;
   // Ran its full 7 days without hitting the target. lastChallenge() keeps showing this one (so the
   // "displayed" challenge is never just null the moment it goes stale) but runningChallenge() has
@@ -2399,7 +2485,14 @@ const resolveInvites = (userId, usernames) => {
   const out = [];
   for (const un of usernames) {
     const f = myConnections.find(fid => normUser(DB.users[fid] && DB.users[fid].username) === normUser(un));
-    if (f) out.push(f);
+    // Sep 24 2026 (audit finding): no dedup -- ["bob","Bob"], or the same name submitted twice,
+    // resolved to the same friend id pushed in twice, which meant a duplicate "Workout invite"
+    // notification and a duplicated "Invited · waiting to respond" chip wherever this list is
+    // rendered. `!out.includes(f)` is enough since every caller of this shared helper (session
+    // creation, templates) starts from an empty invited list -- see the PUT /api/sessions/:id
+    // invite-rewrite for the equivalent guard on the edit path, which additionally has to dedupe
+    // against people already invited/participating.
+    if (f && !out.includes(f)) out.push(f);
   }
   return out;
 };
@@ -2473,7 +2566,9 @@ app.get('/api/sessions/:id/comments', auth, async (req, res) => {
   // WRITE path five lines below has always been guarded; the read path simply never was.
   const tier = sessionTier(s, req.userId);
   if (tier !== 'member' && tier !== 'invited') return res.status(403).json({ error: 'forbidden' });
-  res.json(s.comments || []);
+  // Sep 24 2026 (audit finding): see visibleComments()'s own comment -- membership alone isn't
+  // enough, a blocked co-participant's own messages must not come back either.
+  res.json(visibleComments(s.comments, req.userId));
 });
 app.post('/api/sessions/:id/comments', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
@@ -2504,8 +2599,12 @@ app.post('/api/sessions/:id/comments', auth, async (req, res) => {
   // accepted person could post into the chat and then never hear about any reply to it, only
   // finding out by manually reopening the session. Notify everyone who can actually see this
   // thread, not just current participants.
+  // Sep 24 2026 (audit finding): also skip anyone the poster has blocked or who has blocked the
+  // poster -- a blocked co-participant's messages are now hidden from you on read (see
+  // visibleComments above), so pushing them a notification for a comment they'll never actually
+  // be able to see once they open it would be a dangling, confusing alert.
   const recipients = new Set([...(s.participants || []), ...(s.invited || [])]);
-  for (const pid of recipients) if (pid !== req.userId) notify(pid, { title: 'New message', body: `${who}: ${text.slice(0,40)}`, link: { type: 'session-chat', sessionId: s.id } },
+  for (const pid of recipients) if (pid !== req.userId && !isBlocked(req.userId, pid)) notify(pid, { title: 'New message', body: `${who}: ${text.slice(0,40)}`, link: { type: 'session-chat', sessionId: s.id } },
     { group: { key: `session:${s.id}:chat`, singularBody: `${who} commented on ${wkName}`, pluralBody: n => `${n} new comments on ${wkName}` } });
   res.json(sessionView(s, req.userId));
 });
@@ -2618,6 +2717,15 @@ app.put('/api/sessions/:id/posts/:authorId/comments/:commentId', auth, async (re
   const c = p.comments.find(x => x.id === req.params.commentId);
   if (!c) return res.status(404).json({ error: 'not found' });
   if (c.userId !== req.userId) return res.status(403).json({ error: 'forbidden' });
+  // Sep 24 2026 (audit finding): this checked ownership only, never canSeePostAuthor -- unlike
+  // the sibling live-chat comment routes just above, which explicitly re-check sessionTier "because
+  // a departed member shouldn't keep any write access to a thread they can no longer read." The
+  // exact same reasoning applies here: someone who commented while a session participant (admitted
+  // regardless of the post's own visibility, per canSeePostAuthor's participant bypass) can leave
+  // without keeping credit, or the post can go private, and GET .../comments now correctly 403s
+  // them -- but until this line, they could still PUT/DELETE their own old comment on a thread
+  // they'd otherwise have zero access to.
+  if (!canSeePostAuthor(p, req.params.authorId, req.userId, s)) return res.status(403).json({ error: 'forbidden' });
   // Sep 8 2026 (cold-review finding): same unconditional block check as the POST-new-comment
   // route above, and for the same reason -- replacing an existing comment's text is exactly as
   // capable of landing new abusive content as posting a fresh one, so it can't be exempt from the
@@ -2643,6 +2751,11 @@ app.delete('/api/sessions/:id/posts/:authorId/comments/:commentId', auth, async 
   // Own comment, or the post owner removing anything left on their own post -- see the long
   // comment above the PUT handler just above for why these are the two allowed cases.
   if (c.userId !== req.userId && req.params.authorId !== req.userId) return res.status(403).json({ error: 'forbidden' });
+  // Sep 24 2026 (audit finding): same gap and same fix as the PUT handler above -- deleting your
+  // OWN old comment (the c.userId===req.userId branch; the post-owner-moderation branch already
+  // implies canSeePostAuthor trivially, since authorId===viewerId) must not survive losing the
+  // ability to see the thread at all.
+  if (!canSeePostAuthor(p, req.params.authorId, req.userId, s)) return res.status(403).json({ error: 'forbidden' });
   p.comments = p.comments.filter(x => x.id !== req.params.commentId);
   await save(DB);
   res.json({ ok: true });
@@ -2908,7 +3021,10 @@ app.post('/api/sessions', auth, async (req, res) => {
     const myConnections = connectionsOf(req.userId);
     for (const un of inviteUsernames) {
       const f = myConnections.find(fid => normUser(DB.users[fid] && DB.users[fid].username) === normUser(un));
-      if (f) invites.push(f);
+      // Sep 24 2026 (audit finding): same dedup gap as the shared resolveInvites() helper above --
+      // see its comment. This route has its own separate copy of the same resolution logic rather
+      // than calling resolveInvites, so the same fix has to be made here too.
+      if (f && !invites.includes(f)) invites.push(f);
     }
   }
   const session = {
@@ -3250,6 +3366,20 @@ function anyVisiblePost(s, viewerId) {
   return false;
 }
 
+// Sep 24 2026 (audit finding): the live in-workout chat thread (s.comments) is a single shared
+// array read straight off the session, and neither GET /api/sessions/:id/comments nor
+// sessionView's member/invited branches ever re-checked block on it -- sessionTier only gates
+// whether you can see the THREAD at all, not which messages in it are from someone you've since
+// blocked (or who's blocked you). Two co-participants who blocked each other could still read
+// and post to each other in the exact same shared thread, contradicting this app's own documented
+// block contract ("if EITHER account has blocked the other, neither can see or interact with the
+// other, regardless of who blocked whom"). Same instinct as canSeePostAuthor's isBlocked check on
+// recaps, just applied per-message instead of per-post since this is one shared array, not a
+// per-author map.
+function visibleComments(list, viewerId) {
+  return (list || []).filter(c => !isBlocked(c.userId, viewerId));
+}
+
 // Only the viewer's own entry survives from a per-user map.
 function pickMine(map, viewerId) {
   const out = {};
@@ -3279,7 +3409,12 @@ function sessionView(s, viewerId) {
     // posting shows as simply departed, sets stored but not on display.
     const logs = {};
     for (const [uid, arr] of Object.entries(s.logs || {})) {
-      const current = (s.participants || []).includes(uid) || s.creatorId === uid;
+      // Sep 24 2026 (audit finding): `current` had no isBlocked check, unlike `viaPost` (which
+      // goes through the already-block-aware canSeePostAuthor) -- so two co-participants who
+      // blocked each other still saw each other's full logged sets (every weight/rep) in the
+      // shared sheet, even though the analogous posted-recap path was already correctly hidden.
+      // `uid === viewerId` stays unconditional right below so this can never hide your own sets.
+      const current = ((s.participants || []).includes(uid) || s.creatorId === uid) && !isBlocked(uid, viewerId);
       const viaPost = s.posts && s.posts[uid] && canSeePostAuthor(s.posts[uid], uid, viewerId, s);
       if (uid === viewerId || current || viaPost) logs[uid] = arr;
     }
@@ -3318,7 +3453,22 @@ function sessionView(s, viewerId) {
     // the same scoped way; everyone else's is stripped.
     const myInvitedById = (Array.isArray(s.invited) && s.invited.includes(viewerId))
       ? ((s.invitedBy && s.invitedBy[viewerId]) || s.creatorId) : undefined;
-    return Object.assign({}, s, { posts, logs, joinRequests, pendingRemovals, draftNotes: undefined, myDraftNotes, hiddenFor: undefined, myHiddenExerciseIds, invitedBy: undefined, invitedById: myInvitedById });
+    // Sep 24 2026 (audit finding): comments used to pass straight through the raw spread below
+    // with no block filtering at all -- see the comment on visibleComments() above.
+    const comments = visibleComments(s.comments, viewerId);
+    // Sep 24 2026 (audit finding): joinableHiddenBy -- who swiped to hide THIS workout from their
+    // own "Friends' workouts" feed -- went out as a raw array of every hider's user id to every
+    // current member/creator via this same unfiltered spread, the exact "who did X privately" leak
+    // draftNotes/hiddenFor/invitedBy right above were each already fixed for. Same "yourself and
+    // nobody else" shape as those: a plain boolean for your own hide state (matching the non-member
+    // view's hiddenForMe just below), never the list of who else hid it.
+    const hiddenForMe = Array.isArray(s.joinableHiddenBy) && s.joinableHiddenBy.includes(viewerId);
+    // Cold-review catch (same pass as the block-privacy cluster above): suggestedEdits (pending/
+    // approved swap proposals, each carrying who proposed it) passed straight through the raw
+    // spread with no block check at all, unlike comments/logs/posts right above -- a blocked
+    // co-participant's swap proposal text was still visible to the person who blocked them.
+    const suggestedEdits = (s.suggestedEdits || []).filter(se => !isBlocked(se.proposedBy, viewerId));
+    return Object.assign({}, s, { posts, logs, comments, suggestedEdits, joinRequests, pendingRemovals, draftNotes: undefined, myDraftNotes, hiddenFor: undefined, myHiddenExerciseIds, invitedBy: undefined, invitedById: myInvitedById, joinableHiddenBy: undefined, hiddenForMe });
   }
   if (tier === 'stranger') return null;
 
@@ -3388,7 +3538,7 @@ function sessionView(s, viewerId) {
     // creator," so the Join in? screen could only ever offer to file a second request.
     joinRequests: (s.joinRequests || []).filter(j => j.userId === viewerId),
     logs: {},                            // NOBODY else's sets — see the reader case below
-    comments: tier === 'invited' ? (s.comments || []) : [],
+    comments: tier === 'invited' ? visibleComments(s.comments, viewerId) : [],
     posts: {},
   };
   // A published recap IS its author's sets — that is what was shared, and stripping them rendered
@@ -3926,7 +4076,18 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
     // save -- renames, reorders, additions, and any removal nobody else has logged against --
     // applies immediately, exactly as before; only a removal with a real stake for someone else
     // waits.
-    const newIds = new Set(b.exercises.filter(e => e && e.id).map(e => e.id));
+    // Sep 24 2026 (audit finding, HIGH): a stale Edit-session form (open in one tab/session while a
+    // different one approves a removal or a swap) can otherwise resurrect an exercise everyone just
+    // unanimously voted to remove, or silently revert an approved swap's rename, purely because the
+    // submitted list still reflects whatever the form looked like when it was opened -- reintroducing
+    // exactly the "owner can make sets vanish/reappear without real consent" failure the
+    // pendingRemovals/suggestedEdits approval flows exist to prevent, just via a different route. An
+    // id that's gone from s.exercises because a pendingRemoval on it was already APPROVED is dropped
+    // from what's submitted here, instead of being re-minted as a "new" exercise under a fresh id.
+    const approvedRemovedIds = new Set((s.pendingRemovals || [])
+      .filter(p => p.status === 'approved').map(p => p.exerciseId));
+    const submitted = b.exercises.filter(e => !(e && e.id && approvedRemovedIds.has(e.id) && !s.exercises.find(x => x.id === e.id)));
+    const newIds = new Set(submitted.filter(e => e && e.id).map(e => e.id));
     const removedIds = s.exercises.map(e => e.id).filter(id => !newIds.has(id));
     // Sep 23 2026 (cold-review catch): a pendingRemovals entry stays 'pending' until someone
     // explicitly approves/declines/cancels it -- but the creator changing their mind (re-editing
@@ -3960,10 +4121,37 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
     }
     const blockedIds = new Set(blocked.map(p => p.exerciseId));
     const stillPending = s.exercises.filter(e => blockedIds.has(e.id));
-    const incoming = b.exercises.map((e, i) => Object.assign({
-      id: (e.id && s.exercises.find(x => x.id === e.id)) ? e.id : 'e_' + uid(),
-      order: i,
-    }, withDefaults(e)));
+    const incoming = submitted.map((e, i) => {
+      const existing = e && e.id ? s.exercises.find(x => x.id === e.id) : null;
+      let row = e;
+      // Sep 24 2026 (audit finding, HIGH, part 2): a matching id that still exists but whose
+      // submitted name equals the PRE-swap name of an already-APPROVED suggestedEdits swap on it
+      // (while the live name already reflects that swap) means this row is stale, not a real rename
+      // -- keep the live, swapped name instead of overwriting it. A genuine intentional rename by
+      // the creator to anything else still goes through untouched.
+      // Cold-review catch: matching only the SINGLE most recent approved swap missed a chained
+      // case -- A approved to B, then B later approved to C, and a form stale enough to still say
+      // A (predating BOTH swaps) has no single edit with fromName:'A' AND swapTo:'C'. Walk the
+      // whole chain of approved renames backward from the live name instead, collecting every
+      // historical name that led here, so any hop's pre-swap name is still recognized as stale.
+      if (existing) {
+        const approvedSwaps = (s.suggestedEdits || []).filter(x => x.type === 'swap' && x.exerciseId === existing.id
+          && x.status === 'approved' && x.fromName);
+        const historicalNames = new Set();
+        let cursor = existing.name;
+        for (let hop = 0; hop < approvedSwaps.length; hop++) {
+          const hopEdit = approvedSwaps.find(x => x.swapTo === cursor && !historicalNames.has(x.fromName));
+          if (!hopEdit) break;
+          historicalNames.add(hopEdit.fromName);
+          cursor = hopEdit.fromName;
+        }
+        if (e && historicalNames.has(e.name)) row = Object.assign({}, e, { name: existing.name });
+      }
+      return Object.assign({
+        id: existing ? existing.id : 'e_' + uid(),
+        order: i,
+      }, withDefaults(row));
+    });
     s.exercises = [...incoming, ...stillPending.map((e, i) => Object.assign({}, e, { order: incoming.length + i }))];
   }
   if (Array.isArray(b.inviteUsernames)) {
@@ -3971,7 +4159,17 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   const myConnections = connectionsOf(req.userId);
   for (const un of b.inviteUsernames) {
     const f = myConnections.find(fid => normUser(DB.users[fid] && DB.users[fid].username) === normUser(un));
-    if (f) invites.push(f);
+    // Sep 24 2026 (audit finding): two gaps here. (1) no dedup at all -- submitting the same
+    // person twice (or twice with different casing, since normUser already case-folds the MATCH
+    // but the resulting id was still pushed once per input) queued a duplicate "Workout invite"
+    // notify below and rendered a duplicate "Invited · waiting to respond" chip on the session.
+    // (2) nothing stopped re-adding someone who's ALREADY a joined participant -- s.invited and
+    // s.participants are independent arrays, so checking a friend's box who's already in the
+    // workout put their own id into BOTH, and Home's own `yours`/`pending` filters treat
+    // s.invited as authoritative for "still deciding" -- their own already-active workout (with
+    // sets they may have already logged) vanished from "Your sessions" and was replaced by a
+    // stale "waiting to respond" invite banner for something they were already part of.
+    if (f && !s.participants.includes(f) && !invites.includes(f)) invites.push(f);
   }
   // v251 (audit finding): same gap as /decline just above -- the creator re-editing the invite
   // list can silently drop someone who has a pending swap suggestion in, same as them declining
@@ -3990,9 +4188,16 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   // re-save of the same invite list would otherwise look like a fresh call to Object.fromEntries and
   // reset it); only newly-added names get credited to the person editing this list right now, since
   // they genuinely are the one sending it.
+  // Sep 24 2026 (audit finding): a brand-new invitee added here got no notification at all,
+  // unlike POST /api/sessions (creation) which explicitly notify()s every invite it sends --
+  // someone invited through "Edit workout" only ever found out by chance, reopening the app and
+  // happening to see it appear. Computed before s.invited is overwritten just below, so this is
+  // genuinely "wasn't on the list before, is now," not "was already invited."
+  const newlyInvited = invites.filter(fid => !(s.invited || []).includes(fid));
   for (const fid of invites) if (!s.invitedBy[fid]) s.invitedBy[fid] = req.userId;
   for (const fid of Object.keys(s.invitedBy)) if (!invites.includes(fid)) delete s.invitedBy[fid];
   s.invited = invites;
+  for (const fid of newlyInvited) notify(fid, { title: 'Workout invite', body: `${DB.users[req.userId].displayName} invited you to a workout`, link: { type: 'session', sessionId: s.id } }, { history: false });
   }
   s.updatedAt = new Date().toISOString();
   await save(DB);
@@ -4077,6 +4282,14 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   ensureSessionShape(s);
   if (!Array.isArray(s.invited) || !s.invited.includes(req.userId)) return res.status(403).json({ error: 'not invited' });
   s.invited = s.invited.filter(x => x !== req.userId);
+  // Sep 24 2026 (audit finding): this left the decliner's s.invitedBy entry behind. PUT
+  // /api/sessions/:id's invite-rewrite only ever SETS invitedBy for an id that doesn't already
+  // have one ("if (!s.invitedBy[fid])") -- so if this person is re-invited later by a DIFFERENT
+  // owner (e.g. after a leave/ownership handoff), the stale entry from whoever invited them the
+  // first time around would keep winning, crediting an invite to someone who may not even be in
+  // the session anymore. Declining ends that invite's whole lifecycle; its attribution should end
+  // with it, same as the other per-invite state cleared just below (suggestedEdits, joinRequests).
+  if (isObj(s.invitedBy)) delete s.invitedBy[req.userId];
   // v251 (audit finding): /suggest allows a still-invited (not yet accepted) person to propose a
   // swap before deciding -- that's the whole point of letting an invite hold a suggestion (see the
   // comment there). Declining used to leave that pending suggestion behind, same root cause as
@@ -4137,8 +4350,23 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
     // Sep 6 (cold-review catch): approving now renames the shared exercise to swapTo, so a blank
     // one -- which used to yield a harmless empty variation -- would blank the exercise for everyone.
     if (!swapTo) return res.status(400).json({ error: 'needs a name' });
-    if (!s.exercises.find(e => e.id === exerciseId)) return res.status(404).json({ error: 'exercise not found' });
-    edit = { id: 'se_' + uid(), type: 'swap', exerciseId, proposedBy: req.userId, swapTo, status: 'pending' };
+    const fromEx = s.exercises.find(e => e.id === exerciseId);
+    if (!fromEx) return res.status(404).json({ error: 'exercise not found' });
+    // Sep 24 2026 (audit finding): no dedup at all -- two participants proposing different swaps
+    // on the same exerciseId in close succession both landed as separate pending rows, and if the
+    // creator approved both (each independently valid against its own status), the exercise got
+    // renamed twice while only the SECOND approval's proposer had their own logged sets renamed to
+    // match (approve only touches edit.proposedBy's own variation/logs) -- the first proposer's
+    // sets stayed filed under a name the card no longer showed. One pending swap per exercise at a
+    // time, same as the client's own (view-scoped, so racy) "hide the propose-a-swap button once
+    // one's pending" affordance -- just actually enforced here.
+    if (s.suggestedEdits.some(e => e.type === 'swap' && e.exerciseId === exerciseId && e.status === 'pending'))
+      return res.status(409).json({ error: 'a swap is already pending for this exercise' });
+    // Sep 24 2026 (audit finding): remembering the pre-swap name lets a later stale Edit-session
+    // save recognize "this submitted name is exactly what this exercise used to be called before
+    // an approved swap" and keep the live, swapped name instead of silently reverting it -- see
+    // the guard in PUT /api/sessions/:id.
+    edit = { id: 'se_' + uid(), type: 'swap', exerciseId, proposedBy: req.userId, swapTo, fromName: fromEx.name, status: 'pending' };
   }
   s.suggestedEdits.push(edit);
   await save(DB);
@@ -4236,6 +4464,15 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
   const fromName = ex ? ex.name : null;
   if (!edit.swapTo || !edit.swapTo.trim()) return res.status(400).json({ error: 'needs a name' });   // a pre-Sep-6 blank proposal
   if (ex) ex.name = edit.swapTo;
+  // Sep 24 2026 (audit finding, minor): a pendingRemovals row snapshots exerciseName ONCE, when
+  // the removal request first opens (see PUT /api/sessions/:id) -- if this same exerciseId gets
+  // renamed by an approved swap while that removal is still sitting open, every required
+  // approver's "Remove X?" prompt kept showing the OLD name after everyone could already see the
+  // new one on the card itself. Cosmetic only (approve/decline is keyed by id, not name) but
+  // confusing enough to just keep in sync.
+  for (const pr of (s.pendingRemovals || [])) {
+    if (pr.status === 'pending' && pr.exerciseId === edit.exerciseId) pr.exerciseName = edit.swapTo;
+  }
   if (s.variations[edit.exerciseId]) {
     delete s.variations[edit.exerciseId][edit.proposedBy];
     // ...and anyone else's personal swap that now just restates the shared name (cold-review nit:
@@ -4340,6 +4577,12 @@ app.post('/api/sessions/:id/join/:reqId/approve', auth, async (req, res) => {
   // double-tap or stale second tab could approve AND reject the same join request, leaving the
   // requester added to participants while the request itself reads 'rejected' (or vice versa).
   if (jr.status !== 'pending') return res.status(400).json({ error: 'already decided' });
+  // Sep 24 2026 (audit finding): /join itself gates on canSeeProfile (which is block-aware), but
+  // approval never re-checked block at the moment of decision -- if either side blocked the other
+  // AFTER the request was filed but before the creator answered it, Approve still happily made
+  // them a full member (chat, shared log sheet, everything). Re-check right here, since this is
+  // the actual moment membership is granted.
+  if (isBlocked(jr.userId, req.userId)) return res.status(400).json({ error: 'blocked' });
   jr.status = 'approved';
   if (!s.participants.includes(jr.userId)) s.participants.push(jr.userId);
   // Sep 23 2026 (Jeff, real bug report): someone directly invited AND approved through a separate
@@ -5525,6 +5768,19 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
   if (!s.participants.includes(req.userId) && !s.joinRequests.find(j=>j.userId===req.userId&&j.status==='approved'))
     return res.status(403).json({ error: 'forbidden' });
   const { exerciseId, weight, reps, set, setType, rir } = req.body || {};
+  // Sep 24 2026 (audit finding): exerciseId was never checked against the live exercise list at
+  // all before this point -- so a stale client (its card still showing an exercise that's since
+  // been removed, e.g. via an approved pendingRemoval) could log a "set" that attaches to nothing
+  // real. exerciseNameFor falls back to returning the raw internal id string when it can't resolve
+  // a name, so the set -- and any PR it triggered -- got permanently filed under a garbage name
+  // like "e_ycc71vos" with no way to ever relabel it. Reject up front instead -- but only when
+  // s.exercises genuinely HAS entries and this id just isn't one of them; a session with an EMPTY
+  // exercises list is exposure.mjs's documented legacy/hand-edited-row case (a row saved before
+  // this schema existed, or fixed by hand per DEPLOY.md), where the established, tested rule is
+  // "never drop a real set just because the row is malformed" -- see "the set actually survives in
+  // the database" there. Only a populated list that's missing this specific id is the real signal
+  // something was actually, deliberately removed.
+  if (s.exercises.length && !s.exercises.find(x => x.id === exerciseId)) return res.status(404).json({ error: 'exercise not found' });
   if (!s.logs[req.userId]) s.logs[req.userId] = [];
   const w = numIn(weight, 1e6), r = numIn(reps, 1e6);
   // reps are what make a set a set. Storing reps:0 silently turned "225, forgot to type reps"
@@ -6295,7 +6551,13 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
     visibility: vis,
     comments: existingComments,
     reactions: existingReactions,
-    trainedWith: existingTrainedWith || (s.participants || []).filter(pid => pid !== req.userId)
+    // Sep 24 2026 (audit finding): this used to snapshot every CURRENT participant, including
+    // someone approved into a public workout who never opened it or logged a single set -- "with
+    // @X" credited a person for training that never actually happened for them. Scoped to people
+    // who have actually logged something on this session, same "did they really do it" bar the
+    // rest of the app already applies (sessionTier's own 'alumni' tier, canFinishOrPost, etc).
+    trainedWith: existingTrainedWith || (s.participants || []).filter(pid =>
+      pid !== req.userId && s.logs && Array.isArray(s.logs[pid]) && s.logs[pid].length > 0)
   };
   // Cold-review catch (Sep 4): a real post now exists with its own notes -- including possibly
   // blank, if that's what the person actually typed/left. A leftover draft from before they
