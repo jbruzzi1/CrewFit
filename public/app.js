@@ -25,7 +25,24 @@ const H = {
   delete:p=>H._req('DELETE',p),
 };
 const $ = id => document.getElementById(id);
-function setToken(t,u){ TOKEN=t; localStorage.setItem('crewfit_token',t); ME=u; $('nav').classList.toggle('hidden', !t); }
+let MEDIA_TOKEN = '';
+// Sep 24 2026 (audit finding): recap photos/videos are served from /uploads with a real access
+// check now (see GET /api/media-token and the /uploads/:fname route in server.js), but a plain
+// <img>/<video> src can't carry the normal Authorization header H._req sends on every other
+// request -- so a second, purpose-scoped, shorter-lived signed token rides along in the URL
+// itself instead. Fetched once per login/boot (see ensureMediaToken, called from setToken and
+// tryBoot); mediaSrc() below appends it to every recap-media URL this file renders.
+async function ensureMediaToken(){
+  if(!TOKEN) return;
+  try{ const r = await H.get('/api/media-token'); if(r && r.token) MEDIA_TOKEN = r.token; }catch(e){}
+}
+// Anything that isn't recap media (avatars, a data: URL mid-crop/upload) passes through
+// untouched -- only /uploads/post_* files are gated.
+function mediaSrc(src){
+  if(typeof src!=='string' || src.indexOf('/uploads/post_')!==0 || !MEDIA_TOKEN) return src;
+  return src + (src.indexOf('?')>=0?'&':'?') + 'tok=' + encodeURIComponent(MEDIA_TOKEN);
+}
+function setToken(t,u){ TOKEN=t; localStorage.setItem('crewfit_token',t); ME=u; $('nav').classList.toggle('hidden', !t); ensureMediaToken(); }
 // "3 × 8–10" when a range is set, "3 × 10" when it's a single target
 function repLabel(e){ const lo=Number(e.defaultReps), hi=Number(e.defaultRepsMax);
   if(!lo) return '';                    // timed exercise: no rep target, so claim none
@@ -1459,7 +1476,7 @@ async function openSession(id, opts){
           <svg class="am-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg>
           <span class="am-plus"></span></div>
           <span class="ml-text">Add a photo / video</span></div>
-        ${postMedia.length?`<div class="thumbs">${postMedia.map(m=>`<div class="thumb">${m.type==='image'?`<img src="${esc(m.src)}">`:`<video src="${esc(m.src)}" muted></video>`}</div>`).join('')}</div>`:''}
+        ${postMedia.length?`<div class="thumbs">${postMedia.map(m=>`<div class="thumb">${m.type==='image'?`<img src="${esc(mediaSrc(m.src))}">`:`<video src="${esc(mediaSrc(m.src))}" muted></video>`}</div>`).join('')}</div>`:''}
       </div>`;
     }
   } else if(!isCreator && canEdit){
@@ -1819,7 +1836,7 @@ async function viewPost(id, authorId, opts){
     </label>
     <span class="ml-text">${media.length?'Add another':'Add a photo / video'}</span>
   </div>` : '';
-  const photoStrip = media.length ? `<div class="pp-photos">${media.map((m,i)=>`<div class="pp-photo">${m.type==='image'?`<img src="${esc(m.src)}" alt="">`:`<video src="${esc(m.src)}" muted></video>`}${isAuthor?`<button class="pp-photo-x" onclick="deletePhoto('${id}','${authorId}',${i})" aria-label="Delete photo">✕</button>`:''}</div>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
+  const photoStrip = media.length ? `<div class="pp-photos">${media.map((m,i)=>`<div class="pp-photo">${m.type==='image'?`<img src="${esc(mediaSrc(m.src))}" alt="">`:`<video src="${esc(mediaSrc(m.src))}" muted></video>`}${isAuthor?`<button class="pp-photo-x" onclick="deletePhoto('${id}','${authorId}',${i})" aria-label="Delete photo">✕</button>`:''}</div>`).join('')}</div>${media.length>1?`<div class="pp-photo-dots" id="ppDots-${id}">${media.map((_,i)=>`<span class="pp-dot${i===0?' on':''}"></span>`).join('')}</div>`:''}` : '';
   const photos = (media.length || addPhotoRow) ? `<h2>Photos</h2>${photoStrip}${addPhotoRow}` : '';
   const notes = post.notes ? esc(post.notes) : '<span class="muted">How\'d it go?</span>';
   // Sep 6: your own recap's notes are the same tap-in, self-saving box the live workout has
@@ -3951,8 +3968,8 @@ async function showSavePage(id){
   const t=document.getElementById('thumbs');
   window.__saveMedia.forEach(m=>{
     const d=document.createElement('div'); d.className='thumb';
-    if(m.type==='image'){ const el=document.createElement('img'); el.src=m.src; d.appendChild(el); }
-    else { const el=document.createElement('video'); el.src=m.src; el.muted=true; d.appendChild(el); }
+    if(m.type==='image'){ const el=document.createElement('img'); el.src=mediaSrc(m.src); d.appendChild(el); }
+    else { const el=document.createElement('video'); el.src=mediaSrc(m.src); el.muted=true; d.appendChild(el); }
     const x=document.createElement('span'); x.className='x'; x.textContent='✕'; x.onclick=()=>{ d.remove(); const i=window.__saveMedia.indexOf(m); if(i>-1) window.__saveMedia.splice(i,1); if(!t.children.length) document.getElementById('tabNote').style.display='none'; }; d.appendChild(x);
     t.appendChild(d);
   });
@@ -4152,8 +4169,8 @@ function renderInlineThumbs(){
   const t = document.getElementById('thumbs'); if(!t) return; t.innerHTML='';
   (window.__saveMedia||[]).forEach(m=>{
     const d=document.createElement('div'); d.className='thumb';
-    if(m.type==='image'){ const el=document.createElement('img'); el.src=m.src; d.appendChild(el); }
-    else { const el=document.createElement('video'); el.src=m.src; el.muted=true; d.appendChild(el); }
+    if(m.type==='image'){ const el=document.createElement('img'); el.src=mediaSrc(m.src); d.appendChild(el); }
+    else { const el=document.createElement('video'); el.src=mediaSrc(m.src); el.muted=true; d.appendChild(el); }
     const x=document.createElement('span'); x.className='x'; x.textContent='✕';
     x.onclick=()=>{ const i=window.__saveMedia.indexOf(m); if(i>-1) window.__saveMedia.splice(i,1); d.remove(); markDirty(); refreshAddBtn(); };
     d.appendChild(x); t.appendChild(d);
@@ -7116,7 +7133,7 @@ async function friends(opts){
     const who = esc(actorName(ff.by));
     const when = `<span class="tag ar-when">${feedWhen(ff.at)}</span>`;
     if(ff.type==='recap'){
-      const lead = ff.thumb ? `<img class="feed-thumb" src="${esc(ff.thumb)}" alt="">` : checkChip;
+      const lead = ff.thumb ? `<img class="feed-thumb" src="${esc(mediaSrc(ff.thumb))}" alt="">` : checkChip;
       return `<div class="feed-item feed-recap" onclick="viewPost('${jsq(ff.sessionId)}','${jsq(ff.by)}')" style="cursor:pointer"><span class="feed-lead">${lead}</span><span><b>${who}</b> ${esc(ff.text)}</span>${when}</div>`;
     }
     if(ff.type==='pr'){
@@ -8790,7 +8807,7 @@ async function profileView(id, opts){
   function woCard(w){
     // Jeff, Aug 26: no picture shouldn't mean a gray placeholder box - just skip the image area
     // entirely and let the card show title/exercises only.
-    const img = (w.post&&w.post.media&&w.post.media[0]) ? `<img class="wthumb" src="${esc(w.post.media[0].src)}" alt="">` : '';
+    const img = (w.post&&w.post.media&&w.post.media[0]) ? `<img class="wthumb" src="${esc(mediaSrc(w.post.media[0].src))}" alt="">` : '';
     const title = (w.name && w.name!=='Workout') ? w.name : ((w.firstExercises&&w.firstExercises[0])||'Workout');
     const exs = (w.firstExercises||[]).slice(0,3);
     const more = (w.exerciseCount||0) - exs.length;
@@ -9487,6 +9504,11 @@ async function tryBoot(){
     // stores YOUR OWN history (see localDateStr's own comment) instead of drifting apart for a
     // few hours every evening.
     try{ ME = await H.get('/api/profile/me?localToday='+localDateStr()); }catch(e){ ME=null; }
+    // Sep 24 2026: deliberately NOT awaited -- this is an auxiliary fetch for recap-photo URLs,
+    // not something boot should ever block real navigation on. home() below fires right away;
+    // MEDIA_TOKEN just fills in moments later (any recap image rendered before then is a no-op
+    // passthrough in mediaSrc() and picks up the token on the next re-render).
+    ensureMediaToken();
   }
   if(TOKEN && ME && ME.id){
     $('nav').classList.remove('hidden');
