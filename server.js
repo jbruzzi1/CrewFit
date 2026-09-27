@@ -3603,6 +3603,18 @@ function sessionView(s, viewerId) {
     // gated per-tier. Uses the real s.history, same source `history` below now draws its own
     // (viewer-only) slice from.
     creatorFinished: (s.history || []).some(h => h.userId === s.creatorId),
+    // Sep 27 2026 (Jeff: a friend's past-dated, never-logged workout should auto-disappear from
+    // "Friends' workouts" on Home -- "if its past the date it should disappear from my screen
+    // until he changes the date or deletes it"). Home needs to tell "genuinely never touched" (the
+    // whole reason this exists -- Brian created it, never opened it again) apart from "still
+    // actively being logged, just running past its original date" (the exact case Aug 20's
+    // creatorFinished carve-out already protects -- see the comment above it). The one signal that
+    // tells them apart without exposing anyone's actual sets is whether ANYONE has logged
+    // anything at all -- same "just a boolean, no one's actual data" reasoning as creatorFinished
+    // right above, not the real per-person s.logs (`logs: {}` a few lines down is deliberately
+    // empty for every non-member tier -- see its own comment -- so the client can never compute
+    // this itself from what it's handed).
+    anyLogged: !!(s.logs && Object.values(s.logs).some(arr => Array.isArray(arr) && arr.length)),
     // You are told about YOURSELF and nobody else. Emptying this entirely also erased the fact
     // that the viewer is invited, which is what the whole invitation screen keys on — "waiting on
     // you", the Respond block, and being able to suggest a swap before accepting all vanished.

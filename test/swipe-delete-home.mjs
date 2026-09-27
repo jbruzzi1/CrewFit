@@ -88,6 +88,13 @@ await api(`/api/follow/${friend.user.id}`, {}, me.token);
 // session competes for the single Next Up card slot, which is NOT wrapped in .swipe-row. Past-dating
 // keeps all three reliably landing as plain "Your sessions"/"Friends' workouts" swipe-rows.
 const joinableS = await api('/api/sessions', { name: 'Friend Joinable', scheduledAt: new Date(Date.now() - 86400000).toISOString(), exercises: [{ name: 'Bench Press' }], visibility: 'public' }, friend.token);
+// Sep 27 2026: a past-dated, never-logged friend's joinable workout is now deliberately hidden
+// from "Friends' workouts" (isJoinableStale in app.js -- Jeff: "if its past the date it should
+// disappear... until he changes the date or deletes it"). This test is about the swipe/hide-
+// joinable MECHANIC, not staleness, so the friend logs a real set on their own session to keep it
+// genuinely "in progress" (anyLogged:true) and rendering as a normal row -- see
+// test/friends-workouts.mjs for the staleness behavior itself.
+await api(`/api/sessions/${joinableS.id}/log`, { exerciseId: joinableS.exercises[0].id, weight: 135, reps: 5 }, friend.token);
 const invitedS = await api('/api/sessions', { name: 'Friend Invited Me', scheduledAt: new Date(Date.now() - 172800000).toISOString(), exercises: [{ name: 'Deadlift' }], visibility: 'private', inviteUsernames: [uMe] }, friend.token);
 await api(`/api/sessions/${invitedS.id}/accept`, {}, me.token);
 const ownS = await api('/api/sessions', { name: 'My Own Session', scheduledAt: new Date(Date.now() - 259200000).toISOString(), exercises: [{ name: 'Squat' }], visibility: 'private' }, me.token);
@@ -345,6 +352,10 @@ console.log('\ncold-review catch, round 3: dragging TWO different rows within th
   // in a sandboxed browser can't guarantee lands inside the same ~220ms window reliably) -- same
   // technique the hasFinished test above uses, same real function, same real server session.
   const raceHideS = await api('/api/sessions', { name: 'Race Hide Candidate', scheduledAt: new Date(Date.now() - 432000000).toISOString(), exercises: [{ name: 'Lat Pulldown' }], visibility: 'public' }, friend.token);
+  // Sep 27 2026: same isJoinableStale carve-out as joinableS above -- a past-dated public friend's
+  // workout with no real activity on it no longer renders in "Friends' workouts" at all, so this
+  // race fixture needs a real logged set to stay a normal swipe-row for the race itself to happen.
+  await api(`/api/sessions/${raceHideS.id}/log`, { exerciseId: raceHideS.exercises[0].id, weight: 100, reps: 8 }, friend.token);
   const raceLeaveS = await api('/api/sessions', { name: 'Race Leave Candidate', scheduledAt: new Date(Date.now() - 518400000).toISOString(), exercises: [{ name: 'Leg Press' }], visibility: 'private', inviteUsernames: [uMe] }, friend.token);
   await api(`/api/sessions/${raceLeaveS.id}/accept`, {}, me.token);
 

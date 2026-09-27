@@ -201,6 +201,29 @@ function isSessionMissed(s, viewerId){
   if(s.logs && s.logs[viewerId] && s.logs[viewerId].length) return false;
   return true;
 }
+// Sep 27 2026 (Jeff: "if its past the date it should disappear from my screen until he changes
+// the date or deletes it" -- Brian's own past-dated, never-touched workout was still cluttering
+// Jeff's "Friends' workouts" list on Home). Deliberately narrower than it first sounds -- this
+// does NOT reverse the Aug 20 "past-dated does not mean done" call right above the joinable
+// filter in home(): a workout genuinely still being logged past its original scheduled moment
+// (running long, or spanning past midnight) stays fully visible, same as always. Only a workout
+// that is BOTH past its date AND has no real activity on it at all -- the actual "created it,
+// never opened it again" case Jeff is describing -- disappears. `s.anyLogged` is a session-wide
+// boolean the server computes (see sessionView's non-member `view` object in server.js) for
+// exactly this: a friend never receives anyone else's real logged sets (privacy -- `logs: {}` for
+// every non-member tier), so the client has no other way to tell "abandoned" from "in progress"
+// here. Nothing is deleted or blocked -- editing the date back to today/future, or the creator
+// finishing it, or the creator deleting it outright, all make this re-evaluate false on the very
+// next render, same "just a filter, recomputed fresh every time" mechanism Missed already uses.
+function isJoinableStale(s){
+  if(!s) return false;
+  // Fails open on a missing anyLogged (older/incomplete session shape), same convention as
+  // creatorFinished/hiddenForMe elsewhere in this file: only an EXPLICIT anyLogged:false, alongside
+  // a not-finished creator, is treated as "genuinely never touched" -- undefined means "we don't
+  // know," and not knowing is never a reason to hide someone's workout.
+  if(s.creatorFinished || s.anyLogged !== false) return false;
+  return dayDiff(s.scheduledAt) < 0;
+}
 // Session-level: has ANYONE finished and posted their recap on this workout? Each participant now
 // finishes and posts independently (s.posts, keyed by userId — see server.js), so this is used only
 // for "has this workout moved past the active/editable phase for at least one person" checks, never
@@ -1018,7 +1041,8 @@ async function home(opts){
     && !(s.participants||[]).includes(ME.id)
     && !(Array.isArray(s.invited) && s.invited.includes(ME.id))
     && !s.creatorFinished
-    && !s.hiddenForMe);
+    && !s.hiddenForMe
+    && !isJoinableStale(s));
   // Sep 7 (Jeff: reverting the "hide until there's content" call -- "no guessing... where things
   // would show"): always visible again, same as pre-v364, with the exact original empty copy
   // (never had a CTA of its own -- the solo-line above carries that for a zero-friend user).
