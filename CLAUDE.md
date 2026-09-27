@@ -87,6 +87,15 @@ because you wrote it.
   6. Delete the temp bundle file (`rm _claude_incoming_<branch>.bundle` via `device_bash`).
   7. Only now hand Jeff the push command — and tell him explicitly to run it from a **fresh** terminal window, `cd`'d into his real repo folder by name (e.g. `cd ~/fitness-app`), never assume he's already in the right place.
   This makes the push a small, fast, local-ref-only operation by the time Jeff runs it — no large/unexpected data transfer, no "branch not found," no guessing which folder he's in. If step 1 shows the device bridge isn't linked, say so plainly and fall back to the plain push-command hand-off, but flag to Jeff that it may fail for this same reason until his Mac is linked again.
+- **When Jeff says "merged", immediately hand him the deploy command too — don't wait for a separate "deploy".** (Jeff, Sep 27 2026: "when i say merged - just automatically give me the deploy prompt.") Same fenced-code-block, paste-it-fresh treatment as the push/PR hand-off above:
+  ```
+  cd ~/fitness-app
+  git checkout main
+  git pull origin main
+  export PATH="$HOME/.fly/bin:$PATH"
+  fly deploy --app spotmeapp
+  ```
+  Still never run this yourself (hard rule #1 — it stays Jeff's to run). Note this repo also has a GitHub Actions pipeline (`.github/workflows/deploy.yml`) that auto-deploys on push to `main` IF a `FLY_API_TOKEN` secret is configured — confirmed live at least once (Sep 27 2026, `spotmeapp.fly.dev/healthz` changed without this manual command being run). Hand him the manual command regardless; if the Actions pipeline already deployed it, running this again is a harmless redundant deploy, not a conflict (fly's own concurrency group serializes them). Don't try to detect or skip based on pipeline state — just always send the prompt the moment he says "merged".
 
 ## Design constants
 
