@@ -169,5 +169,50 @@ console.log('\nSep 18 2026: hiddenForMe (Home\'s swipe-to-remove, server-compute
   ok(rowFor('Never Touched It') !== '', 'a session shape missing hiddenForMe entirely (older/legacy) fails open, same convention as creatorFinished above');
 }
 
+console.log('\nSep 27 2026 (Jeff: "if its past the date it should disappear from my screen until he changes the date or deletes it" -- Brian\'s untouched Sep 24th workout cluttering Jeff\'s Friends\' workouts): a past-dated, unfinished, NEVER-logged friend\'s workout is now hidden');
+{
+  // anyLogged is a server-computed aggregate boolean (sessionView's non-member `view`, server.js)
+  // standing in for "does anyone's real log data exist on this session" -- a friend never receives
+  // anyone else's actual logs (privacy), so the client cannot compute this itself. Explicitly false
+  // here means the server checked and found nothing, which is the real "abandoned" case.
+  const abandoned = base({ name: 'Brians Untouched Squat', scheduledAt: daysAgo(3), creatorFinished: false, anyLogged: false });
+  const html = await renderJoinable([abandoned]);
+  ok(!html.includes('Brians Untouched Squat'), 'a past-dated workout nobody has logged anything on disappears from Friends\' workouts');
+}
+
+console.log("the carve-out: still actively being logged past its date protects the Aug 20 \"past-dated does not mean done\" rule");
+{
+  // Same shape as "abandoned" above -- past-dated, not yet marked creatorFinished -- but someone
+  // (the creator or another participant) HAS logged real sets on it. This is exactly the case the
+  // Aug 20 fix (top of this file) exists to protect: a workout that runs long or spans past
+  // midnight must not vanish out from under the people still actively using it.
+  const stillActive = base({ name: 'Still Being Logged Deadlift', scheduledAt: daysAgo(1), creatorFinished: false, anyLogged: true });
+  const html = await renderJoinable([stillActive]);
+  ok(html.includes('Still Being Logged Deadlift'), 'anyLogged:true keeps a past-dated, not-yet-finished workout visible -- it is not abandoned, it is in progress');
+}
+
+console.log('a past-dated, creatorFinished:true workout stays hidden regardless of anyLogged -- isJoinableStale does not fight the existing finished check');
+{
+  const finishedAndLogged = base({ name: 'Wrapped Up Row', scheduledAt: daysAgo(2), creatorFinished: true, anyLogged: true });
+  const html = await renderJoinable([finishedAndLogged]);
+  ok(!html.includes('Wrapped Up Row'), 'creatorFinished:true keeps it out exactly as before -- this feature only ever hides MORE, never brings a finished one back');
+}
+
+console.log("editing the date to today/future -- or the creator finishing it -- makes an abandoned workout reappear automatically (same \"just a filter, recomputed fresh every time\" mechanism isSessionMissed already uses -- see the comment above isJoinableStale)");
+{
+  const nowFuture = base({ name: 'Brian Rescheduled It', scheduledAt: daysAhead(1), creatorFinished: false, anyLogged: false });
+  const html = await renderJoinable([nowFuture]);
+  ok(html.includes('Brian Rescheduled It'), 'moving the date to the future clears the staleness the very next render, with no other change needed');
+}
+
+console.log('a session shape missing anyLogged entirely fails open, same established convention as creatorFinished and hiddenForMe above -- "we don\'t know" is never a reason to hide someone\'s workout');
+{
+  const noAnyLoggedField = base({ name: 'Old Shape No AnyLogged', scheduledAt: daysAgo(5), creatorFinished: false });
+  // (base() never sets anyLogged, so this fixture already lacks the field -- explicit for clarity)
+  delete noAnyLoggedField.anyLogged;
+  const html = await renderJoinable([noAnyLoggedField]);
+  ok(html.includes('Old Shape No AnyLogged'), 'a past-dated session missing anyLogged still shows -- only an EXPLICIT anyLogged:false hides it');
+}
+
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
 process.exit(fails ? 1 : 0);
