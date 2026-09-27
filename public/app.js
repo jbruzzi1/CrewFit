@@ -1233,8 +1233,19 @@ async function openSession(id, opts){
   // shared exercise-list EDIT form (renderWorkoutEdit) still shows everything, since managing the
   // shared plan is a different thing from personally not wanting to see one lift.
   const myHidden = new Set(s.myHiddenExerciseIds || []);
+  // Sep 27 2026: which one exercise's card is fully expanded right now (see exCollapsedRowHtml's
+  // own comment for the feature). Falls back to the first visible exercise when nothing is
+  // remembered yet for this session, or when the remembered one no longer applies here (removed,
+  // hidden, or a stale id from some other session entirely).
+  let openExId = null;
+  if(canEdit){
+    const visibleExIds = s.exercises.filter(e=>!myHidden.has(e.id)).map(e=>e.id);
+    openExId = getOpenExercise(s.id);
+    if(!openExId || !visibleExIds.includes(openExId)) openExId = visibleExIds[0] || null;
+  }
   // my variation view (each exercise = its own card tile; swap suggestion nested inside)
   const myEx = s.exercises.filter(e=>!myHidden.has(e.id)).map(e=>{
+    const isOpenLogCard = canEdit && e.id === openExId;
     const v = s.variations[e.id] && s.variations[e.id][ME.id];
     // find an approved swap for this exercise (option 1: exercise becomes swapTo + muted "swapped by X")
     const approved = (editByEx[e.id]||[]).find(ed=>ed.status==='approved');
@@ -1264,7 +1275,8 @@ async function openSession(id, opts){
     // Sep 6: an invitee (can't log yet) still taps the card to propose; a non-creator who CAN log
     // gets a "Swap →" link in the card head instead (see statusTag) that asks "just me / everyone".
     const tap = (!canEdit && offerSwap) ? ` onclick="openSwapChoice('${s.id}','${e.id}',false)"` : '';
-    const cls = (!canEdit && offerSwap) ? 'ex-card log-row' : 'ex-card';
+    const cls = (!canEdit && offerSwap) ? 'ex-card log-row'
+              : (canEdit && !isOpenLogCard) ? 'ex-card log-row ex-collapsed' : 'ex-card';
     const canSwapHere = canEdit && !isCreator && !myPost && !pendingSwap && !v;
     const swapBy = pendingSwap
       ? (() => { const n = nameCache[pendingSwap.proposedBy];
@@ -1301,10 +1313,13 @@ async function openSession(id, opts){
     // No "4 x 6-8" on the list at all — Jeff's call, twice. The workout list answers one question,
     // which is what you are doing; the prescription is an instruction and it now lives in the log
     // sheet, where you read it at the moment you act on it rather than four lifts in advance.
-    let head = canEdit
+    const exLogsMine = ((s.logs && s.logs[ME.id]) || []).filter(l => l.exerciseId === e.id);
+    let head = isOpenLogCard
       ? exLogBlockHtml(s, e, { name, statusTag, crewLine, recName: recExName,
           loadType: (LIBN[e.name] && LIBN[e.name].loadType) || '',
-          exLogs: ((s.logs && s.logs[ME.id]) || []).filter(l => l.exerciseId === e.id) })
+          exLogs: exLogsMine })
+      : canEdit
+      ? exCollapsedRowHtml(s.id, e, { name, exLogs: exLogsMine })
       : `<div class="ex-head"${tap}><div class="ex-main"><div class="ex-name">${name}</div>${statusTag}${crewLine}</div></div>`;
     let sub = '';
     for(const ed of (editByEx[e.id]||[])){
@@ -1714,7 +1729,10 @@ async function openSession(id, opts){
   notesAutosize();
   // v312: every inline logger's "when to add weight" box loads after the page is on screen, so
   // it never delays the render -- same as the old sheet did for its one exercise.
-  if(canEdit) for(const e of s.exercises) refreshLogRec(e.id, s);
+  // Sep 27 2026: only the one exercise actually expanded carries this box now (a collapsed row
+  // has nowhere to put it) -- fetching it for every OTHER exercise on every render would just be
+  // N-1 wasted requests whose results land in a [data-f="rec"] that doesn't exist.
+  if(canEdit && openExId) refreshLogRec(openExId, s);
   // v254 (Jeff): tapping into a screen used to leave the window wherever it happened to be
   // scrolled from the PREVIOUS screen, so a session opened after scrolling halfway down Home
   // could render already scrolled to the middle.
@@ -2970,6 +2988,29 @@ const TYPE_LABEL = { normal:'Normal', warmup:'Warm up', drop:'Drop', failure:'Fa
 function logBlock(exId){ return document.querySelector(`.ex-log[data-ex="${exId}"]`); }
 function lf(exId, key){ const b = logBlock(exId); return b ? b.querySelector(`[data-f="${key}"]`) : null; }
 
+// Sep 27 2026 (Jeff: "a long screen with all of the selected exercises... keep only the active
+// exercise open and showing everything. All other exercises collapse into just the name. Once
+// we click on it - it uncollapses and the previous open one collapses"): which exercise's card
+// renders fully expanded vs. condensed to a single tappable row, on the logging page only (an
+// invitee's tap-to-propose card never had a logger to begin with -- see canEdit in openSession).
+// Persisted per session in localStorage, same guarded pattern as crewfit_theme (currentTheme()
+// above) -- private browsing / storage disabled must fall back to "nothing remembered", never
+// crash the page.
+function getOpenExercise(sid){ try{ return localStorage.getItem('crewfit_open_ex_'+sid); }catch(e){ return null; } }
+function setOpenExercise(sid, exId){ try{ localStorage.setItem('crewfit_open_ex_'+sid, exId); }catch(e){} }
+// The collapsed row's onclick target: remember the tap, re-render (openSession recomputes which
+// card is "open" from getOpenExercise, see its own comment there), then bring the now-expanded
+// card into view. Deliberately does NOT focus the weight input the way focusLogBlock (deep-link
+// entry) does -- that pops the keyboard, which is right when a push notification hands you
+// straight to logging but wrong for casually glancing between exercises.
+function openExercise(sid, exId){
+  setOpenExercise(sid, exId);
+  openSession(sid, {quiet:true}).then(()=>{
+    const block = logBlock(exId);
+    if(block){ try{ block.scrollIntoView({ block:'start', behavior:'smooth' }); }catch(err){ block.scrollIntoView(); } }
+  });
+}
+
 // ---- Load type: what the number in the weight box actually means ----
 // The library tags exercises whose entered weight is ambiguous (see exercise-library.json):
 //   pair   two implements, the number is PER HAND  (70 → 70 each, 140 total)
@@ -3018,12 +3059,42 @@ function updateLoadHint(exId){
   const w=lf(exId,'w'); if(!w) return;
   el.textContent = loadHintText(el.dataset.load, w.value);
 }
+// Sep 27 2026: the condensed row for every exercise that is NOT the one currently expanded (see
+// openExId in openSession, and openExercise() a few screens up which flips which one that is).
+// Jeff's own words were "collapse into just the name" -- asked directly whether that should stay
+// literal or carry a small progress readout too, he picked the readout: a checkmark once you've
+// hit this exercise's target set count, otherwise "done/target sets" (or a plain "N sets" / "No
+// sets yet" when the exercise carries no set target at all -- e.g. a timed hold). The outer
+// <div class="ex-card ex-log ex-collapsed" data-...> is written by openSession, same as the
+// expanded card's -- logBlock()/captureLogState() find either shape by the same data-ex.
+// The empty `<div data-f="rest"></div>` at the end renders nothing by itself -- kept as a real
+// target for startRest() even while collapsed, so REST_EX/REST_UNTIL (one rest timer for the
+// whole page, see startRest's own comment) always has somewhere to land. Today nothing actually
+// calls startRest() for an exercise other than the one you're actively logging on -- which, under
+// this accordion, can only ever be the currently-open one -- but this costs nothing to keep and
+// avoids silently losing that global state the day a future trigger (partner-sync, voice quick-
+// log reaching across exercises) needs it.
+function exCollapsedRowHtml(sid, e, o){
+  const target = Number(e.defaultSets) || 0;
+  const done = (o.exLogs||[]).length;
+  const hitTarget = target > 0 && done >= target;
+  const meta = hitTarget
+    ? `<span class="ex-collapsed-done" aria-label="Target hit"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`
+    : `<span class="ex-collapsed-count">${target ? `${done}/${target} sets` : (done ? `${done} set${done===1?'':'s'}` : 'No sets yet')}</span>`;
+  return `<div class="ex-head ex-head-collapsed" onclick="openExercise('${sid}','${e.id}')">
+    <div class="ex-main"><div class="ex-name">${o.name}</div></div>
+    <div class="ex-collapsed-meta">${meta}<svg class="ex-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 6 15 12 9 18"/></svg></div>
+  </div>
+  <div data-f="rest"></div>`;
+}
 // The inner markup of one exercise card on the active-workout screen, when you can log on it
 // (v312, Jeff: "get rid of the logging page and have it all on the active workout page"). What the
 // log sheet used to hold, one card per exercise: name + target, the sets you've logged (the same
 // rows the posted-workout view shows -- W/D/F badge or set number, "143 lb × 12 reps", PR pill,
 // Edit), the live "when to add weight" box, the set-type pill, and the mic / weight / reps / RIR /
-// + Add row. The outer <div class="ex-card ex-log" data-...> is written by openSession.
+// + Add row. The outer <div class="ex-card ex-log" data-...> is written by openSession. Only
+// rendered for the one exercise currently expanded (see openExId in openSession) -- every other
+// exercise gets exCollapsedRowHtml above instead.
 function exLogBlockHtml(s, e, o){
   const target = repLabel(e) ? `<div class="ex-sub">Target <b>${e.defaultSets} × ${repLabel(e)}</b></div>` : '';
   const loadType = o.loadType || '';
@@ -9610,7 +9681,10 @@ async function tryBoot(){
       const [sid, exId] = openLog.split(':');
       // v262 (cold-review fix): gate openLogSheet on openSession actually succeeding -- see the
       // comment at openSession's `return true;` for why calling both unconditionally double-alerted.
-      if(sid && exId){ const opened = await openSession(sid); if(opened) focusLogBlock(exId); return; }
+      // Sep 27 2026: the deep-linked exercise must be the one that renders EXPANDED, regardless of
+      // whichever one this session last remembered being open -- focusLogBlock below assumes a
+      // real weight input exists to focus, which only a collapsed row's card does not have.
+      if(sid && exId){ setOpenExercise(sid, exId); const opened = await openSession(sid); if(opened) focusLogBlock(exId); return; }
     }
     if(dlLink && await openDeepLink(dlLink)) return;
     home();
@@ -9658,6 +9732,8 @@ if('serviceWorker' in navigator && typeof navigator.serviceWorker.addEventListen
       await BOOT_DONE;
       if(!ME || !ME.id) return;
       // same success-gating as tryBoot's ?openLog= branch above -- see openSession's `return true;` comment.
+      // Sep 27 2026: same reason as that branch -- force this exercise to be the one that opens expanded.
+      setOpenExercise(d.sid, d.exId);
       const opened = await openSession(d.sid);
       if(opened) focusLogBlock(d.exId);
     }
