@@ -188,7 +188,10 @@ console.log('\n=== "Suggest a change" card: swap sub-section only when there\'s 
   // Sep 6: the swap half of this card is gone -- swapping starts from the exercise card's own
   // "Swap →" link (openSwapChoice: just me / everyone). The card is add-only now.
   ok(!/Pick replacement from Workouts/.test(appEl.innerHTML) && !/id="swEx"/.test(appEl.innerHTML), 'no dropdown/"Pick replacement" swap sub-section any more');
-  ok(/openSwapChoice\('sess1','ex1',true\)/.test(appEl.innerHTML) && /Swap →/.test(appEl.innerHTML), 'the exercise card itself carries the "Swap →" door (just me / everyone) for a non-creator participant');
+  // Sep 27 2026 (ownerless redesign): openSwapChoice now takes a 4th arg (isOwnerless) so its sheet
+  // can show the right copy for "propose for everyone" -- false here since this fixture has a real
+  // creator.
+  ok(/openSwapChoice\('sess1','ex1',true,false\)/.test(appEl.innerHTML) && /Swap →/.test(appEl.innerHTML), 'the exercise card itself carries the "Swap →" door (just me / everyone) for a non-creator participant');
   ok(/Suggest adding an exercise/.test(appEl.innerHTML), 'and the add button is there too');
   ok(/openSuggestAddPicker\('sess1'\)/.test(appEl.innerHTML), 'add button wired to openSuggestAddPicker for this session');
 

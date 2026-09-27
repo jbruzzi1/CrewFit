@@ -87,7 +87,7 @@ console.log("\na solo workout with nobody else's credit is deleted outright — 
   ok(!db.sessions[solo.id], 'and is genuinely gone from the database, not just hidden');
 }
 
-console.log('\na workout Jeff CREATED where Brian also logged real sets is handed off, not deleted — Brian keeps his credit');
+console.log('\na workout Jeff CREATED where Brian also logged real sets is cleared, not deleted — Brian keeps his credit');
 {
   const shared = await post('/api/sessions', {
     name: 'Push Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Bench Press' }],
@@ -101,26 +101,30 @@ console.log('\na workout Jeff CREATED where Brian also logged real sets is hande
   await post('/api/sessions/' + shared.id + '/lock', {}, brian.token);
 
   const r = await post('/api/me/reset-workouts', { confirm: true }, jeff.token);
-  ok(r.sessionsHandedOff >= 1, `at least one session was handed off, not deleted (got ${r.sessionsHandedOff})`);
+  ok(r.sessionsHandedOff >= 1, `at least one session pivoted ownerless, not deleted (got ${r.sessionsHandedOff})`);
 
   const db = await readDb(testDb.url);
   const s = db.sessions[shared.id];
   ok(!!s, "Brian's workout still exists");
-  ok(s.creatorId === brian.user.id, 'ownership passed to Brian, the one remaining real participant');
+  // Sep 27 2026 (ownerless redesign): ownership no longer hands off to Brian -- it clears outright,
+  // same as /leave and /remove-mine now do. See server.js's "Ownerless Workout Flow" comments.
+  ok(s.creatorId === null, `ownership clears rather than passing to Brian (got ${s.creatorId})`);
   ok((s.history || []).some(h => h.userId === brian.user.id), "Brian's own credit is untouched");
   ok(!(s.history || []).some(h => h.userId === jeff.user.id), "Jeff's credit is gone from it");
   ok(!(s.participants || []).includes(jeff.user.id), 'Jeff is off the participant list');
   ok((s.logs && s.logs[brian.user.id] && s.logs[brian.user.id].length) > 0, "Brian's actual logged sets (185x6... 135x8) are untouched");
   ok(!s.logs || !s.logs[jeff.user.id], "Jeff's own logs are gone");
 
+  // Doc tab 06 "Locked Forever": with no creator left, editing the shared exercise list/details is
+  // permanently off, for Brian same as anyone else -- nobody is ever promoted to fill that gap.
   const brianCanEdit = await fetch(B + '/api/sessions/' + shared.id, {
     method: 'PUT', headers: { ...J, Authorization: 'Bearer ' + brian.token },
     body: JSON.stringify({ name: 'Push Day (renamed)' }),
   });
-  ok(brianCanEdit.status === 200, 'Brian, the new owner, can edit the workout that is now his');
+  ok(brianCanEdit.status === 403, `Brian cannot edit it either -- ownerless locks editing for everyone, forever (got ${brianCanEdit.status})`);
 }
 
-console.log('\nSep 18 2026 (cold-review catch): a workout Jeff created where Brian has JOINED but logged NOTHING yet is also handed off, not deleted — the same gap DELETE /api/sessions/:id and POST /leave were just fixed for');
+console.log('\nSep 18 2026 (cold-review catch): a workout Jeff created where Brian has JOINED but logged NOTHING yet is also cleared, not deleted — the same gap DELETE /api/sessions/:id and POST /leave were just fixed for');
 {
   // Before this fix, this loop's own guard was `othersWithCredit(s, me)` alone -- a friend who'd
   // merely accepted the invite and hadn't logged a single set yet was invisible to it, so "reset my
@@ -134,14 +138,14 @@ console.log('\nSep 18 2026 (cold-review catch): a workout Jeff created where Bri
   // Neither Jeff nor Brian has logged a single set here.
 
   const r = await post('/api/me/reset-workouts', { confirm: true }, jeff.token);
-  ok(r.sessionsHandedOff >= 1, `handed off, not counted among the deletions (got sessionsDeleted=${r.sessionsDeleted}, sessionsHandedOff=${r.sessionsHandedOff})`);
+  ok(r.sessionsHandedOff >= 1, `pivoted ownerless, not counted among the deletions (got sessionsDeleted=${r.sessionsDeleted}, sessionsHandedOff=${r.sessionsHandedOff})`);
 
   const db = await readDb(testDb.url);
   const s = db.sessions[joinedOnly.id];
   ok(!!s, "the workout still exists -- Brian's invite-acceptance was never a hard delete");
-  ok(s.creatorId === brian.user.id, 'ownership passed to Brian, the one remaining current participant, even with zero credit to go on');
+  ok(s.creatorId === null, `ownership clears rather than passing to Brian, even with zero credit to go on (got ${s.creatorId})`);
   ok(!(s.participants || []).includes(jeff.user.id), 'Jeff is off the participant list');
-  ok((s.participants || []).includes(brian.user.id), 'Brian is still a participant, now the owner');
+  ok((s.participants || []).includes(brian.user.id), 'Brian is still a participant, just like everyone else now');
 }
 
 console.log("\na workout Jeff only JOINED (Brian's, not his) is left completely alone for Brian — reset only strips Jeff's own trace");
@@ -191,7 +195,7 @@ console.log('\na session Jeff already LEFT earlier (alumni-only credit, no live 
   ok(!!db.sessions[oldSession.id], "Brian's session itself still exists — Jeff was never its creator");
 }
 
-console.log('\nwhen MULTIPLE friends have current credit in a workout Jeff created, the inheritance is deterministic — the same rule /leave already uses, not a coin flip');
+console.log('\nwhen MULTIPLE friends have current credit in a workout Jeff created, ownership clears rather than trying to pick one of them — the exact case the ownerless redesign exists for (a creator leaving can never select between three-plus people)');
 {
   const carla = await reg('reset_carla', 'pass1234', 'Carla');
   await post('/api/follow/' + carla.user.id, {}, jeff.token);
@@ -215,10 +219,9 @@ console.log('\nwhen MULTIPLE friends have current credit in a workout Jeff creat
   const db = await readDb(testDb.url);
   const s = db.sessions[trio.id];
   ok(!!s, 'the workout survives — two other people have real credit in it');
-  ok(s.creatorId === brian.user.id || s.creatorId === carla.user.id,
-     `ownership landed on one of the two people who actually still have logs, not on Jeff or nobody (got ${s.creatorId})`);
+  ok(s.creatorId === null, `ownership clears rather than landing on Brian or Carla (got ${s.creatorId})`);
   ok((s.logs[brian.user.id] || []).length > 0 && (s.logs[carla.user.id] || []).length > 0,
-     "both Brian's AND Carla's sets survive untouched regardless of who inherited it");
+     "both Brian's AND Carla's sets survive untouched now that the workout is ownerless");
   ok(!s.logs[jeff.user.id], "Jeff's own sets are gone");
 }
 

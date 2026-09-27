@@ -490,8 +490,11 @@ console.log('\nSep 18 2026 (Jeff, real bug report on Home\'s swipe-to-delete): a
   ok(!!finalJoinedOnly, 'the workout still exists -- it was never actually deleted');
   ok(!(finalJoinedOnly.participants || []).includes(creator.user.id), 'the creator is now gone as a participant (they left, not deleted it)');
   ok((finalJoinedOnly.participants || []).includes(participant.user.id), 'the partner is still right there, workout intact for them');
-  ok(finalJoinedOnly.creatorId === participant.user.id,
-     `ownership transferred to the remaining current participant, exactly like a real Leave does (got ${finalJoinedOnly.creatorId})`);
+  // Sep 27 2026 (ownerless redesign): ownership no longer hands off to the remaining participant --
+  // it simply clears, same as any other creator Leave. See server.js's "Ownerless Workout Flow"
+  // comments (above applyOwnedSuggestedEdit) for the full history of why.
+  ok(finalJoinedOnly.creatorId === null,
+     `ownership clears rather than transferring, exactly like a real Leave does now (got ${finalJoinedOnly.creatorId})`);
 }
 
 console.log('\nand the delete-fallback for an ALREADY-finished creator still just leaves cleanly, no duplicate credit');

@@ -158,7 +158,7 @@ console.log('\n4. only the creator sees the full joinRequests list -- other part
     `a regular (non-creator) participant does NOT see carol's join request or her note (got ${JSON.stringify(asParticipant.joinRequests)})`);
 }
 
-console.log('\n5. creatorId does not lock to null when a not-yet-logged current participant exists');
+console.log('\n5. creatorId clears to null even when a not-yet-logged current participant exists (ownerless redesign, Sep 27 2026 -- ownership no longer hands off to anyone, ever, since it can\'t deterministically pick among three-plus people; see server.js\'s "Ownerless Workout Flow" comments)');
 {
   const host = await reg('sec253_e1', 'pass1234', 'E1');
   const departed = await reg('sec253_e2', 'pass1234', 'E2');
@@ -170,17 +170,17 @@ console.log('\n5. creatorId does not lock to null when a not-yet-logged current 
   await post(`/api/sessions/${s.id}/accept`, {}, bob.token);
   // "departed" leaves keeping credit -- gives the workout SOMEONE with credit (satisfies /leave's
   // own "nobody has logged, delete it instead" guard for when the creator leaves next) without
-  // being a CURRENT participant any more, so they can't be handed ownership.
+  // being a CURRENT participant any more.
   await post(`/api/sessions/${s.id}/leave`, { keep: true }, departed.token);
-  // bob stays current but never logs anything -- this is the exact case othersWhoLogged() alone
-  // used to miss.
+  // bob stays current but never logs anything -- irrelevant now (nobody is ever promoted, logged in
+  // or not), kept only because it's still a realistic shape to exercise.
   const hostLeaves = await post(`/api/sessions/${s.id}/leave`, { keep: true }, host.token);
   ok(!hostLeaves.error, `the creator can leave (got ${JSON.stringify(hostLeaves.error)})`);
   // /leave's own response is just {ok:true, left:true} -- it doesn't echo the updated session --
-  // so check ownership by asking bob (the new creator) for the session afresh.
+  // so check ownership by asking bob (a current participant) for the session afresh.
   const afterLeave = await get('/api/sessions/' + s.id, bob.token);
-  ok(afterLeave.creatorId === bob.user.id,
-    `ownership passes to bob -- the current, not-yet-logged participant -- instead of locking to null (got creatorId=${afterLeave.creatorId})`);
+  ok(afterLeave.creatorId === null,
+    `ownership clears to null rather than passing to bob (got creatorId=${afterLeave.creatorId})`);
   ok((afterLeave.participants || []).includes(bob.user.id), `bob is still listed as a participant too (got ${JSON.stringify(afterLeave.participants)})`);
 }
 

@@ -3560,7 +3560,13 @@ function sessionView(s, viewerId) {
     // approved swap proposals, each carrying who proposed it) passed straight through the raw
     // spread with no block check at all, unlike comments/logs/posts right above -- a blocked
     // co-participant's swap proposal text was still visible to the person who blocked them.
-    const suggestedEdits = (s.suggestedEdits || []).filter(se => !isBlocked(se.proposedBy, viewerId));
+    // Sep 27 2026 (ownerless redesign): a privatePreJoin edit (suggestOwnerless's still-invited
+    // carve-out) is explicitly NOT part of the shared conversation every other suggestedEdits entry
+    // is -- see the comment above suggestOwnerless's branch in /suggest for why ("stays entirely
+    // private... nobody else is left to ask"). A current member never legitimately has one of their
+    // own here (it only ever exists before they've joined, and /accept resolves and removes it the
+    // moment they do), so this is a straightforward exclude, not a "your own only" carve-out.
+    const suggestedEdits = (s.suggestedEdits || []).filter(se => !isBlocked(se.proposedBy, viewerId) && !se.privatePreJoin);
     return Object.assign({}, s, { posts, logs, comments, suggestedEdits, joinRequests, pendingRemovals, draftNotes: undefined, myDraftNotes, hiddenFor: undefined, myHiddenExerciseIds, invitedBy: undefined, invitedById: myInvitedById, joinableHiddenBy: undefined, hiddenForMe });
   }
   if (tier === 'stranger') return null;
@@ -3611,7 +3617,11 @@ function sessionView(s, viewerId) {
       ? ((s.invitedBy && s.invitedBy[viewerId]) || s.creatorId) : undefined,
     // who proposed swapping what is a conversation between the people in the workout — a stranger
     // reading a public recap was never one of them (v250: this used to include 'reader' too).
-    suggestedEdits: tier === 'invited' ? (s.suggestedEdits || []) : [],
+    // Sep 27 2026 (ownerless redesign): EXCEPT a privatePreJoin edit, which is deliberately not
+    // part of that shared conversation -- it's one still-invited person's own stashed swap, visible
+    // only to them until they actually join (see suggestOwnerless's comment in /suggest). Another
+    // invited-tier viewer (a different pending invitee to the same session) must not see it either.
+    suggestedEdits: tier === 'invited' ? (s.suggestedEdits || []).filter(se => !se.privatePreJoin || se.proposedBy === viewerId) : [],
     // your OWN swap comes back; nobody else's
     variations: pickMine(s.variations, viewerId),
     attendance: {},
@@ -3727,6 +3737,125 @@ function dropRequiredApprover(s, target) {
     }
   }
   return resolvedNow;
+}
+
+// Sep 27 2026 (ownerless-workout redesign, Jeff: "the owner can just leave -- no new owner needed",
+// mapped out in full in a reference doc -- "Ownerless Workout Flow" -- after the Sep 26 attempt to
+// ship a plain ownership-HANDOFF notification turned out to directly contradict this already-
+// decided design). The old behavior silently promoted another current participant to creatorId
+// when the creator left; that's gone. Ownership now simply clears (creatorId -> null) and NEVER
+// comes back -- nothing in this codebase ever re-assigns a null creatorId, which is what makes
+// s.creatorId === null a reliable, permanent signal that a session is (and will remain) ownerless
+// for the rest of its life. Every route below branches on that signal.
+//
+// Mutates a pending suggestedEdit into its applied, shared-plan-changing form -- the exact
+// mutation the OWNED single-approver /suggest/:id/approve route has always performed. Factored out
+// so the pivot moment (an edit still waiting on a now-departed owner's OK "auto-applies right now
+// -- nobody's left to ask", the doc's own step 5a) can share it instead of duplicating it. Callers
+// set edit.status and call save/notify themselves -- this function only ever mutates exercises/
+// variations/logs, matching the shape approve() already returns to its own caller.
+function applyOwnedSuggestedEdit(s, edit) {
+  if (edit.type === 'add') {
+    const newEx = Object.assign({ id: 'e_' + uid(), order: s.exercises.length }, withDefaults({ name: edit.swapTo }));
+    s.exercises.push(newEx);
+    return { fromName: null };
+  }
+  const ex = s.exercises.find(x => x.id === edit.exerciseId);
+  const fromName = ex ? ex.name : null;
+  if (!edit.swapTo || !edit.swapTo.trim()) return { fromName };   // a pre-Sep-6 blank proposal
+  if (ex) ex.name = edit.swapTo;
+  for (const pr of (s.pendingRemovals || [])) {
+    if (pr.status === 'pending' && pr.exerciseId === edit.exerciseId) pr.exerciseName = edit.swapTo;
+  }
+  if (s.variations[edit.exerciseId]) {
+    delete s.variations[edit.exerciseId][edit.proposedBy];
+    for (const uid_ of Object.keys(s.variations[edit.exerciseId])) {
+      if (s.variations[edit.exerciseId][uid_] && s.variations[edit.exerciseId][uid_].swapTo === edit.swapTo) delete s.variations[edit.exerciseId][uid_];
+    }
+  }
+  const already = (s.logs && s.logs[edit.proposedBy]) || [];
+  let renamed = 0;
+  for (const l of already) {
+    if (l.exerciseId !== edit.exerciseId) continue;
+    if (l.exerciseName === edit.swapTo) continue;
+    l.exerciseName = edit.swapTo; renamed++;
+  }
+  if (renamed) rebuildAllPrs();
+  return { fromName };
+}
+
+// Sep 27 2026: at the exact pivot instant an owned session becomes ownerless, anything still
+// waiting on that now-departed owner's OK can never be decided again (approve/reject become
+// creator-only forever, and there is no creator) -- so it auto-applies right there, as the doc's
+// own step 5a puts it: "nobody's left to ask. It would be stuck forever otherwise." Returns the
+// list of applied edits so the caller can notify each proposer once, after its own save(DB).
+function autoApplyPendingEditsAtPivot(s) {
+  const applied = [];
+  for (const edit of (s.suggestedEdits || [])) {
+    if (edit.status !== 'pending' || edit.privatePreJoin) continue;
+    edit.status = 'approved';
+    applyOwnedSuggestedEdit(s, edit);
+    applied.push(edit);
+  }
+  return applied;
+}
+
+// Sep 27 2026: applies (or clears) ONE current participant's own independent vote on an ownerless
+// group proposal. This is deliberately NOT a shared-plan rename the way the owned approve route
+// above is -- the doc is explicit that "the shared exercise name never changes for anyone -- every
+// 'yes' is really that person's own personal swap, the same mechanism 'swap for just me' already
+// used" (see POST /variation). A swap-vote is literally that: a personal s.variations entry. An
+// add-vote is literally the existing per-viewer hide/unhide mechanism (s.hiddenFor) an "add"
+// proposal already defaults everyone but the proposer into when it's created (see /suggest below).
+// Never touches anyone else's card, never renames the shared exercise, never retroactively relabels
+// sets already logged before this vote (same "frozen at log time" principle /variation already
+// follows) -- only a fresh approve relabels going-forward/already-logged sets under the new name.
+// Sep 27 2026 (Jeff, cold-review follow-up: "it should disappear/collapse once everyone's on
+// board"): an ownerless "add" suggestion voted yes by every CURRENT participant has nothing left
+// to decide, so it settles (status: 'approved') and drops out of "Suggested changes" for good --
+// see the client's app.js `ed.type==='add' && ed.status==='approved'` skip in the pendingEdits/
+// decidedHtml split, built ahead of this exact feature and dead (per its own comment) until now.
+// Deliberately scoped to 'add' only: a swap never settles this way -- every "yes" on a swap is
+// its own permanent personal choice, never a step toward one shared decision (see
+// applyOwnerlessVote's own comment on why a swap never renames the shared exercise for everyone).
+// Checked fresh against the CURRENT s.participants every time it's called (on every vote, and
+// again after every departure route -- see /leave, /remove-mine, stripUserFromSession), so it
+// naturally re-opens the moment someone new joins mid-vote (a late joiner is backfilled into
+// s.hiddenFor by /accept, but only while this stays 'pending' -- exactly the state this guards)
+// and can complete on its own when a holdout leaves instead of voting.
+function maybeResolveOwnerlessAdd(s, edit) {
+  if (edit.type !== 'add' || edit.status !== 'pending') return;
+  const votes = edit.votes || {};
+  if (s.participants.length && s.participants.every(pid => votes[pid] === 'approved')) edit.status = 'approved';
+}
+
+function applyOwnerlessVote(s, edit, userId, decision) {
+  edit.votes = edit.votes || {};
+  edit.votes[userId] = decision;
+  if (edit.type === 'add') {
+    s.hiddenFor[edit.exerciseId] = s.hiddenFor[edit.exerciseId] || [];
+    const hidden = s.hiddenFor[edit.exerciseId];
+    const idx = hidden.indexOf(userId);
+    if (decision === 'approved') { if (idx !== -1) hidden.splice(idx, 1); }
+    else if (idx === -1) hidden.push(userId);
+    maybeResolveOwnerlessAdd(s, edit);
+    return;
+  }
+  s.variations[edit.exerciseId] = s.variations[edit.exerciseId] || {};
+  if (decision === 'approved') {
+    s.variations[edit.exerciseId][userId] = { swapTo: edit.swapTo, reason: 'self' };
+    let renamed = 0;
+    for (const l of ((s.logs && s.logs[userId]) || [])) {
+      if (l.exerciseId !== edit.exerciseId || l.exerciseName === edit.swapTo) continue;
+      l.exerciseName = edit.swapTo; renamed++;
+    }
+    if (renamed) rebuildAllPrs();
+  } else {
+    // Only clear if the CURRENT variation is the one THIS proposal set -- never clobber an
+    // unrelated personal "swap for just me" the same user made some other way.
+    const v = s.variations[edit.exerciseId][userId];
+    if (v && v.swapTo === edit.swapTo) delete s.variations[edit.exerciseId][userId];
+  }
 }
 
 // Record ONE user's own completion of this workout — a history row scoped to them alone. Used by
@@ -3894,7 +4023,21 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // person's kept sets and PRs with no involvement from them. An APPROVED swap stays: it was
   // settled while they were here, and the kept s.variations entry is what attributes their
   // surviving sets to the lift they actually did.
-  s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === me && e.status === 'pending'));
+  // Sep 27 2026 (ownerless redesign, cold-review catch -- same fix /remove-mine and
+  // stripUserFromSession already got, missed here): an ownerless group-vote proposal is shared,
+  // possibly-already-voted-on state -- the proposer leaving must not retract every OTHER current
+  // participant's own independent vote on it. e.votes is only ever set on that kind, never on the
+  // old-style single-approver kind, so its presence reliably tells the two apart. Without this, a
+  // proposer leaving an ownerless workout after someone else had already voted deleted the whole
+  // row out from under that other person's still-live s.variations/s.hiddenFor state, leaving it
+  // orphaned with nothing left to render or change it.
+  s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === me && e.status === 'pending' && !e.votes));
+  // Sep 27 2026 (cold-review follow-up, Jeff: an "add" should collapse "once everyone's on
+  // board"): departing can BE the missing vote -- if the only holdout on a still-pending add
+  // leaves rather than voting, whoever's left may now be unanimous. Re-check every pending add
+  // against the just-shrunk s.participants so it settles the moment that's true, not only the
+  // next time someone happens to vote (see maybeResolveOwnerlessAdd's own comment).
+  for (const edit of s.suggestedEdits) maybeResolveOwnerlessAdd(s, edit);
   // v248 (audit finding): joinRequests was never touched by leaving. POST /log and POST /suggest
   // both treat "an APPROVED join request exists for this user" as authorization on its own,
   // independent of s.participants — that's the door someone who joined via request came in
@@ -3915,28 +4058,22 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // else's, and is exactly what lets you still find this workout later (see the new 'alumni'
   // sessionTier below).
   if (s.attendance) delete s.attendance[me];
-  // If the creator walks away, the workout needs a new owner or nobody can ever finish or edit
-  // it. Ownership can only pass to someone CURRENT, never a departed alumni — a departed person
-  // is not here to own anything. If nobody current is left either, creatorId goes explicitly null
-  // rather than pointing at nobody: it still displays and can still be reopened by anyone with a
-  // real connection to it (an alumni history row, a friend, and so on), it just has no one who can
-  // edit or delete it until someone new takes it over — which nothing in this codebase currently
-  // does, so today that means never; an orphaned workout stays exactly as it was left.
-  if (s.creatorId === me) {
-    // v253 (audit finding): this used to be othersWhoLogged(s, me) alone with nothing to fall
-    // back to — which only counts a CURRENT participant who has already logged at least one set.
-    // A participant who accepted an invite but hasn't logged anything yet (the workout hasn't
-    // started, or they simply haven't gotten to their exercise) is every bit as CURRENT as one who
-    // has, but was invisible to this check — so the creator leaving handed the workout to nobody
-    // (creatorId: null, permanently unowned per the comment above) even though a real person was
-    // still sitting right there in s.participants. Prefer someone who's actually logged something
-    // (more likely to still be actively training it right now); fall back to any other current
-    // participant rather than orphaning the workout for no reason.
-    const currentOthers = othersWhoLogged(s, me);
-    // s.participants was already filtered to exclude `me` above, so this is every OTHER current
-    // participant, logged or not.
-    s.creatorId = currentOthers.length ? currentOthers[0] : (s.participants.length ? s.participants[0] : null);
-    if (s.creatorId && !s.participants.includes(s.creatorId)) s.participants.push(s.creatorId);
+  // Sep 27 2026 (ownerless-workout redesign -- see the "Ownerless Workout Flow" reference doc,
+  // and the comment on applyOwnedSuggestedEdit above for the full history of how this replaced a
+  // Sep 26 handoff-notification attempt that turned out to contradict this already-decided
+  // design). The creator leaving no longer hands the workout to anyone -- ownership simply clears.
+  // Everyone still in it keeps full use of it (see the ownerless branches of /suggest and
+  // /suggest/:id/approve|reject below); a handful of creator-only actions (edit, delete, approve a
+  // join request) become permanently locked, since nobody is ever promoted to fill the gap.
+  const wasOwner = s.creatorId === me;
+  const alreadyOwnerless = s.creatorId === null;
+  if (wasOwner) s.creatorId = null;
+  let autoApplied = [];
+  if (wasOwner) {
+    // Doc step 5a: anything still waiting on the now-departed owner's OK auto-applies right now --
+    // approve/reject become creator-only forever from here on, and there is no creator, so it
+    // would otherwise be stuck waiting for a decision that can never come.
+    autoApplied = autoApplyPendingEditsAtPivot(s);
   }
   // Sep 23 2026 (audit finding): leaving used to never let go of a still-required removal-approval
   // vote -- see dropRequiredApprover's own comment above othersWithCredit for why that left a
@@ -3944,9 +4081,34 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   const resolvedRemovals = dropRequiredApprover(s, me);
   rebuildAllPrs();
   await save(DB);
+  // Sep 23 2026: resolvedRemovals notified s.creatorId specifically -- with ownership never
+  // handed off anymore, an ownerless session has no creatorId to notify, so this now only ever
+  // fires for a still-owned session (unchanged for that case).
   if (s.creatorId) {
     for (const pr of resolvedRemovals) {
       notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } }, { push: false });
+    }
+  }
+  for (const edit of autoApplied) {
+    if (!isBlocked(me, edit.proposedBy)) {
+      notify(edit.proposedBy, { title: 'Suggestion approved', body: `${edit.swapTo} was approved automatically — the host left before deciding`, link: { type: 'session', sessionId: s.id } });
+    }
+  }
+  // Doc tab 07: two distinct broadcasts. The pivot itself ("Workout host left") only when THIS
+  // leave is what caused it; a plain "[Name] left the workout" for any departure (owner or not)
+  // once the session was ALREADY ownerless beforehand -- an owned session's ordinary participant
+  // leaving is unaffected (no notification), same as before this redesign.
+  const stillHere = (s.participants || []).filter(id => id !== me);
+  if (wasOwner) {
+    for (const uid_ of stillHere) {
+      if (!DB.users[uid_] || isBlocked(me, uid_)) continue;
+      notify(uid_, { title: s.name || 'Workout', body: 'Workout host left — this workout has no host now, but everyone can still add or swap exercises.', link: { type: 'session', sessionId: s.id } });
+    }
+  } else if (alreadyOwnerless) {
+    const whoLeft = (DB.users[me] && DB.users[me].displayName) || 'Someone';
+    for (const uid_ of stillHere) {
+      if (!DB.users[uid_] || isBlocked(me, uid_)) continue;
+      notify(uid_, { title: s.name || 'Workout', body: `${whoLeft} left the workout.`, link: { type: 'session', sessionId: s.id } });
     }
   }
   res.json({ ok: true, left: true });
@@ -4095,19 +4257,22 @@ app.post('/api/sessions/:id/remove-mine', auth, async (req, res) => {
   // me already gone from this session, that's a swap credited to someone with no footprint left to
   // have actually proposed it. An approved one stays, same reasoning as /leave: it was settled while
   // I was still here.
-  s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === me && e.status === 'pending'));
-  if (s.creatorId === me) {
-    // Sep 23 2026 (audit finding): this used to be othersWhoLogged(s, me) alone with no fallback --
-    // the exact gap /leave's own v253 fix already closed (see the long comment on /leave's identical
-    // line). A participant who accepted an invite but hasn't logged anything yet is still genuinely
-    // CURRENT and a legitimate heir; without this fallback the workout went permanently ownerless
-    // (creatorId: null) the moment the creator tapped "Remove from my profile," even though someone
-    // real was still sitting right there in s.participants. The comment above this route already
-    // claimed this "mirrors /leave exactly" -- now it actually does.
-    const currentOthers = othersWhoLogged(s, me);
-    s.creatorId = currentOthers.length ? currentOthers[0] : (s.participants.length ? s.participants[0] : null);
-    if (s.creatorId && !s.participants.includes(s.creatorId)) s.participants.push(s.creatorId);
-  }
+  // Sep 27 2026 (ownerless redesign): an old-style, single-approver pending proposal is exclusively
+  // mine until someone (the creator) decides it, so erasing every trace of me still withdraws it,
+  // same as always. A group-vote (ownerless) proposal is shared, possibly-already-voted-on state --
+  // the proposer leaving doesn't retract every OTHER current participant's own independent vote
+  // on it, so those are left untouched here (e.votes is only ever set on that kind, never on the
+  // old-style kind, so its presence reliably tells the two apart).
+  s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === me && e.status === 'pending' && !e.votes));
+  // Sep 27 2026 (cold-review follow-up, same reasoning as /leave's own copy of this): erasing me
+  // (including any "no" vote I'd cast) from the workout can be exactly the thing that completes
+  // consensus for whoever's left on a still-pending add.
+  for (const edit of s.suggestedEdits) maybeResolveOwnerlessAdd(s, edit);
+  const wasOwner = s.creatorId === me;
+  const alreadyOwnerless = s.creatorId === null;
+  if (wasOwner) s.creatorId = null;
+  let autoApplied = [];
+  if (wasOwner) autoApplied = autoApplyPendingEditsAtPivot(s);
   // Sep 23 2026 (audit finding, same as /leave above): drop any still-required removal-approval
   // vote this route was about to erase every OTHER trace of -- see dropRequiredApprover's own
   // comment above othersWithCredit.
@@ -4117,6 +4282,24 @@ app.post('/api/sessions/:id/remove-mine', auth, async (req, res) => {
   if (s.creatorId) {
     for (const pr of resolvedRemovals) {
       notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } }, { push: false });
+    }
+  }
+  for (const edit of autoApplied) {
+    if (!isBlocked(me, edit.proposedBy)) {
+      notify(edit.proposedBy, { title: 'Suggestion approved', body: `${edit.swapTo} was approved automatically — the host left before deciding`, link: { type: 'session', sessionId: s.id } });
+    }
+  }
+  const stillHere = (s.participants || []).filter(id => id !== me);
+  if (wasOwner) {
+    for (const uid_ of stillHere) {
+      if (!DB.users[uid_] || isBlocked(me, uid_)) continue;
+      notify(uid_, { title: s.name || 'Workout', body: 'Workout host left — this workout has no host now, but everyone can still add or swap exercises.', link: { type: 'session', sessionId: s.id } });
+    }
+  } else if (alreadyOwnerless) {
+    const whoLeft = (DB.users[me] && DB.users[me].displayName) || 'Someone';
+    for (const uid_ of stillHere) {
+      if (!DB.users[uid_] || isBlocked(me, uid_)) continue;
+      notify(uid_, { title: s.name || 'Workout', body: `${whoLeft} left the workout.`, link: { type: 'session', sessionId: s.id } });
     }
   }
   res.json({ ok: true, removed: true });
@@ -4319,7 +4502,11 @@ app.post('/api/sessions/:id/removal/:reqId/approve', auth, async (req, res) => {
     pr.status = 'approved';
     s.exercises = s.exercises.filter(e => e.id !== pr.exerciseId);
     // Sep 24 2026 audit round 4: same missing block check as the removal-request notify above.
-    if (!isBlocked(req.userId, s.creatorId)) notify(s.creatorId, { title: 'Removal approved', body: `Everyone signed off — ${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } });
+    // Sep 27 2026 (ownerless redesign): a pendingRemoval opened before the creator left can still
+    // get its last required sign-off after they're gone (this route gates on requiredApprovals,
+    // not on being the creator) -- with nobody left to notify as "the creator," skip it rather than
+    // notify(null, ...).
+    if (s.creatorId && !isBlocked(req.userId, s.creatorId)) notify(s.creatorId, { title: 'Removal approved', body: `Everyone signed off — ${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } });
   }
   await save(DB);
   res.json(sessionView(s, req.userId));
@@ -4340,7 +4527,9 @@ app.post('/api/sessions/:id/removal/:reqId/decline', auth, async (req, res) => {
   await save(DB);
   const who = DB.users[req.userId] ? DB.users[req.userId].displayName : 'Someone';
   // Sep 24 2026 audit round 4: same missing block check as the removal-request notify above.
-  if (!isBlocked(req.userId, s.creatorId)) notify(s.creatorId, { title: 'Removal declined', body: `${who} said no — ${pr.exerciseName} stays in ${s.name}`, link: { type: 'session', sessionId: s.id } });
+  // Sep 27 2026 (ownerless redesign): same reasoning as the approve route just above -- a still-
+  // pending removal from before the creator left can still be declined after they're gone.
+  if (s.creatorId && !isBlocked(req.userId, s.creatorId)) notify(s.creatorId, { title: 'Removal declined', body: `${who} said no — ${pr.exerciseName} stays in ${s.name}`, link: { type: 'session', sessionId: s.id } });
   res.json(sessionView(s, req.userId));
 });
 
@@ -4376,8 +4565,37 @@ app.post('/api/sessions/:id/accept', auth, async (req, res) => {
   if (isBlocked(s.creatorId, req.userId)) return res.status(400).json({ error: 'blocked' });
   s.invited = s.invited.filter(x => x !== req.userId);
   if (!s.participants.includes(req.userId)) s.participants.push(req.userId);
+  // Sep 27 2026 (ownerless redesign, doc tab 04): a still-invited person can stash one private
+  // pre-join swap via /suggest before deciding (see suggestOwnerless's privatePreJoin branch) --
+  // nobody else ever saw it as a proposal, so it never went through group voting. The moment they
+  // actually join, it becomes real: exactly their own personal swap on that exercise, the same
+  // mechanism a vote itself uses (applyOwnerlessVote's swap branch also refiles their own
+  // already-logged sets under the new name, same as any other approved swap would). It is never
+  // promoted into a shared/group suggestedEdits entry -- nobody voted on it, nobody gets notified,
+  // it was always theirs alone and just waited on them becoming a participant.
+  if (s.creatorId === null) {
+    const pre = s.suggestedEdits.find(e => e.privatePreJoin && e.proposedBy === req.userId);
+    if (pre) {
+      applyOwnerlessVote(s, pre, req.userId, 'approved');
+      s.suggestedEdits = s.suggestedEdits.filter(e => e !== pre);
+    }
+    // Cold-review catch: suggestOwnerless's 'add' branch snapshots s.hiddenFor[newEx.id] to every
+    // CURRENT participant at proposal time (everyone but the proposer, so it starts hidden for
+    // them) -- someone who joins later was never in that snapshot, so "not in the hidden array"
+    // silently read as "already voted yes" the moment they became a participant, showing the
+    // suggested exercise on their card as if decided when they'd never seen or voted on it. Backfill
+    // them into every still-pending add's hidden list, same as if they'd been a participant when it
+    // was first proposed.
+    for (const edit of s.suggestedEdits) {
+      if (edit.type !== 'add' || edit.status !== 'pending' || edit.proposedBy === req.userId) continue;
+      s.hiddenFor[edit.exerciseId] = s.hiddenFor[edit.exerciseId] || [];
+      if (!s.hiddenFor[edit.exerciseId].includes(req.userId)) s.hiddenFor[edit.exerciseId].push(req.userId);
+    }
+  }
   await save(DB);
-  notify(s.creatorId, { title: 'Invite accepted', body: `${DB.users[req.userId].displayName} joined your workout`, link: { type: 'session', sessionId: s.id } });
+  // An ownerless workout has no creator to tell "someone joined" -- there's no notify(null, ...)
+  // call to make (that would silently write a orphaned userId:null history row nobody ever reads).
+  if (s.creatorId) notify(s.creatorId, { title: 'Invite accepted', body: `${DB.users[req.userId].displayName} joined your workout`, link: { type: 'session', sessionId: s.id } });
   res.json(sessionView(s, req.userId));
 });
 
@@ -4415,7 +4633,8 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   // /leave: it was settled while they were still around, not left dangling.
   s.joinRequests = (s.joinRequests || []).filter(j => !(j.userId === req.userId && j.status === 'pending'));
   await save(DB);
-  notify(s.creatorId, { title: 'Invite declined', body: `${DB.users[req.userId].displayName} declined your workout`, link: { type: 'session', sessionId: s.id } });
+  // Same reasoning as /accept just above: an ownerless workout has no creator to tell.
+  if (s.creatorId) notify(s.creatorId, { title: 'Invite declined', body: `${DB.users[req.userId].displayName} declined your workout`, link: { type: 'session', sessionId: s.id } });
   res.json(sessionView(s, req.userId));
 });
 
@@ -4445,6 +4664,13 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
   // exercise isn't that -- it's shaping a workout you're not confirmed into yet, so this stays
   // restricted to isParticipant/approvedJoin. Still-invited (not yet accepted) is refused here.
   if (type === 'add' && !isParticipant && !approvedJoin) return res.status(403).json({ error: 'accept the invite first' });
+  // Sep 27 2026 (ownerless-workout redesign): once there's no creator, a proposal stops being a
+  // single yes/no for the whole group ("the actual redesign" -- doc tab 05). Someone still just
+  // invited gets one, narrower carve-out instead (doc tab 04's "still invited" wrinkle): their ONE
+  // pre-join swap stays entirely private, applied only to their own card the moment they actually
+  // join -- nobody else in an ownerless workout is left to ask, and unlike the owned case, there's
+  // no creator for it to go to in the meantime either.
+  if (s.creatorId === null) return suggestOwnerless(req, res, s, type, isParticipant, approvedJoin, invited);
   let edit;
   if (type === 'add') {
     const name = currentExerciseName(capStr((req.body || {}).name, 80).trim());   // stale client -- see EXERCISE_RENAMES
@@ -4465,7 +4691,9 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
     // match (approve only touches edit.proposedBy's own variation/logs) -- the first proposer's
     // sets stayed filed under a name the card no longer showed. One pending swap per exercise at a
     // time, same as the client's own (view-scoped, so racy) "hide the propose-a-swap button once
-    // one's pending" affordance -- just actually enforced here.
+    // one's pending" affordance -- just actually enforced here. (Ownerless mode has no such race --
+    // there's no shared rename to collide over, see suggestOwnerless -- so this stays scoped to the
+    // owned path, which is the only one reachable past the branch above.)
     if (s.suggestedEdits.some(e => e.type === 'swap' && e.exerciseId === exerciseId && e.status === 'pending'))
       return res.status(409).json({ error: 'a swap is already pending for this exercise' });
     // Sep 24 2026 (audit finding): remembering the pre-swap name lets a later stale Edit-session
@@ -4500,6 +4728,103 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
   }
   res.json(sessionView(s, req.userId));
 });
+
+// Sep 27 2026 (ownerless-workout redesign): the ownerless half of POST /suggest, split out for
+// its own clarity rather than tangled into the owned branch above via a dozen inline conditionals.
+// Two completely different shapes, per the doc:
+//   - still just invited (doc tab 04's wrinkle): a private, single pre-join swap, invisible to
+//     everyone else, applied only to the proposer's own card once they actually accept (see
+//     POST /:id/accept below).
+//   - already in it: a group proposal (doc tab 05) -- the proposer's own "yes" applies instantly
+//     (applyOwnerlessVote below), every other CURRENT participant gets their own independent,
+//     never-expiring approve/reject via the *same* /suggest/:id/approve|reject routes used for the
+//     owned case (those routes branch on s.creatorId === null the same way this one does).
+async function suggestOwnerless(req, res, s, type, isParticipant, approvedJoin, invited) {
+  if (!isParticipant && !approvedJoin) {
+    // Still invited, ownerless: the private pre-join carve-out. Type is always 'swap' here --
+    // 'add' already refused a still-invited caller above, before this function is ever reached.
+    const exerciseId = capStr((req.body || {}).exerciseId, 64);
+    const swapTo = currentExerciseName(capStr((req.body || {}).swapTo, 80).trim());
+    if (!swapTo) return res.status(400).json({ error: 'needs a name' });
+    const fromEx = s.exercises.find(e => e.id === exerciseId);
+    if (!fromEx) return res.status(404).json({ error: 'exercise not found' });
+    // Same "reuse one row" instinct as /join's own dedupe -- proposing again before joining just
+    // replaces your own earlier private pick rather than piling up rows nobody but you will ever
+    // see.
+    let edit = s.suggestedEdits.find(e => e.privatePreJoin && e.proposedBy === req.userId);
+    if (edit) { edit.exerciseId = exerciseId; edit.swapTo = swapTo; edit.fromName = fromEx.name; }
+    else {
+      edit = { id: 'se_' + uid(), type: 'swap', exerciseId, proposedBy: req.userId, swapTo, fromName: fromEx.name, status: 'pending', privatePreJoin: true };
+      s.suggestedEdits.push(edit);
+    }
+    await save(DB);
+    // Nobody else is asked or told -- doc tab 04: "Brian and Carla never see it, never vote on it,
+    // and are never notified."
+    return res.json(sessionView(s, req.userId));
+  }
+  const proposerId = req.userId;
+  let edit;
+  if (type === 'add') {
+    const name = currentExerciseName(capStr((req.body || {}).name, 80).trim());
+    if (!name) return res.status(400).json({ error: 'needs a name' });
+    // Doc tab 05: "Adding an exercise ... now applies to the proposer's own card first" -- the
+    // exercise is real and shared immediately, exactly like an owned add always was, just hidden
+    // by default from everyone but the proposer (the existing hide-for-me mechanism, s.hiddenFor)
+    // until each other current participant casts their own vote.
+    const newEx = Object.assign({ id: 'e_' + uid(), order: s.exercises.length }, withDefaults({ name }));
+    s.exercises.push(newEx);
+    edit = { id: 'se_' + uid(), type: 'add', exerciseId: newEx.id, proposedBy: proposerId, swapTo: name, status: 'pending', votes: {} };
+    s.hiddenFor[newEx.id] = s.participants.filter(id => id !== proposerId);
+  } else {
+    const exerciseId = capStr((req.body || {}).exerciseId, 64);
+    const swapTo = currentExerciseName(capStr((req.body || {}).swapTo, 80).trim());
+    if (!swapTo) return res.status(400).json({ error: 'needs a name' });
+    const fromEx = s.exercises.find(e => e.id === exerciseId);
+    if (!fromEx) return res.status(404).json({ error: 'exercise not found' });
+    // Cold-review catch (finding #4, Jeff: "yes fix it"): re-proposing a DIFFERENT swap on the same
+    // exercise you already have a pending proposal on used to just pile up a second independent row
+    // -- your own stale earlier proposal (plus anyone who'd already voted on IT) kept sitting there
+    // alongside the new one, reading as two options nobody actually meant to offer, since this is
+    // one person changing their own mind, not proposing a genuine second alternative. Two DIFFERENT
+    // people each proposing their own swap on the same exercise is unaffected and still stays two
+    // rows -- that's a real choice for the group to have (per-proposer, not per-exercise, unlike the
+    // owned path's single "one swap pending per exercise" 409 above, which is a real conflict there
+    // because an owned approval renames the shared exercise for everyone).
+    edit = s.suggestedEdits.find(e => e.type === 'swap' && e.exerciseId === exerciseId && e.proposedBy === proposerId && e.status === 'pending');
+    if (edit) {
+      // Same "reuse one row" instinct as the privatePreJoin branch above. It's now a materially
+      // different proposal, so every vote already cast on the OLD swapTo is stale: clear each
+      // voter's OWN row (so the UI doesn't keep showing a "you said yes" that no longer means
+      // anything) and, for anyone whose approve had set their personal variation to that old value,
+      // undo it too -- same "only clear if it's still the exact thing this edit set" guard
+      // applyOwnerlessVote's own reject branch already uses, so an unrelated personal swap someone
+      // made some other way is never touched.
+      const oldSwapTo = edit.swapTo;
+      for (const voterId of Object.keys(edit.votes || {})) {
+        const v = s.variations[exerciseId] && s.variations[exerciseId][voterId];
+        if (v && v.swapTo === oldSwapTo) delete s.variations[exerciseId][voterId];
+      }
+      edit.swapTo = swapTo;
+      edit.fromName = fromEx.name;
+      edit.votes = {};
+    } else {
+      edit = { id: 'se_' + uid(), type: 'swap', exerciseId, proposedBy: proposerId, swapTo, fromName: fromEx.name, status: 'pending', votes: {} };
+      s.suggestedEdits.push(edit);
+    }
+  }
+  if (type === 'add') s.suggestedEdits.push(edit);
+  applyOwnerlessVote(s, edit, proposerId, 'approved');   // "proposing counts as his own yes"
+  await save(DB);
+  // Doc tab 07: "Every other current participant -- not the proposer, not anyone still just
+  // invited" -- s.participants is exactly that population once proposerId is excluded.
+  const who = DB.users[proposerId].displayName;
+  const label = type === 'add' ? `suggested adding ${edit.swapTo}` : `wants to swap ${edit.fromName || 'an exercise'} → ${edit.swapTo}`;
+  for (const uid_ of s.participants) {
+    if (uid_ === proposerId || !DB.users[uid_] || isBlocked(proposerId, uid_)) continue;
+    notify(uid_, { title: type === 'add' ? 'New exercise to review' : 'Swap to review', body: `${who} ${label}. Your call — approve or reject anytime.`, link: { type: 'session', sessionId: s.id } });
+  }
+  res.json(sessionView(s, proposerId));
+}
 
 // Sep 6 (Jeff, on the swap flow: "if there is more than 2 people in the workout they can do 'swap
 // for just me'"). A personal swap: instant, no approval, touches nobody else's plan. Stored as
@@ -4536,12 +4861,48 @@ app.post('/api/sessions/:id/variation', auth, async (req, res) => {
   res.json(sessionView(s, me));
 });
 
+// Sep 27 2026 (ownerless redesign, doc tab 04 "Can Change? Yes, anytime"): with no creator to make
+// a single yes/no call, every "yes" is really that participant's own personal swap (or, for an
+// add, un-hiding it from their own card) -- applyOwnerlessVote already does exactly that, the same
+// mechanism /variation and s.hiddenFor already use elsewhere. A swap never touches edit.status (it
+// stays 'pending' forever -- there is no global decision to reach, only each participant's own
+// standing vote), and it never locks: the same participant calling this again later just moves
+// their own vote, which is the whole point of "anytime." An add is the one exception, added same
+// day (Jeff, cold-review follow-up): once applyOwnerlessVote's own maybeResolveOwnerlessAdd sees
+// every current participant has voted yes, THAT settles and locks (see the guard just below) --
+// same "once it's no longer pending, nobody touches it again" principle the owned-mode approve/
+// reject routes already enforce. A privatePreJoin edit isn't a group vote at all (it's one still-
+// invited person's own stashed swap, applied for real once they accept -- see POST /accept) so
+// it's explicitly out of scope here, not silently voted on.
+async function voteOwnerless(req, res, s, edit, decision) {
+  if (edit.privatePreJoin) return res.status(400).json({ error: 'not a group suggestion' });
+  if (!s.participants.includes(req.userId)) return res.status(403).json({ error: 'not a participant' });
+  if (edit.type === 'add' && edit.status !== 'pending') return res.status(400).json({ error: 'already settled' });
+  const prev = (edit.votes || {})[req.userId];
+  if (prev === decision) return res.json(sessionView(s, req.userId)); // already their vote -- no-op, nobody re-notified
+  applyOwnerlessVote(s, edit, req.userId, decision);
+  await save(DB);
+  // Only the proposer is told, and only when someone ELSE'S vote actually changed -- their own
+  // vote changing is something they just did themselves, not news.
+  if (req.userId !== edit.proposedBy && DB.users[edit.proposedBy] && !isBlocked(req.userId, edit.proposedBy)) {
+    const who = DB.users[req.userId].displayName;
+    const label = edit.type === 'add' ? `adding ${edit.swapTo}` : `your swap: ${edit.fromName || 'the exercise'} → ${edit.swapTo}`;
+    notify(edit.proposedBy, {
+      title: decision === 'approved' ? 'Suggestion approved' : 'Suggestion declined',
+      body: decision === 'approved' ? `${who} approved ${label}.` : `${who} declined ${label}. It's still up to everyone else.`,
+      link: { type: 'session', sessionId: s.id },
+    });
+  }
+  res.json(sessionView(s, req.userId));
+}
+
 app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   const edit = s.suggestedEdits.find(e => e.id === req.params.editId);
   if (!edit) return res.status(404).json({ error: 'edit not found' });
+  if (s.creatorId === null) return voteOwnerless(req, res, s, edit, 'approved');
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator approves' });
   // v252 (audit finding): without this, a double-tap or a stale second tab could approve AND
   // reject the same suggestion -- approve already renames logged sets and rebuilds PRs below, none
@@ -4627,6 +4988,7 @@ app.post('/api/sessions/:id/suggest/:editId/reject', auth, async (req, res) => {
   ensureSessionShape(s);
   const edit = s.suggestedEdits.find(e => e.id === req.params.editId);
   if (!edit) return res.status(404).json({ error: 'edit not found' });
+  if (s.creatorId === null) return voteOwnerless(req, res, s, edit, 'rejected');
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator approves' });
   // v252: same guard as approve above -- a stale reject after it's already been approved (or
   // already rejected) must not silently flip a decided edit back and forth.
@@ -4655,6 +5017,11 @@ app.post('/api/sessions/:id/join', auth, async (req, res) => {
   // can do (canSeeProfile — same rule as everything else, Sep 2026), and the reply says nothing
   // except that the request was filed.
   if (!s || s.visibility !== 'public') return res.status(400).json({ error: 'not joinable' });
+  // Sep 27 2026 (ownerless redesign, doc tab 06 "Locked Forever"): a public ownerless workout
+  // can't be asked to join at all, first time or not -- there's no creator left to ask, and
+  // nothing in this codebase ever promotes anyone to fill that gap. Explicit and up front, rather
+  // than relying on canSeeProfile(null, ...) incidentally returning false below.
+  if (s.creatorId === null) return res.status(400).json({ error: 'this workout has no host to ask' });
   if (s.creatorId !== req.userId && !canSeeProfile(s.creatorId, req.userId))
     return res.status(403).json({ error: 'forbidden' });
   // Already in it (an approved request, or invited-and-accepted separately) — nothing to request.
@@ -4842,7 +5209,13 @@ function stripUserFromSession(s, userId) {
   // above this function says history is ALWAYS cleared here, stronger than /leave. Left behind, it
   // could still be approved later and rewrite logged sets attributed to a user this function just
   // erased every other trace of. An approved one stays — it was settled before the reset.
-  s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === userId && e.status === 'pending'));
+  // Sep 27 2026 (ownerless redesign): don't erase a shared group-vote proposal (e.votes set) just
+  // because its proposer got reset -- see the identical guard and reasoning on /remove-mine.
+  s.suggestedEdits = (s.suggestedEdits || []).filter(e => !(e.proposedBy === userId && e.status === 'pending' && !e.votes));
+  // Sep 27 2026 (cold-review follow-up, same reasoning as /leave's and /remove-mine's own copy of
+  // this): reset-workouts erasing userId (including any "no" vote they'd cast) can be exactly the
+  // thing that completes consensus on a still-pending add for whoever's left.
+  for (const edit of s.suggestedEdits) maybeResolveOwnerlessAdd(s, edit);
   // Sep 23 2026 (audit finding, same as /leave and /remove-mine): reset-workouts is the third
   // route that erases someone's participation without ever letting go of a still-required
   // removal-approval vote they held -- see dropRequiredApprover's own comment above
@@ -4871,6 +5244,11 @@ app.post('/api/me/reset-workouts', auth, async (req, res) => {
     return res.status(400).json({ error: 'confirm:true is required to reset your workouts' });
   const me = req.userId;
   let sessionsDeleted = 0, sessionsHandedOff = 0, sessionsCleared = 0;
+  // Sep 27 2026 (ownerless redesign): collected here instead of notifying inline, so every
+  // notify() call happens after the loop's own await save(DB) below -- a crash partway through
+  // this loop can never leave someone notified about a pivot that didn't actually get persisted.
+  const pivots = [];       // { sessionId, sessionName, stillHere: [ids] } -- "host left" broadcast
+  const autoApprovals = [];  // { proposedBy, swapTo, sessionId } -- from auto-applying pending edits
   for (const s of Object.values(DB.sessions)) {
     ensureSessionShape(s);
     const isCreator = s.creatorId === me;
@@ -4904,18 +5282,53 @@ app.post('/api/me/reset-workouts', auth, async (req, res) => {
         sessionsDeleted++;
         continue;
       }
-      const currentOthers = othersWhoLogged(s, me);
+      // Sep 27 2026 (ownerless redesign): ownership no longer hands off to othersWhoLogged -- it
+      // just clears, same as /leave and /remove-mine. Anything still waiting on this now-departed
+      // owner's OK auto-applies right now (doc step 5a), same helper those two routes use.
+      //
+      // Cold-review catch (finding #3): this used to call autoApplyPendingEditsAtPivot(s) BEFORE
+      // stripUserFromSession(s, me), the opposite order from /leave and /remove-mine (both of which
+      // withdraw the departing creator's own still-pending, non-voted self-proposal -- see
+      // stripUserFromSession's own suggestedEdits filter, identical to the one duplicated inline in
+      // those two routes -- before ever calling autoApplyPendingEditsAtPivot). With the old order
+      // here, a creator who reset their workouts while their OWN pending suggestion was still
+      // outstanding got it auto-approved (nobody left to reject it -- vacuously "no one voted no"),
+      // while the identical scenario via a single Leave or Remove-mine discarded it instead. Calling
+      // stripUserFromSession first withdraws that self-proposal before autoApply ever sees it, so all
+      // three routes now treat a departing creator's own pending self-proposal the same way.
       stripUserFromSession(s, me);
-      s.creatorId = currentOthers.length ? currentOthers[0] : (othersStillHere.length ? othersStillHere[0] : null);
-      if (s.creatorId && !s.participants.includes(s.creatorId)) s.participants.push(s.creatorId);
-      sessionsHandedOff++;
+      const autoApplied = autoApplyPendingEditsAtPivot(s);
+      s.creatorId = null;
+      sessionsHandedOff++;   // field name kept for API-shape compatibility; it now counts pivots, not handoffs
+      pivots.push({ sessionId: s.id, sessionName: s.name || 'Workout', stillHere: othersStillHere, wasOwner: true });
+      for (const edit of autoApplied) autoApprovals.push({ sessionId: s.id, proposedBy: edit.proposedBy, swapTo: edit.swapTo });
     } else {
+      const alreadyOwnerless = s.creatorId === null;
+      const othersStillHere = (s.participants || []).filter(id => id !== me);
       stripUserFromSession(s, me);
       sessionsCleared++;
+      if (alreadyOwnerless) pivots.push({ sessionId: s.id, sessionName: s.name || 'Workout', stillHere: othersStillHere, wasOwner: false });
     }
   }
   rebuildAllPrs();     // every record was built from logs that may no longer be theirs
   await save(DB);
+  const whoLeft = (DB.users[me] && DB.users[me].displayName) || 'Someone';
+  for (const a of autoApprovals) {
+    if (!isBlocked(me, a.proposedBy)) {
+      notify(a.proposedBy, { title: 'Suggestion approved', body: `${a.swapTo} was approved automatically — the host left before deciding`, link: { type: 'session', sessionId: a.sessionId } });
+    }
+  }
+  // Doc tab 07, same two broadcasts as /leave and /remove-mine -- one notification per affected
+  // workout, never bundled (each is a different workout with its own name and link).
+  for (const p of pivots) {
+    const body = p.wasOwner
+      ? 'Workout host left — this workout has no host now, but everyone can still add or swap exercises.'
+      : `${whoLeft} left the workout.`;
+    for (const uid_ of p.stillHere) {
+      if (!DB.users[uid_] || isBlocked(me, uid_)) continue;
+      notify(uid_, { title: p.sessionName, body, link: { type: 'session', sessionId: p.sessionId } });
+    }
+  }
   res.json({ ok: true, sessionsDeleted, sessionsHandedOff, sessionsCleared });
 });
 

@@ -892,7 +892,10 @@ async function home(opts){
     const isCreator = s.creatorId === ME.id;
     // With no friends yet the edit form's invite list is empty, so the button goes to the Friends
     // tab (add someone) instead -- cold-review catch.
-    const inviteBtn = `<button class="sec" onclick="${isCreator && myFriends.length ? `editSession('${s.id}')` : `showTab('friends')`}">Invite a friend</button>`;
+    // Sep 27 2026 (ownerless redesign, doc tab 06 "Locked Forever"): once a workout's creator has
+    // left, inviting is off for everyone -- there's no one left who could ever act on it. Omitted
+    // entirely here rather than left pointing at a dead editSession() call.
+    const inviteBtn = s.creatorId === null ? '' : `<button class="sec" onclick="${isCreator && myFriends.length ? `editSession('${s.id}')` : `showTab('friends')`}">Invite a friend</button>`;
     // Sep 9 2026 (Jeff: "I want to create a workout and it show up in what's up next until I click
     // 'Start now' then it moves to your sessions"). primaryOpens is startSession() (which marks
     // s.startedAt server-side, then opens it -- see the /start route comment in server.js) for
@@ -1141,14 +1144,39 @@ async function openSession(id, opts){
   // an invitation, the one with a reason to say "not Barbell Row", never saw it at all.
   const canSuggest = !isCreator && !sessionHasAnyPost(s) && !canEdit
     && Array.isArray(s.invited) && s.invited.includes(ME.id);
+  // Sep 27 2026 (ownerless redesign, doc tab 05): no creator left means every suggested add/swap is
+  // an independent, never-expiring per-participant vote instead of one owner's single yes/no --
+  // see server.js's suggestOwnerless/applyOwnerlessVote. This one flag is threaded through every
+  // spot below that used to just check isCreator for "can decide this."
+  const isOwnerless = s.creatorId === null;
+  // Sep 27 2026 (ownerless redesign): pulled into one place since the same approve/reject pairing
+  // renders in two spots below (a swap's own inline card row, and the "Suggested changes" stack) --
+  // keeping them in sync here means a copy change only has to happen once.
+  // NOTE for Jeff: this exact wording ("you said yes/no", "open vote") is a first draft, same as
+  // the two ownerless notification texts already flagged -- easy to change once you've seen it.
+  const suggestActionsHtml = (ed) => {
+    if(!isOwnerless){
+      return isCreator
+        ? `<button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button>`
+        : `<span class="tag">waiting on creator</span>`;
+    }
+    if(!isParticipant) return `<span class="tag">open vote</span>`;
+    const myVote = (ed.votes||{})[ME.id];
+    const voteNote = myVote==='approved' ? `<span class="tag">you said yes</span>`
+                   : myVote==='rejected' ? `<span class="tag">you said no</span>` : '';
+    return `${voteNote}<button class="sm ok" onclick="approve('${s.id}','${ed.id}')">${myVote==='approved'?'Approved':'Approve'}</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">${myVote==='rejected'?'Declined':'Reject'}</button>`;
+  };
   // suggested edits, keyed by target exercise id (compact one-line inline row, C style)
   const editByEx = {};
+  // Sep 27 2026 (ownerless redesign): an ownerless "add" suggestion (suggestOwnerless in server.js)
+  // -- unlike an owned one -- creates the real exercise immediately and hides it (s.hiddenFor) from
+  // everyone but the proposer until they each vote yes, so it DOES carry a real exerciseId from the
+  // start. Excluding every 'add' here regardless of exerciseId (not just the null-exerciseId owned
+  // case v262b's comment describes) keeps both shapes routed the same way: always through the
+  // pendingEdits/"Suggested changes" stack below, never this per-exercise inline row, which has no
+  // sensible "X → Y" rendering for an add anyway.
   for(const ed of s.suggestedEdits){
-    // v262b: an "add a new exercise" suggestion (see /suggest in server.js) has no exerciseId --
-    // it isn't a change to any existing card. Grouping it under the shared editByEx[undefined]
-    // bucket would make every OTHER add-suggestion's presence there falsely mark THIS one as
-    // "already shown inline" in the fallback list below, hiding all of them.
-    if(!ed.exerciseId) continue;
+    if(!ed.exerciseId || ed.type==='add') continue;
     (editByEx[ed.exerciseId] = editByEx[ed.exerciseId] || []).push(ed);
   }
   // Sep 23 2026: pending exercise-removal requests (bug #2 fix), keyed by exerciseId same as
@@ -1227,7 +1255,7 @@ async function openSession(id, opts){
     // A pending swap outranks everything else this line could say. It is the state of the lift.
     const statusTag = pendingSwap ? `<span class="swap-pending">Swap suggested by ${esc(swapBy)}</span>`
                      : (!canEdit && offerSwap) ? `<span class="log-hint">Suggest a swap →</span>`
-                     : canSwapHere ? `<span class="log-hint swap-link" onclick="openSwapChoice('${s.id}','${e.id}',true)">Swap →</span>` : '';
+                     : canSwapHere ? `<span class="log-hint swap-link" onclick="openSwapChoice('${s.id}','${e.id}',true,${isOwnerless})">Swap →</span>` : '';
     // Who ELSE has worked this lift. Without it a shared workout shows you nothing your partner
     // did — you invite someone, they train, and the screen looks the same as if you were alone.
     // Gated on inTheWorkout: GET /api/sessions/:id hands the FULL logs of every participant to any
@@ -1260,8 +1288,7 @@ async function openSession(id, opts){
       if(ed.status==='pending'){
         // the status line above already named who; this row is for WHAT and what happens next
         sub += `<div class="req"><div class="rc">${esc(e.name)} → <b>${esc(ed.swapTo)}</b></div>`;
-        if(isCreator) sub += `<div class="ra"><button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button></div>`;
-        else sub += `<div class="ra"><span class="tag">waiting on creator</span></div>`;
+        sub += `<div class="ra">${suggestActionsHtml(ed)}</div>`;
         sub += `</div>`;
       }
       // approved/rejected swaps: no residual row (approved becomes the exercise name above; rejected leaves original)
@@ -1315,10 +1342,17 @@ async function openSession(id, opts){
   const pendingEdits = [];
   let decidedHtml = '';
   for(const ed of s.suggestedEdits){
-    if(ed.exerciseId && liveExIds.has(ed.exerciseId)) continue; // already shown inline above (a swap on a still-existing exercise)
+    // Sep 27 2026 (ownerless redesign): an ownerless 'add' edit has a real, live exerciseId from
+    // the moment it's proposed (see the editByEx comment above) -- but unlike a swap, that exercise
+    // is HIDDEN from everyone but the proposer until they vote yes (s.hiddenFor), so there is no
+    // card for it "shown inline above" to skip to. Exempting type==='add' here keeps it visible in
+    // this stack until every voter has had a chance to see and decide on it.
+    if(ed.type!=='add' && ed.exerciseId && liveExIds.has(ed.exerciseId)) continue; // already shown inline above (a swap on a still-existing exercise)
     // An approved add is now a real exercise with its own card in the list above -- nothing more
     // to say about it here. An approved swap has no such card of its own (it renamed an existing
     // one), so it still falls through to the muted "swapped by X" line below.
+    // (Ownerless mode never sets ed.status to 'approved'/'rejected' -- every vote is standing and
+    // changeable, so an ownerless edit always reaches the 'pending' branch below, indefinitely.)
     if(ed.type==='add' && ed.status==='approved') continue;
     if(ed.status==='pending') pendingEdits.push(ed);
     else if(ed.status==='approved'){
@@ -1336,10 +1370,7 @@ async function openSession(id, opts){
     const head = ed.type==='add'
       ? `${byName==='You' ? 'You suggested adding' : esc(byName)+' suggests adding'} ${esc(ed.swapTo)}`
       : `${byName==='You' ? 'You suggested' : esc(byName)+' suggests'} → ${esc(ed.swapTo)}`;
-    const actions = isCreator
-      ? `<button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button>`
-      : `<span class="tag">waiting on creator</span>`;
-    return `<div class="req"><div class="rc">${head}</div><div class="ra">${actions}</div></div>`;
+    return `<div class="req"><div class="rc">${head}</div><div class="ra">${suggestActionsHtml(ed)}</div></div>`;
   };
   let edits;
   if(pendingEdits.length <= 1){
@@ -1461,7 +1492,10 @@ async function openSession(id, opts){
     // add one, and the add-weight rule explains itself in the card's own "One more like that"
     // box the moment it applies.
     if(canEdit) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">${qlExample()} · tap a set to edit it.</div>`;
-    else if(canSuggest) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Not feeling one of these? Tap it to propose a replacement — ${esc(isUnknownName(nameCache[s.creatorId])?'the host':String(nameCache[s.creatorId]).split(' ')[0])} approves it.</div>`;
+    // Sep 27 2026 (ownerless redesign): a still-invited person's swap here is suggestOwnerless's
+    // privatePreJoin carve-out (server.js) -- nobody approves it, it's just stashed and becomes
+    // their own personal swap the moment they actually accept. Wording is a first draft.
+    else if(canSuggest) html += `<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Not feeling one of these? Tap it to propose a replacement — ${isOwnerless ? "it'll be waiting on your own card once you join." : esc(isUnknownName(nameCache[s.creatorId])?'the host':String(nameCache[s.creatorId]).split(' ')[0])+' approves it.'}</div>`;
   }
   if(edits) html += `<h2 class="pt">Suggested changes</h2>${edits}`;
   if(jr) html += `<h2 class="pt">Join requests</h2>${jr}`;
@@ -1493,8 +1527,11 @@ async function openSession(id, opts){
     // Sep 6: the swap half of this card (a native dropdown + "Pick replacement from Workouts")
     // is gone -- swapping now starts from the exercise card itself ("Swap →", openSwapChoice).
     // Only proposing a brand-new exercise is left here, since it has no card to hang off.
+    // Sep 27 2026 (ownerless redesign): no host left to approve anything -- it's added right away
+    // and everyone else votes on it whenever they get to it (wording is a first draft).
+    const addBlurb = isOwnerless ? "Want to add something new? Everyone can vote on it, anytime." : `Want to add something new? ${hostFirst} approves that too.`;
     html += `<h2 class="sep">Suggest a change</h2><div class="card">
-      <div class="muted" style="font-size:12.5px;margin:2px 2px 8px">Want to add something new? ${hostFirst} approves that too.</div>
+      <div class="muted" style="font-size:12.5px;margin:2px 2px 8px">${addBlurb}</div>
       <button class="sec sm" style="background:var(--line)" onclick="openSuggestAddPicker('${s.id}')">Suggest adding an exercise →</button>
     </div>`;
   }
@@ -1548,7 +1585,11 @@ async function openSession(id, opts){
   // visibility==='public' matches the server's own /join eligibility rule (server.js) — a
   // private session reached some other way (e.g. a publicly-shared recap on it) is not actually
   // joinable, and should not offer a button promising otherwise.
-  const joinable = !isCreator && !isParticipant && !respondHere && s.visibility === 'public';
+  // Sep 27 2026 (ownerless redesign, doc tab 06 "Locked Forever"): POST /join now refuses outright
+  // ("this workout has no host to ask") once s.creatorId is null -- there is nobody left to decide
+  // a request. Excluding isOwnerless here too, not just server-side, so this never offers a button
+  // that's guaranteed to fail the moment it's tapped.
+  const joinable = !isCreator && !isParticipant && !respondHere && s.visibility === 'public' && !isOwnerless;
 
   // Chat comes BEFORE the answer for someone deciding. Brian messages from the rack — "at the gym,
   // rack 3" — and that used to sit below the exercises AND below the buttons, so the most
@@ -2561,12 +2602,19 @@ async function swapPick(name){
 // attach to) -- they go straight to proposing. Jeff, Sep 6: "if there is more than 2 people in the
 // workout they can do 'swap for just me'" -- offered at any size, since it's the person's own card
 // either way; a vote was considered and skipped (host-approves is the group's proxy).
-function openSwapChoice(id, exerciseId, canPersonal){
+function openSwapChoice(id, exerciseId, canPersonal, isOwnerless){
   if(!canPersonal){ SWAP_KIND = 'all'; return openSwapPicker(id, exerciseId); }
+  // Sep 27 2026 (ownerless redesign): in an ownerless workout there's no host to approve this, and
+  // approving it never renames the shared exercise for everyone the way an owned approval does --
+  // each "yes" is really that voter's own personal swap (see applyOwnerlessVote in server.js).
+  // Wording here is a first draft, same as the rest of this redesign's copy.
+  const proposeNote = isOwnerless
+    ? 'Everyone in the workout can vote yes on it for their own card, anytime.'
+    : 'The host approves it, then it changes for the whole workout.';
   const inner = `<div class="sheet"><div class="sheet-head"><h2>Swap this exercise</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
     <div class="sheet-list">
       <button class="sheet-row" onclick="closeSheet();SWAP_KIND='me';openSwapPicker('${jsq(id)}','${jsq(exerciseId)}')"><div><b>Swap for just me</b><div class="muted" style="font-size:12px;font-weight:400;margin-top:2px">Instant. Only your card changes.</div></div></button>
-      <button class="sheet-row" onclick="closeSheet();SWAP_KIND='all';openSwapPicker('${jsq(id)}','${jsq(exerciseId)}')"><div><b>Propose for everyone</b><div class="muted" style="font-size:12px;font-weight:400;margin-top:2px">The host approves it, then it changes for the whole workout.</div></div></button>
+      <button class="sheet-row" onclick="closeSheet();SWAP_KIND='all';openSwapPicker('${jsq(id)}','${jsq(exerciseId)}')"><div><b>Propose for everyone</b><div class="muted" style="font-size:12px;font-weight:400;margin-top:2px">${esc(proposeNote)}</div></div></button>
     </div>
   </div>`;
   openSheetHtml(inner);
