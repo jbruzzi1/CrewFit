@@ -47,6 +47,7 @@ const files = [
   'test/pr-set-record.mjs', 'test/last-set-chip-tap-to-add.mjs', 'test/notifications-dismiss.mjs',
   'test/notification-swipe-dismiss.mjs', 'test/blank-workout-name.mjs', 'test/back-after-start-now.mjs',
   'test/log-rec-not-yet-logged-today.mjs', 'test/rest-timer-edit.mjs', 'test/type-pill-collapse.mjs',
+  'test/ex-accordion-collapse.mjs',
   'test/quick-workout-routine-page.mjs', 'test/assisted-exercise.mjs', 'test/recap-local-date.mjs',
   'test/scheduled-at-validation.mjs', 'test/crew-sheet-empty-state.mjs',
   'test/block-crew-streak-privacy.mjs', 'test/progress-additions.mjs',

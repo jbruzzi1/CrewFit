@@ -171,6 +171,13 @@ console.log('the wheel is bounded by its own values -- overscrolling either end 
 
 console.log('the wheel is keyboard-operable, not scroll-only (real a11y path: focus, arrow, confirm)');
 {
+  // Sep 27 2026: the logging page is now an accordion (only the active exercise is expanded --
+  // see exCollapsedRowHtml/openExercise in app.js) -- exercise 2 starts collapsed (exercise 1,
+  // the first one, is what a brand new session opens by default), so a real tap on its collapsed
+  // row is needed before anything below it can be filled in, same as a real user switching which
+  // exercise they're working on.
+  await page.click(`.ex-log[data-ex="${exId2}"] .ex-head`);
+  await page.waitForSelector(`.ex-log[data-ex="${exId2}"] [data-f="w"]`, { timeout: 5000 });
   // exId2 (exercise 2) has never logged a set yet in this test -- start its own real rest timer first.
   await page.fill(`.ex-log[data-ex="${exId2}"] [data-f="w"]`, '30');
   await page.fill(`.ex-log[data-ex="${exId2}"] [data-f="r"]`, '10');
@@ -196,6 +203,9 @@ console.log('the wheel is keyboard-operable, not scroll-only (real a11y path: fo
 
 console.log('a stale popup left open while a DIFFERENT exercise starts its own timer must not clobber that timer on confirm');
 {
+  // Switch the accordion back to exercise 1 -- the section above left exercise 2 expanded.
+  await page.click(`.ex-log[data-ex="${exId}"] .ex-head`);
+  await page.waitForSelector(`.ex-log[data-ex="${exId}"] [data-f="w"]`, { timeout: 5000 });
   // exId (exercise 1) has had no running timer since the overscroll block above applied to it;
   // start a fresh one, then open its edit popup and leave it open without confirming.
   await page.fill(`.ex-log[data-ex="${exId}"] [data-f="w"]`, '135');

@@ -723,6 +723,20 @@
     .ex-card .ex-meta { flex:0 0 auto; display:flex; align-items:center; }
     .ex-card .tag { font-size:12px; color:var(--muted); white-space:nowrap; }
     .ex-card .req { margin-top:10px; padding-top:10px; padding-bottom:0; border-top:1px solid var(--line); }
+    /* Sep 27 2026 (Jeff: "collapse into just the name"): the condensed accordion row for every
+       exercise on the logging page that is not the one currently expanded (exCollapsedRowHtml,
+       app.js). Tighter than the full .ex-card (which sizes itself for a whole logger) so a long
+       exercise list actually reads as shorter once most of it is collapsed -- 12px/8px vs. the
+       open card's 13px/13px, and no bottom border under the name (that hairline belongs to the
+       expanded header, .ex-log .ex-head below; a lone rule under a single line of text here would
+       just look like a stray divider with nothing under it). */
+    .ex-card.ex-collapsed { padding:12px 14px; margin:8px 0; }
+    .ex-log.ex-collapsed .ex-head { padding-bottom:0; border-bottom:none; }
+    .ex-head-collapsed { align-items:center; }
+    .ex-collapsed-meta { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+    .ex-collapsed-count { font-size:12px; color:var(--muted); white-space:nowrap; }
+    .ex-collapsed-done { display:inline-flex; color:var(--green); }
+    .ex-chevron { color:var(--muted); flex:0 0 auto; }
     /* (Aug 17, v160: .nav was position:fixed with translateZ/will-change compositor hints to stop
        iOS repainting it lazily mid-scroll. Sep 7, 2026: that stopped working -- see the body rule
        at the top of the stylesheet for the sticky layout that replaced it.) */
@@ -1731,6 +1745,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Activity</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=449"></script>
+  <script src="app.js?v=450"></script>
 </body>
 </html>

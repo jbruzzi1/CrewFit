@@ -155,6 +155,11 @@ console.log('reopening the pill after a log picks back up from the last-picked t
 
 console.log('the second exercise card has its own, completely independent pill state');
 {
+  // Sep 27 2026: the logging page is now an accordion (only the active exercise is expanded --
+  // see exCollapsedRowHtml/openExercise in app.js), so card 2 starts collapsed and needs a real
+  // tap to reveal its own logger before its pill can be read at all.
+  await page.click(`.ex-log[data-ex="${exId2}"] .ex-head`);
+  await page.waitForSelector(`.ex-log[data-ex="${exId2}"] [data-f="typePill"]`, { timeout: 5000 });
   const label2 = await page.$eval(`.ex-log[data-ex="${exId2}"] [data-f="typePillLabel"]`, el => el.textContent.trim());
   const pill2Visible = await page.$eval(`.ex-log[data-ex="${exId2}"] [data-f="typePill"]`, el => !el.classList.contains('hidden'));
   ok(label2 === 'Normal', `card 2's pill was never touched by card 1's picks (got ${JSON.stringify(label2)})`);
