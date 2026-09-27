@@ -253,23 +253,28 @@ console.log('\n7b. PUT invite-list edits notify a brand-new invitee, and dedupe 
   ok((notifs.invites || []).some(i => i.sessionId === s.id), `the brand-new invitee added via Edit-session gets notified (got invites=${JSON.stringify(notifs.invites)})`);
 }
 
-console.log('\n8. Declining an invite clears the stale invitedBy attribution, so a later re-invite by someone else credits correctly');
+console.log('\n8. Declining an invite clears the stale invitedBy attribution, so a later re-invite credits correctly (Sep 27 2026: this used to be exercised via ownership handoff to a "heir" who re-invites -- the ownerless redesign means ownership never hands off to anyone any more, so that specific multi-owner scenario can no longer occur at all; re-invites, like every other edit, only ever come from the one never-replaced creator, right up until they leave and editing locks forever for everyone -- doc tab 06 "Locked Forever". Rewritten to check what is still true: decline genuinely clears the stale entry, and the workout is permanently locked once it goes ownerless, with no "someone else" left to still credit)');
 {
   const host = await reg('decl1_host');
-  const heir = await reg('decl1_heir');
+  const other = await reg('decl1_other');
   const invitee = await reg('decl1_invitee');
-  await connect(host, heir); await connect(host, invitee); await connect(heir, invitee);
-  const s = await post('/api/sessions', { name: 'Session', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Bench Press' }], visibility: 'private', inviteUsernames: ['decl1_invitee', 'decl1_heir'] }, host.token);
+  await connect(host, other); await connect(host, invitee); await connect(other, invitee);
+  const s = await post('/api/sessions', { name: 'Session', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Bench Press' }], visibility: 'private', inviteUsernames: ['decl1_invitee', 'decl1_other'] }, host.token);
   await post(`/api/sessions/${s.id}/decline`, {}, invitee.token);
-  await post(`/api/sessions/${s.id}/accept`, {}, heir.token);
-  // host leaves, ownership hands off to heir
-  await post(`/api/sessions/${s.id}/leave`, {}, host.token);
-  const afterHandoff = await get(`/api/sessions/${s.id}`, heir.token);
-  ok(afterHandoff.creatorId === heir.id, 'sanity: ownership really did hand off to heir');
-  const reinvited = await put(`/api/sessions/${s.id}`, { inviteUsernames: ['decl1_invitee'] }, heir.token);
-  ok((reinvited.invited || []).includes(invitee.id), 'heir successfully re-invites the person who originally declined');
+  await post(`/api/sessions/${s.id}/accept`, {}, other.token);
+  // The same, never-replaced host re-invites the person who originally declined -- confirms decline
+  // genuinely cleared their stale invitedBy entry rather than leaving it stuck.
+  const reinvited = await put(`/api/sessions/${s.id}`, { inviteUsernames: ['decl1_invitee', 'decl1_other'] }, host.token);
+  ok((reinvited.invited || []).includes(invitee.id), 'the host successfully re-invites the person who originally declined');
   const inviteeView = await get(`/api/sessions/${s.id}`, invitee.token);
-  ok(inviteeView.invitedById === heir.id, `the re-invite is correctly credited to HEIR (who just sent it), not the original host whose invite they declined (got invitedById=${inviteeView.invitedById})`);
+  ok(inviteeView.invitedById === host.id, `the re-invite is correctly credited to the host who just sent it (got invitedById=${inviteeView.invitedById})`);
+
+  // host leaves -- ownership clears to null, nothing hands off to "other" or anyone else.
+  await post(`/api/sessions/${s.id}/leave`, {}, host.token);
+  const afterPivot = await get(`/api/sessions/${s.id}`, other.token);
+  ok(afterPivot.creatorId === null, `sanity: ownership genuinely cleared rather than handing off (got creatorId=${afterPivot.creatorId})`);
+  const editAfterPivot = await put(`/api/sessions/${s.id}`, { inviteUsernames: ['decl1_invitee'] }, other.token);
+  ok(editAfterPivot.error === 'not yours', `editing/re-inviting is locked forever once ownerless -- there is no "someone else" left to (mis)credit an invite to (got ${JSON.stringify(editAfterPivot)})`);
 }
 
 console.log('\n9. Media token: recap photo URLs are gated by a real access check, not served unconditionally');

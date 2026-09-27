@@ -58,7 +58,7 @@ const put = (p, b, tok) => fetch(B + p, { method: 'PUT', headers: tok ? { ...J, 
 const get = (p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
 const reg = async (username) => { const r = await post('/api/register', { username, pin: 'pass1234', displayName: username }); return { token: r.token, id: r.user.id, user: r.user }; };
 
-console.log('\nFix #1: creator taps "Remove from my profile" -- ownership hands off to any other CURRENT participant, not just one who has already logged something');
+console.log('\nFix #1: creator taps "Remove from my profile" -- the workout survives for any other CURRENT participant, not just one who has already logged something (Sep 27 2026 ownerless redesign: ownership now clears rather than handing off -- see server.js\'s "Ownerless Workout Flow" comments)');
 {
   const host = await reg('rm1_host');
   const other = await reg('rm1_other');
@@ -72,8 +72,8 @@ console.log('\nFix #1: creator taps "Remove from my profile" -- ownership hands 
   const r = await post(`/api/sessions/${s.id}/remove-mine`, {}, host.token);
   ok(r.ok === true && r.removed === true, `remove-mine itself succeeds (got ${JSON.stringify(r)})`);
   const after = await get(`/api/sessions/${s.id}`, other.token);
-  ok(after.creatorId === other.id, `ownership handed to the still-current participant, not left null (got creatorId=${after.creatorId})`);
-  ok((after.participants || []).includes(other.id), 'the new owner is still listed as a participant');
+  ok(after.creatorId === null, `ownership clears to null rather than handing off to the still-current participant (got creatorId=${after.creatorId})`);
+  ok((after.participants || []).includes(other.id), 'the workout is still intact for them, still listed as a participant');
 }
 
 console.log('\nFix #1 (unchanged case): if NOBODY else is current, remove-mine still orphans the workout exactly as before -- nothing to hand off to');
@@ -212,60 +212,50 @@ console.log('\nFix #5: a pending (not-yet-accepted) invitee can already post AND
   ok(gotChatNotif, `the still-invited person was notified of the reply in a thread they can already read and post in (got history=${JSON.stringify((notifs.history||[]).map(h=>h.link))})`);
 }
 
-console.log('\nFix #4: "X invited you" keeps crediting whoever actually sent the invite, even after ownership hands off to someone else');
+console.log('\nFix #4: "X invited you" keeps crediting whoever actually sent the invite, even after ownership clears to null (Sep 27 2026 ownerless redesign superseded the old handoff -- there is no more "heir" to silently re-credit invites to; the invariant that still matters is that the ORIGINAL host stays credited, and that editing the invite list is now locked for everyone, forever, since nobody is ever promoted to fill the gap -- doc tab 06 "Locked Forever")');
 {
   const host = await reg('inv1_host');
-  const heir = await reg('inv1_heir');
+  const other = await reg('inv1_other');
   const invitee = await reg('inv1_invitee');
-  await post(`/api/follow/${heir.id}`, {}, host.token);
+  await post(`/api/follow/${other.id}`, {}, host.token);
   await post(`/api/follow/${invitee.id}`, {}, host.token);
   const s = await post('/api/sessions', {
     name: 'Handoff Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Bench Press' }],
-    visibility: 'private', inviteUsernames: ['inv1_heir', 'inv1_invitee'],
+    visibility: 'private', inviteUsernames: ['inv1_other', 'inv1_invitee'],
   }, host.token);
-  await post(`/api/sessions/${s.id}/accept`, {}, heir.token);
-  // heir logs a set so the ownership-handoff fallback prefers them as the new owner.
+  await post(`/api/sessions/${s.id}/accept`, {}, other.token);
   const benchId = s.exercises.find(e => e.name === 'Bench Press').id;
-  await post(`/api/sessions/${s.id}/log`, { exerciseId: benchId, weight: 135, reps: 8 }, heir.token);
+  await post(`/api/sessions/${s.id}/log`, { exerciseId: benchId, weight: 135, reps: 8 }, other.token);
   // invitee never answers -- still sitting in s.invited when the host leaves.
 
   const beforeNotifs = await get('/api/notifications', invitee.token);
   const beforeInvite = (beforeNotifs.invites || []).find(iv => iv.sessionId === s.id);
-  ok(!!beforeInvite && beforeInvite.from.username === 'inv1_host', `before any handoff, the invite correctly names the real host (got ${beforeInvite && beforeInvite.from && beforeInvite.from.username})`);
+  ok(!!beforeInvite && beforeInvite.from.username === 'inv1_host', `before the host leaves, the invite correctly names the real host (got ${beforeInvite && beforeInvite.from && beforeInvite.from.username})`);
 
   const leaveRes = await post(`/api/sessions/${s.id}/leave`, { keep: true }, host.token);
   ok(leaveRes.ok === true, 'the host leaves');
-  const afterHandoff = await get(`/api/sessions/${s.id}`, heir.token);
-  ok(afterHandoff.creatorId === heir.id, `ownership genuinely handed off to the heir (got creatorId=${afterHandoff.creatorId})`);
+  const afterPivot = await get(`/api/sessions/${s.id}`, other.token);
+  ok(afterPivot.creatorId === null, `ownership clears to null rather than handing off to anyone (got creatorId=${afterPivot.creatorId})`);
   // Cold-review catch: the member-tier view is a raw spread of the session object, which used to
   // leak s.invitedBy -- who invited EVERY invitee, not just the viewer's own -- to any current
   // member. Fixed the same "yourself and nobody else" way draftNotes/hiddenFor already were.
-  ok(afterHandoff.invitedBy === undefined, `a member (the heir) does NOT get the whole invitedBy map -- who invited the still-pending invitee is not the heir's business (got ${JSON.stringify(afterHandoff.invitedBy)})`);
+  ok(afterPivot.invitedBy === undefined, `a member does NOT get the whole invitedBy map -- who invited the still-pending invitee is not their business (got ${JSON.stringify(afterPivot.invitedBy)})`);
 
   const afterNotifs = await get('/api/notifications', invitee.token);
   const afterInvite = (afterNotifs.invites || []).find(iv => iv.sessionId === s.id);
-  ok(!!afterInvite && afterInvite.from.username === 'inv1_host', `AFTER the handoff, the invite still credits the ORIGINAL host, not the new owner (got ${afterInvite && afterInvite.from && afterInvite.from.username})`);
+  ok(!!afterInvite && afterInvite.from.username === 'inv1_host', `AFTER the pivot, the invite still credits the ORIGINAL host -- there is no new owner to (mis)credit it to instead (got ${afterInvite && afterInvite.from && afterInvite.from.username})`);
 
   const invSessionView = await get(`/api/sessions/${s.id}`, invitee.token);
-  ok(invSessionView.invitedById === host.id, `the invitee's own session view also resolves the real inviter, not the current creator (got invitedById=${invSessionView.invitedById}, creatorId=${invSessionView.creatorId})`);
+  ok(invSessionView.invitedById === host.id, `the invitee's own session view also resolves the real inviter, even with creatorId now null (got invitedById=${invSessionView.invitedById}, creatorId=${invSessionView.creatorId})`);
 
-  // The new owner re-saving the invite list (still including the same still-pending invitee)
-  // must NOT silently re-credit that invite to themselves -- only a genuinely NEW invitee added
-  // in this edit should be credited to whoever is editing it now.
-  const thirdParty = await reg('inv1_third');
-  // The new owner has to actually be CONNECTED to re-save someone into the invite list (same
-  // eligibility rule as inviting at creation time -- see resolveInvites/connectionsOf) -- heir was
-  // never connected to the still-pending invitee before now, only the original host was.
-  await post(`/api/follow/${invitee.id}`, {}, heir.token);
-  await post(`/api/follow/${thirdParty.id}`, {}, heir.token);
-  await put(`/api/sessions/${s.id}`, { inviteUsernames: ['inv1_invitee', 'inv1_third'] }, heir.token);
-  const afterEditNotifs = await get('/api/notifications', invitee.token);
-  const afterEditInvite = (afterEditNotifs.invites || []).find(iv => iv.sessionId === s.id);
-  ok(afterEditInvite && afterEditInvite.from.username === 'inv1_host', `re-saving the SAME invite list under the new owner still credits the original host for the invitee who was already on it (got ${afterEditInvite && afterEditInvite.from && afterEditInvite.from.username})`);
-
-  const thirdNotifs = await get('/api/notifications', thirdParty.token);
-  const thirdInvite = (thirdNotifs.invites || []).find(iv => iv.sessionId === s.id);
-  ok(thirdInvite && thirdInvite.from.username === 'inv1_heir', `a genuinely NEW invitee added in that same edit is correctly credited to whoever just invited them (got ${thirdInvite && thirdInvite.from && thirdInvite.from.username})`);
+  // Doc tab 06 "Locked Forever": editing the invite list (part of the shared exercise-list/details
+  // edit) is creator-only, and there is no creator any more -- nobody, not even the one remaining
+  // current participant, can re-save the invite list once a workout is ownerless.
+  const editAttempt = await fetch(B + `/api/sessions/${s.id}`, {
+    method: 'PUT', headers: { ...J, Authorization: 'Bearer ' + other.token },
+    body: JSON.stringify({ inviteUsernames: ['inv1_invitee'] }),
+  });
+  ok(editAttempt.status === 403, `editing the invite list is locked forever once ownerless, for every participant (got ${editAttempt.status})`);
 }
 
 try { srv && srv.kill(); } catch {}

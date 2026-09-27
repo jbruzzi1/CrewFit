@@ -90,7 +90,10 @@ console.log('deleting a shared workout cannot erase the other person\'s history'
   ok(bp.prs.some(p => p.weight === 495), "and Brian still has his");
   const still = await get(brian, '/api/sessions/' + s.id);
   ok(still && still.id === s.id, 'the workout still exists for Brian');
-  ok(still.creatorId === brian.id, 'and he now owns it, so he can still finish it');
+  // Sep 27 2026 (ownerless redesign): ownership no longer hands off to Brian -- it simply clears.
+  // Finishing his own portion never depended on being the creator anyway (see /lock), so this is
+  // still true in spirit ("Brian can still finish it"), just via a different mechanism now.
+  ok(still.creatorId === null, `ownership clears rather than passing to Brian, who can still finish his own portion regardless (got ${still.creatorId})`);
 }
 
 console.log('\ndeleting a workout only you logged in still works');

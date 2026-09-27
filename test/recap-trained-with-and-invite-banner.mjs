@@ -150,12 +150,12 @@ console.log('\nFix #2 (kick case): the same snapshot survives someone being KICK
   ok(/pp-collab">with @twk_target/.test(sink.html), `the host's already-posted recap still names the kicked participant (got ${(sink.html.match(/pp-collab">[^<]*/) || [])[0]})`);
 }
 
-console.log('\nFix #4 (client): Home\'s invite banner names the person who actually sent the invite, even after ownership has since handed off to someone else');
+console.log('\nFix #4 (client): Home\'s invite banner names the person who actually sent the invite, even after ownership has since cleared to null (Sep 27 2026 ownerless redesign: ownership no longer hands off to anyone -- see server.js\'s "Ownerless Workout Flow" comments -- so the invariant that matters now is that the ORIGINAL host stays credited even once creatorId is null, not "someone else")');
 {
   const host = await reg('ivb_host');
-  const heir = await reg('ivb_heir');
+  const other = await reg('ivb_other');
   const invitee = await reg('ivb_invitee');
-  await post('/api/follow/' + heir.user.id, {}, host.token);
+  await post('/api/follow/' + other.user.id, {}, host.token);
   await post('/api/follow/' + invitee.user.id, {}, host.token);
   // Invitee needs to actually know the host's real name via friendName()'s own-friends lookup.
   await post('/api/follow/' + host.user.id, {}, invitee.token);
@@ -163,23 +163,23 @@ console.log('\nFix #4 (client): Home\'s invite banner names the person who actua
   const s = await post('/api/sessions', {
     name: 'Handoff Day', scheduledAt: new Date().toISOString(),
     exercises: [{ name: 'Bench Press' }], visibility: 'private',
-    inviteUsernames: ['ivb_heir', 'ivb_invitee'],
+    inviteUsernames: ['ivb_other', 'ivb_invitee'],
   }, host.token);
-  await post(`/api/sessions/${s.id}/accept`, {}, heir.token);
+  await post(`/api/sessions/${s.id}/accept`, {}, other.token);
   const benchId = s.exercises.find(e => e.name === 'Bench Press').id;
-  await post(`/api/sessions/${s.id}/log`, { exerciseId: benchId, weight: 135, reps: 8 }, heir.token);
+  await post(`/api/sessions/${s.id}/log`, { exerciseId: benchId, weight: 135, reps: 8 }, other.token);
   // invitee never answers.
 
   await post(`/api/sessions/${s.id}/leave`, { keep: true }, host.token);
-  const afterHandoff = await get(`/api/sessions/${s.id}`, heir.token);
-  ok(afterHandoff.creatorId === heir.user.id, `sanity: ownership really did hand off to the heir (got creatorId=${afterHandoff.creatorId})`);
+  const afterPivot = await get(`/api/sessions/${s.id}`, other.token);
+  ok(afterPivot.creatorId === null, `sanity: ownership genuinely cleared rather than handing off (got creatorId=${afterPivot.creatorId})`);
 
   const ctx = makeCtx();
   vm.runInContext(`TOKEN = ${JSON.stringify(invitee.token)}; ME = ${JSON.stringify(invitee.user)};`, ctx);
   sink.html = '';
   await vm.runInContext('home', ctx)();
   ok(/<b>ivb_host<\/b> invited you/.test(sink.html), `Home's banner still credits the ORIGINAL host for the invite (got ${(sink.html.match(/<b>[^<]*<\/b> invited you/) || [])[0]})`);
-  ok(!/<b>ivb_heir<\/b> invited you/.test(sink.html), 'the banner does NOT credit the new owner for an invite they never sent');
+  ok(!/<b>ivb_other<\/b> invited you/.test(sink.html), 'the banner does NOT credit anyone else for an invite they never sent');
 }
 
 try { srv && srv.kill(); } catch {}

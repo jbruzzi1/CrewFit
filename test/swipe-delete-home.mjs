@@ -427,7 +427,9 @@ console.log('\nJeff, real bug report + "Smarter routing" follow-up (Sep 18/20 20
   const friendView = await direct.json();
   ok(!(friendView.participants || []).includes(me.user.id), 'I am gone as a participant (I left, not deleted it)');
   ok((friendView.participants || []).includes(friend.user.id), 'my friend is still right there, workout intact for them');
-  ok(friendView.creatorId === friend.user.id, `ownership transferred to my friend, the one remaining current participant (got ${friendView.creatorId})`);
+  // Sep 27 2026 (ownerless redesign): ownership no longer hands off to a remaining participant --
+  // it simply clears. See server.js's "Ownerless Workout Flow" comments for the full history.
+  ok(friendView.creatorId === null, `ownership clears rather than transferring to my friend (got ${friendView.creatorId})`);
   const meAfterShared = await apiGet('/api/sessions', me.token);
   ok(!meAfterShared.some(s => s.id === ownSharedS.id && (s.participants || []).includes(me.user.id)), 'and it no longer shows as mine to keep managing');
 }
