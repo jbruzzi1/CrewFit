@@ -2863,12 +2863,18 @@ let SEED_DRAFT = [];
 // is local-only anymore. ME.trainingPhase is null for anyone who has never opened this screen and
 // saved a pick; repRange() server-side behaves byte-identical to before this feature existed for
 // them until they do.
+// Sep 28 2026 (audit finding): two copy bugs fixed in place --
+//   1. these blurbs used a literal "--" where every other user-facing string in the app uses "—".
+//   2. the stabilization blurb said "Plateau watch below", but this text renders in the phase-picker
+//      sheet, not the Progress page Plateau watch actually lives on -- "below" pointed at nothing
+//      wherever this sheet is actually opened from. Reworded to describe the relationship without
+//      claiming a screen position.
 const TRAINING_PHASES = [
-  { key:'stabilization', label:'Stabilization & Endurance', blurb:'Lighter weight, higher reps. Builds movement quality and joint stability -- also where Plateau watch below suggests cycling back to.', reps:'12-20 reps' },
+  { key:'stabilization', label:'Stabilization & Endurance', blurb:'Lighter weight, higher reps. Builds movement quality and joint stability — also the phase Plateau watch suggests cycling back to when a lift stalls.', reps:'12-20 reps' },
   { key:'strength_endurance', label:'Strength Endurance', blurb:'Moderate weight. Blends strength work with the stability focus from phase 1.', reps:'8-12 reps' },
-  { key:'hypertrophy', label:'Hypertrophy', blurb:'Heavier weight, minimal rest, focused on muscle size -- closest to how CrewFit’s rep ranges work today.', reps:'6-12 reps' },
+  { key:'hypertrophy', label:'Hypertrophy', blurb:'Heavier weight, minimal rest, focused on muscle size — closest to how CrewFit’s rep ranges work today.', reps:'6-12 reps' },
   { key:'max_strength', label:'Maximal Strength', blurb:'Heavy weight, longer rest between sets. For pure strength gains.', reps:'1-5 reps' },
-  { key:'power', label:'Power', blurb:'Paired sets: one heavy and near-max, one light and explosive. For speed and power. (CrewFit has no paired/superset target yet, so only the heavy side -- 1-5 reps -- is checked.)', reps:'1-5 reps checked' },
+  { key:'power', label:'Power', blurb:'Paired sets: one heavy and near-max, one light and explosive. For speed and power. (CrewFit has no paired/superset target yet, so only the heavy side — 1-5 reps — is checked.)', reps:'1-5 reps checked' },
 ];
 function trainingPhaseLabel(){
   const p = ME && ME.trainingPhase && TRAINING_PHASES.find(x=>x.key===ME.trainingPhase);
@@ -6420,8 +6426,18 @@ async function progressScreen(opts){
   const topLifts = d.topLifts || {lifts:[], allNames:[], picks:[]};
   window._TOPLIFT_ALL = topLifts.allNames || [];
   window._TOPLIFT_PICKS_SAVED = topLifts.picks || [];
+  // Sep 28 2026 (audit finding): "Now shows only Cable Fly in Top lifts, but Records shows a
+  // Barbell Back Squat PR too -- different screens seem to read from different sources." They're
+  // not -- Top lifts is a deliberately short, curated snapshot (your own picks, or the 3 you log
+  // most, see the comment above topLiftsFor() in server.js) while Personal records is the complete
+  // all-time list. Nothing on screen said that, so the gap read as a bug. One-line caption added
+  // under each header saying what it is, rather than leaving people to guess.
+  const topLiftsSub = topLifts.picks.length
+    ? 'Your 3 picks — tap Edit to change them'
+    : 'Your 3 most-logged lifts — tap Edit to pick your own';
   const topLiftsHtml = topLifts.lifts.length ? `<div class="sec-head"><h2>Top lifts</h2>
       <button class="txt-btn" style="margin-left:auto" onclick="openTopLiftPicker()" title="Pick which lifts to show">Edit</button></div>
+    <p class="muted" style="margin:-6px 0 10px;font-size:12.5px">${topLiftsSub}</p>
     <div class="card">
       ${topLifts.lifts.map(l=>`<div class="pr">
         <div><div class="pr-n">${esc(l.name)}</div>
@@ -6515,10 +6531,20 @@ async function progressScreen(opts){
           const cap = firstIdx===0
             ? `over ${(PROG_RANGES.find(r=>r.weeks===d.weeks.length)||{label:d.weeks.length+' weeks'}).label.toLowerCase()}`
             : `since ${shortDate(active[0].weekOf)}`;
-          // No active streak (0 weeks) falls back to the plain average as the hero, same as
-          // before this change — nothing to lead with otherwise.
+          // Sep 28 2026 (audit finding): 1 active week produces a real but useless number -- "0.3
+          // days/week average" reads as failure when it's really just "not enough data yet to mean
+          // anything." Same "hide until it says something real" rule as the Home stat row never
+          // showing a zero (CLAUDE.md) -- require 2 active weeks before the average itself appears.
+          // A genuinely earned streak is a different, already-true fact and is never hidden by this
+          // floor; only the raw average (and the average half of the streak caption) waits for it.
+          const ACTIVE_WEEKS_FLOOR = 2;
+          const enoughData = active.length >= ACTIVE_WEEKS_FLOOR;
           if(d.streakWeeks>0) return `<div class="streak-hero">${d.streakWeeks}<span class="hero-u"> week streak</span></div>
-             <div class="hero-cap">${avg} days/week average, ${cap}</div>`;
+             <div class="hero-cap">${enoughData ? `${avg} days/week average, ${cap}` : 'Keep it up — your weekly average will show here soon'}</div>`;
+          // No active streak (0 weeks) falls back to the plain average as the hero, same as
+          // before this change — nothing to lead with otherwise, once there's enough of it.
+          if(!enoughData) return `<div class="hero" style="font-size:17px">Still building your pattern</div>
+             <div class="hero-cap">Log a few more workouts to see your weekly average</div>`;
           return `<div class="hero">${avg}<span class="hero-u"> days/week average</span></div>
              <div class="hero-cap">${cap}</div>`;
         })()}
@@ -6543,6 +6569,7 @@ async function progressScreen(opts){
   const recordsTabHtml = `${goalsHtml}
 
     <h2>Personal records</h2>
+    <p class="muted" style="margin:-6px 0 10px;font-size:12.5px">Every PR you've ever earned, all-time — not just your top lifts above</p>
     <div class="card">${prHtml}</div>`;
 
   // Sep 14 2026 round 3: which tab's content actually renders -- the other two are computed above
@@ -6951,11 +6978,40 @@ function exDetail(name){
       <div class="sheet-row"><span>Equipment</span><b>${eqs}</b></div>
       <div class="sheet-row"><span>Pattern</span><b>${esc(e.pattern||'—')}</b></div>
       <div class="sheet-row"><span>Suggested</span><b>${sets} × ${reps}</b></div>
-      <div class="sheet-row"><span>Personal best</span><b data-f="pr" class="muted">…</b></div>
-      <div class="sheet-row"><span>Best set</span><b data-f="setpr" class="muted">…</b></div>
+      <!-- Sep 28 2026 (audit finding): "Personal best" and "Best set" read as the exact same stat
+           with no explanation of the difference. They're genuinely different records (see the
+           /api/progress/exercise/:name comment in server.js: pr = heaviest weight ever moved on
+           this lift; setPr = most total weight in a single set, weight × reps) -- relabeled to say
+           that plainly instead of leaving people to guess. -->
+      <div class="sheet-row"><span>Heaviest lift</span><b data-f="pr" class="muted">…</b></div>
+      <div class="sheet-row"><span>Best set volume</span><b data-f="setpr" class="muted">…</b></div>
+      <div data-ex-action></div>
     </div>`;
   sheet.onclick=(e)=>{ if(e.target===sheet) closeSheet(); }; document.body.appendChild(sheet);
   requestAnimationFrame(()=>sheet.classList.add('show'));
+  // Sep 28 2026 (audit finding): "the library is a dead end unless you already started a session" --
+  // this sheet was info-only (favorite + close, nothing else). Same fetch-after-render pattern as
+  // the pr/setpr rows just below (sheet opens instantly, this fills in once it knows the answer):
+  // isSessionLiveNow (its own comment above) is the app's one existing definition of "actively
+  // happening right now", reused verbatim rather than inventing a second one. If today's workout is
+  // MINE, adding is instant (same PUT the ⋯ menu's Edit session already uses); if it's a workout
+  // I'm just a participant in, it goes through the existing suggest-an-addition flow instead, since
+  // I can't edit someone else's plan directly.
+  H.get('/api/sessions').then(sessions=>{
+    if(!document.body.contains(sheet)) return;
+    const row = sheet.querySelector('[data-ex-action]'); if(!row) return;
+    // Cold-review catch: /api/sessions also returns workouts you're only INVITED to (not yet
+    // accepted) -- isSessionLiveNow alone says nothing about that, and home()'s own "yours" list
+    // (its own comment above) filters exactly this out before ever applying isSessionLiveNow. Same
+    // filter here, or a pending invite to a friend's workout starting right now could get picked as
+    // "live", offering to add to a workout that isn't actually yours to add to yet.
+    const live = Array.isArray(sessions)
+      ? sessions.find(s => s.participants.includes(ME.id) && !(Array.isArray(s.invited) && s.invited.includes(ME.id)) && isSessionLiveNow(s))
+      : null;
+    row.innerHTML = live
+      ? `<button class="blue" style="margin-top:14px;width:100%" onclick="exAddToLive('${jsq(live.id)}','${jsq(e.name)}',${live.creatorId===ME.id})">Add to today's workout</button>`
+      : `<button class="blue" style="margin-top:14px;width:100%" onclick="exStartWorkoutWith('${jsq(e.name)}')">Start a workout with this</button>`;
+  }).catch(()=>{});
   // Sep 5 (Jeff: "add in what the users personal best is for that exercise"): the sheet opens
   // instantly off window._LIB2 with no network round trip, same as always -- this fills the PR
   // row in place once the cheap per-exercise endpoint answers, same fetch-after-render pattern
@@ -6979,6 +7035,42 @@ function exDetail(name){
       else setBox.textContent = 'Not logged yet';
     }
   });
+}
+// Sep 28 2026 (audit finding, exDetail's action row above): no workout is live right now -- same
+// one-tap-to-start shape as tapping "+ Quick Workout" and picking this one exercise, just skipping
+// the picker since it's already chosen. promptQuickWorkoutName/createQuickWorkout are the exact
+// same functions workoutNow()'s own flow ends in (see their comments).
+function exStartWorkoutWith(name){
+  closeSheet();
+  DRAFT = { exercises:[{name}], inviteUsernames:[], location: (ME && ME.defaultGym) || '' };
+  EDITING_SESSION = null; EDITING_TPL = null; EDITING_ID = null;
+  if(typeof TPL_MODE === 'object' && TPL_MODE){ TPL_MODE.active=false; TPL_MODE.id=null; TPL_MODE.name=''; TPL_MODE.copy=false; }
+  promptQuickWorkoutName();
+}
+// Sep 28 2026 (audit finding, exDetail's action row above): today's workout is already live.
+// `isMine` (whether the live session's creator is me) decides which of two existing mechanisms
+// this reuses -- never a new one:
+//   - mine: the exact same PUT the ⋯ menu's Edit session already sends (putWorkoutExercises),
+//     with this exercise appended -- instant, no approval needed, since I already own the plan.
+//   - not mine (I'm a participant in someone else's live workout): the existing suggest-an-addition
+//     flow (same POST suggestAddPick sends) -- files it for the host to approve, since I can't edit
+//     their plan directly.
+async function exAddToLive(sessionId, name, isMine){
+  closeSheet();
+  const epoch = UI_EPOCH;
+  if(isMine){
+    const s = await H.get('/api/sessions/'+sessionId);
+    if(!s || s.error){ alert((s && s.error) || 'Workout not found'); return; }
+    const exercises = (s.exercises||[]).map(x=>({ id:x.id, name:x.name, defaultSets:x.defaultSets, defaultReps:x.defaultReps, defaultRepsMax:x.defaultRepsMax }));
+    exercises.push({ name });
+    const prev = await putWorkoutExercises(sessionId, exercises, s.name);
+    if(!prev) return;
+    if(nothingNavigatedSince(epoch)) openSession(sessionId, {silent:true});
+  } else {
+    const r = await H.post(`/api/sessions/${sessionId}/suggest`, { type:'add', name });
+    if(r && r.error){ alert(r.error); return; }
+    if(nothingNavigatedSince(epoch)) alert('Suggested — the host will need to approve it before it shows up.');
+  }
 }
 // v247: used to be document.querySelector('.sheet-back') — the FIRST .sheet-back in document
 // order, i.e. the OLDEST open sheet. Almost every call site only ever has one sheet open, so this
@@ -7228,7 +7320,21 @@ async function friends(opts){
     }
     for (const [key, group] of groupsByKey) {
       const sorted = group.length > 1 ? [...group].sort((a, b) => new Date(a.at) - new Date(b.at)) : group;
-      out[slotOf.get(key)] = {...sorted[0], _prGroup: sorted};
+      // Sep 28 2026 (audit finding): the same exercise can fire more than one 'pr' feed event in a
+      // single session (e.g. beating your own new best twice in one workout, or a set generating
+      // both an isPr and isSetPr improvement) -- these used to survive into `_prGroup` as separate
+      // members with the identical exerciseName, so "hit 4 new PRs" and the sub-line repeating a
+      // name twice both described PR EVENTS, not lifts. Dedupe by exerciseName (keeping whichever
+      // occurrence sorted earliest, same deterministic pick the group itself already uses) so the
+      // count and the list both describe unique lifts.
+      const seenNames = new Set();
+      const deduped = sorted.filter(g => {
+        const n = g.exerciseName || '';
+        if (seenNames.has(n)) return false;
+        seenNames.add(n);
+        return true;
+      });
+      out[slotOf.get(key)] = {...deduped[0], _prGroup: deduped};
     }
     return out;
   };
@@ -8995,9 +9101,18 @@ async function profileView(id, opts){
         // same .feed-lead fixed column as Home's feed - text start must line up across PR/check rows
         return `<div class="feed-item"><span class="feed-lead">${chip}</span><span>${esc(a.text)}</span></div>`;
       }).join('');
+  // Sep 28 2026 (audit finding): buildActivityFor (server.js) only ever looks at the last 7 days --
+  // it's a "what's new lately" feed, not a full history -- so someone with real workouts logged
+  // more than a week ago was seeing "No activity yet" here while Home's own stat row and My
+  // Workouts (both all-time) showed the opposite. "No activity yet" is a claim about their WHOLE
+  // history and was false whenever p.workoutsCompleted>0 (CLAUDE.md: never state something about
+  // the user's history that isn't true). Genuinely new accounts (workoutsCompleted===0) keep the
+  // original copy unchanged.
   const activityBlock = activity.length
     ? `<h2 class="light">Recent Activity</h2><div class="card feed-strip">${activityRows}</div>`
-    : (isMe ? `<h2 class="light">Recent Activity</h2>${homeEmpty(ICON_FEED, 'No activity yet', 'Log a workout to see it here.')}` : '');
+    : (isMe ? `<h2 class="light">Recent Activity</h2>${p.workoutsCompleted>0
+        ? homeEmpty(ICON_FEED, 'No activity this week', 'New PRs, streaks and completions from the last 7 days show up here.')
+        : homeEmpty(ICON_FEED, 'No activity yet', 'Log a workout to see it here.')}` : '');
   const workouts = p.myWorkouts||[];
   function woCard(w){
     // Jeff, Aug 26: no picture shouldn't mean a gray placeholder box - just skip the image area

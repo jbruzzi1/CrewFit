@@ -366,7 +366,20 @@ console.log('Consistency: streak leads the card (round Sep 2, replacing the aver
     `a "How it works" link explains the bars, matching Add weight/Volume trend's own pattern (got ${section.includes('How it works') ? 'present but wrong text' : 'missing entirely'})`);
 }
 
-console.log('Consistency: no active streak falls back to the plain average as the hero (unchanged from before)');
+console.log('Consistency: no active streak falls back to the plain average as the hero, once there is enough data (2+ active weeks)');
+{
+  PROGRESS_FIXTURE = baseProgress({
+    weeks: [{ weekOf: '2026-08-17', days: 2 }, { weekOf: '2026-08-24', days: 2 }],
+    thisWeek: 2, avgPerWeek: 2, streakWeeks: 0,
+  });
+  await progressScreen({ silent: true });
+  const section = consistencySection(appEl.innerHTML);
+  ok(section.includes('class="hero">2.0<span'), `with no streak and 2 active weeks, the average is the plain bold .hero (got ${section.slice(0, 300)})`);
+  ok(!section.includes('class="streak-hero"'), 'no streak-hero markup renders when streakWeeks is 0');
+  ok(!section.includes('week streak'), 'no "week streak" text renders when streakWeeks is 0');
+}
+
+console.log('Consistency: Sep 28 2026 audit finding -- "0.3 days/week average" reads as failure when it is really just 1 week of data. A single active week now hides the raw average entirely rather than showing a small, uninformative number (same "hide until it says something real" rule as the Home stat row never showing a zero).');
 {
   PROGRESS_FIXTURE = baseProgress({
     weeks: [{ weekOf: '2026-08-17', days: 0 }, { weekOf: '2026-08-24', days: 2 }],
@@ -374,9 +387,22 @@ console.log('Consistency: no active streak falls back to the plain average as th
   });
   await progressScreen({ silent: true });
   const section = consistencySection(appEl.innerHTML);
-  ok(section.includes('class="hero">2.0<span'), `with no streak, the average is still the plain bold .hero (got ${section.slice(0, 300)})`);
-  ok(!section.includes('class="streak-hero"'), 'no streak-hero markup renders when streakWeeks is 0');
-  ok(!section.includes('week streak'), 'no "week streak" text renders when streakWeeks is 0');
+  ok(!section.includes('class="hero">2.0<span'), `1 active week no longer shows the raw average as the hero (got ${section.slice(0, 300)})`);
+  ok(section.includes('Still building your pattern'), 'shows the "not enough data yet" fallback instead');
+  ok(!section.includes('days/week average'), 'no days/week wording at all under the floor');
+}
+
+console.log('Consistency: the 2-active-week floor never hides a genuinely earned streak -- only the average half of its caption waits for enough data');
+{
+  PROGRESS_FIXTURE = baseProgress({
+    weeks: [{ weekOf: '2026-08-24', days: 2 }],
+    thisWeek: 2, avgPerWeek: 2, streakWeeks: 1,
+  });
+  await progressScreen({ silent: true });
+  const section = consistencySection(appEl.innerHTML);
+  ok(section.includes('class="streak-hero"') && section.includes('>1<') && section.includes('week streak'), `a real 1-week streak still renders as the hero even with only 1 active week (got ${section.slice(0, 300)})`);
+  ok(!section.includes('days/week average'), 'the numeric average is withheld from the caption under the floor');
+  ok(section.includes('your weekly average will show here soon'), 'caption explains the average is still coming, rather than going blank');
 }
 
 console.log('Consistency: "How it works" line is absent on the true empty state (nothing trained ever)');
