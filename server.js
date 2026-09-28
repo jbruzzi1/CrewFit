@@ -2240,6 +2240,18 @@ app.get('/api/notifications', auth, async (req, res) => {
       removals.push({ type: 'removal', sessionId: s.id, reqId: pr.id, sessionName: s.name || 'Workout', exerciseName: pr.exerciseName, from: publicUser(pr.proposedBy) });
     }
   }
+  // Sep 27 2026 (Jeff, part 1): a declined-then-changed-their-mind request (POST
+  // .../reinvite-request) sits here the same way a join/removal request does, so the creator's
+  // one-tap "Invite them back" button (app.js) survives missing the one push notification, same
+  // reasoning as removals' own comment just above. Creator-only, same as joinRequests.
+  const reinviteAsks = [];
+  for (const s of Object.values(DB.sessions)) {
+    if (s.creatorId !== req.userId) continue;
+    for (const rr of (s.reinviteRequests || [])) {
+      if (!DB.users[rr.userId] || isBlocked(rr.userId, req.userId)) continue;
+      reinviteAsks.push({ type: 'reinviteAsk', sessionId: s.id, reqId: rr.id, sessionName: s.name || 'Workout', message: rr.message || '', from: publicUser(rr.userId) });
+    }
+  }
   const cutoff = Date.now() - NOTIFICATION_HISTORY_DAYS * 86400000;
   const history = Object.values(DB.notifications)
     .filter(n => n.userId === req.userId && new Date(n.createdAt).getTime() >= cutoff)
@@ -2248,7 +2260,7 @@ app.get('/api/notifications', auth, async (req, res) => {
     .map(n => ({ type: 'history', id: n.id, title: n.title, body: n.body, at: n.createdAt, link: n.link || null }));
   const seenAt = me.notificationsSeenAt ? new Date(me.notificationsSeenAt).getTime() : 0;
   const unseenHistory = history.filter(n => new Date(n.at).getTime() > seenAt).length;
-  res.json({ invites, followRequests, joinRequests, removals, history, count: invites.length + followRequests.length + joinRequests.length + removals.length + unseenHistory });
+  res.json({ invites, followRequests, joinRequests, removals, reinviteAsks, history, count: invites.length + followRequests.length + joinRequests.length + removals.length + reinviteAsks.length + unseenHistory });
 });
 // Stamps "I have now looked at the notifications page" -- called by renderNotifications() in
 // app.js when it actually lands on the page, deliberately NOT by GET /api/notifications itself
@@ -3329,6 +3341,16 @@ function ensureSessionShape(s) {
   s.history = objArray(s.history);
   if (!isObj(s.posts)) s.posts = {};
   if (!isObj(s.draftNotes)) s.draftNotes = {};
+  // Sep 27 2026 (Jeff): "Brian declined... but later thought he could go... message the chat for a
+  // re-invitation." A private-session decliner drops to sessionTier 'stranger' (see that function's
+  // own comment) -- no participant/invited status, no logs, no history -- so they lose ALL access to
+  // the session, including chat, the instant they decline. Rather than the heavier change of
+  // re-granting chat access unilaterally, a decliner who changes their mind sends a short message
+  // that goes straight to the creator as its own notification (see POST .../reinvite-request below);
+  // the creator can then one-tap re-invite them from THEIR notification (see .../approve below),
+  // which does the exact same s.invited/s.invitedBy work the normal invite flows already do. Same
+  // objArray-normalized shape as joinRequests/pendingRemovals just above.
+  s.reinviteRequests = objArray(s.reinviteRequests);
   return s;
 }
 
@@ -4644,10 +4666,82 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   // back someone who had explicitly said no. An already-APPROVED request stays, same reasoning as
   // /leave: it was settled while they were still around, not left dangling.
   s.joinRequests = (s.joinRequests || []).filter(j => !(j.userId === req.userId && j.status === 'pending'));
+  // Sep 27 2026 (Jeff): "along with this - we should add a 'reason for declining message' and the
+  // owner will get this message." Optional, capped well short of anything that'd blow up a
+  // notification body (this is a quick reason, not a chat message -- the reinvite-request flow
+  // below is where an actual back-and-forth belongs).
+  const reason = typeof (req.body && req.body.reason) === 'string' ? req.body.reason.trim().slice(0, 300) : '';
   await save(DB);
   // Same reasoning as /accept just above: an ownerless workout has no creator to tell.
-  if (s.creatorId) notify(s.creatorId, { title: 'Invite declined', body: `${DB.users[req.userId].displayName} declined your workout`, link: { type: 'session', sessionId: s.id } });
+  if (s.creatorId) notify(s.creatorId, { title: 'Invite declined', body: `${DB.users[req.userId].displayName} declined your workout${reason ? `: "${reason}"` : ''}`, link: { type: 'session', sessionId: s.id } });
+  // Sep 27 2026 (Jeff, part 1): the decliner themselves used to get no notification of their own
+  // decline at all -- nothing for "changed your mind" to hook into later. This is the tap target:
+  // link:{type:'reinvite-ask'} opens a small compose sheet (client-side) rather than the session
+  // itself, since a private-session decliner has just dropped to sessionTier 'stranger' and can't
+  // GET the session at all anymore (see sessionTier's own comment). history:true (not the
+  // {history:false} most invite-lifecycle notifies use) since this is meant to sit and wait for
+  // "later thought he could go", not just flash by.
+  notify(req.userId, { title: 'You declined', body: `You declined ${s.name || 'the workout'}. Changed your mind?`, link: { type: 'reinvite-ask', sessionId: s.id } }, { push: false });
   res.json(sessionView(s, req.userId));
+});
+
+// Sep 27 2026 (Jeff, part 1 continued): the other half of "message the chat for a re-invitation" --
+// a decliner (now sessionTier 'stranger' or 'friend', neither of which has chat access -- see
+// sessionView's own tier-gating comment) sends a short note that reaches the creator as a real
+// notification, without re-granting any session access just to deliver one message. Deliberately
+// NOT gated behind any tier check beyond auth: the whole point is this works for someone who has
+// zero standing access to the session anymore.
+app.post('/api/sessions/:id/reinvite-request', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  if (!s.creatorId) return res.status(400).json({ error: 'no host to ask' });
+  if (s.creatorId === req.userId) return res.status(400).json({ error: 'cannot re-invite yourself' });
+  if ((s.invited || []).includes(req.userId) || (s.participants || []).includes(req.userId)) {
+    return res.status(400).json({ error: 'already part of this workout' });
+  }
+  if (isBlocked(req.userId, s.creatorId)) return res.status(403).json({ error: 'not found' });
+  const message = typeof (req.body && req.body.message) === 'string' ? req.body.message.trim().slice(0, 300) : '';
+  const rr = { id: 'rr_' + uid(), userId: req.userId, message, at: new Date().toISOString() };
+  s.reinviteRequests.push(rr);
+  await save(DB);
+  notify(s.creatorId, { title: 'Wants back in', body: `${DB.users[req.userId].displayName} would like to be re-invited to ${s.name || 'your workout'}${message ? `: "${message}"` : ''}`, link: { type: 'session', sessionId: s.id } }, { history: false });
+  res.json({ ok: true });
+});
+
+// The creator's one-tap side (Jeff's picked option): re-adds the requester exactly the way a fresh
+// invite already works (s.invited/s.invitedBy + the same 'Workout invite' notify PUT /api/sessions/:id
+// sends for a newly-added name), then clears the request. Creator-only, and still gated on being a
+// real connection -- same eligibility check every other invite path already enforces -- so this can't
+// be used to invite someone who was never connected in the first place.
+app.post('/api/sessions/:id/reinvite-request/:reqId/approve', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not your workout' });
+  const rr = (s.reinviteRequests || []).find(r => r.id === req.params.reqId);
+  if (!rr) return res.status(404).json({ error: 'not found' });
+  s.reinviteRequests = s.reinviteRequests.filter(r => r.id !== rr.id);
+  const stillConnected = connectionsOf(req.userId).includes(rr.userId);
+  if (!stillConnected) { await save(DB); return res.status(400).json({ error: 'no longer connected' }); }
+  if (!s.invited.includes(rr.userId) && !s.participants.includes(rr.userId)) {
+    s.invited.push(rr.userId);
+    s.invitedBy[rr.userId] = req.userId;
+    notify(rr.userId, { title: 'Workout invite', body: `${DB.users[req.userId].displayName} invited you back to a workout`, link: { type: 'session', sessionId: s.id } }, { history: false });
+  }
+  await save(DB);
+  res.json(sessionView(s, req.userId));
+});
+
+// Dismiss without re-inviting -- e.g. the creator has moved on and the workout is long over.
+app.post('/api/sessions/:id/reinvite-request/:reqId/dismiss', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not your workout' });
+  s.reinviteRequests = (s.reinviteRequests || []).filter(r => r.id !== req.params.reqId);
+  await save(DB);
+  res.json({ ok: true });
 });
 
 // suggest a swap (any participant; also join-requester after approval)

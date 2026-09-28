@@ -610,12 +610,12 @@ console.log('\nacceptInvite');
 await checkNavGuard('acceptInvite', () => acceptInvite('sess1'), '/api/sessions/sess1/accept', 'openSession');
 await checkFastPath('acceptInvite', () => acceptInvite('sess1'), '/api/sessions/sess1/accept', 'openSession');
 
-console.log('\ndeclineInvite (confirmSheet-wrapped)');
+console.log('\ndeclineInvite (Sep 27 2026: now a textEntrySheet with an optional reason, not a confirmSheet -- see declineInviteSheet)');
 {
   pending.clear();
   const before = calls();
-  declineInvite('sess1'); // opens the confirm sheet, wires CONFIRM_CB
-  vm.runInContext('runConfirmCb()', ctx); // taps "Decline invite" -- fires the POST, in flight
+  declineInvite('sess1'); // opens the text-entry sheet, wires window._teConfirm
+  vm.runInContext('_teConfirm()', ctx); // taps "Decline invite" -- fires the POST, in flight
   vm.runInContext('UI_EPOCH++', ctx); // user navigates away before it resolves
   pending.get('/api/sessions/sess1/decline')();
   await new Promise(r => setTimeout(r, 0));
@@ -626,7 +626,7 @@ console.log('\ndeclineInvite (confirmSheet-wrapped)');
   pending.clear();
   const before = calls();
   declineInvite('sess1');
-  vm.runInContext('runConfirmCb()', ctx);
+  vm.runInContext('_teConfirm()', ctx);
   pending.get('/api/sessions/sess1/decline')();
   await new Promise(r => setTimeout(r, 0));
   const after = calls();
