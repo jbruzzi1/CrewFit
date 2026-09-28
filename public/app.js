@@ -3432,10 +3432,15 @@ function refreshLogRec(exId, s){
           : `Try <b>${r.ready.suggested} ${U}</b> today`}</span>
         <span class="lr-why">hit ${r.ready.targetRepsMax} reps at ${W(r.ready.weight)}, last 2 sessions</span>
       </div>`;
+    // Sep 28 2026 (Jeff, real bug report -- Brian read this mid-workout and got confused): the old
+    // "10 of 12 reps last time" read like a fraction/set-count ("set 10 of 12"), not "you got 10,
+    // the target is 12". Jeff's pick from three rendered options: state what happened, then what
+    // it takes to progress -- same fix mirrored on the Progress page's own "Hold for now" list
+    // (rp-why below), which had the identical pattern.
     else if(r.hold) box.innerHTML=`<div class="log-rec hold">
         <span class="lr-ic" aria-hidden="true">–</span>
         <span class="lr-t">Repeat <b>${W(r.hold.weight)}</b></span>
-        <span class="lr-why">${r.hold.reps} of ${r.hold.targetRepsMax} reps last time</span>
+        <span class="lr-why">Hit ${r.hold.reps} reps last time — ${r.hold.targetRepsMax} moves you up</span>
       </div>`;
     // One clean session away. Dashed green, not solid: the same family as the real suggestion,
     // visibly not yet the real suggestion, and — unlike the green box — not tappable.
@@ -6444,11 +6449,14 @@ async function progressScreen(opts){
     const holdShowAllLink = d.holds.length > HOLD_SHOW_N
       ? `<div style="text-align:right;margin-top:8px"><button class="txt-btn" onclick="toggleHoldExpanded()">${HOLD_EXPANDED?'Show fewer':'Show all '+d.holds.length}</button></div>`
       : '';
+    // Sep 28 2026: same "N of M reps" confusion fix as refreshLogRec's r.hold branch above --
+    // see its own comment for the full story. Same wording pattern, here with the weight named
+    // explicitly since this list has no separate weight readout the way the log sheet does.
     holdHtml = `<div class="hold-sec"><div class="hold-head">Hold for now</div>
       ${holdShown.map(h=>`<div class="hold">
         <div class="hold-ic" aria-hidden="true">–</div>
         <div class="rp-main"><div class="rp-name">${esc(h.exercise)}</div>
-          <div class="rp-why">${h.reps} of ${h.targetRepsMax} reps at ${WL(h.weight)} — repeat it before adding</div></div>
+          <div class="rp-why">Hit ${h.reps} reps at ${WL(h.weight)} — ${h.targetRepsMax} moves you up</div></div>
       </div>`).join('')}${holdShowAllLink}</div>`;
   }
 
