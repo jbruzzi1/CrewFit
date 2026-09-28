@@ -5677,19 +5677,38 @@ function findExLibEntry(name, userId) {
   return null;
 }
 
-// Working sets logged THIS calendar week (Monday–Sunday UTC, same boundary weeksFor uses above),
-// attributed to every muscle group the exercise targets — full credit to each, same "touch it,
-// it counts" rule creditFinish already uses for history.muscleGroups, just counted in sets
-// instead of "did I touch this at all."
+// Sep 28 2026 (audit finding: "Chest shows 0/16 sets this week even though a set was logged and
+// counted everywhere else -- the finish screen said '1 working set', Home said '1 PR this week',
+// Progress's own header said '1 day trained this week'"). Root cause: volumeFor/volumeTrendFor
+// bucketed sessions by s.scheduledAt/perfDate and the server's own bare UTC clock -- the EXACT bug
+// weeksFor/currentStreak already hit and fixed (v247, see the comment above weeksFor): a session's
+// SCHEDULED timestamp can land on a different UTC calendar day/week than the day the user actually
+// trained in their own local time, and the server's bare `new Date()` "today" has no idea what the
+// caller's local day even is. This shared helper answers "which day did THIS finished session
+// count for" exactly the way weeksFor already does: prefer the session's own history row for this
+// user (h.date, stamped from the caller's localDate at the moment they hit Finish) and only fall
+// back to scheduledAt for a session that's been logged into but not yet finished (no h.date yet --
+// there is no better source for that case). Used by volumeFor, volumeTrendFor and firstLogDateFor
+// below so all three agree with weeksFor on what "this week" means, instead of each other.
+function sessionDateFor(s, userId) {
+  const hist = (s.history || []).find(h => h.userId === userId);
+  return hist ? hist.date : perfDate(s.scheduledAt).slice(0, 10);
+}
+
+// Working sets logged THIS calendar week (Monday–Sunday, anchored to the CALLER's own local day —
+// see localToday and sessionDateFor above), attributed to every muscle group the exercise targets
+// — full credit to each, same "touch it, it counts" rule creditFinish already uses for
+// history.muscleGroups, just counted in sets instead of "did I touch this at all."
 //
 // `weeks` widens the window to a trailing N-Monday-anchored span (including the current partial
 // week, same "count the week you're mid-way through" precedent weeksFor already sets) and returns
 // the PER-WEEK AVERAGE instead of a raw count, so it's directly comparable to the same target —
 // e.g. weeks=4 answers "what has this looked like lately" without one light or one heavy week
 // swinging the number. weeks=1 (the default) is untouched — same math as before this existed.
-function volumeFor(userId, weeks = 1) {
-  const today = new Date();
-  const monday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+function volumeFor(userId, weeks = 1, localToday) {
+  const today = isValidLocalDateStr(localToday) ? localToday : new Date().toISOString().slice(0, 10);
+  const [ty, tm, td] = today.split('-').map(Number);
+  const monday = new Date(Date.UTC(ty, tm - 1, td));
   monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
   const windowStart = new Date(monday); windowStart.setUTCDate(windowStart.getUTCDate() - 7 * (weeks - 1));
   const a = windowStart.toISOString().slice(0, 10);
@@ -5700,7 +5719,8 @@ function volumeFor(userId, weeks = 1) {
   for (const s of Object.values(DB.sessions)) {
     const mine = s.logs && s.logs[userId];
     if (!mine || !mine.length) continue;
-    if (perfDate(s.scheduledAt).slice(0, 10) < a || perfDate(s.scheduledAt).slice(0, 10) >= b) continue;
+    const at = sessionDateFor(s, userId);
+    if (at < a || at >= b) continue;
     for (const l of mine) {
       if (!isWorkingSet(l)) continue;
       const lib = findExLibEntry(logExerciseName(s, l, userId), userId);
@@ -5727,9 +5747,10 @@ function volumeFor(userId, weeks = 1) {
 // trailing-average window — a trend chart needs real week-by-week bars, not one blended number.
 // Every muscle group gets a bucketed set count for every week in range, same "full credit to
 // every muscle group the exercise targets" rule volumeFor already uses.
-function volumeTrendFor(userId, weeks) {
-  const today = new Date();
-  const monday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+function volumeTrendFor(userId, weeks, localToday) {
+  const today = isValidLocalDateStr(localToday) ? localToday : new Date().toISOString().slice(0, 10);
+  const [ty, tm, td] = today.split('-').map(Number);
+  const monday = new Date(Date.UTC(ty, tm - 1, td));
   monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
   const buckets = [];
   for (let i = weeks - 1; i >= 0; i--) {
@@ -5742,7 +5763,7 @@ function volumeTrendFor(userId, weeks) {
   for (const s of Object.values(DB.sessions)) {
     const mine = s.logs && s.logs[userId];
     if (!mine || !mine.length) continue;
-    const at = perfDate(s.scheduledAt).slice(0, 10);
+    const at = sessionDateFor(s, userId);
     if (at < a0 || at >= bN) continue;         // outside the whole range — skip the bucket scan
     const bucket = buckets.find(w => at >= w.a && at < w.b);
     if (!bucket) continue;
@@ -5771,10 +5792,34 @@ function firstLogDateFor(userId) {
   for (const s of Object.values(DB.sessions)) {
     const mine = s.logs && s.logs[userId];
     if (!mine || !mine.some(isWorkingSet)) continue;
-    const at = perfDate(s.scheduledAt).slice(0, 10);
+    const at = sessionDateFor(s, userId);
     if (!min || at < min) min = at;
   }
   return min;
+}
+
+// Sep 28 2026 (audit finding, Jeff: "every muscle group now says 'Behind target 2 weeks in a
+// row'... twelve red 'behind target' lines on a new account is the same demoralizing-first-
+// impression problem as before, just louder... at least collapse the streak warning to only
+// muscles the user has actually trained"). All-time (no date window -- this is "have you EVER
+// touched this muscle", not "lately"), same touch-it-it-counts credit as volumeFor. A muscle group
+// with zero sets ever isn't "behind" on anything -- it's simply not part of this person's training
+// yet (forearms/traps especially: plenty of real routines never target them directly), and
+// flagging it the same as a muscle that's genuinely regressed is exactly the "wall of red on
+// things I never claimed to train" Jeff called out.
+function everTrainedMusclesFor(userId) {
+  const touched = new Set();
+  for (const s of Object.values(DB.sessions)) {
+    const mine = s.logs && s.logs[userId];
+    if (!mine || !mine.length) continue;
+    for (const l of mine) {
+      if (!isWorkingSet(l)) continue;
+      const lib = findExLibEntry(logExerciseName(s, l, userId), userId);
+      if (!lib) continue;
+      for (const m of exMuscles(lib)) touched.add(m);
+    }
+  }
+  return touched;
 }
 
 // Sep 14 2026 (Jeff, "what else can we add to the progress page" -- picked "under target 2 weeks
@@ -5788,15 +5833,21 @@ function firstLogDateFor(userId) {
 // judging) the current week. Suppressed entirely for a user who hasn't been training long enough
 // for both comparison weeks to be real (see firstLogDateFor) -- a brand-new account should never
 // see "behind" on muscles it hasn't had the chance to train yet.
-function muscleBalanceFor(userId) {
-  const vt = volumeTrendFor(userId, 3);
+// Sep 28 2026: ALSO suppressed per muscle group the user has never once trained (see
+// everTrainedMusclesFor above) -- same principle as the account-age guard just above, applied per
+// muscle instead of per account. A muscle you've genuinely been neglecting lately still flags; one
+// you've simply never included in your training doesn't.
+function muscleBalanceFor(userId, localToday) {
+  const vt = volumeTrendFor(userId, 3, localToday);
   const [twoAgo, oneAgo] = vt.weeks;   // vt.weeks[2] is the current, in-progress week -- excluded
   const firstLog = firstLogDateFor(userId);
   if (!firstLog || firstLog > twoAgo.a) return { groups: [] };
+  const everTrained = everTrainedMusclesFor(userId);
   const byGroup2 = {}; for (const g of twoAgo.groups) byGroup2[g.group] = g.sets;
   const byGroup1 = {}; for (const g of oneAgo.groups) byGroup1[g.group] = g.sets;
   const flagged = [];
   for (const g of MUSCLE_ORDER) {
+    if (!everTrained.has(g)) continue;
     const target = MUSCLE_TARGETS[g];
     const s2 = byGroup2[g] || 0, s1 = byGroup1[g] || 0;
     if (s2 < target && s1 < target) flagged.push({ group: g, target, weeks: [s2, s1] });
@@ -6012,6 +6063,17 @@ function trendFor(userId) {
       // green up-arrow (see the comment above bestPointOfWindow). Now unit-converted too (same
       // fix as points above -- bestPoint.weight/unit are the untouched raw values).
       currentWeight: inUnit(bestPoint.weight, bestPoint.unit || 'lb', displayUnit),
+      // Sep 28 2026 (audit finding, Jeff: "the 7% is from reps (12 → 15), but showing the weight
+      // unchanged next to an up-arrow looks like a bug even though it isn't"). "What's driving it"
+      // only ever showed weight-vs-weight, but changePct is scored off est (weight AND reps via
+      // Epley) -- a rep-only improvement at the same weight is a completely real, positive change
+      // that the weight-only line couldn't show at all. Two candidate fixes, both real numbers
+      // already computed above, neither needing new math -- exposed here so the client can render
+      // either (or both, for Jeff to pick from) without another round trip:
+      //   - currentReps (+ l.points[0].reps, already sent): "40×12 → 40×15"
+      //   - currentEst (+ l.points[0].est, already sent): "115 → 123 lb (est.)"
+      currentReps: bestPoint.reps,
+      currentEst: Math.round(inUnit(bestPoint.est, 'lb', displayUnit)),
       // Sep 11 2026 (Jeff, asked before building): the per-lift Strength Trend chart plots this
       // lift's own points, and for an assisted exercise the client flips its y-axis so the line
       // still reads "up = improving" like every other lift, even though the underlying number
@@ -6426,18 +6488,21 @@ app.get('/api/progress', auth, async (req, res) => {
     // rationale). Each range is a true per-week average over its trailing window via the same
     // volumeFor(userId, weeks), not a sum — a consistently-trained muscle reads the same whether
     // you're looking at a week or 3 months.
-    volume: volumeFor(req.userId, 1),
-    volumeAvg: volumeFor(req.userId, 4),
-    volume3mo: volumeFor(req.userId, 13),
+    // Sep 28 2026: all four now take req.query.localToday, same trust rule as weeksFor just above
+    // (this is always the caller's own live request) -- see the comment above sessionDateFor for
+    // the bug this fixes (volume was disagreeing with weeksFor/Home on what "this week" means).
+    volume: volumeFor(req.userId, 1, req.query.localToday),
+    volumeAvg: volumeFor(req.userId, 4, req.query.localToday),
+    volume3mo: volumeFor(req.userId, 13, req.query.localToday),
     // No longer consumed by the client's Volume trend view as of round 5 (it used to drive a
     // per-week SVG trend chart, now retired in favor of the range-picker bar rows above) — left
     // computed/returned since Consistency's own weeksFor still needs this same `weeks` param, and
     // nothing else currently depends on removing this field. Candidate for cleanup later if truly
     // nothing else ever needs real per-week history again.
-    volumeTrend: volumeTrendFor(req.userId, weeks),
+    volumeTrend: volumeTrendFor(req.userId, weeks, req.query.localToday),
     // Sep 14 2026 additions -- see topLiftsFor()/muscleBalanceFor() for the reasoning behind each.
     topLifts: topLiftsFor(req.userId),
-    muscleBalance: muscleBalanceFor(req.userId)
+    muscleBalance: muscleBalanceFor(req.userId, req.query.localToday)
   });
 });
 
