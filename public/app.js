@@ -1234,7 +1234,17 @@ async function openSession(id, opts){
   }
   // pre-resolve proposer display names (await only at top level, not inside .map)
   const nameCache = {};
-  const nameOfCached = async (id) => { if(!(id in nameCache)) nameCache[id] = await nameOf(id); return nameCache[id]; };
+  // Sep 28 2026 (audit finding, Jeff: "wherever there is an avatar it should show the person's
+  // profile picture also, if they have one"): favChip below (the "Who's in"/"Invited" chips) used
+  // to render a letter-only circle unconditionally, never a real photo, even for someone who has
+  // one set -- personOf() makes the exact same /api/friends lookup nameOf() already did, just
+  // returning the {displayName, username, avatar} shape avatarHtml() wants instead of only the
+  // name, so this caches BOTH off the one call rather than doubling the round-trips.
+  const personCache = {};
+  const nameOfCached = async (id) => {
+    if(!(id in nameCache)){ const p = await personOf(id); personCache[id] = p; nameCache[id] = p.displayName; }
+    return nameCache[id];
+  };
   for(const ed of s.suggestedEdits){ await nameOfCached(ed.proposedBy); }
   for(const j of s.joinRequests){ await nameOfCached(j.userId); }
   for(const pr of (s.pendingRemovals||[])){ await nameOfCached(pr.proposedBy); for(const uid of (pr.requiredApprovals||[])) await nameOfCached(uid); }
@@ -1686,7 +1696,8 @@ async function openSession(id, opts){
   const favChip = (pid, pending, removable) => {
     const known = !isUnknownName(nameCache[pid]);
     const label = known ? String(nameCache[pid]) : 'A friend';
-    const av = `<div class="fav-av" style="background:${avatarColor(label)};color:#fff">${esc(label[0])}</div>`;
+    const person = personCache[pid];
+    const av = avatarHtml(person ? { ...person, displayName: label } : { displayName: label, username: '', avatar: '' }, 'fav-av');
     const removeBtn = removable ? `<button class="linkbtn" style="padding:2px 4px" title="Remove from workout" onclick="event.stopPropagation();confirmRemoveParticipant('${s.id}','${pid}',${JSON.stringify(label)})">✕</button>` : '';
     if(!pending) return `<div class="fav">${av}<span>${esc(label)}</span>${removeBtn}</div>`;
     return `<div class="fav pending"><div class="fav-av-wrap">${av}<div class="fav-pending-dot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div></div><span>${esc(label)}</span></div>`;
@@ -2588,16 +2599,18 @@ async function loadChat(s){
     return;
   }
   if(card) card.classList.remove('chat-card-open');
-  const nm={};
-  for(const c of cs){ if(!(c.userId in nm)) nm[c.userId]= await nameOf(c.userId); }
+  // Sep 28 2026 (audit finding, Jeff: "wherever there is an avatar it should show the person's
+  // profile picture also, if they have one"): this box was still on the pre-Sep-1 letter-only
+  // pattern (nameOf + a hand-rolled initial) -- loadPostComments right below got the real-photo
+  // fix that day (personOf + avatarHtml), but this sibling comment box, for the LIVE in-session
+  // workout chat rather than a posted recap's comments, was never brought along. Same fix, same
+  // pattern, mirrored here.
+  const people={};
+  for(const c of cs){ if(!(c.userId in people)) people[c.userId] = await personOf(c.userId); }
   box.innerHTML = cs.map(c=>{
-    const name = c.userId===ME.id?'You':(nm[c.userId]||'User');
-    const ini = c.userId===ME.id?'Y':((nm[c.userId]||'?')[0]||'?');
-    // "You" used to get an off-palette orange found nowhere else in the app, while everyone else
-    // got the old rainbow hash -- two more one-off treatments on top of Home's own green avatar.
-    // avatarColor() is now one consistent accent for everyone (see its definition), including you;
-    // the bold "You"/name label right next to it is what actually says whose comment this is.
-    const col = avatarColor(nm[c.userId]||c.userId);
+    const p = people[c.userId] || { displayName:'User', username:'', avatar:'' };
+    const name = c.userId===ME.id?'You':(p.displayName||'User');
+    const avHtml = avatarHtml(c.userId===ME.id ? { ...p, displayName:'You' } : p, 'fav-av');
     const t = new Date(c.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
     const editedTag = c.editedAt ? ' <span class="muted" style="font-size:11px">(edited)</span>' : '';
     // Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one", then
@@ -2615,7 +2628,7 @@ async function loadChat(s){
     const dots = c.userId===ME.id
       ? '<div class="cmt-own-actions"><button class="cmt-edit-btn" onclick="editChatMessagePrompt(\''+s.id+'\',\''+c.id+'\',\''+jsq(c.text)+'\')" aria-label="Edit message">'+editPencilSvg()+'</button><button class="cmt-delete-btn" onclick="deleteChatMessagePrompt(\''+s.id+'\',\''+c.id+'\')" aria-label="Delete message">'+trashSvg()+'</button></div>'
       : '';
-    return '<div class="cmt"><div class="fav-av" style="background:'+col+';color:#fff">'+esc(ini)+'</div><div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span>'+editedTag+'</div><div class="cmt-text">'+esc(c.text)+'</div></div>'+dots+'</div>';
+    return '<div class="cmt">'+avHtml+'<div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span>'+editedTag+'</div><div class="cmt-text">'+esc(c.text)+'</div></div>'+dots+'</div>';
   }).join('');
 }
 async function editChatMessagePrompt(sessionId, commentId, currentText){
@@ -7393,9 +7406,16 @@ async function friends(opts){
   // can be ME.id. `f` (the friends list) never contains yourself, so a plain `f.find` lookup used
   // to silently fall through to "A friend" for your own rows. actorOf/actorName both special-case
   // ME.id first, the same way personOf() already does elsewhere in this file.
-  const actorOf = id => id===ME.id ? { id, displayName:'You', username: ME.username||'', avatar: ME.avatar||'' }
+  // Sep 28 2026 (audit finding): actorOf used to overwrite displayName with the literal string
+  // 'You' for your own rows -- fine for actorName's headline text, but that same object also feeds
+  // avatarHtml(actorOf(ff.by),...) in heroCardHtml, and avatarHtml falls back to a colored initial
+  // ("Y") whenever there's no photo. Your own hero card was showing a "Y" avatar instead of your
+  // real initial/photo -- the identity object and the "You" headline label are two different
+  // things and got conflated. actorOf now always carries your REAL displayName (so avatarHtml's
+  // fallback initial is correct); actorName is the only place "You" gets substituted in.
+  const actorOf = id => id===ME.id ? { id, displayName: ME.displayName||ME.username||'You', username: ME.username||'', avatar: ME.avatar||'' }
     : (f.find(x=>x.id===id) || { id, displayName:'A friend', username:'', avatar:'' });
-  const actorName = id => actorOf(id).displayName;
+  const actorName = id => id===ME.id ? 'You' : actorOf(id).displayName;
   // "N days ago" bucketing for a compact feed row's trailing timestamp -- distinct from fmtWhen
   // (used elsewhere for a workout's own scheduled time, "Today, 3:45 PM"). Handles days<=0 as
   // "Today" too: since Sep 12, a same-day compact row can render under the "Today" header
