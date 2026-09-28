@@ -675,8 +675,28 @@ async function home(opts){
     return then.toLocaleDateString(undefined, { month:'short', day:'numeric' });
   };
   const weekAgoMs = Date.now() - 7*86400e3;
-  const earnedPrs = ((prog && prog.prs) || []).filter(p => p.source === 'earned' && !p.firstLog);
-  const prsThisWeek = earnedPrs.filter(p => new Date(p.at).getTime() >= weekAgoMs).length;
+  // Sep 28 2026 (audit finding, Jeff: "Home says '1 PR this week'. By my count it's 2 or 3 --
+  // Sep 23 40x15, today's 45x12, and 95x8, all inside the same week"): the old `!p.firstLog`
+  // filter here was borrowed from the celebratory PR BADGE rule (see exSetRowsHtml/setRows/the
+  // finish recap's own firstLog gating, a narrower "did THIS set earn a badge" question) -- right
+  // for a badge on one set, wrong for a week-in-review tally, where a first attempt at a new lift
+  // is a genuine, real thing that happened this week and belongs in the count. `earnedPrs` below
+  // keeps every earned record regardless of firstLog now; only prsThisWeek's OWN counting logic
+  // changed, so `best` just below (which never had a documented reason to want firstLog excluded)
+  // is unaffected either way.
+  const earnedPrs = ((prog && prog.prs) || []).filter(p => p.source === 'earned');
+  // Counts the weight-record event AND the volume-record event for this week separately, unless
+  // they're literally the same set (same "genuinely different set" guard the Records list's own
+  // setPrCaption uses) -- so a set that wins both records only counts once, but Sep 23's 40x15
+  // (a genuine volume record, still standing -- see setPrLabel's own comment) counts alongside
+  // 45x12's weight record instead of being invisible to this tally the same way it used to be
+  // invisible on the Records list.
+  const prsThisWeek = earnedPrs.reduce((n, p) => {
+    if (new Date(p.at).getTime() >= weekAgoMs) n++;
+    const sameSet = p.setWeight === p.weight && p.setReps === p.reps;
+    if (p.setAt && !sameSet && new Date(p.setAt).getTime() >= weekAgoMs) n++;
+    return n;
+  }, 0);
   // v249 (audit finding): this comment used to claim records "carry no unit field" and are
   // therefore safe to label with prog.unit, the page's current unit preference — that was true
   // only by accident, because rebuildAllPrs() (server.js) used to silently drop the unit a PR was
@@ -1858,7 +1878,12 @@ async function viewPost(id, authorId, opts){
   // the same PUT/DELETE /api/sessions/:id/log/:logId already used by the live in-workout
   // "Edit set" sheet (editLogSet et al above) -- that route is keyed off req.userId's own
   // s.logs entry server-side, so this needed no server change, just this entry point.
-  const setRows = (ls, mine) => `<div class="pp-sets">${ls.map(l=>`<div class="pp-set${mine?' pp-set-mine':''}"${mine?` onclick="editPostedSet('${id}','${authorId}','${l.id}')"`:''}>${ (()=>{ const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''}; return `<span class="pp-set-n ${b.c}">${b.t}</span>`; })() }<span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr?'<span class="pp-pr pp-pr-gold">PR</span>':''}${l.isSetPr?'<span class="pp-pr">VOLUME</span>':''}</div>`).join('')}</div>`;
+  // setBadges (defined below, hoisted) gives the warm-up-excluded working-set count -- same fix,
+  // same helper, as the live log sheet's exSetRowsHtml. `ls` is already sorted by set above.
+  // Sep 28 2026 (same audit finding as exSetRowsHtml's PR badge above): a first-ever log showed a
+  // PR badge here too, disagreeing with the Activity feed which already excludes first-ever logs
+  // -- gated on !firstLog/!setFirstLog for the same reason, Records/profile untouched.
+  const setRows = (ls, mine) => { const badges = setBadges(ls); return `<div class="pp-sets">${ls.map((l,i)=>`<div class="pp-set${mine?' pp-set-mine':''}"${mine?` onclick="editPostedSet('${id}','${authorId}','${l.id}')"`:''}><span class="pp-set-n ${badges[i].c}">${badges[i].t}</span><span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr&&!l.firstLog?'<span class="pp-pr pp-pr-gold">PR</span>':''}${l.isSetPr&&!l.setFirstLog?'<span class="pp-pr">VOLUME</span>':''}</div>`).join('')}</div>`; };
   // An approved swap replaces the exercise for the session, and openSession already titles the
   // card with the swapped-in name. This screen said the original, so the two disagreed about what
   // the lift even was. Same resolution here, so they agree.
@@ -2430,10 +2455,21 @@ async function editPostedSet(id, authorId, logId){
   const mine = (s.logs && s.logs[ME.id]) || [];
   const l = mine.find(x => x.id === logId);
   if(!l) return;
+  // Sep 28 2026 (cold-review catch on the audit9 warm-up-numbering fix): this sheet used to show
+  // the raw, un-corrected l.set -- so a row badged "1" (setBadges' warm-up-excluded count) could
+  // open an Edit sheet header that said "Set 2" (the old raw sequential value), the exact
+  // inconsistency that fix was meant to remove. Recompute the same badge the row itself shows,
+  // using the same setBadges() helper, and only swap in the corrected number for a plain numbered
+  // (normal/failure-numbered) set -- a warm-up/drop still shows its own raw number here, unchanged,
+  // same as before this fix (this header has never rendered "W"/"D" labels, only numbers).
+  const rowsForEx = mine.filter(x=>x.exerciseId===l.exerciseId).sort((a,b)=>(Number(a.set)||0)-(Number(b.set)||0));
+  const badgeIdx = rowsForEx.findIndex(x=>x.id===logId);
+  const badgeT = badgeIdx>=0 ? setBadges(rowsForEx)[badgeIdx].t : null;
+  const setLabel = typeof badgeT === 'number' ? badgeT : (l.set||'');
   openSheetHtml(`
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>Edit set</h2><button class="icon-btn" onclick="closeSheet()" aria-label="Close">✕</button></div>
-      <div class="ex-sub">Set ${l.set||''}</div>
+      <div class="ex-sub">Set ${setLabel}</div>
       <label class="muted" style="font-size:12px">Weight (${unitOf(l)})</label>
       <input id="ppEdW" type="number" inputmode="decimal" step="any" value="${l.weight}">
       <label class="muted" style="font-size:12px">Reps</label>
@@ -3155,6 +3191,25 @@ function exLogBlockHtml(s, e, o){
     </div>`:''}
     <div data-f="rest"></div>`;
 }
+// Sep 28 2026 (audit finding, Jeff: "Sets show W, 2, 3 -- but the summary says 'working sets' and
+// excludes the warm-up from volume ... Working sets should be 1, 2"): l.set (server.js) is the RAW
+// log order, kept that way on purpose so rows always sort correctly regardless of type -- it was
+// never meant to be echoed straight into the badge. A warm-up/drop set shouldn't consume a number
+// in that sequence at all, only the actual working sets should be counted for display. Walks the
+// already-sorted row list once, handing back one badge per row; a warm-up/drop still reads "W"/"D"
+// exactly as before, a failure set still reads "F" (unchanged, existing behavior -- Jeff's report
+// was specifically about the warm-up, not about failure sets also getting a number), and only the
+// plain/normal rows get the corrected, warm-up/drop-excluded count. Shared by the live log sheet
+// (exSetRowsHtml) and the posted-workout view (setRows below) -- both had the identical bug.
+function setBadges(rows){
+  let n = 0;
+  return rows.map(l=>{
+    if(l.setType==='warmup') return {t:'W',c:'warm'};
+    if(l.setType==='drop') return {t:'D',c:'drop'};
+    if(l.setType==='failure') return {t:'F',c:'fail'};
+    n++; return {t:n,c:''};
+  });
+}
 // The set rows inside a card. Same shape as the posted-workout view's rows (Jeff sent that
 // screenshot as the target): a W/D/F badge or the set number, "143 lb × 12 reps", PR, Edit.
 // Prefer the loadType stamped on the set when it was logged; fall back to the exercise's current
@@ -3163,11 +3218,12 @@ function exLogBlockHtml(s, e, o){
 function exSetRowsHtml(sid, exId, exLogs, loadType, justLoggedId){
   const rows = (exLogs||[]).slice().sort((a,b)=>(a.set||0)-(b.set||0));
   if(!rows.length) return `<div class="ex-log-empty muted">No sets yet</div>`;
+  const badges = setBadges(rows);
   const suffixFor = l => { const t = l.loadType || loadType || ''; return t==='pair' ? ' each' : t==='added' ? ' added' : ''; };
   // RIR is optional per set - only shown when actually tracked, never a fabricated "RIR 0".
   const rirFor = l => (l.rir!==undefined && l.rir!==null) ? ` · RIR ${l.rir}` : '';
-  return rows.map(l=>{
-    const b = l.setType==='warmup'?{t:'W',c:'warm'}:l.setType==='drop'?{t:'D',c:'drop'}:l.setType==='failure'?{t:'F',c:'fail'}:{t:(l.set||'·'),c:''};
+  return rows.map((l,i)=>{
+    const b = badges[i];
     const pop = l.id===justLoggedId ? ' pr-pop' : '';
     // Sep 9 2026 (Jeff: "PR icon for heaviest weight for a rep and also a total volume for a
     // set... different color and acronym"): two independent records can land on the same set, so
@@ -3182,11 +3238,17 @@ function exSetRowsHtml(sid, exId, exLogs, loadType, justLoggedId){
     // 2026, same day: "I think maybe it should say VOLUME instead of VOL - Hevy says VOLUME full
     // and that avoids confusion") -- matching the convention of a well-known competitor app Jeff
     // referenced by name.
+    // Sep 28 2026 (audit finding, "PR definition inconsistent across the app" -- a first-ever log
+    // of a lift got a live PR badge here but never showed up on the Activity feed, which already
+    // excluded first-ever logs via groupPrsForFeed): gated on !firstLog/!setFirstLog so the live
+    // badge agrees with the feed instead of contradicting it. Records/profile still show the lift
+    // as the current best regardless (isPr/isSetPr themselves are untouched) -- only the
+    // celebratory "you just hit a PR" badges are suppressed for a set with nothing to compare to.
     return `<div class="pp-set pp-set-mine" onclick="editLogSet('${sid}','${exId}','${l.id}')">
       <span class="pp-set-n ${b.c}">${b.t}</span>
       <span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)}${suffixFor(l)} × ${Number(l.reps)||0} reps${rirFor(l)}</span>
-      ${l.isPr?`<span class="pp-pr pp-pr-gold${pop}">PR</span>`:''}
-      ${l.isSetPr?`<span class="pp-pr${pop}">VOLUME</span>`:''}
+      ${l.isPr && !l.firstLog?`<span class="pp-pr pp-pr-gold${pop}">PR</span>`:''}
+      ${l.isSetPr && !l.setFirstLog?`<span class="pp-pr${pop}">VOLUME</span>`:''}
     </div>`; }).join('');
 }
 // Re-render one card's set rows from a fresh session object, in place -- nothing else on the
@@ -3314,7 +3376,22 @@ function refreshLogRec(exId, s){
   // scope at every call site below) says whether THIS exercise has a set logged today; the r.soon
   // branch below picks its wording from that, same "state" this box is a caller for the r.ready/
   // r.hold branches, just this one now has two versions instead of one.
-  const hasLoggedToday = !!(s && s.logs && s.logs[ME.id] && s.logs[ME.id].some(l => l.exerciseId === exId));
+  // Sep 28 2026 (audit finding, Jeff: "A warm-up set triggers the coaching ... Warm-ups should be
+  // invisible to the overload engine"): recommendationsFor (server.js) already excludes warm-ups
+  // from the actual ready/hold/soon EVIDENCE via isWorkingSet -- what was still wrong was this
+  // wording flag, which counted ANY logged set today, warm-up included. A warm-up flipped the copy
+  // from "Last time: X x Y / Match that today" to "One more set like that" as if it were real
+  // progress toward the suggestion, even though nothing about the recommendation itself had moved.
+  // Same working-set definition as server.js's WORKING_SET_TYPES (normal/failure; warmup/drop are not).
+  const hasLoggedToday = !!(s && s.logs && s.logs[ME.id] && s.logs[ME.id].some(l => l.exerciseId === exId && l.setType!=='warmup' && l.setType!=='drop'));
+  // Sep 28 2026 (audit finding, Jeff: "the suggestion doesn't see today's sets... hit 45x12, got a
+  // PR badge, and the card still said 'Try 45 lb today'"): sessionsForUser() (server.js) deliberately
+  // excludes any working set carrying an RIR value from the coaching evidence (Aug 22 rule: "the
+  // weight to add next should focus only on full sets, not any with an RIR") -- correct on its own,
+  // but with nothing telling the person WHY, a real set they just logged looks silently ignored.
+  // Asked Jeff how this should read; his pick: acknowledge it happened, still don't count it. Same
+  // working-set definition as hasLoggedToday just above, narrowed to sets that actually carry `rir`.
+  const hasRirToday = !!(s && s.logs && s.logs[ME.id] && s.logs[ME.id].some(l => l.exerciseId === exId && l.setType!=='warmup' && l.setType!=='drop' && l.rir!==undefined && l.rir!==null));
   H.get('/api/progress/exercise/'+encodeURIComponent(recName)).then(r=>{
     if(block._recSeq !== mySeq) return;   // superseded by a newer refresh on this same card
     if(!document.body.contains(block)) return;   // the page re-rendered or was left meanwhile
@@ -3326,7 +3403,12 @@ function refreshLogRec(exId, s){
     // LESS weight next time -- less assist is the harder set, same inversion as everywhere else
     // this touches. lessIsMore flags that so this box points its arrow down and says "assist",
     // not "add", while staying otherwise identical (still tappable, still fills the same input).
-    if(r.ready) box.innerHTML=`<div class="log-rec up" role="button" tabindex="0"
+    if(hasRirToday) box.innerHTML=`<div class="log-rec hold">
+        <span class="lr-ic" aria-hidden="true">–</span>
+        <span class="lr-t">Logged with RIR</span>
+        <span class="lr-why">Try it again without RIR to count toward your next suggestion</span>
+      </div>`;
+    else if(r.ready) box.innerHTML=`<div class="log-rec up" role="button" tabindex="0"
         onclick="useSuggested('${exId}',${r.ready.suggested})"
         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();useSuggested('${exId}',${r.ready.suggested});}">
         <span class="lr-ic" aria-hidden="true">${r.ready.lessIsMore?'↓':'↑'}</span>
@@ -3727,12 +3809,18 @@ async function editLogSet(sid, exId, logId){
   const mine=(s&&s.logs&&s.logs[ME.id])||[];
   const l=mine.find(x=>x.id===logId); if(!l) return;
   const block = logBlock(exId); const loadType = block ? (block.dataset.load||'') : '';
+  // Sep 28 2026 (cold-review catch, same fix as editPostedSet above): recompute the row's own
+  // setBadges() number rather than showing the raw, un-corrected l.set.
+  const rowsForEx = mine.filter(x=>x.exerciseId===exId).sort((a,b)=>(Number(a.set)||0)-(Number(b.set)||0));
+  const badgeIdx = rowsForEx.findIndex(x=>x.id===logId);
+  const badgeT = badgeIdx>=0 ? setBadges(rowsForEx)[badgeIdx].t : null;
+  const setLabel = typeof badgeT === 'number' ? badgeT : (l.set||'');
   history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet=document.createElement('div'); sheet.className='sheet-back';
   sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>Edit set</h2><button class="icon-btn" onclick="closeSheet()" aria-label="Close">✕</button></div>
-      <div class="ex-sub">Set ${l.set||''}</div>
+      <div class="ex-sub">Set ${setLabel}</div>
       <label class="muted" style="font-size:12px">Weight (${unitOf(l)}${loadType==='pair'?', each hand':loadType==='added'?' added':''})</label>
       <input id="edW" type="number" inputmode="decimal" step="any" value="${l.weight}">
       <label class="muted" style="font-size:12px">Reps</label>
@@ -3970,12 +4058,17 @@ async function showRecap(id){
       if(w>0){ vol += w*r*(pair?2:1); if(pair) anyPair=true; if(lt==='added') anyAdded=true; if(lt==='single') anySingle=true; }
       else anyBW=true;
       if(!top || w>toUser(top.weight,unitOf(top)) || (w===toUser(top.weight,unitOf(top)) && r>(Number(top.reps)||0))) top=l;
-      if(l.isPr) prs.push(`${esc(nm)} — ${Number(l.weight)>0?Number(l.weight)+' '+unitOf(l):'bodyweight'} × ${r}`);
+      // Sep 28 2026 (audit finding, Jeff: "Barbell Row 95x8 got a PR badge and appeared in the
+      // finish screen's '2 personal records' ... but it's not in the Activity feed ... A first-ever
+      // log of a lift shouldn't be a PR anywhere"): groupPrsForFeed (server.js) already excludes a
+      // first-ever log from the celebratory feed via !p.firstLog -- this screen, right above that
+      // exact same feed item in the flow, was missing the matching check. Same rule, both surfaces.
+      if(l.isPr && !l.firstLog) prs.push(`${esc(nm)} — ${Number(l.weight)>0?Number(l.weight)+' '+unitOf(l):'bodyweight'} × ${r}`);
       // Sep 9 2026: a set can also be the biggest total-weight set ever done on this lift without
       // being the heaviest weight (see rebuildAllPrs) -- worth the same "you did something new"
       // moment on the one screen built for celebrating, even though it's a different record than
       // the line above. Labeled explicitly ("best set") so it isn't misread as a duplicate PR.
-      if(l.isSetPr && !l.isPr) prs.push(`${esc(nm)} — ${Number(l.weight)>0?Number(l.weight)+' '+unitOf(l):'bodyweight'} × ${r} (best set)`);
+      if(l.isSetPr && !l.isPr && !l.setFirstLog) prs.push(`${esc(nm)} — ${Number(l.weight)>0?Number(l.weight)+' '+unitOf(l):'bodyweight'} × ${r} (best set)`);
     }
     return {nm, logged, ceiling, top, range:repLabel(e), work:logged.filter(isWorking).length};
   }).filter(r=>r.work);
@@ -5900,10 +5993,20 @@ function setVolMode(m){ VOL_MODE = m; progressScreen({silent:true}); }
 const GROUP_LABEL = { legs:'Legs', push:'Push', pull:'Pull', core:'Core', cardio:'Cardio', other:'Other' };
 // Mirrors server.js's PLATEAU_MIN_SESSIONS -- copy text only, the server is the actual gate.
 const PLATEAU_MIN_SESSIONS = 3;
-// Display labels for the weekly-volume meter rows (server sends raw EX_LIB muscle_groups keys).
+// Display labels for muscle-group keys app-wide (server/library send raw EX_LIB muscle_groups
+// keys, e.g. 'lats', 'abdominals'). Originally built for the weekly-volume meter rows only; Sep 28
+// 2026 (audit finding, Jeff: "Muscle names differ: library says Lats / Abdominals, Trends says
+// Back / Abs -- pick one naming convention app-wide") -- the exercise library screens were instead
+// relying on CSS text-transform:capitalize on the raw key (see .sheet-thumb-cap, index.html),
+// which literally capitalizes "lats"/"abdominals" rather than translating them. Rather than invent
+// new wording, this map (Jeff's own already-shipped choice on Trends) is now the one source of
+// truth everywhere a muscle key is shown to a person -- see muscleLabel() below.
 const MUSCLE_LABEL = { chest:'Chest', lats:'Back', shoulders:'Shoulders', traps:'Traps',
   biceps:'Biceps', triceps:'Triceps', forearms:'Forearms', quads:'Quads', hamstrings:'Hamstrings',
-  glutes:'Glutes', calves:'Calves', abdominals:'Abs' };
+  glutes:'Glutes', calves:'Calves', abdominals:'Abs', cardio:'Cardio' };
+// Falls back to a capitalized raw key for anything not in the map (defensive only -- MUSCLE_LABEL
+// covers every key LIB_MUSCLES/EX_LIB actually uses, this is just for an unrecognized one).
+function muscleLabel(key){ return MUSCLE_LABEL[key] || (key ? key.charAt(0).toUpperCase()+key.slice(1) : ''); }
 // A bodyweight best has no weight — "0 × 10" reads as broken. Show the reps, which is what
 // you actually compare bodyweight sets on.
 // "2026-05-01" -> "May 1"
@@ -5923,6 +6026,20 @@ function prLabel(p){
   const w=Number(p.weight)||0;
   if(w===0) return `${p.reps} reps`;
   return `${w} ${unitOf(p)} × ${p.reps}`;
+}
+// Sep 28 2026 (audit finding, Jeff: "Sep 23's 40x15 was a PR ... later vanished from Records once
+// 45x12 became the weight record"): it never actually vanished server-side -- recordsFor() has
+// always tracked the best-VOLUME set (weight x reps) as its own separate record alongside the
+// best-WEIGHT set (see rebuildAllPrs' bestSetLog in server.js), but the Personal records row only
+// ever rendered prLabel(p) -- the weight record -- so a set that won on volume alone (600, i.e.
+// 40x15) had nowhere to show once a heavier-but-lower-volume set (540, i.e. 45x12) took the weight
+// slot. This is that record's own label, read off the SAME p object's setWeight/setReps/setUnit
+// fields (already sent by recordsFor(), just never displayed) instead of building a second history
+// system to solve a display gap.
+function setPrLabel(p){
+  const w=Number(p.setWeight)||0;
+  if(w===0) return `${p.setReps} reps`;
+  return `${w} ${p.setUnit||'lb'} × ${p.setReps}`;
 }
 
 // Sep 14 2026: shared by both the Goals card and the inline bar on a Personal-records row (see
@@ -6111,7 +6228,7 @@ function volTrendChart(d){
     const flag = balanceByGroup[g.group];
     const flagHtml = flag ? `<div class="rp-why" style="margin-top:6px">Behind target 2 weeks in a row</div>` : '';
     return `<div class="mv-row">
-      <div class="mv-top"><span class="mv-name">${MUSCLE_LABEL[g.group]||g.group}</span>
+      <div class="mv-top"><span class="mv-name">${muscleLabel(g.group)}</span>
         <span class="mv-n">${g.sets}<span class="mv-of"> / ${g.target} sets${rangeInfo.suffix}</span></span></div>
       <div class="mv-track"><div class="mv-fill${met?' mv-met':''}" style="width:${pct}%"></div></div>
       ${flagHtml}
@@ -6404,6 +6521,12 @@ async function progressScreen(opts){
         // same unit, not whatever unit the viewer happens to be on right now (prLabel's own v249
         // fix, same reasoning, applied here too).
         const goalFallback = (!p.goalProgress && p.goal) ? `<div class="pr-goal">goal ${p.goal} ${unitOf(p)}</div>` : '';
+        // Sep 28 2026 (audit finding -- see setPrLabel's own comment above): only worth a second
+        // line when it's genuinely a DIFFERENT set than the weight record above it -- the common
+        // case is the same set wins both, and showing "45 lb x 12 / Best set: 45 lb x 12" twice
+        // would just look like a rendering bug.
+        const setPrCaption = (p.setWeight!==undefined && (p.setWeight!==p.weight || p.setReps!==p.reps))
+          ? `<div class="pr-setpr">Best set: ${setPrLabel(p)}</div>` : '';
         if(p.source==='entered') return `<div class="pr pr-self">
           <div><div class="pr-n">${esc(p.exercise)} <span class="self-tag">you entered</span></div>
             <div class="pr-d">Starting best · beat it to set a record</div></div>
@@ -6414,11 +6537,11 @@ async function progressScreen(opts){
             <div class="pr-beat-was">Beat the <b>${p.seedWeight} × ${p.seedReps}</b> you entered</div></div>
           <div class="pr-r"><div class="pr-w">${prLabel(p)}</div>
             <div class="beat-chip">▲ Record beaten</div></div>
-          ${goalBarHtml(p,'pr-goalbar')}</div>`;
+          ${setPrCaption}${goalBarHtml(p,'pr-goalbar')}</div>`;
         return `<div class="pr">
           <div><div class="pr-n">${esc(p.exercise)}</div><div class="pr-d">${fmtDate(p.at)}</div></div>
           <div class="pr-r"><div class="pr-w">${prLabel(p)}</div>${goalFallback}</div>
-          ${goalBarHtml(p,'pr-goalbar')}</div>`;
+          ${setPrCaption}${goalBarHtml(p,'pr-goalbar')}</div>`;
       }).join('') + prShowAllLink
     : `<div class="muted" style="padding:8px 2px">Log a workout — your first set of any exercise is a record.</div>`;
 
@@ -6786,7 +6909,7 @@ function renderLibGroups(){
     const tiles = cat.muscles.map(m=>`
       <div class="mg-card mg-tile" onclick="libOpenMuscle('${m}')">
         <div class="mg-ico">${mgIcon(m)}</div>
-        <div class="mg-card-body"><div class="mg-card-name">${esc(m)}</div><div class="mg-card-count">${counts[m]} exercises</div></div>
+        <div class="mg-card-body"><div class="mg-card-name">${esc(muscleLabel(m))}</div><div class="mg-card-count">${counts[m]} exercises</div></div>
       </div>`).join('');
     return `${cat.name ? `<div class="lib-cat">${esc(cat.name)}</div>` : ''}<div class="mg-grid">${tiles}</div>`;
   }).join('');
@@ -6795,6 +6918,12 @@ function renderLibGroups(){
 function libOpenMuscle(m, opts){
   // v254: same silent/fromHistory shape as library() -- see its comment just above. The only
   // silent caller is submitCreateEx's same-screen refresh; the only fromHistory caller is popstate.
+  // Sep 28 2026 (audit finding, muscle-naming consistency -- see muscleLabel()'s own comment): `m`
+  // itself stays the raw EX_LIB key everywhere below (LIB_STATE, onclick handlers, mgIcon) since
+  // that's the vocabulary the rest of the picker matches against -- only the three header <h1>s and
+  // the search placeholder actually SHOW it to a person, so only those go through muscleLabel(m).
+  // This screen used to rely on CSS text-transform:capitalize for that display (removed below),
+  // which merely capitalized the raw key ("Lats") instead of the app's real display name ("Back").
   const silent = !!(opts && opts.silent);
   const fromHistory = !!(opts && opts.fromHistory);
   LIB_STATE.view='muscle'; LIB_STATE.muscle=m; LIB_STATE.eq=''; LIB_STATE.q=''; LIB_STATE.fav=false;
@@ -6802,7 +6931,7 @@ function libOpenMuscle(m, opts){
   const head = LIB_ADDMODE
     ? `<div class="pick-head lib-head">
          <button class="sec sm" onclick="library()">‹ All muscles</button>
-         <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
+         <h1 style="flex:1;font-size:18px">${esc(muscleLabel(m))}</h1>
          <button class="icon-btn" onclick="openCreateEx('${m}')" title="Create exercise">＋</button>
          <button class="blue sm" onclick="libDone()">Done (<span id="libDoneCount">${DRAFT.exercises.length}</span>)</button>
        </div>`
@@ -6816,16 +6945,16 @@ function libOpenMuscle(m, opts){
     : SEED_MODE
     ? `<div class="pick-head lib-head">
          <button class="sec sm" onclick="library()">‹ All muscles</button>
-         <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
+         <h1 style="flex:1;font-size:18px">${esc(muscleLabel(m))}</h1>
        </div>`
     : `<div class="pick-head lib-head">
          <button class="sec sm" onclick="library()">‹ All muscles</button>
-         <h1 style="flex:1;font-size:18px;text-transform:capitalize">${esc(m)}</h1>
+         <h1 style="flex:1;font-size:18px">${esc(muscleLabel(m))}</h1>
          <button class="txt-btn" onclick="templatesPage()" title="Routines">Routines</button>
          <button class="icon-btn" onclick="openCreateEx('${m}')" title="Create exercise">＋</button>
        </div>`;
   $('app').innerHTML = `<div class="pick">${head}
-    <div class="pick-search"><input id="ls" placeholder="Search ${esc(m)}" oninput="libSearch(this.value)"></div>
+    <div class="pick-search"><input id="ls" placeholder="Search ${esc(muscleLabel(m))}" oninput="libSearch(this.value)"></div>
     <div class="cat-pills eq-pills" id="eqPills2">
       <span class="cat-pill on" data-eq="" onclick="pickEq2(this)">Any</span>
       <!-- Jeff, Sep 1: "when adding exercises to a workout you can click the favorite tab for
@@ -6864,7 +6993,7 @@ function exRowHtml(e){
     return `<div class="ex-row" onclick="swapPick('${jsq(e.name)}')">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}${exBadges(e)}</div>
+          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).map(muscleLabel).join(' · '))}${e.mine?' · your exercise':''}${exBadges(e)}</div>
         </div>
         <div class="mg-chev">›</div>
       </div>`;
@@ -6873,7 +7002,7 @@ function exRowHtml(e){
     return `<div class="ex-row" onclick="suggestAddPick('${jsq(e.name)}')">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}${exBadges(e)}</div>
+          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).map(muscleLabel).join(' · '))}${e.mine?' · your exercise':''}${exBadges(e)}</div>
         </div>
         <div class="mg-chev">›</div>
       </div>`;
@@ -6884,7 +7013,7 @@ function exRowHtml(e){
     return `<div class="ex-row" onclick="seedPickerPick('${jsq(e.name)}')">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${exBadges(e)}</div>
+          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).map(muscleLabel).join(' · '))}${exBadges(e)}</div>
         </div>
         <div class="mg-chev">›</div>
       </div>`;
@@ -6896,7 +7025,7 @@ function exRowHtml(e){
     return `<div class="ex-row ${added?'ex-on':''}" onclick="libToggle('${jsq(e.name)}', this)">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
-          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}${exBadges(e)}</div>
+          <div class="ex-mg">${esc(exMuscles(e).slice(0,2).map(muscleLabel).join(' · '))}${e.mine?' · your exercise':''}${exBadges(e)}</div>
         </div>
         ${favBtnHtml(e)}
         <div class="ex-add">${added?'✓':'+'}</div>
@@ -6905,7 +7034,7 @@ function exRowHtml(e){
   return `<div class="ex-row" onclick="exDetail('${jsq(e.name)}')">
       <div class="ex-main">
         <div class="ex-name">${esc(e.name)}</div>
-        <div class="ex-mg">${esc(exMuscles(e).slice(0,2).join(' · '))}${e.custom?' · your exercise':''}${exBadges(e)}</div>
+        <div class="ex-mg">${esc(exMuscles(e).slice(0,2).map(muscleLabel).join(' · '))}${e.mine?' · your exercise':''}${exBadges(e)}</div>
       </div>
       ${favBtnHtml(e)}
       <div class="mg-chev">›</div>
@@ -6933,7 +7062,11 @@ function renderLibExercises(){
     : '<div class="muted" style="padding:20px;text-align:center">No exercises here.</div>';
 }
 function openCreateEx(presetMuscle){
-  const msel = LIB_MUSCLES.map(m=>`<option value="${m}" ${presetMuscle===m?'selected':''}>${m}</option>`).join('');
+  // Sep 28 2026 (audit finding, muscle-naming consistency): this dropdown's visible option text
+  // was the raw EX_LIB key ("lats") with no capitalize CSS on <option> at all -- muscleLabel(m)
+  // now matches every other display spot; the <option>'s value stays the raw key untouched, since
+  // that's what actually gets submitted.
+  const msel = LIB_MUSCLES.map(m=>`<option value="${m}" ${presetMuscle===m?'selected':''}>${esc(muscleLabel(m))}</option>`).join('');
   const eqOpts = EQ_FAMILY.map(f=>`<option value="${f.key}">${f.label}</option>`).join('');
   history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet = document.createElement('div'); sheet.className='sheet-back';
@@ -6973,17 +7106,28 @@ function showHowItWorks(title){
 }
 function exDetail(name){
   const e = window._LIB2.find(x=>x.name===name); if(!e) return;
-  const sets = e.defaultSets||3, reps=e.defaultReps||10;
+  const sets = e.defaultSets||3;
+  // Sep 28 2026 (audit finding, Jeff: "Exercise sheet says 'Suggested 3 x 10'; the workout card
+  // says 'Target 3 x 10-15'... Pick one source for these"): this sheet was reading only
+  // e.defaultReps, dropping defaultRepsMax entirely -- the workout card's "Target" already uses
+  // repLabel(e), which folds the max back in ("10-15"). Same underlying data (defaultTargetFor,
+  // server.js), rendered the same way here: a real range/single number when there is one, and
+  // (cold-review catch) NOTHING at all for a timed exercise (Plank, a cardio machine -- see the
+  // "Plank 3 x 10 is the kind of wrong that costs you the reader" comment on defaultTargetFor,
+  // server.js) instead of quietly fabricating "Suggested 3 x 10" the way a bare `e.defaultReps||10`
+  // fallback would -- the workout card already shows nothing in that case; this row now matches it
+  // exactly rather than half-matching it.
+  const repsLabel = repLabel(e);
   const eqs = eqList(e).map(x=>esc(x)).join(', ')||'—';
   history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>${esc(e.name)}</h2>${favBtnHtml(e)}<button class="icon-btn" onclick="closeSheet()" aria-label="Close">✕</button></div>
       <div class="sheet-thumb"><div class="mg-ico">${exThumb(e)}</div>
-        <div class="sheet-thumb-meta"><span class="sheet-thumb-cap">${esc(exMuscles(e).join(' · '))}</span><div class="ex-badges sheet-badges">${exBadges(e, true)}</div></div></div>
+        <div class="sheet-thumb-meta"><span class="sheet-thumb-cap">${esc(exMuscles(e).map(muscleLabel).join(' · '))}</span><div class="ex-badges sheet-badges">${exBadges(e, true)}</div></div></div>
       <div class="sheet-row"><span>Equipment</span><b>${eqs}</b></div>
       <div class="sheet-row"><span>Pattern</span><b>${esc(e.pattern||'—')}</b></div>
-      <div class="sheet-row"><span>Suggested</span><b>${sets} × ${reps}</b></div>
+      ${repsLabel?`<div class="sheet-row"><span>Suggested</span><b>${sets} × ${repsLabel}</b></div>`:''}
       <!-- Sep 28 2026 (audit finding): "Personal best" and "Best set" read as the exact same stat
            with no explanation of the difference. They're genuinely different records (see the
            /api/progress/exercise/:name comment in server.js: pr = heaviest weight ever moved on
@@ -8472,7 +8616,7 @@ function openSettings(opts){
     <h2>Preferences</h2>
     <div class="sheet-list">
       <button class="sheet-row" onclick="toggleTheme()">Appearance <span class="row-val" id="themeVal">${currentTheme()==='dark'?'Dark':'Light'}</span></button>
-      <button class="sheet-row" onclick="pickUnits()">Weight units <span class="row-val">${esc(myUnit())}</span></button>
+      <button class="sheet-row" onclick="pickUnits()">Weight units <span class="row-val" id="unitsVal">${esc(myUnit())}</span></button>
       <button class="sheet-row" onclick="seedSetupScreen()">Starting weights</button>
       <!-- Sep 15 2026 -- secondary door into trainingFocusScreen(); the primary, more visible one
            is the chip on the Progress page itself (Jeff felt a Settings-only row would get lost). -->
@@ -8968,6 +9112,13 @@ async function setUnits(u){
   const r = await H.post('/api/me/units',{units:u});
   if(r.error){ alert(r.error); return; }
   ME.units = r.units;
+  // Sep 28 2026 (audit finding, Jeff: "Settings row and the checkmark don't update after changing
+  // units -- row said 'kg' and the sheet had Pounds checked, until a reload. The change did save."):
+  // ME.units was already updated above, but nothing patched the Settings row underneath this sheet
+  // -- same gap toggleTheme() already closes for Appearance (see its own comment: "update the row
+  // in place"). Same fix, same pattern.
+  const v = document.getElementById('unitsVal');
+  if(v) v.textContent = esc(myUnit());
   closeSheet();
 }
 async function profileView(id, opts){
@@ -9609,7 +9760,12 @@ async function applyCrop(type){
 // v254: silent -- this is the 'me' tab's render target (via showTab/renderTabState), which already
 // owns the nav push/scroll/UI_EPOCH bump for the tab switch. See profileView's own comment.
 function meScreen(){ profileView(ME.id, {silent:true, tabRoot:true}); }
-function logout(){ localStorage.removeItem('crewfit_token'); TOKEN=''; ME=null; $('nav').classList.add('hidden'); authScreen(); }
+// Sep 28 2026 (cold-review, defensive): window._LIB2 now carries a per-user `mine` flag on every
+// custom exercise (see GET /api/exercises, server.js) -- it's already re-fetched fresh on every
+// library() visit so no live path was found that actually shows a stale value today, but clearing
+// it here removes the possibility outright for a second account signing in on the same device
+// before the library screen happens to be revisited.
+function logout(){ localStorage.removeItem('crewfit_token'); TOKEN=''; ME=null; window._LIB2=null; $('nav').classList.add('hidden'); authScreen(); }
 
 // ---- Push ----
 async function setupPush(){
@@ -9662,13 +9818,25 @@ async function contactSupport(){
 function syncSheetsToViewport(){
   if(!window.visualViewport) return;
   const vv = window.visualViewport;
+  // Sep 28 2026 (audit finding, Jeff: "Bottom sheets aren't pinned to the viewport: with Settings
+  // scrolled down, the Weight Units sheet opened off-screen below the fold"): this used to apply
+  // vv.offsetTop/vv.height to every open sheet UNCONDITIONALLY, even with no keyboard up at all.
+  // visualViewport.offsetTop isn't guaranteed to read a clean 0 outside of an actual keyboard/zoom
+  // interaction on every mobile browser -- a stale/nonzero reading left over from scrolling can get
+  // baked into a sheet that opens right after, shifting it down by that amount (and shrinking its
+  // height to match), which is exactly what pushes a freshly-opened sheet below the fold instead of
+  // the plain CSS `.sheet-back{position:fixed;inset:0}` pinning it to the true, full screen. Only
+  // override top/height while a keyboard genuinely IS covering part of the screen (same threshold
+  // syncFrameToViewport already uses below) -- otherwise clear back to the CSS default so a sheet is
+  // always pinned to the real viewport.
+  const keyboardUp = vv.height < window.innerHeight - 100;
   document.querySelectorAll('.sheet-back').forEach(back=>{
-    back.style.height = vv.height + 'px';
-    back.style.top = vv.offsetTop + 'px';
+    back.style.height = keyboardUp ? (vv.height + 'px') : '';
+    back.style.top = keyboardUp ? (vv.offsetTop + 'px') : '';
     const sheet = back.querySelector('.sheet');
     // min() against the CSS's own 86vh so this only ever SHRINKS a sheet to fit above the
     // keyboard -- it must never grow one taller than its normal, no-keyboard design height.
-    if(sheet) sheet.style.maxHeight = Math.max(160, Math.min(vv.height - 16, window.innerHeight*0.86)) + 'px';
+    if(sheet) sheet.style.maxHeight = keyboardUp ? (Math.max(160, Math.min(vv.height - 16, window.innerHeight*0.86)) + 'px') : '';
   });
 }
 // v363 (cold-review catch): body is a fixed 100dvh frame now and #app the only scroller. iOS does

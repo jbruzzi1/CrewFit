@@ -747,7 +747,21 @@ function publicUser(id) {
 app.get('/api/exercises', async (req, res) => {
   // ownerId is stripped: this route needs no login, and it was handing out a real user id beside
   // every custom exercise name to anyone who asked.
-  const custom = Object.values(DB.customExercises || {}).flat().map(({ ownerId, ...rest }) => sanitizeExercise(rest))
+  //
+  // Sep 28 2026 (audit finding, Jeff: "'Assisted Pull-up,' 'Band Assisted Pull-up,' and 'Flat
+  // Dumbbell Fly' are tagged 'your exercise' on this reviewer account, which never created a
+  // custom exercise. Are custom exercises leaking globally, or is the tag wrong?"): the leak part
+  // is deliberate and correct -- a custom exercise is shown to every user by design (see the
+  // comment on POST /api/exercises/custom below), so the whole library benefits from what anyone
+  // adds. The TAG was the actual bug: ownerId was stripped before this response ever reaches the
+  // client, so app.js's `e.custom` flag was the only signal it had, and it's true for EVERY custom
+  // exercise regardless of who made it -- so it labeled all of them "your exercise" for everyone.
+  // This route still needs no login (browsing the library works logged out), so identity is read
+  // the same soft, optional way userIdFromToken already supports elsewhere in this file -- a
+  // missing/invalid token just means every custom exercise reads as not-mine, same as a guest.
+  const myId = userIdFromToken((req.headers['authorization'] || '').replace(/^Bearer\s/, ''));
+  const custom = Object.values(DB.customExercises || {}).flat()
+    .map(({ ownerId, ...rest }) => Object.assign(sanitizeExercise(rest), { mine: !!myId && ownerId === myId }))
     // a custom exercise someone made under a name the library has SINCE adopted (the Sep 2026
     // audit added Dumbbell Romanian Deadlift, Incline Dumbbell Fly, ...) would list twice --
     // findExLibEntry already resolves that name to the library entry, so show only that one
@@ -6989,9 +7003,22 @@ function rebuildAllPrs() {
         // new Date('s_ab12cd34') is Invalid Date, which made the comparator return NaN and
         // left the sort unstable.
         if (!l.at) l.at = perfDate(s.scheduledAt);
+        // Sep 28 2026 (audit finding, Jeff: "Workout timestamps drift by a minute: Profile lists
+        // 'Sep 27, 10:19 PM' (finish), Records and Activity say '10:18 PM' (start). Pick one."):
+        // _performedAt used to be s.scheduledAt unconditionally -- WHEN the workout was PLANNED to
+        // start, not when it actually happened -- while Profile's own "Your Workouts" list (see
+        // profileOf, `at: post ? post.at : ...`) already preferred the recap-post time. Same
+        // priority now, everywhere: the posted recap's own timestamp first (matches Profile
+        // exactly whenever a recap was posted, the common case), else the real finish moment
+        // (s.history's own `at`, stamped by creditFinish at /lock -- more precise than scheduledAt
+        // for a workout that was finished but never posted), else the old scheduledAt/l.at
+        // fallback for a session that's still in progress and has neither.
+        const hist = (s.history || []).find(h => h.userId === userId);
+        const post = s.posts && s.posts[userId];
         // non-persisted: the training date, used for ordering only
         Object.defineProperty(l, '_performedAt', {
-          value: perfDate(s.scheduledAt, l.at), enumerable: false, configurable: true });
+          value: perfDate(post && post.at, perfDate(hist && hist.at, perfDate(s.scheduledAt, l.at))),
+          enumerable: false, configurable: true });
         const name = logExerciseName(s, l, userId);
         groups[userId] = groups[userId] || {};
         groups[userId][name] = groups[userId][name] || [];
@@ -7010,6 +7037,20 @@ function rebuildAllPrs() {
         const d = new Date(a._performedAt) - new Date(b._performedAt);
         return d || (new Date(a.at) - new Date(b.at));
       });
+      // Sep 28 2026 (cold-review catch on the firstLog/setFirstLog addition above): firstLog can't
+      // be based on `chronological[0]` (sorted by `_performedAt`) the way the weight/date fields
+      // are -- `_performedAt` now prefers the session's finish/post time (see the comment on it in
+      // the grouping loop above), which can jump FORWARD every time /lock or /unlock reruns this
+      // function. Leave a session open for days, log a real PR in a separate, already-finished
+      // later session in between, then finally lock the old one: the old session's _performedAt
+      // jumps to "now" (its late finish time), pushing it chronologically AFTER the later session's
+      // already-recorded PR -- which flips that later, genuinely-not-first log's firstLog to true
+      // and silently hides its earned PR/VOLUME badge on next render, purely because an unrelated
+      // session got locked late. `l.at` (stamped once, at the moment that specific set was actually
+      // logged) never gets rewritten by a later /lock or /unlock, so it's the only stable signal for
+      // "was this genuinely the very first attempt ever" -- used ONLY for that question, not for the
+      // `.at`/`setAt` display timestamps below, which correctly keep preferring the finish/post time.
+      const everByAt = groups[userId][name].slice().sort((a, b) => new Date(a.at) - new Date(b.at));
       // "Best" = HEAVIEST, with reps only as a tiebreak at equal weight.
       // Was weight*reps (volume), which meant 225x8 (1800) outranked 315x3 (945) — not what
       // a lifter means by a PR, and not what the profile's PR card implies. It also made
@@ -7086,8 +7127,20 @@ function rebuildAllPrs() {
         // record was never the result of an improvement, so it's a baseline, not an earned PR.
         // Still shown as the user's current best on their OWN profile (see profileOf's `prs`) --
         // just excluded from the celebratory feed/activity items (see groupPrsForFeed).
-        const firstLog = bestLog === chronological[0];
-        const setFirstLog = bestSetLog === chronological[0];
+        const firstLog = bestLog === everByAt[0];
+        const setFirstLog = bestSetLog === everByAt[0];
+        // Sep 28 2026 (audit finding, Jeff: "Barbell Row 95x8 got a PR badge and appeared in the
+        // finish screen's '2 personal records,' but it's not in the Activity feed ... A first-ever
+        // log of a lift shouldn't be a PR anywhere -- that's the cleaner rule."): firstLog/setFirstLog
+        // were only ever written into DB.prs, so groupPrsForFeed (the ONE place that reads DB.prs
+        // for this) correctly excluded a first-ever log, but every OTHER celebratory surface reading
+        // isPr/isSetPr straight off the log entry itself -- the finish screen's own PR count/list,
+        // the live "PR" badge on a just-logged set -- had no way to apply the same exclusion and
+        // counted it anyway. Stamped onto the log entry itself now, right alongside isPr/isSetPr, so
+        // every surface can apply Jeff's own rule the same way groupPrsForFeed already does: a
+        // celebratory PR is `isPr && !firstLog` (or `isSetPr && !setFirstLog`), never isPr alone.
+        bestLog.firstLog = firstLog;
+        if (bestSetLog) bestSetLog.setFirstLog = setFirstLog;
         DB.prs[userId] = DB.prs[userId] || {};
         // v249 (audit finding): `unit` was dropped here, even though bestLog.weight is stored in
         // WHATEVER unit that specific set was logged in (kg bars move in 2.5s, lb in 5s — see the
@@ -7175,6 +7228,14 @@ app.post('/api/sessions/:id/lock', auth, async (req, res) => {
   if (creditFinish(s, req.userId, req.body && req.body.localDate)) {
     checkCrewChallenges(req.userId);
     emitFinishFeedEvents(s, req.userId, ranksBefore, req.body && req.body.localDate);
+    // Sep 28 2026 (audit finding, Jeff: "Workout timestamps drift by a minute: Profile lists the
+    // finish time, Records and Activity say the start time"): rebuildAllPrs' _performedAt now
+    // prefers this user's s.history finish timestamp (stamped by creditFinish just above) over
+    // scheduledAt -- but every PR/record in DB.prs was still only a SNAPSHOT taken back at log
+    // time, before this history row existed, so it kept the old scheduledAt-based value forever
+    // unless something logged again afterward. /lock is exactly the moment that history row is
+    // created, so it's also exactly the moment the snapshot needs to be retaken.
+    rebuildAllPrs();
     await save(DB);
   }
   res.json(sessionView(s, req.userId));
@@ -7188,15 +7249,21 @@ app.post('/api/sessions/:id/lock', auth, async (req, res) => {
 // recap, if any) are left completely untouched — only the "this counts as finished" flag on it —
 // so tapping this can never lose anything they've already saved, and it can never touch another
 // participant's credit. Idempotent, same as /lock: calling it with no history row present is a
-// harmless no-op. Streak, PRs and weekly volume are all derived from s.history at query time (see
-// currentStreak/rebuildAllPrs et al), so removing a row here needs no other cache invalidated.
+// harmless no-op. Streak and weekly volume are derived from s.history at query time (see
+// currentStreak et al), so removing a row here needs no other cache invalidated for those. PRs are
+// the one exception (Sep 28 2026 audit finding): DB.prs' own `.at` is a SNAPSHOT taken by
+// rebuildAllPrs, now preferring this same s.history entry's finish timestamp (see its comment) --
+// without a rebuild here too, undoing a finish would leave that snapshot stamped with a finish time
+// that no longer happened until some unrelated later action anywhere happens to trigger the next
+// global rebuild. Cheap and already called from far hotter paths (every single set log) -- see the
+// same reasoning in /lock and /post above.
 app.post('/api/sessions/:id/unlock', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   const before = s.history.length;
   s.history = s.history.filter(h => h.userId !== req.userId);
-  if (s.history.length !== before) await save(DB);
+  if (s.history.length !== before) { rebuildAllPrs(); await save(DB); }
   res.json(sessionView(s, req.userId));
 });
 
@@ -7312,6 +7379,12 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   // unrelated save. The draft did its job (getting notes typed during the workout to this point);
   // once posted, s.posts[req.userId].notes is the one source of truth.
   if (s.draftNotes) delete s.draftNotes[req.userId];
+  // Sep 28 2026 (audit finding, timestamp drift -- see the matching comment in /lock above):
+  // _performedAt/DB.prs' own `at` prefer this user's posted-recap timestamp (s.posts[userId].at,
+  // just set above) over the finish/scheduledAt fallbacks -- posting is exactly the moment that
+  // field starts existing (or, on an edit, stays the same by design -- existingAt above), so the
+  // snapshot needs retaking here too, the same as /lock.
+  rebuildAllPrs();
   await save(DB);
   res.json(sessionView(s, req.userId));
 });

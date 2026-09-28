@@ -70,7 +70,11 @@ console.log('\nthe tile counts on the All-muscles screen match that rule');
 {
   vm.runInContext(`LIB_STATE.view='groups'; LIB_STATE.q=''; renderLibGroups()`, ctx);
   const html = sink.lib2 || '';
-  const count = (m) => (html.match(new RegExp(`<div class="mg-card-name">${m}</div><div class="mg-card-count">(\\d+) exercises`)) || [])[1];
+  // Sep 28 2026 (same audit finding as below): renderLibGroups() now prints the tile's display
+  // name via muscleLabel(m) instead of the raw lowercase key, so this lookup has to key off the
+  // same displayed label ("Triceps", "Back" for lats, etc.) rather than the raw key text.
+  const muscleLabel = vm.runInContext('muscleLabel', ctx);
+  const count = (m) => (html.match(new RegExp(`<div class="mg-card-name">${muscleLabel(m)}</div><div class="mg-card-count">(\\d+) exercises`)) || [])[1];
   ok(count('triceps') === '2', `Triceps counts 2, not 4 (got ${count('triceps')})`);
   ok(count('chest') === '1' && count('shoulders') === '1', `Chest 1, Shoulders 1 (got chest ${count('chest')}, shoulders ${count('shoulders')})`);
   ok(count('quads') === '1' && count('glutes') === '1' && count('cardio') === '1', `Sled Push counts once in each of Quads, Glutes and Cardio (got ${count('quads')}/${count('glutes')}/${count('cardio')})`);
@@ -79,7 +83,12 @@ console.log('\nthe tile counts on the All-muscles screen match that rule');
 console.log('\nhelper muscles are still on the row, in the detail sheet, and searchable from All muscles');
 {
   const row = vm.runInContext(`exRowHtml(window._LIB2[0])`, ctx);
-  ok(/chest · triceps/.test(row), `the bench press row subtitle still reads "chest · triceps" (got ${row.match(/ex-mg">([^<]*)/)?.[1]})`);
+  // Sep 28 2026 (audit finding, Jeff: "Muscle names differ: library says Lats / Abdominals, Trends
+  // says Back / Abs -- pick one naming convention app-wide"): exRowHtml now runs exMuscles() through
+  // the same MUSCLE_LABEL map Trends already used, instead of leaning on CSS text-transform to fake
+  // a capital letter on the raw key -- so the row correctly reads "Chest · Triceps" now, not the
+  // lowercase raw keys this assertion used to lock in.
+  ok(/Chest · Triceps/.test(row), `the bench press row subtitle reads "Chest · Triceps" (got ${row.match(/ex-mg">([^<]*)/)?.[1]})`);
   ok(vm.runInContext(`exMuscles(window._LIB2[0]).join(' · ')`, ctx) === 'chest · triceps · shoulders', 'the detail sheet lists primaries then helpers');
   vm.runInContext(`LIB_STATE.view='groups'; LIB_STATE.q='triceps'; renderLibGroups()`, ctx);
   const hits = [...(sink.lib2 || '').matchAll(/exDetail\('([^']+)'\)/g)].map(m => m[1]);
