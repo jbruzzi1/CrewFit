@@ -2467,10 +2467,23 @@ async function deletePostedSetConfirmed(id, authorId, logId){
 // before the request resolves, and the stale response used to yank the screen back to the session
 // regardless of where the user had moved on to. Guarded the same way with nothingNavigatedSince().
 async function acceptInvite(id){ const epoch=UI_EPOCH; await H.post(`/api/sessions/${id}/accept`,{}); if(nothingNavigatedSince(epoch)) openSession(id); }
-async function declineInvite(id){
-  confirmSheet('Decline invite?', 'The workout comes off your Home.', 'Decline invite',
-    async () => { const epoch=UI_EPOCH; await H.post(`/api/sessions/${id}/decline`,{}); if(nothingNavigatedSince(epoch)) home({silent:true}); }, false);
+// Sep 27 2026 (Jeff, part 2): "add a 'reason for declining message' and the owner will get this
+// message." Reuses textEntrySheet (the same in-app text-entry sheet as bio/notes/template-naming)
+// rather than confirmSheet's plain Cancel/Decline pair, since this now needs a real (optional)
+// field, not just a yes/no. onCancel is deliberately omitted -- backing out of this sheet is just
+// "didn't decline," nothing to clean up, same as confirmSheet's own Cancel before this change.
+function declineInviteSheet(id, afterDecline){
+  textEntrySheet({
+    title: 'Decline invite?', label: 'Add a reason (optional) — the host will see it.',
+    placeholder: 'e.g. can\'t make it, sorry!', multiline: true, confirmLabel: 'Decline invite', cancelLabel: 'Cancel',
+    onConfirm: async (reason) => {
+      const epoch = UI_EPOCH;
+      await H.post(`/api/sessions/${id}/decline`, { reason: (reason||'').trim() });
+      if(nothingNavigatedSince(epoch)) afterDecline();
+    },
+  });
 }
+async function declineInvite(id){ declineInviteSheet(id, () => home({silent:true})); }
 // The requester's half of the join-request flow — approveJoin/rejectJoin (below) are the
 // creator's half, and already existed; this side never had a button to actually fire the request
 // from, even though the server route has been there all along.
@@ -8413,6 +8426,10 @@ async function renderNotifications(opts){
   // it doesn't strand it forever. approveRemoval/declineRemoval are the exact same functions the
   // in-session Approve/Decline buttons already call (see their own definitions).
   const removals = (data && data.removals) || [];
+  // Sep 27 2026 (Jeff, part 1): a declined invitee who's since asked to be re-invited (see
+  // reinviteAskSheet/POST .../reinvite-request) -- same "surfaced here too, not just the one push
+  // that created it" reasoning as removals just above.
+  const reinviteAsks = (data && data.reinviteAsks) || [];
   const history = (data && data.history) || [];
   // Sep 5 (Jeff: a push for something that already happened -- someone followed you, a reaction,
   // an accepted invite -- showed nothing here, and he asked for past notifications to show for a
@@ -8468,6 +8485,29 @@ async function renderNotifications(opts){
           <button class="sm no" onclick="notifDeclineRemoval('${rm.sessionId}','${rm.reqId}')">Decline</button>
         </div>
       </div>`).join('') + `</div>` : '';
+  // Sep 27 2026 (Jeff, part 1): Jeff's own suggested UI, from the creator's side -- one-tap
+  // "Re-invite" re-adds them exactly like a fresh invite (see the .../approve route); "Not now"
+  // just clears the ask without re-inviting.
+  // Sep 27 2026 cold-review round (Jeff, screenshot: "the box with the most amount of text is
+  // squish... invite them back button wording is eh... or 'not now' underneath?"). The generic
+  // .req row (avatar | text | buttons, all in one line -- shared with follow/join/removal rows
+  // above) assumes short text; this row's text can run long (a name + a workout name + up to a
+  // 300-char quoted message), which squeezed the two side-by-side buttons into a narrow column
+  // next to 4-5 lines of wrapped text. Own layout instead of .req: text on top (still avatar +
+  // name, same look as the other rows), actions stacked full-width underneath, same shape Jeff
+  // asked for. "Invite them back" -> "Re-invite" (his own suggestion) -- shorter, and the
+  // sentence above it already spells out what's being invited to.
+  const reinviteAsksHtml = reinviteAsks.length ? `<h2>Wants back in</h2><div class="card" style="padding:6px 12px">` + reinviteAsks.map(ra => `
+      <div class="reinv-row">
+        <div class="reinv-top">
+          ${avatarHtml(ra.from,'av')}
+          <div class="rc"><b>${esc(ra.from.displayName||ra.from.username)}</b> would like to be re-invited to <i>${esc(ra.sessionName)}</i>${ra.message?` — "${esc(ra.message)}"`:''}</div>
+        </div>
+        <div class="reinv-actions">
+          <button class="sm ok" onclick="notifApproveReinvite('${ra.sessionId}','${ra.reqId}')">Re-invite</button>
+          <button class="sm no" onclick="notifDismissReinvite('${ra.sessionId}','${ra.reqId}')">Not now</button>
+        </div>
+      </div>`).join('') + `</div>` : '';
   // Past notifications -- read-only, no action row (unlike the three sections above, there's
   // nothing left to accept/decline/approve here, just a record that it happened). Same
   // .feed-item/.feed-lead shape as Home's "Friends' Activity" strip, reused rather than inventing
@@ -8502,6 +8542,9 @@ async function renderNotifications(opts){
     if(l.type === 'profile' && l.userId) return ` onclick="profileView('${jsq(l.userId)}')" style="cursor:pointer"`;
     if(l.type === 'crew' && l.crewId) return ` onclick="crewView('${jsq(l.crewId)}')" style="cursor:pointer"`;
     if(l.type === 'crew-chat' && l.crewId) return ` onclick="openCrewChat('${jsq(l.crewId)}')" style="cursor:pointer"`;
+    // Sep 27 2026: the "You declined" row -- tapping it opens the re-invite-request compose sheet
+    // (see reinviteAskSheet), same reasoning as openDeepLink's own 'reinvite-ask' case above.
+    if(l.type === 'reinvite-ask' && l.sessionId) return ` onclick="reinviteAskSheet('${jsq(l.sessionId)}')" style="cursor:pointer"`;
     return '';   // {type:'notifications'} (already here) and anything unrecognized: inert, as before
   };
   // Sep 8 2026: on a touch screen `cursor:pointer` (historyTapAttrs, above) is invisible -- there's
@@ -8536,9 +8579,9 @@ async function renderNotifications(opts){
       ${historyToday.length ? `<h2 class="light">Today</h2><div class="card feed-strip">${historyToday.map(historyRow).join('')}</div>` : ''}
       ${historyEarlier.length ? `<h2 class="light">Last 7 days</h2><div class="card feed-strip">${historyEarlier.map(historyRow).join('')}</div>` : ''}` : '';
   // Discoverability rule (CLAUDE.md): never hide an empty state -- render it open, not a blank page.
-  const empty = (!invites.length && !followRequests.length && !joinRequests.length && !removals.length && !history.length)
+  const empty = (!invites.length && !followRequests.length && !joinRequests.length && !removals.length && !reinviteAsks.length && !history.length)
     ? homeEmpty(ICON_BELL, "You're all caught up", 'Invites and requests will show up here.') : '';
-  $('app').innerHTML = `<div class="wrap">${head}${invitesHtml}${followHtml}${joinHtml}${removalsHtml}${historyHtml}${empty}</div>`;
+  $('app').innerHTML = `<div class="wrap">${head}${invitesHtml}${followHtml}${joinHtml}${removalsHtml}${reinviteAsksHtml}${historyHtml}${empty}</div>`;
   if(history.length) historySwipeInit($('app'));
   if(!silent){ const st = { t:'notifications' }; fromHistory ? landOn(st) : navigated(st); }
 }
@@ -8726,10 +8769,7 @@ async function notifAcceptInvite(id){
   await H.post(`/api/sessions/${id}/accept`,{});
   if(nothingNavigatedSince(epoch)) openSession(id);
 }
-async function notifDeclineInvite(id){
-  confirmSheet('Decline invite?', 'The workout comes off your Home.', 'Decline invite',
-    async () => { const epoch=UI_EPOCH; await H.post(`/api/sessions/${id}/decline`,{}); if(nothingNavigatedSince(epoch)) renderNotifications({silent:true}); }, false);
-}
+async function notifDeclineInvite(id){ declineInviteSheet(id, () => renderNotifications({silent:true})); }
 // Exact same pipeline as acceptFollow/rejectFollow (Friends tab, above) -- refreshes this screen
 // instead of friends().
 async function notifAcceptFollow(id){
@@ -8764,6 +8804,18 @@ async function notifApproveRemoval(id, reqId){
 async function notifDeclineRemoval(id, reqId){
   const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/removal/${reqId}/decline`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
+}
+// Sep 27 2026 (Jeff, part 1): the creator's one-tap side of "wants back in" -- same pipeline shape
+// as notifApproveRemoval/notifDeclineRemoval just above (same server-route-then-refresh pattern).
+async function notifApproveReinvite(id, reqId){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/reinvite-request/${reqId}/approve`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
+}
+async function notifDismissReinvite(id, reqId){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/reinvite-request/${reqId}/dismiss`, {});
   if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
 }
 // Task #64, Jeff Aug 21: "Can you delete all of my workouts and history to let me start over?"
@@ -9628,9 +9680,30 @@ async function openDeepLink(link){
     if(link.type === 'profile' && link.userId){ await profileView(link.userId); return true; }
     if(link.type === 'crew' && link.crewId){ await crewView(link.crewId); return true; }
     if(link.type === 'crew-chat' && link.crewId){ await openCrewChat(link.crewId); return true; }
+    // Sep 27 2026 (Jeff, part 1): the decliner's own "You declined" notification -- deliberately
+    // NOT openSession (they've dropped to sessionTier 'stranger'/'friend' and can't GET it anymore,
+    // see /decline's own comment in server.js) but a small compose sheet that sends a message to
+    // the host instead.
+    if(link.type === 'reinvite-ask' && link.sessionId){ reinviteAskSheet(link.sessionId); return true; }
     if(link.type === 'notifications'){ await renderNotifications(); return true; }
   }catch(e){ /* best-effort deep link -- see comment above */ }
   return false;
+}
+// Sep 27 2026 (Jeff, part 1): "message the chat for a re-invitation" -- since a decliner has no
+// chat (or any) access to the session anymore, this sends a short note straight to the host as a
+// notification instead (see POST .../reinvite-request in server.js), rather than reopening the
+// real session/chat. Reuses textEntrySheet, same as declineInviteSheet just above.
+function reinviteAskSheet(sessionId){
+  textEntrySheet({
+    title: 'Ask to be re-invited?', label: 'Message to the host (optional)',
+    placeholder: 'e.g. I can make it after all — mind adding me back?', multiline: true,
+    confirmLabel: 'Send request', cancelLabel: 'Cancel',
+    onConfirm: async (message) => {
+      const r = await H.post(`/api/sessions/${sessionId}/reinvite-request`, { message: (message||'').trim() });
+      if(r && r.error){ alert(r.error); return; }
+      alert('Request sent — the host will be notified.');
+    },
+  });
 }
 // ---- Boot ----
 // v253 (audit finding): this used to wipe the token and drop straight to the login screen the
