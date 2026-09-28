@@ -60,6 +60,7 @@ const files = [
   'test/ownerless-workout-flow.mjs', 'test/ownerless-workout-flow-client.mjs',
   'test/reinvite-request.mjs', 'test/exercise-sheet-cta.mjs', 'test/volume-local-date.mjs',
   'test/audit9-progress-fixes.mjs', 'test/audit9-client-fixes.mjs', 'test/audit9-pr-visibility.mjs',
+  'test/audit10-feed-hero-fixes.mjs', 'test/audit10-avatar-photo-everywhere.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
