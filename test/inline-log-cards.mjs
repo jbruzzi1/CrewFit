@@ -60,6 +60,28 @@ console.log('renderExSets() paints one card, in place, and leaves the others alo
   ok((html.match(/editLogSet\('s1','exA','l\d'\)/g) || []).length === 3 && html.includes(`editLogSet('s1','exA','l2')`) && !html.includes('pp-set-edit'), 'every row is wired to the small Edit-set sheet for that set, with no "Edit" label');
 }
 
+console.log('\na first-ever log of a lift does not get a live PR/VOLUME badge (Sep 28 2026 audit: it used to show one here while the Activity feed already excluded it -- see the matching comment above exSetRowsHtml\'s return)');
+{
+  const s = { logs: { u1: [
+    { id: 'l1', exerciseId: 'exA', set: 1, weight: 95, reps: 8, setType: 'normal', isPr: true, firstLog: true },
+  ] } };
+  renderExSets('exA', s, 'l1');
+  const html = A.sets.innerHTML;
+  ok(!html.includes('pp-pr'), `a first-ever log renders no PR/VOLUME pill at all (got ${html.includes('pp-pr')})`);
+  const s2 = { logs: { u1: [
+    { id: 'l2', exerciseId: 'exA', set: 1, weight: 100, reps: 8, setType: 'normal', isPr: true, isSetPr: true, setFirstLog: true },
+  ] } };
+  renderExSets('exA', s2, 'l2');
+  const html2 = A.sets.innerHTML;
+  ok(html2.includes('pp-pr pp-pr-gold') && !html2.includes('>VOLUME<'), `isPr alone (not firstLog) still shows PR; isSetPr with setFirstLog:true still suppresses VOLUME (got ${html2.match(/pp-pr[^>]*>[^<]*/g)})`);
+  const s3 = { logs: { u1: [
+    { id: 'l3', exerciseId: 'exA', set: 1, weight: 105, reps: 8, setType: 'normal', isPr: true, isSetPr: true },
+  ] } };
+  renderExSets('exA', s3, 'l3');
+  const html3 = A.sets.innerHTML;
+  ok(html3.includes('>PR<') && html3.includes('>VOLUME<'), 'a genuine (non-first) PR + VOLUME set still shows both pills, unchanged');
+}
+
 console.log('\nan exercise with nothing logged reads "No sets yet"; a card that is not on screen is a no-op');
 {
   renderExSets('exA', { logs: { u1: [] } });

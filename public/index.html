@@ -1536,6 +1536,13 @@
     .pr:last-child { border-bottom:none; }
     .pr-n { font-size:14px; font-weight:600; }
     .pr-d { font-size:11px; color:var(--muted); margin-top:2px; }
+    /* Sep 28 2026 (audit finding -- see setPrLabel's own comment in app.js): a second, smaller
+       caption for the best-VOLUME set when it's a different set than the headline weight record
+       above it, so that record stays visible on this list instead of only living on the
+       exercise-detail sheet. Same size/color as .pr-d (the date caption). flex:0 0 100% on the
+       flex-wrap:wrap .pr parent (same technique .pr-goalbar already uses just below) drops it to
+       its own full-width line under the name/weight row regardless of either column's width. */
+    .pr-setpr { font-size:11px; color:var(--muted); margin-top:2px; flex:0 0 100%; }
     .pr-r { text-align:right; }
     .pr-w { font-size:14px; font-weight:700; }
     .pr-self { background:#fbfcfd; border-left:3px solid #dfe3e9; padding-left:9px; margin-left:-3px; border-radius:0 8px 8px 0; }
@@ -1781,6 +1788,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Activity</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=454"></script>
+  <script src="app.js?v=456"></script>
 </body>
 </html>
