@@ -138,6 +138,25 @@ console.log('\nwith only 2 sessions and a lighter second one, the fix reads it a
   ok(lift.changePct === 0, `the fix instead holds at 0% -- best-of-window (only 2 sessions available) is the earlier, heavier one, itself the baseline (got ${lift.changePct}%)`);
 }
 
+console.log('\nSep 28 2026 audit finding (Jeff, live account): a REP-only improvement at the same weight -- changePct is scored off est (weight AND reps via Epley), but "what\'s driving it" used to show weight-vs-weight only ("40 -> 40 lb ^ 7%", which reads as broken even though the % is correct). currentReps/currentEst now expose what actually changed.');
+{
+  const u = await newUser();
+  const NAME = 'Cable Fly';
+  await log(u, NAME, '2026-08-01T18:00:00Z', 40, 12);   // baseline: 40 lb x 12
+  await log(u, NAME, '2026-08-08T18:00:00Z', 40, 15);   // same weight, more reps -- genuine progress
+
+  const p = await progress(u);
+  const lift = (p.trend.lifts || []).find(l => l.name === NAME);
+  ok(!!lift, `${NAME} has a trend entry`);
+  ok(lift.currentWeight === 40 && lift.points[0].weight === 40, `weight is genuinely unchanged, 40 -> 40 (got ${lift.points[0].weight} -> ${lift.currentWeight})`);
+  ok(lift.changePct > 0, `changePct is still positive -- reps alone is a real improvement (got ${lift.changePct}%)`);
+  const expectedPct = Number(((est(40, 15) / est(40, 12) - 1) * 100).toFixed(1));
+  ok(lift.changePct === expectedPct, `and matches the est-based math exactly (got ${lift.changePct}%, expected ${expectedPct}%)`);
+  ok(lift.points[0].reps === 12, `points[0].reps carries the STARTING rep count so the client can show it (got ${lift.points[0].reps})`);
+  ok(lift.currentReps === 15, `currentReps carries the CURRENT (best-of-window) rep count, the missing half of the picture "40 -> 40 lb" couldn't show (got ${lift.currentReps})`);
+  ok(typeof lift.currentEst === 'number' && lift.currentEst > lift.points[0].est, `currentEst is also exposed as an alternative ("115 -> 123 lb (est.)") -- higher than the starting est, same direction as changePct (got ${lift.points[0].est} -> ${lift.currentEst})`);
+}
+
 } finally {
   await stop();
   await testDb.drop();

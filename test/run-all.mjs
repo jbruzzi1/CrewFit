@@ -58,7 +58,7 @@ const files = [
   'test/participant-departure-cleanup.mjs', 'test/recap-trained-with-and-invite-banner.mjs',
   'test/lifecycle-audit-round3.mjs', 'test/lifecycle-audit-round4.mjs',
   'test/ownerless-workout-flow.mjs', 'test/ownerless-workout-flow-client.mjs',
-  'test/reinvite-request.mjs', 'test/exercise-sheet-cta.mjs',
+  'test/reinvite-request.mjs', 'test/exercise-sheet-cta.mjs', 'test/volume-local-date.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

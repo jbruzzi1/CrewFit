@@ -6005,10 +6005,16 @@ function trendChart(d, U){
   // Sep 5: the weight range has to end at the SAME session changePct was computed from (server's
   // currentWeight, the best-of-recent-window session) -- not literally the last logged session's
   // weight, or a lighter off-day weight could sit right next to a green "▲" and contradict itself.
+  // Sep 28 2026 (audit finding, Jeff: "the 7% is from reps (12 → 15), but showing the weight
+  // unchanged next to an up-arrow looks like a bug even though it isn't"). changePct is scored off
+  // est (weight AND reps, via Epley) but this line only ever showed weight-vs-weight -- a rep-only
+  // improvement at the same weight used to render as "40 → 40 lb ▲ 7%", which reads as broken even
+  // though the % is correct. Now shows the actual reps alongside the weight ("40×12 → 40×15") so a
+  // rep-driven gain is visibly a real change, not a mismatched number next to an arrow.
   const drivers = isOverall ? `<div class="drv-head">What's driving it</div>${
     t.lifts.slice().sort((a,b)=>b.changePct-a.changePct).map(l=>`<div class="drv">
       <div class="drv-n">${esc(l.name)}</div>
-      <div class="drv-w">${l.points[0].weight} → ${l.currentWeight} ${U}${l.lessIsMore?' assist':''}</div>
+      <div class="drv-w">${l.points[0].weight}×${l.points[0].reps} → ${l.currentWeight}×${l.currentReps} ${U}${l.lessIsMore?' assist':''}</div>
       <div class="drv-p ${l.changePct>0.5?'up':'flat'}">${l.changePct>0.5?'▲ '+Math.round(l.changePct)+'%':'—'}</div>
     </div>`).join('')}` : '';
 

@@ -179,6 +179,29 @@ console.log('\n=== Muscle balance ===');
     const chest = (prog.muscleBalance.groups || []).find(g => g.group === 'chest');
     ok(!chest, `NOT flagged -- the current in-progress week is never counted (got ${JSON.stringify(prog.muscleBalance.groups)})`);
   }
+
+  console.log('\nSep 28 2026 audit finding (Jeff, live account: "every muscle group now says Behind target -- twelve red lines on a new account, same demoralizing problem, just louder"): a muscle group NEVER trained at all is never flagged, even though it is technically at 0/target for both completed weeks -- only a muscle genuinely regressed from being trained before counts as "behind"');
+  {
+    const u = await reg('mbal_never', 'pass1234', 'Never Trained');
+    // Old enough for the account-age gate, same lift used for both the padding session and the
+    // actual under-target weeks so no OTHER muscle group gets touched by accident besides bench
+    // press's own real targets (chest primary, triceps/shoulders secondary -- see the "multi-
+    // muscle attribution" test in progress-volume-bodyweight.mjs). All three are genuinely under
+    // target both completed weeks, so all three legitimately flag; the point of this test is every
+    // OTHER muscle (lats, biceps, forearms, quads, hamstrings, glutes, calves, abdominals, traps --
+    // never touched by this account at all) must NOT show up, even though each reads 0/target for
+    // both weeks too -- that was old code's actual bug (every one of those flagged, [0,0]).
+    await logSession(u, 'Flat Barbell Bench Press', dateInWeek(6, 1), 135, 8);
+    await logSession(u, 'Flat Barbell Bench Press', dateInWeek(2, 1), 135, 8);
+    await logSession(u, 'Flat Barbell Bench Press', dateInWeek(1, 1), 135, 8);
+    const prog = await get('/api/progress', u.token);
+    const groups = prog.muscleBalance.groups || [];
+    const flaggedNames = groups.map(g => g.group);
+    ok(flaggedNames.includes('chest'), `chest -- genuinely under target -- IS flagged (got ${JSON.stringify(flaggedNames)})`);
+    const neverTouched = ['lats', 'biceps', 'forearms', 'quads', 'hamstrings', 'glutes', 'calves', 'abdominals', 'traps'];
+    const leaked = neverTouched.filter(g => flaggedNames.includes(g));
+    ok(leaked.length === 0, `none of the muscles this account has never once trained show up as "behind" (leaked: ${JSON.stringify(leaked)}, full list: ${JSON.stringify(flaggedNames)})`);
+  }
 }
 
 console.log('\n=== Goal progress ===');
