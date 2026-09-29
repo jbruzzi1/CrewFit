@@ -392,7 +392,12 @@
     button.sec { background:var(--card); color:var(--fg); border:1px solid var(--line); }
     button.blue { background:var(--blue); color:#fff; }
     button.red { background:var(--red); color:#fff; }
-    button.sm { padding:7px 12px; width:auto; font-size:12px; border-radius:9px; margin:0; }
+    /* Sep 29 2026 (Jeff, picked from 3 rendered options -- "moderate squared" over "soft" and
+       "crisp"): approve/reject pills and the type-picker pill/menu now share one consistent,
+       squared-but-not-boxy radius family instead of each control having its own mismatched value
+       (this used to be 9px, the tt-pill below was a fully-round 999px, and .type-seg was 10px/8px
+       -- the mismatch is exactly what made the pill visibly "go square" when tapped open). */
+    button.sm { padding:7px 12px; width:auto; font-size:12px; border-radius:8px; margin:0; }
     button.sm.gray { background:var(--card); color:var(--fg); border:1px solid var(--line); }
     /* v306: was a centered pair of small pills — the only centered element on the New Workout
        screen (every other row is left-aligned or full-width). Made full-width + equal-split so
@@ -799,7 +804,8 @@
     /* Sep 28 2026 (Jeff: "the buttons on the re-invite don't have to be that big") -- matches the
        app's own standard small-pill sizing (button.sm: 7px 12px padding, 12px font) instead of the
        larger size these were stretched to when they went full-width; still full-width/stacked. */
-    .reinv-row .reinv-actions .sm { font-weight:600; font-size:12px; padding:7px 10px; width:100%; margin:0; border-radius:9px; border:1px solid transparent; }
+    /* Sep 29 2026: radius unified with button.sm's own base rule -- see that comment. */
+    .reinv-row .reinv-actions .sm { font-weight:600; font-size:12px; padding:7px 10px; width:100%; margin:0; border-radius:8px; border:1px solid transparent; }
     /* Sep 27 2026 (Jeff: "do we like the look of the buttons?"): the tinted-pill treatment .req
        rows use for their small side-by-side Approve/Reject pairs read as flat/washed-out once
        stretched into a full-width PRIMARY action here -- switched to the same solid-blue fill
@@ -1209,8 +1215,9 @@
        the boxes"). One control language everywhere a segment is picked; measured >=16px of room
        beside every label at 390px. Selected segment stays the neutral raised step, not a blue
        fill, so it does not compete with the blue + Add right under it. */
-    .ex-log .type-seg { background:#eef1f5; border-radius:10px; padding:3px; gap:0; margin:8px 0 8px; }
-    .ex-log .type-seg .chip { flex:1; border:none; background:transparent; border-radius:8px; padding:7px 4px; font-size:11.5px; font-weight:600; color:var(--muted); white-space:nowrap; }
+    /* Sep 29 2026: radius unified with .tt-pill below and button.sm -- see that comment. */
+    .ex-log .type-seg { background:#eef1f5; border-radius:8px; padding:3px; gap:0; margin:8px 0 8px; }
+    .ex-log .type-seg .chip { flex:1; border:none; background:transparent; border-radius:6px; padding:7px 4px; font-size:11.5px; font-weight:600; color:var(--muted); white-space:nowrap; }
     .ex-log .type-seg .chip.on { background:#fff; color:var(--blue); box-shadow:0 1px 2px rgba(0,0,0,.08); font-weight:700; }
     /* Sep 10 2026 (Jeff, on a screenshot of his own workout page): "How do we feel about the
        visual of the logging in this page now. Do we feel it's cluttered or proper?" -- pushed to
@@ -1221,8 +1228,11 @@
        "<type> ⌄" pill by default; tapping it swaps in the exact same .type-seg control in place.
        Picking a chip collapses back to the pill immediately, now labeled with whatever was picked
        -- so the pill always shows the true current state at a glance, expanded only to change it. */
+    /* Sep 29 2026: radius unified with .ex-log .type-seg above and button.sm -- see that comment.
+       Was a fully-round 999px, which is exactly what made this pill visibly "go square" the
+       instant it was tapped open into the type-seg track. */
     .tt-pill { display:inline-flex; align-items:center; gap:5px; background:#eef1f5; color:var(--fg);
-      border:none; border-radius:999px; padding:7px 11px 7px 13px; font-size:12px; font-weight:600;
+      border:none; border-radius:8px; padding:7px 11px 7px 13px; font-size:12px; font-weight:600;
       margin:8px 0 8px; cursor:pointer; width:auto; }
     :where(html.theme-dark) .tt-pill { background:#262930; }
     .tt-pill svg { width:11px; height:11px; opacity:.55; }
@@ -1504,9 +1514,10 @@
     .hold-ic.almost-ic { background:rgba(6,122,6,.12); color:#067a06; }
     .rulenote { font-size:12px; color:var(--muted); line-height:1.55; padding:11px 2px 0; border-top:1px solid var(--line); margin-top:8px; }
     .rulenote .how-link { color:var(--blue); font-weight:600; cursor:pointer; }
-    /* Sep 6: the Edit-set sheet's Type picker is the same track the log-sheet cards use */
-    .sheet .type-seg { background:#eef1f5; border-radius:10px; padding:3px; gap:0; display:flex; }
-    .sheet .type-seg .chip { flex:1; border:none; background:transparent; border-radius:8px; padding:7px 4px; font-size:11.5px; font-weight:600; color:var(--muted); text-align:center; white-space:nowrap; cursor:pointer; }
+    /* Sep 6: the Edit-set sheet's Type picker is the same track the log-sheet cards use.
+       Sep 29 2026: radius unified with .ex-log .type-seg -- see that comment. */
+    .sheet .type-seg { background:#eef1f5; border-radius:8px; padding:3px; gap:0; display:flex; }
+    .sheet .type-seg .chip { flex:1; border:none; background:transparent; border-radius:6px; padding:7px 4px; font-size:11.5px; font-weight:600; color:var(--muted); text-align:center; white-space:nowrap; cursor:pointer; }
     .sheet .type-seg .chip.on { background:#fff; color:var(--blue); box-shadow:0 1px 2px rgba(0,0,0,.08); font-weight:700; }
     .rulenote b { color:var(--fg); font-weight:700; }
     /* Weekly volume meter rows (Progress page) — a track (var(--line)) with a fill that turns
@@ -1788,6 +1799,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Activity</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=459"></script>
+  <script src="app.js?v=460"></script>
 </body>
 </html>
