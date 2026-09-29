@@ -77,7 +77,7 @@ console.log('\nreset-workouts (stripUserFromSession) withdraws it too');
   await post('/api/sessions/' + s.id + '/suggest', { exerciseId: s.exercises[0].id, swapTo: 'Lat Pulldown' }, bob.token);
   await post('/api/sessions/' + s.id + '/log', { exerciseId: s.exercises[0].id, weight: 95, reps: 10 }, bob.token);
 
-  const reset = await post('/api/me/reset-workouts', { confirm: true }, bob.token);
+  const reset = await post('/api/me/reset-workouts', { password: 'pass1234' }, bob.token);
   ok(!reset.error && reset.sessionsCleared >= 1, `bob resets his workouts (got ${JSON.stringify(reset)})`);
 
   const asHost = await get('/api/sessions/' + s.id, host.token);

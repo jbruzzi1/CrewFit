@@ -184,7 +184,7 @@ console.log('\nFix #3d: "reset my workouts" (stripUserFromSession) also drops a 
   const pr = putRes.pendingRemovals.find(p => p.exerciseId === curlId);
   ok(!!pr, 'a pending removal exists, waiting on the other participant');
 
-  const resetRes = await post('/api/me/reset-workouts', { confirm: true }, other.token);
+  const resetRes = await post('/api/me/reset-workouts', { password: 'pass1234' }, other.token);
   ok(resetRes.ok === true, `reset-workouts succeeds (got ${JSON.stringify(resetRes)})`);
   const after = await get(`/api/sessions/${s.id}`, host.token);
   const prAfter = after.pendingRemovals.find(p => p.id === pr.id);

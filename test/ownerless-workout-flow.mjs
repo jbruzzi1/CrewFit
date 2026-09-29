@@ -303,7 +303,7 @@ console.log('\n10. resetting workouts (POST /api/me/reset-workouts) pivots owner
   const rowId = s.exercises.find(e => e.name === 'Row').id;
   await post(`/api/sessions/${s.id}/suggest`, { type: 'swap', exerciseId: rowId, swapTo: 'T-Bar Row' }, a.token);
 
-  const r = await post('/api/me/reset-workouts', { confirm: true }, host.token);
+  const r = await post('/api/me/reset-workouts', { password: 'pass1234' }, host.token);
   ok(r.ok === true, `host resets their workouts (got ${JSON.stringify(r)})`);
 
   const view = await get(`/api/sessions/${s.id}`, b.token);
@@ -377,7 +377,7 @@ console.log('\n13. a departing creator\'s own still-pending, un-voted self-propo
   const rowId = s.exercises.find(e => e.name === 'Row').id;
   const proposed = await post(`/api/sessions/${s.id}/suggest`, { type: 'swap', exerciseId: rowId, swapTo: 'Cable Row' }, host.token);
   ok(!proposed.error, `the host (soon-to-depart creator) proposes their own swap (got ${proposed.error})`);
-  const r = await post('/api/me/reset-workouts', { confirm: true }, host.token);
+  const r = await post('/api/me/reset-workouts', { password: 'pass1234' }, host.token);
   ok(r.ok === true, 'host resets their workouts with their own pending self-proposal still outstanding');
   const view = await get(`/api/sessions/${s.id}`, a.token);
   ok(view.creatorId === null, 'the workout still pivoted to ownerless via reset');
