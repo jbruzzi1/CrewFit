@@ -306,11 +306,24 @@ function usernameProblem(username) {
   const raw = String(username == null ? '' : username).trim();
   if (!USERNAME_RE.test(raw)) return 'Username must be 3-20 characters, letters, numbers, . _ or - only';
   if (RESERVED_USERNAMES.has(normUser(raw))) return 'That username is reserved';
+  // Sep 29 2026 (account deletion): a deleted account's row is anonymized in place with a
+  // `deleted_<id>` username (see POST /api/me/delete-account) rather than removed outright, so
+  // nothing else in this file has to null-check a vanished DB.users[id]. Blocking this prefix on
+  // the way IN means nobody can ever pick a real username that later reads as a deleted account.
+  if (normUser(raw).startsWith('deleted_')) return 'That username is reserved';
   return null;
 }
+// Sep 29 2026 (Jeff: "make it whatever they want as long as its longer than 6 characters... a
+// cap thats default for passwords used elsewhere"): this already validated a real free-text
+// password (the field's own name — hashPin/verifyPin/pinProblem — is the one thing left over
+// from this app's original PIN-only design; the login/register UI has used type="password" text
+// inputs with no character restriction for a while now, see authScreen()). The only actual change
+// here is the floor: 6 -> 8, the near-universal minimum other apps use, so it won't read as an
+// arbitrary number of this app's own invention. 64 was already the ceiling — also already the
+// standard default (NIST SP 800-63B recommends allowing at least 64) — so it's unchanged.
 function pinProblem(pin) {
   const p = String(pin == null ? '' : pin);
-  if (p.length < 6) return 'Password must be at least 6 characters';
+  if (p.length < 8) return 'Password must be at least 8 characters';
   if (p.length > 64) return 'Password must be 64 characters or fewer';
   return null;
 }
@@ -700,7 +713,14 @@ app.post('/api/login', async (req, res) => {
   if (failCount('acct:' + uname) >= 40)
     return res.status(429).json({ error: 'This account is temporarily locked after too many failed attempts. Try again later.' });
   const u = findUserByName(username);
-  if (!u || !verifyPin(u, pin)) {
+  // Sep 29 2026 (account deletion): findUserByName already can't match a deleted account by its
+  // OLD username (the row's username field is overwritten with an anonymized deleted_<id> tag at
+  // deletion time, see POST /api/me/delete-account), and its pinHash/pinSalt are scrambled to an
+  // unguessable value at the same time — so verifyPin below would already fail on its own. This
+  // check is defense in depth, not the only thing stopping it: explicit and immediate rather than
+  // relying on hash entropy, and it keeps the failure on the exact same generic "bad credentials"
+  // path (no separate wording that would confirm to a caller that an account once existed here).
+  if (!u || u.deleted || !verifyPin(u, pin)) {
     noteLoginFail(ipKey);
     bumpFail('acct:' + uname, 60 * 60 * 1000);
     return res.status(401).json({ error: 'bad credentials' });
@@ -1198,6 +1218,55 @@ app.post('/api/me/default-gym', auth, async (req, res) => {
   DB.users[req.userId].defaultGym = capStr(defaultGym, 120).trim();
   await save(DB);
   res.json({ defaultGym: DB.users[req.userId].defaultGym });
+});
+// Sep 29 2026 (Jeff: "add an edit display name or username"). displayName has no uniqueness rule
+// (never has — see registration, where duplicate display names are already allowed and disambiguated
+// by the @username everywhere they're shown together) and, unlike bio/defaultGym, isn't allowed to
+// go empty: it's the one thing every profile card/feed row renders as the headline. capStr(...,80)
+// matches the same cap registration itself already applies to a display name.
+app.post('/api/me/display-name', auth, async (req, res) => {
+  const { displayName } = req.body || {};
+  const v = capStr(displayName, 80).trim();
+  if (!v) return res.status(400).json({ error: 'Display name cannot be empty' });
+  DB.users[req.userId].displayName = v;
+  await save(DB);
+  res.json({ displayName: v });
+});
+// Same usernameProblem + case-insensitive uniqueness rule registration already enforces (see
+// usernameProblem, findUserByName, and the Aug-2026 comment above normUser on why exact-match
+// comparison was a real bug). findUserByName's own match has to be excluded when it's just this
+// account matching itself (e.g. re-submitting the same username unchanged, or a same-username-
+// different-case correction like "Jordan" -> "jordan").
+app.post('/api/me/username', auth, async (req, res) => {
+  const { username } = req.body || {};
+  const uProblem = usernameProblem(username);
+  if (uProblem) return res.status(400).json({ error: uProblem });
+  const existing = findUserByName(username);
+  if (existing && existing.id !== req.userId) return res.status(409).json({ error: 'username taken' });
+  DB.users[req.userId].username = String(username).trim();
+  await save(DB);
+  res.json({ username: DB.users[req.userId].username });
+});
+// Distinct from the disabled /api/forgot + /api/reset above (which took no proof of identity at
+// all — see the long comment there on why they're off) — this requires the CURRENT password,
+// which only someone already able to log in has, so it carries none of that risk. The one and
+// only self-service credential change this app offers today; "forgot" recovery genuinely has no
+// safe implementation yet (no email/phone on file to verify against — same comment).
+app.post('/api/me/password', auth, async (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  const u = DB.users[req.userId];
+  // 400, deliberately not 401: this request already carries a VALID auth token (it passed `auth`
+  // above) -- the wrong thing here is the current-password confirmation, not the session. app.js's
+  // shared H._req treats ANY 401 from ANYWHERE as "your session is dead," wipes the token, and
+  // force-logs-out back to the auth screen (see its own comment) -- a wrong-password typo here
+  // would otherwise silently sign the user out instead of showing them the actual error. Caught by
+  // rendering this for real, not just by reading the code (see CLAUDE.md's own verification rule).
+  if (!currentPassword || !verifyPin(u, currentPassword)) return res.status(400).json({ error: 'Current password is incorrect' });
+  const pProblem = pinProblem(newPassword);
+  if (pProblem) return res.status(400).json({ error: pProblem });
+  Object.assign(u, hashPin(newPassword));
+  await save(DB);
+  res.json({ ok: true });
 });
 // Following is a REQUEST now, not an instant grant. It stays pending until the target accepts.
 app.post('/api/follow/:id', auth, async (req, res) => {
@@ -5359,14 +5428,18 @@ function stripUserFromSession(s, userId) {
 // flip), creatorId going explicitly null if nobody current remains, and their own trace is
 // stripped from the now-handed-off session. If they're not the creator, the session and its actual
 // owner are left completely alone — only their own trace is stripped out of it.
-app.post('/api/me/reset-workouts', auth, async (req, res) => {
-  if (!(req.body && req.body.confirm === true))
-    return res.status(400).json({ error: 'confirm:true is required to reset your workouts' });
-  const me = req.userId;
+// Sep 29 2026 (account deletion): extracted verbatim out of POST /api/me/reset-workouts below —
+// deleting an account needs to erase exactly this same per-session footprint (every creator
+// hand-off/hard-delete rule, every ownerless-vote/pending-edit edge case this loop already
+// accounts for), and reimplementing any of that a second time for delete-account would be exactly
+// the kind of drift blockUser's own comment warns about ("share exactly one implementation rather
+// than two copies... drifting apart"). Pure function: no req/res, callers own save(DB) + notifying
+// from the returned pivots/autoApprovals (see reset-workouts below for the reference shape).
+function wipeUserFromAllSessions(me) {
   let sessionsDeleted = 0, sessionsHandedOff = 0, sessionsCleared = 0;
   // Sep 27 2026 (ownerless redesign): collected here instead of notifying inline, so every
-  // notify() call happens after the loop's own await save(DB) below -- a crash partway through
-  // this loop can never leave someone notified about a pivot that didn't actually get persisted.
+  // notify() call happens after the caller's own await save(DB) -- a crash partway through this
+  // loop can never leave someone notified about a pivot that didn't actually get persisted.
   const pivots = [];       // { sessionId, sessionName, stillHere: [ids] } -- "host left" broadcast
   const autoApprovals = [];  // { proposedBy, swapTo, sessionId } -- from auto-applying pending edits
   for (const s of Object.values(DB.sessions)) {
@@ -5431,7 +5504,13 @@ app.post('/api/me/reset-workouts', auth, async (req, res) => {
     }
   }
   rebuildAllPrs();     // every record was built from logs that may no longer be theirs
-  await save(DB);
+  return { sessionsDeleted, sessionsHandedOff, sessionsCleared, pivots, autoApprovals };
+}
+// Notifies every pivot/auto-approval wipeUserFromAllSessions collected, in the one shared shape
+// both reset-workouts and delete-account send it in. Split out so the two callers' own res.json()
+// (different shapes -- reset-workouts echoes counts back for its own UI, delete-account doesn't)
+// don't have to duplicate this notify loop too.
+function notifyWipePivots(me, pivots, autoApprovals) {
   const whoLeft = (DB.users[me] && DB.users[me].displayName) || 'Someone';
   for (const a of autoApprovals) {
     if (!isBlocked(me, a.proposedBy)) {
@@ -5449,7 +5528,102 @@ app.post('/api/me/reset-workouts', auth, async (req, res) => {
       notify(uid_, { title: p.sessionName, body, link: { type: 'session', sessionId: p.sessionId } });
     }
   }
+}
+app.post('/api/me/reset-workouts', auth, async (req, res) => {
+  if (!(req.body && req.body.confirm === true))
+    return res.status(400).json({ error: 'confirm:true is required to reset your workouts' });
+  const me = req.userId;
+  const { sessionsDeleted, sessionsHandedOff, sessionsCleared, pivots, autoApprovals } = wipeUserFromAllSessions(me);
+  await save(DB);
+  notifyWipePivots(me, pivots, autoApprovals);
   res.json({ ok: true, sessionsDeleted, sessionsHandedOff, sessionsCleared });
+});
+// Sep 29 2026 (Jeff: "add... account deletion"; app-store readiness -- Apple guideline 5.1.1(v)
+// requires letting a user delete their own account from within an app that lets them create one).
+// Requires the CURRENT password re-entered, same proof-of-identity bar as /api/me/password above
+// -- an irreversible action needs at least that, not just "you're already logged in right now."
+//
+// This anonymizes the account IN PLACE rather than actually removing the DB.users[id] row.
+// Considered a real hard delete first: `nameOf` (crew/challenge display helper, above) is the only
+// place in this whole file that already tolerates a vanished user id (falls back to "(deleted
+// account)") -- everywhere else that reads DB.users[someId] (profileOf, canSeeProfile, avatarHtml,
+// publicUser, ...) assumes the row exists and was never audited against one disappearing out from
+// under a still-live session/comment/report/notification that references it. That's exactly the
+// class of "conditional failure invisible until the one missing case actually happens in
+// production" this file's own boot-migration rule (CLAUDE.md #7) exists to avoid, and account
+// deletion is not a place to find out the hard way. Anonymizing gets the same practical outcome
+// Apple's guideline is actually after -- the account is gone, cannot be logged into again, and no
+// longer identifies this person -- without that referential-integrity risk. u.deleted + the /login
+// check above are what actually enforce "gone"; the scrambled credentials are defense in depth.
+//
+// Flagged, not silently decided: deleting frees this account's OLD username for anyone else to
+// register (findUserByName can no longer match it once u.username below is overwritten) -- nothing
+// reserves it against reuse/impersonation. That's a real product call, not an engineering one; easy
+// to add a reserved-usernames list later if it turns out to matter.
+app.post('/api/me/delete-account', auth, async (req, res) => {
+  const me = req.userId;
+  const u = DB.users[me];
+  if (!u) return res.status(404).json({ error: 'not found' });
+  const { password } = req.body || {};
+  // 400, not 401 -- same reasoning as POST /api/me/password just above: this request already has
+  // a valid session token, a wrong confirmation password here must not trip app.js's global
+  // "any 401 means your session died" handler and force a surprise logout.
+  if (!password || !verifyPin(u, password)) return res.status(400).json({ error: 'Password is incorrect' });
+
+  const { pivots, autoApprovals } = wipeUserFromAllSessions(me);
+  // Persist + notify about the session wipe FIRST, same order reset-workouts uses (save, then
+  // notify only what's actually saved -- see notifyWipePivots' own comment on why) and, just as
+  // important here, BEFORE any of the follow-severance/anonymization below runs. Cold-review catch
+  // (Sep 29 2026): notifyWipePivots reads DB.users[me].displayName (the "X left the workout" body)
+  // and calls isBlocked(me, ...) to decide who to skip -- both need REAL data. Anonymizing first
+  // would have every one of those notifications read "Deleted user left the workout" instead of
+  // the actual name, and would silently defeat every "don't notify someone you're blocked with"
+  // check (isBlocked reads the very following/followers/blocked arrays the step below empties, so
+  // it would return false for everyone -- not "no one is blocked", just "the data being asked is
+  // already gone"). Doing this phase first, and the anonymization as its own second phase with its
+  // own save, keeps both halves correct without changing wipeUserFromAllSessions/notifyWipePivots
+  // themselves (still exactly what reset-workouts calls, unmodified).
+  await save(DB);
+  notifyWipePivots(me, pivots, autoApprovals);
+
+  // Sever the follow graph in every direction, app-wide -- blockUser (above) only ever does this
+  // for ONE other account at a time (the two people on either side of a single block); deletion
+  // needs the same following/followers/followReqs/blocked cleanup applied against every account
+  // that has a reference to `me` anywhere in those four lists.
+  for (const other of Object.values(DB.users)) {
+    if (other.id === me) continue;
+    if (Array.isArray(other.following)) other.following = other.following.filter(x => x !== me);
+    if (Array.isArray(other.followers)) other.followers = other.followers.filter(x => x !== me);
+    if (Array.isArray(other.followReqs)) other.followReqs = other.followReqs.filter(x => x !== me);
+    if (Array.isArray(other.blocked)) other.blocked = other.blocked.filter(x => x !== me);
+  }
+  delete DB.pushSubs[me];   // stop push delivery dead rather than let it 404/410 itself out later
+
+  // Cold-review catch (Sep 29 2026): u.avatar='' below only clears the REFERENCE -- same gap
+  // POST /api/me/avatar's own comment already documents for a re-upload landing under a different
+  // extension. Left unlinked, avatar_<id>.<ext> keeps sitting in UPLOAD_DIR and keeps being served
+  // by the unauthenticated `/uploads` static mount at its same old, already-known URL forever --
+  // directly contradicting this route's own point ("no longer identifies this person"). Same
+  // best-effort unlink POST /api/me/avatar already uses for exactly this reason.
+  if (u.avatar) {
+    try { fs.unlinkSync(path.join(UPLOAD_DIR, path.basename(u.avatar))); } catch (e) {}
+  }
+
+  const tag = 'deleted_' + me;   // uid() is already exactly 8 lowercase alnum chars -- see its own comment
+  u.username = tag;
+  u.displayName = 'Deleted user';
+  u.bio = '';
+  u.avatar = '';
+  u.defaultGym = '';
+  u.profileVisibility = 'private';
+  Object.assign(u, hashPin(crypto.randomBytes(32).toString('hex')));   // unusable, unguessable -- see /login's own check, this is belt-and-suspenders
+  u.following = []; u.followers = []; u.followReqs = [];
+  ensureBlockArray(u); u.blocked = [];
+  u.deleted = true;
+  u.deletedAt = new Date().toISOString();
+
+  await save(DB);   // second save: the follow-severance + anonymization phase above, its own step
+  res.json({ ok: true });
 });
 
 

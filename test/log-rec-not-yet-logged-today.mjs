@@ -63,7 +63,7 @@ async function past(tok, daysAgo, weight, reps) {
   await post(`/api/sessions/${s.id}/log`, { exerciseId: s.exercises[0].id, weight, reps, setType: 'normal' }, tok);
 }
 
-const reg = await post('/api/register', { username: 'lrn' + Math.random().toString(36).slice(2, 8), pin: '123456', displayName: 'Jeff' });
+const reg = await post('/api/register', { username: 'lrn' + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: 'Jeff' });
 const tok = reg.token;
 await past(tok, 14, 185, 7);    // fell short of 8 -- does not top out
 await past(tok, 7, 185, 10);    // tops out -- this becomes "latest"

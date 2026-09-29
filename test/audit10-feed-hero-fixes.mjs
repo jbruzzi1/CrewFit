@@ -59,7 +59,7 @@ async function api(path, method, token, body) {
   return r.json();
 }
 const reg = async (u) => {
-  const r = await api('/api/register', 'POST', null, { username: u + Math.random().toString(36).slice(2, 8), pin: '123456', displayName: u });
+  const r = await api('/api/register', 'POST', null, { username: u + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: u });
   return { token: r.token, id: r.user.id, displayName: r.user.displayName };
 };
 

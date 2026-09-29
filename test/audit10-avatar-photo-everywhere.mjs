@@ -49,7 +49,7 @@ async function api(path, method, token, body) {
   return r.json();
 }
 async function reg(username, displayName) {
-  const r = await api('/api/register', 'POST', null, { username, pin: '123456', displayName });
+  const r = await api('/api/register', 'POST', null, { username, pin: '12345678', displayName });
   return { token: r.token, id: r.user.id, username };
 }
 // 1x1 transparent PNG, smallest valid image the /api/me/avatar upload route accepts.

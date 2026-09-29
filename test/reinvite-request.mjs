@@ -38,7 +38,7 @@ ok(!!srv, 'server boots');
 
 const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b || {}) }).then(r => r.json());
 const get = (p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
-const reg = (username, displayName) => post('/api/register', { username, pin: '123456', displayName: displayName || username });
+const reg = (username, displayName) => post('/api/register', { username, pin: '12345678', displayName: displayName || username });
 const connect = async (a, b) => { await post(`/api/follow/${b.user.id}`, {}, a.token); await post(`/api/follow/${a.user.id}`, {}, b.token); };
 
 console.log('\ndecline with an optional reason -- reaches the creator, is not required');

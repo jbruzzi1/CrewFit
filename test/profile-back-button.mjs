@@ -58,7 +58,7 @@ await page.goto(BASE + '/');
 
 async function register(name) {
   const r = await page.evaluate(async ({ BASE, name }) => {
-    const res = await fetch(BASE + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: name + Math.random().toString(36).slice(2, 8), pin: '123456', displayName: name }) });
+    const res = await fetch(BASE + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: name + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: name }) });
     return res.json();
   }, { BASE, name });
   return r; // {token, user: {...}} shape assumed same as other tests -- normalized below

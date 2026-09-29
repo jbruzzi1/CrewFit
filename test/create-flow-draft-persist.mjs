@@ -59,7 +59,7 @@ async function freshPage() {
   const uname = 'vfx' + Math.random().toString(36).slice(2, 8);
   await page.goto(BASE + '/');
   const reg = await page.evaluate(async ({ BASE, uname }) => {
-    const r = await fetch(BASE + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: uname, pin: '123456', displayName: 'Vis Fix Test' }) });
+    const r = await fetch(BASE + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: uname, pin: '12345678', displayName: 'Vis Fix Test' }) });
     return r.json();
   }, { BASE, uname });
   await page.evaluate((tok) => localStorage.setItem('crewfit_token', tok), reg.token);
