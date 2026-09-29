@@ -6,3 +6,12 @@ data.json
 vapid.json
 *.log
 .DS_Store
+# Sep 29 2026: fly deploy warned the build context was 110MB/972 files -- none of these five need
+# to ship in the image (scratch outputs, agent-internal state, local-scratch, a node_modules
+# tarball backup, and runtime-uploaded user files that live on a volume, not in the image).
+# Excluding them only shrinks what gets zipped up for the builder; doesn't touch app behavior.
+Claude outputs/
+.hermes/
+_to_delete/
+_nm.tgz
+uploads/
