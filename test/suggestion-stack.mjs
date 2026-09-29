@@ -151,7 +151,7 @@ console.log("\napproving the front card decides it and reveals the next one -- d
   ok(sink.html.includes('Jeff suggests adding Cable Fly'), 'and it\'s the right one');
 }
 
-console.log('\nrejecting the last remaining suggestion empties the deck entirely -- no stray stack/dots left behind');
+console.log('\nrejecting the last remaining suggestion empties the deck entirely -- no stray stack/dots or leftover "declined" text left behind, just a toast confirming the tap -- Sep 29 2026 audit finding, Jeff\'s pick after seeing a permanent "declined" line on screen ("I don\'t want suggested changes just sitting there the whole time... notifications already hosts what got approved or declined")');
 {
   const ctx = makeCtx();
   vm.runInContext(`TOKEN = ${JSON.stringify(brian.token)}; ME = ${JSON.stringify(brian.user)};`, ctx);
@@ -160,7 +160,9 @@ console.log('\nrejecting the last remaining suggestion empties the deck entirely
   sink.html = '';
   await vm.runInContext('reject', ctx)(s.id, jeffEdit.id);
   await new Promise(r => setTimeout(r, 80)); // see the comment on the same pattern above (approve())
+  ok(sink.html.includes('>Declined<'), 'the toast confirming the tap fired (showToast, plain "Declined" message, no exercise name)');
   ok(!sink.html.includes('Suggested changes'), 'the "Suggested changes" section is gone entirely -- nothing pending or decided left to show');
+  ok(!sink.html.includes('declined'), 'no leftover "Cable Fly · declined" line -- the workout page carries no permanent record, same as before this whole feature existed');
   ok(!sink.html.includes('sugg-stack') && !sink.html.includes('sugg-dot'), 'no leftover stack chrome');
 }
 

@@ -4,8 +4,11 @@
 // "Last 7 days" using dayDiff() (a real calendar-day boundary, same one fmtWhen already uses for
 // each row's own Today/Yesterday wording) rather than a raw 24-hour window -- see the long comment
 // above historyHtml in app.js. Rows are also now individually tappable via historyTapAttrs(), which
-// dispatches to openSession/viewPost/profileView/crewView depending on n.link's type, deep-linking
-// exactly the same destinations openDeepLink() (see test/deeplink-dispatch.mjs) does for a live push.
+// deep-links exactly the same destinations openDeepLink() (see test/deeplink-dispatch.mjs) does for
+// a live push -- as of Sep 29 2026 (audit finding, Tier 5) both read off the one shared
+// DEEP_LINK_TYPES table, so a row's onclick is openDeepLink(<link object>) rather than calling
+// openSession/viewPost/profileView/crewView directly (see the esc() helper below, matching app.js's
+// own, used to build the expected attribute string).
 //
 // This runs the real renderNotifications() end to end (real app.js, mocked H.get('/api/notifications')
 // response) and inspects the actual rendered HTML written to #app -- not a source-text check -- same
@@ -15,6 +18,10 @@ import vm from 'node:vm';
 
 let fails = 0;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fails++; };
+// Mirrors app.js's own ESC_MAP/esc() exactly (public/app.js:62-63) -- used below to build the
+// exact onclick="openDeepLink(...)" attribute string historyTapAttrs() actually renders.
+const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const esc = s => String(s).replace(/[&<>"']/g, c => ESC_MAP[c]);
 
 const SRC = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 
@@ -153,12 +160,19 @@ console.log('\nhistory rows tap through to the right screen, matching n.link (sa
   await vm.runInContext('renderNotifications()', ctx);
   await sleep(5);
   const html = appEl.innerHTML;
-  ok(html.includes(`onclick="openSession('s_1')"`), "session-linked row calls openSession('s_1')");
-  ok(html.includes(`onclick="openSessionChat('s_1b')"`), "session-chat-linked row calls openSessionChat('s_1b'), not plain openSession");
-  ok(html.includes(`onclick="viewPost('s_2','u_2')"`), "post-linked row calls viewPost('s_2','u_2')");
-  ok(html.includes(`onclick="profileView('u_3')"`), "profile-linked row calls profileView('u_3')");
-  ok(html.includes(`onclick="crewView('c_4')"`), "crew-linked row calls crewView('c_4')");
-  ok(html.includes(`onclick="openCrewChat('c_4b')"`), "crew-chat-linked row calls openCrewChat('c_4b'), not plain crewView");
+  // Sep 29 2026 (audit finding, Tier 5): historyTapAttrs() used to build its onclick by calling
+  // openSession/viewPost/etc. directly -- a second, hand-written copy of the same link.type
+  // branching openDeepLink() does for push-tap navigation, which could silently drift out of sync
+  // with it. Both now read off one shared DEEP_LINK_TYPES table, so a row's onclick is
+  // `openDeepLink({...the link object...})` instead -- these assertions were updated to match that
+  // (still checking the real rendered HTML, still one distinct link per row type), not relaxed.
+  const dlAttr = link => `onclick="openDeepLink(${esc(JSON.stringify(link))})"`;
+  ok(html.includes(dlAttr({ type: 'session', sessionId: 's_1' })), "session-linked row dispatches openDeepLink for session s_1");
+  ok(html.includes(dlAttr({ type: 'session-chat', sessionId: 's_1b' })), "session-chat-linked row dispatches openDeepLink for session-chat s_1b, not plain session");
+  ok(html.includes(dlAttr({ type: 'post', sessionId: 's_2', authorId: 'u_2' })), "post-linked row dispatches openDeepLink for post s_2/u_2");
+  ok(html.includes(dlAttr({ type: 'profile', userId: 'u_3' })), "profile-linked row dispatches openDeepLink for profile u_3");
+  ok(html.includes(dlAttr({ type: 'crew', crewId: 'c_4' })), "crew-linked row dispatches openDeepLink for crew c_4");
+  ok(html.includes(dlAttr({ type: 'crew-chat', crewId: 'c_4b' })), "crew-chat-linked row dispatches openDeepLink for crew-chat c_4b, not plain crew");
   // Rows 5 and 6 must NOT be tappable -- extract each row's own markup (by its distinguishing body
   // text) rather than asserting on the whole page, since rows 1-4 legitimately DO have onclick.
   const rowFor = text => { const i = html.indexOf(text); const start = html.lastIndexOf('<div class="feed-item"', i); const end = html.indexOf('</div></div>', i) + '</div></div>'.length; return html.slice(start, end); };

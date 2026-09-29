@@ -2323,6 +2323,26 @@ app.get('/api/notifications', auth, async (req, res) => {
       removals.push({ type: 'removal', sessionId: s.id, reqId: pr.id, sessionName: s.name || 'Workout', exerciseName: pr.exerciseName, from: publicUser(pr.proposedBy) });
     }
   }
+  // Sep 29 2026 (audit finding, Tier 4e): a pending suggested edit (add/swap proposal awaiting the
+  // creator's approve/reject) used to have no home here at all -- unlike invites/followRequests/
+  // joinRequests/removals above, a creator who missed or dismissed the one push for a suggestion
+  // had no way to rediscover it except by remembering which specific workout it was on and
+  // reopening it. Same shape as removals just above: creator-only (approve/reject on an owned
+  // session's suggestedEdits is creator-only -- see POST .../suggest/:editId/approve|reject),
+  // pending entries only. Deliberately NOT reconstructed for ownerless sessions (s.creatorId ===
+  // null, excluded by the creatorId check below) -- there, every participant can vote at any time
+  // and the pending stack stays visible and standing for as long as it's unresolved (see the
+  // ownerless redesign's own comment on suggestedEdits in openSession), so there's no single,
+  // missable decision moment the way there is here.
+  const suggestions = [];
+  for (const s of Object.values(DB.sessions)) {
+    if (s.creatorId !== req.userId) continue;
+    for (const ed of (s.suggestedEdits || [])) {
+      if (ed.status !== 'pending') continue;
+      if (!DB.users[ed.proposedBy] || isBlocked(ed.proposedBy, req.userId)) continue;
+      suggestions.push({ type: 'suggestion', sessionId: s.id, editId: ed.id, sessionName: s.name || 'Workout', editType: ed.type, swapTo: ed.swapTo, from: publicUser(ed.proposedBy) });
+    }
+  }
   // Sep 27 2026 (Jeff, part 1): a declined-then-changed-their-mind request (POST
   // .../reinvite-request) sits here the same way a join/removal request does, so the creator's
   // one-tap "Invite them back" button (app.js) survives missing the one push notification, same
@@ -2343,7 +2363,7 @@ app.get('/api/notifications', auth, async (req, res) => {
     .map(n => ({ type: 'history', id: n.id, title: n.title, body: n.body, at: n.createdAt, link: n.link || null }));
   const seenAt = me.notificationsSeenAt ? new Date(me.notificationsSeenAt).getTime() : 0;
   const unseenHistory = history.filter(n => new Date(n.at).getTime() > seenAt).length;
-  res.json({ invites, followRequests, joinRequests, removals, reinviteAsks, history, count: invites.length + followRequests.length + joinRequests.length + removals.length + reinviteAsks.length + unseenHistory });
+  res.json({ invites, followRequests, joinRequests, removals, suggestions, reinviteAsks, history, count: invites.length + followRequests.length + joinRequests.length + removals.length + suggestions.length + reinviteAsks.length + unseenHistory });
 });
 // Stamps "I have now looked at the notifications page" -- called by renderNotifications() in
 // app.js when it actually lands on the page, deliberately NOT by GET /api/notifications itself
@@ -2792,7 +2812,11 @@ app.post('/api/sessions/:id/comments', auth, async (req, res) => {
   // visibleComments above), so pushing them a notification for a comment they'll never actually
   // be able to see once they open it would be a dangling, confusing alert.
   const recipients = new Set([...(s.participants || []), ...(s.invited || [])]);
-  for (const pid of recipients) if (pid !== req.userId && !isBlocked(req.userId, pid)) notify(pid, { title: 'New message', body: `${who}: ${text.slice(0,40)}`, link: { type: 'session-chat', sessionId: s.id } },
+  // Sep 29 2026 (audit finding, Tier 4e): titled the generic literal 'New message' here while crew
+  // chat's identical kind of event (below, same file) titles itself with the crew's own name --
+  // same inconsistency this fixes, just the other direction: title it with the workout's name
+  // (wkName, already computed just above) to match.
+  for (const pid of recipients) if (pid !== req.userId && !isBlocked(req.userId, pid)) notify(pid, { title: wkName, body: `${who}: ${text.slice(0,40)}`, link: { type: 'session-chat', sessionId: s.id } },
     { group: { key: `session:${s.id}:chat`, singularBody: `${who} commented on ${wkName}`, pluralBody: n => `${n} new comments on ${wkName}` } });
   res.json(sessionView(s, req.userId));
 });
@@ -4201,9 +4225,17 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // Sep 23 2026: resolvedRemovals notified s.creatorId specifically -- with ownership never
   // handed off anymore, an ownerless session has no creatorId to notify, so this now only ever
   // fires for a still-owned session (unchanged for that case).
+  // Sep 29 2026 (audit finding, Tier 4e -- awaiting Jeff's actual sign-off, see the audit doc):
+  // this used to push:false -- silent, in-app only -- while the identical "Removal approved"
+  // event pushes for real when it resolves because every required approver actually taps Approve
+  // (see the unmodified notify() further down this file). Unlike this route, s.creatorId is
+  // already nulled out above when the departing person IS the owner (wasOwner), so this never
+  // self-notifies -- the recipient here is always someone other than whoever's leaving. Pushing it
+  // every time, regardless of which path resolved it, so the creator hears about it the same way
+  // either way -- flagged for Jeff to actually confirm, not yet a decision he's made.
   if (s.creatorId) {
     for (const pr of resolvedRemovals) {
-      notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } }, { push: false });
+      notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } });
     }
   }
   for (const edit of autoApplied) {
@@ -4267,6 +4299,15 @@ app.post('/api/sessions/:id/participants/:pid/remove', auth, async (req, res) =>
   await save(DB);
   const hostName = DB.users[s.creatorId] ? DB.users[s.creatorId].displayName : 'The organizer';
   notify(target, { title: 'Removed from workout', body: `${hostName} removed you from ${s.name}. Your logged sets are still saved.`, link: { type: 'session', sessionId: s.id } });
+  // Sep 29 2026 (audit finding, Tier 4e; cold-review catch on the fix below): /leave and
+  // /remove-mine's matching blocks were changed to always push "Removal approved" (see their own
+  // comments) because in BOTH of those routes, when the actor IS the creator, s.creatorId is
+  // already nulled out (wasOwner -> s.creatorId = null) before this notify runs -- so they never
+  // actually self-notify. This route is different: it's creator-only (the 403 a few lines up), so
+  // req.userId === s.creatorId on every call, and this notify block fires for the SAME person who
+  // just tapped the kick button that resolved it. That's exactly the self-notification case
+  // notify()'s own opts.push===false comment describes ("a push would just be telling someone
+  // about the button they themselves just tapped") -- kept muted here, unlike its two siblings.
   for (const pr of resolvedNow) {
     notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } }, { push: false });
   }
@@ -4396,9 +4437,14 @@ app.post('/api/sessions/:id/remove-mine', auth, async (req, res) => {
   const resolvedRemovals = dropRequiredApprover(s, me);
   rebuildAllPrs();
   await save(DB);
+  // Sep 29 2026 (audit finding, Tier 4e -- awaiting Jeff's actual sign-off, see the audit doc):
+  // same push-consistency fix as /leave's identical block above, same reasoning: s.creatorId is
+  // already nulled out above when the departing person IS the owner, so this never self-notifies
+  // either -- always push "Removal approved," whether it resolved by someone actually approving
+  // or by dropping out here.
   if (s.creatorId) {
     for (const pr of resolvedRemovals) {
-      notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } }, { push: false });
+      notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } });
     }
   }
   for (const edit of autoApplied) {
@@ -5186,9 +5232,18 @@ app.post('/api/sessions/:id/suggest/:editId/reject', auth, async (req, res) => {
   await save(DB);
   // Sep 24 2026 audit round 4: same missing block check as the propose/approve-side notifies
   // above.
-  if (edit.type !== 'add' && !isBlocked(req.userId, edit.proposedBy)) {
-    const ex = s.exercises.find(x => x.id === edit.exerciseId);
-    notify(edit.proposedBy, { title: 'Swap not approved', body: `${DB.users[s.creatorId].displayName} kept ${ex ? ex.name : 'the exercise'}. You can still swap it for just you.`, link: { type: 'session', sessionId: s.id } });
+  // Sep 29 2026 (audit finding, Tier 4e): this used to skip the notify entirely for edit.type
+  // ==='add' -- a rejected ADD suggestion told its proposer nothing at all, while a rejected SWAP
+  // always did, even though the approve path notifies for both (see 'Exercise added' vs 'Swap
+  // approved' just above). "Your suggestion was rejected" should reach you exactly as reliably as
+  // "your suggestion was approved" does, regardless of which kind it was.
+  if (!isBlocked(req.userId, edit.proposedBy)) {
+    if (edit.type === 'add') {
+      notify(edit.proposedBy, { title: 'Exercise not added', body: `${DB.users[s.creatorId].displayName} didn't add ${edit.swapTo} to the workout.`, link: { type: 'session', sessionId: s.id } });
+    } else {
+      const ex = s.exercises.find(x => x.id === edit.exerciseId);
+      notify(edit.proposedBy, { title: 'Swap not approved', body: `${DB.users[s.creatorId].displayName} kept ${ex ? ex.name : 'the exercise'}. You can still swap it for just you.`, link: { type: 'session', sessionId: s.id } });
+    }
   }
   res.json(sessionView(s, req.userId));
 });
