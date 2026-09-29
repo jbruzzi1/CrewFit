@@ -58,15 +58,21 @@ await post('/api/follow-requests/' + jeff.user.id + '/accept', {}, brian.token);
 await post('/api/follow/' + jeff.user.id, {}, brian.token);
 await post('/api/follow-requests/' + brian.user.id + '/accept', {}, jeff.token);
 
-console.log('\nguard rails: no confirm, no auth');
+// Sep 29 2026 (audit finding, Tier 1 #2): this used to accept a bare confirm:true -- proof you
+// tapped a button, not proof you're really the account holder. Now requires the real current
+// password, the exact same bar /api/me/delete-account already sets for the same severity of
+// action (erases everything, no undo) -- see that route's own comment.
+console.log('\nguard rails: no password, wrong password, no auth');
 {
-  const noAuth = await postRaw('/api/me/reset-workouts', { confirm: true });
+  const noAuth = await postRaw('/api/me/reset-workouts', { password: 'pass1234' });
   ok(noAuth.status === 401 || noAuth.status === 403, `no token is rejected (got ${noAuth.status})`);
-  const noConfirm = await postRaw('/api/me/reset-workouts', {}, jeff.token);
-  ok(noConfirm.status === 400, `missing confirm:true is rejected, not silently treated as yes (got ${noConfirm.status})`);
+  const noPassword = await postRaw('/api/me/reset-workouts', {}, jeff.token);
+  ok(noPassword.status === 400, `missing password is rejected, not silently treated as yes (got ${noPassword.status})`);
+  const wrongPassword = await postRaw('/api/me/reset-workouts', { password: 'wrongpass1' }, jeff.token);
+  ok(wrongPassword.status === 400, `the wrong password is rejected (got ${wrongPassword.status})`);
   // A body carrying someone else's id must be ignored outright — this route only ever touches the
   // caller's own token identity.
-  const spoofed = await post('/api/me/reset-workouts', { confirm: true, userId: brian.user.id }, jeff.token);
+  const spoofed = await post('/api/me/reset-workouts', { password: 'pass1234', userId: brian.user.id }, jeff.token);
   ok(spoofed.ok === true, 'a spoofed userId in the body does not error — it is just ignored');
 }
 
@@ -80,7 +86,7 @@ console.log("\na solo workout with nobody else's credit is deleted outright — 
   await post('/api/sessions/' + solo.id + '/log', { exerciseId: exId, weight: 225, reps: 5 }, jeff.token);
   await post('/api/sessions/' + solo.id + '/lock', {}, jeff.token);
 
-  const r = await post('/api/me/reset-workouts', { confirm: true }, jeff.token);
+  const r = await post('/api/me/reset-workouts', { password: 'pass1234' }, jeff.token);
   ok(r.ok === true, 'resets ok');
   ok(r.sessionsDeleted === 1, `the solo session was hard-deleted (got ${r.sessionsDeleted})`);
   const db = await readDb(testDb.url);
@@ -100,7 +106,7 @@ console.log('\na workout Jeff CREATED where Brian also logged real sets is clear
   await post('/api/sessions/' + shared.id + '/lock', {}, jeff.token);
   await post('/api/sessions/' + shared.id + '/lock', {}, brian.token);
 
-  const r = await post('/api/me/reset-workouts', { confirm: true }, jeff.token);
+  const r = await post('/api/me/reset-workouts', { password: 'pass1234' }, jeff.token);
   ok(r.sessionsHandedOff >= 1, `at least one session pivoted ownerless, not deleted (got ${r.sessionsHandedOff})`);
 
   const db = await readDb(testDb.url);
@@ -137,7 +143,7 @@ console.log('\nSep 18 2026 (cold-review catch): a workout Jeff created where Bri
   await post('/api/sessions/' + joinedOnly.id + '/accept', {}, brian.token);
   // Neither Jeff nor Brian has logged a single set here.
 
-  const r = await post('/api/me/reset-workouts', { confirm: true }, jeff.token);
+  const r = await post('/api/me/reset-workouts', { password: 'pass1234' }, jeff.token);
   ok(r.sessionsHandedOff >= 1, `pivoted ownerless, not counted among the deletions (got sessionsDeleted=${r.sessionsDeleted}, sessionsHandedOff=${r.sessionsHandedOff})`);
 
   const db = await readDb(testDb.url);
@@ -161,7 +167,7 @@ console.log("\na workout Jeff only JOINED (Brian's, not his) is left completely 
   await post('/api/sessions/' + briansSession.id + '/lock', {}, brian.token);
   await post('/api/sessions/' + briansSession.id + '/lock', {}, jeff.token);
 
-  await post('/api/me/reset-workouts', { confirm: true }, jeff.token);
+  await post('/api/me/reset-workouts', { password: 'pass1234' }, jeff.token);
 
   const db = await readDb(testDb.url);
   const s = db.sessions[briansSession.id];
@@ -187,7 +193,7 @@ console.log('\na session Jeff already LEFT earlier (alumni-only credit, no live 
   const beforeReset = await get('/api/sessions/' + oldSession.id, jeff.token);
   ok(beforeReset.status === 200, 'sanity: alumni tier lets Jeff see this before reset (got ' + beforeReset.status + ')');
 
-  await post('/api/me/reset-workouts', { confirm: true }, jeff.token);
+  await post('/api/me/reset-workouts', { password: 'pass1234' }, jeff.token);
 
   const afterReset = await get('/api/sessions/' + oldSession.id, jeff.token);
   ok(afterReset.status === 403, `after reset, Jeff has no history row left here either — back to a genuine stranger (got ${afterReset.status})`);
@@ -214,7 +220,7 @@ console.log('\nwhen MULTIPLE friends have current credit in a workout Jeff creat
   await post('/api/sessions/' + trio.id + '/log', { exerciseId: exId, weight: 185, reps: 6 }, brian.token);
   await post('/api/sessions/' + trio.id + '/log', { exerciseId: exId, weight: 155, reps: 8 }, carla.token);
 
-  await post('/api/me/reset-workouts', { confirm: true }, jeff.token);
+  await post('/api/me/reset-workouts', { password: 'pass1234' }, jeff.token);
 
   const db = await readDb(testDb.url);
   const s = db.sessions[trio.id];
@@ -239,7 +245,7 @@ console.log('\ncreator + the ONLY other credit is a departed (non-current) histo
   await post('/api/sessions/' + ghost.id + '/leave', { keep: true }, brian.token);
   await post('/api/sessions/' + ghost.id + '/log', { exerciseId: exId, weight: 65, reps: 12 }, jeff.token);
 
-  await post('/api/me/reset-workouts', { confirm: true }, jeff.token);
+  await post('/api/me/reset-workouts', { password: 'pass1234' }, jeff.token);
 
   const db = await readDb(testDb.url);
   const s = db.sessions[ghost.id];
@@ -275,7 +281,7 @@ console.log("\nv249 (audit finding): a discard-leave-then-reset used to leave a 
   ok(!(sBefore.history || []).some(h => h.userId === jeff.user.id), 'sanity: no history row exists — discard never called creditFinish');
   ok(!!(sBefore.posts && sBefore.posts[jeff.user.id]), "sanity: the recap Jeff posted BEFORE leaving is still sitting on the session — this is the exact gap");
 
-  const r = await post('/api/me/reset-workouts', { confirm: true }, jeff.token);
+  const r = await post('/api/me/reset-workouts', { password: 'pass1234' }, jeff.token);
   ok(r.ok === true, 'reset runs ok');
   ok(r.sessionsCleared === 1, `the session with only a stale recap and no other trace is still recognized as touched and cleared (got ${r.sessionsCleared})`);
 

@@ -1253,6 +1253,21 @@ app.post('/api/me/username', auth, async (req, res) => {
 // only self-service credential change this app offers today; "forgot" recovery genuinely has no
 // safe implementation yet (no email/phone on file to verify against — same comment).
 app.post('/api/me/password', auth, async (req, res) => {
+  // Sep 29 2026 (audit finding, Tier 1 #1): this route already carries a valid session token, so
+  // the only thing standing between a stolen token and the account's real password was however
+  // many guesses someone wanted to make -- nothing here ever capped them. Same failCount/bumpFail/
+  // clearFail pattern login already uses for its own per-account lockout (above) rather than a
+  // blanket overLimit -- this only counts WRONG guesses against the cap and clears it on a
+  // successful one, so a real user changing their password repeatedly (or this route being called
+  // legitimately many times, e.g. in tests) never trips it; only a run of actual wrong guesses does.
+  // Keyed on req.userId, not IP, since a stolen token can come from any IP. Cold-review catch (Sep
+  // 29 2026): the 'pw-confirm:' key is deliberately SHARED with /api/me/reset-workouts and
+  // /api/me/delete-account below, not a separate key per route -- all three check the exact same
+  // verifyPin(u, ...) against the same account's real password, so a per-route counter would have
+  // let a stolen token get 3x the effective guess budget just by rotating which of the three
+  // routes it hit.
+  if (failCount('pw-confirm:' + req.userId) >= 10)
+    return res.status(429).json({ error: 'Too many attempts. Try again later.' });
   const { currentPassword, newPassword } = req.body || {};
   const u = DB.users[req.userId];
   // 400, deliberately not 401: this request already carries a VALID auth token (it passed `auth`
@@ -1261,12 +1276,28 @@ app.post('/api/me/password', auth, async (req, res) => {
   // force-logs-out back to the auth screen (see its own comment) -- a wrong-password typo here
   // would otherwise silently sign the user out instead of showing them the actual error. Caught by
   // rendering this for real, not just by reading the code (see CLAUDE.md's own verification rule).
-  if (!currentPassword || !verifyPin(u, currentPassword)) return res.status(400).json({ error: 'Current password is incorrect' });
+  if (!currentPassword || !verifyPin(u, currentPassword)) {
+    bumpFail('pw-confirm:' + req.userId, 60 * 60 * 1000);
+    return res.status(400).json({ error: 'Current password is incorrect' });
+  }
+  clearFail('pw-confirm:' + req.userId);
   const pProblem = pinProblem(newPassword);
   if (pProblem) return res.status(400).json({ error: pProblem });
   Object.assign(u, hashPin(newPassword));
+  // Sep 29 2026 (audit finding, Tier 1 #3): userIdFromToken's own comment above already says this
+  // field "lets a single account be signed out everywhere, e.g. after a password change" -- it was
+  // checked there but never actually assigned anywhere, so that sentence was aspirational, not
+  // real: every OTHER session stayed valid for up to TOKEN_TTL_DAYS (90) after a password change.
+  // Setting it here is what actually closes that. This device's own request already carries a
+  // token whose payload.t predates the timestamp being set below, so without doing anything else
+  // this exact device would immediately fail its own next request -- a surprise logout right after
+  // successfully changing your password, the same class of bug the 400-not-401 comment above this
+  // route already goes out of its way to avoid. Fixed the same way: mint this device a fresh token
+  // (signToken uses Date.now(), which is monotonic and therefore never earlier than the
+  // tokensValidFrom timestamp just written) and hand it back so app.js can swap it in silently.
+  u.tokensValidFrom = new Date().toISOString();
   await save(DB);
-  res.json({ ok: true });
+  res.json({ ok: true, token: signToken(u.id) });
 });
 // Following is a REQUEST now, not an instant grant. It stays pending until the target accepts.
 app.post('/api/follow/:id', auth, async (req, res) => {
@@ -5472,8 +5503,10 @@ function stripUserFromSession(s, userId) {
 // Scoped to req.userId ONLY — never a body param, so this can never be pointed at anyone else,
 // spoofed userId in the body or not. Account identity (username, login, friends) is untouched;
 // that was Jeff's own explicit choice when asked what "start over" should mean — only what he
-// actually LOGGED disappears. Requires an explicit confirm:true so a bare/misfired POST can never
-// silently wipe someone's training history.
+// actually LOGGED disappears. Requires the caller's real current password (see the route below,
+// Sep 29 2026 audit finding, Tier 1 #2 -- it used to just be a bare confirm:true, which is proof
+// you tapped a button, not proof you're really the account holder) so a bare/misfired POST, or a
+// stolen session, can never silently wipe someone's training history.
 //
 // For every session this user has any real footprint in (current participant, creator, or a
 // history-only alumni row): if they're the creator and nobody else has real credit
@@ -5584,10 +5617,25 @@ function notifyWipePivots(me, pivots, autoApprovals) {
     }
   }
 }
+// Sep 29 2026 (audit finding, Tier 1 #2): this used to accept a bare `confirm:true` -- proof you
+// tapped a button, not proof you're really the account holder -- while /api/me/delete-account
+// (just below) requires the actual current password for the exact same severity of action
+// (erases every workout/log/PR, no undo). Now matches that bar exactly: current password
+// required, same verifyPin check, same error shape/status, and the SAME 'pw-confirm:' failure
+// counter that route and /api/me/password share -- see /api/me/password's own comment on why
+// this is one shared per-account budget across all three password-confirmation routes, not a
+// separate 10/hour per route.
 app.post('/api/me/reset-workouts', auth, async (req, res) => {
-  if (!(req.body && req.body.confirm === true))
-    return res.status(400).json({ error: 'confirm:true is required to reset your workouts' });
   const me = req.userId;
+  const u = DB.users[me];
+  if (failCount('pw-confirm:' + me) >= 10)
+    return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+  const { password } = req.body || {};
+  if (!password || !verifyPin(u, password)) {
+    bumpFail('pw-confirm:' + me, 60 * 60 * 1000);
+    return res.status(400).json({ error: 'Password is incorrect' });
+  }
+  clearFail('pw-confirm:' + me);
   const { sessionsDeleted, sessionsHandedOff, sessionsCleared, pivots, autoApprovals } = wipeUserFromAllSessions(me);
   await save(DB);
   notifyWipePivots(me, pivots, autoApprovals);
@@ -5619,11 +5667,23 @@ app.post('/api/me/delete-account', auth, async (req, res) => {
   const me = req.userId;
   const u = DB.users[me];
   if (!u) return res.status(404).json({ error: 'not found' });
+  // Sep 29 2026 (audit finding, Tier 1 #1): same reasoning as POST /api/me/password's own comment
+  // -- a valid-but-stolen token could otherwise guess this account's real password against this
+  // route forever, nothing here ever capped it. Same failCount/bumpFail/clearFail pattern (only
+  // wrong guesses count, cleared on a correct one), and the SAME shared 'pw-confirm:' counter as
+  // /api/me/password and /api/me/reset-workouts -- one 10/hour budget across all three, not 10
+  // per route (see /api/me/password's own comment on why).
+  if (failCount('pw-confirm:' + me) >= 10)
+    return res.status(429).json({ error: 'Too many attempts. Try again later.' });
   const { password } = req.body || {};
   // 400, not 401 -- same reasoning as POST /api/me/password just above: this request already has
   // a valid session token, a wrong confirmation password here must not trip app.js's global
   // "any 401 means your session died" handler and force a surprise logout.
-  if (!password || !verifyPin(u, password)) return res.status(400).json({ error: 'Password is incorrect' });
+  if (!password || !verifyPin(u, password)) {
+    bumpFail('pw-confirm:' + me, 60 * 60 * 1000);
+    return res.status(400).json({ error: 'Password is incorrect' });
+  }
+  clearFail('pw-confirm:' + me);
 
   const { pivots, autoApprovals } = wipeUserFromAllSessions(me);
   // Persist + notify about the session wipe FIRST, same order reset-workouts uses (save, then
@@ -5676,6 +5736,16 @@ app.post('/api/me/delete-account', auth, async (req, res) => {
   ensureBlockArray(u); u.blocked = [];
   u.deleted = true;
   u.deletedAt = new Date().toISOString();
+  // Sep 29 2026 (audit finding, Tier 1 #3): this screen's own confirmation copy already promises
+  // "You'll be signed out everywhere" -- that wasn't actually true until this line existed.
+  // u.deleted + the pinHash scramble above stop a NEW login, but userIdFromToken never checked
+  // u.deleted, so a token issued before deletion kept authenticating as this (now-anonymized)
+  // account for up to TOKEN_TTL_DAYS (90) after. tokensValidFrom is the mechanism
+  // userIdFromToken's own comment already describes for exactly this; it was just never assigned
+  // anywhere. Setting it here makes every outstanding token -- including this device's own,
+  // which is fine, since the client calls logout() right after this response either way -- fail
+  // immediately on its next use.
+  u.tokensValidFrom = u.deletedAt;
 
   await save(DB);   // second save: the follow-severance + anonymization phase above, its own step
   res.json({ ok: true });

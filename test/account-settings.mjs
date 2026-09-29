@@ -91,17 +91,34 @@ console.log('\nusername');
 
 console.log('\nchange password');
 {
-  const u = await reg('cp_' + Date.now(), 'pass1234', 'CP');
+  const uname = 'cp_' + Date.now();
+  const u = await reg(uname, 'pass1234', 'CP');
+  // A second live session for the same account (a second device, in effect) -- lets the
+  // sign-out-everywhere assertions below tell "this device" apart from "every other device".
+  const device2 = await login(uname, 'pass1234');
+  ok(!!device2.token, 'sanity: a second device can log in with the still-current password');
+
   const wrongCurrent = await post('/api/me/password', { currentPassword: 'nope1234', newPassword: 'newpass12' }, u.token);
   ok(wrongCurrent.error, `the wrong current password is refused (got ${JSON.stringify(wrongCurrent)})`);
   const weakNew = await post('/api/me/password', { currentPassword: 'pass1234', newPassword: 'short' }, u.token);
   ok(weakNew.error, 'a new password under 8 characters is refused, same floor as registration');
   const r = await post('/api/me/password', { currentPassword: 'pass1234', newPassword: 'newpass12' }, u.token);
   ok(r.ok === true, `a correct current password + valid new one succeeds (got ${JSON.stringify(r)})`);
-  const oldNoLongerWorks = await login(u.user.username, 'pass1234');
+  const oldNoLongerWorks = await login(uname, 'pass1234');
   ok(!oldNoLongerWorks.token, 'the old password no longer logs in');
-  const newWorks = await login(u.user.username, 'newpass12');
+  const newWorks = await login(uname, 'newpass12');
   ok(!!newWorks.token, 'the new password does');
+
+  // Sep 29 2026 (audit finding, Tier 1 #3; cold-review catch): the whole point of this change is
+  // that it actually signs out every OTHER session, while the device that made the change gets a
+  // fresh token so it doesn't lock itself out. None of that was previously covered here.
+  ok(typeof r.token === 'string' && r.token.length > 0, `the response hands back a fresh token for this device (got ${JSON.stringify(r.token)})`);
+  const oldTokenAfterChange = await postRaw('/api/me/display-name', { displayName: 'still me?' }, u.token);
+  ok(oldTokenAfterChange.status === 401, `this device's OWN pre-change token is dead too, same as any other pre-change token (got ${oldTokenAfterChange.status})`);
+  const freshTokenWorks = await postRaw('/api/me/display-name', { displayName: 'still me' }, r.token);
+  ok(freshTokenWorks.status === 200, `but the FRESH token the route handed back keeps this device logged in, no surprise logout right after changing your own password (got ${freshTokenWorks.status})`);
+  const device2AfterChange = await postRaw('/api/me/display-name', { displayName: 'device 2?' }, device2.token);
+  ok(device2AfterChange.status === 401, `the OTHER device's session is genuinely signed out (got ${device2AfterChange.status})`);
 }
 
 console.log('\ndelete account');
@@ -175,10 +192,14 @@ console.log('\ndelete account');
   const loginAfter = await login(ownerOldUsername, 'pass1234');
   ok(!loginAfter.token, 'the deleted account can no longer log in under its old username');
   const tokenStillWorks = await fetch(B + '/api/profile/' + owner.user.id, { headers: { Authorization: 'Bearer ' + owner.token } });
-  // The pre-deletion token is still cryptographically valid (tokens are signed, not revoked by
-  // list) -- what actually matters is that the account behind it no longer identifies this person
-  // or holds real data, checked below via the friend's own view of the follow graph and session.
-  ok(tokenStillWorks.status === 200 || tokenStillWorks.status === 404, 'a stale pre-deletion token does not crash the server either way');
+  // Sep 29 2026 (audit finding, Tier 1 #3): this used to assert 200-or-404 with a comment saying
+  // the pre-deletion token "is still cryptographically valid (tokens are signed, not revoked by
+  // list)" -- that sentence WAS the bug (Tier 1 audit finding #3: delete-account's own confirm
+  // screen already promised "you'll be signed out everywhere," and nothing made that true).
+  // tokensValidFrom is now actually assigned on delete (see the route's own comment), so this
+  // exact pre-deletion token fails userIdFromToken's check and auth() correctly 401s -- the
+  // stronger, intended behavior, not a crash to merely tolerate.
+  ok(tokenStillWorks.status === 401, `a stale pre-deletion token is rejected, not still usable (got ${tokenStillWorks.status})`);
 
   const friendsFollowing = await fetch(B + '/api/profile/' + friend.user.id + '/following', { headers: { Authorization: 'Bearer ' + friend.token } }).then(r => r.json());
   ok(Array.isArray(friendsFollowing) && !friendsFollowing.some(x => x.id === owner.user.id),
@@ -205,6 +226,43 @@ console.log('\ndelete account');
   ok(sessAfter && sessAfter.creatorId === null, `the workout pivoted to ownerless, same as reset-workouts (got ${JSON.stringify(sessAfter)})`);
   ok(sessAfter && Array.isArray(sessAfter.participants) && sessAfter.participants.includes(friend.user.id),
      'and the friend is still a real current participant, with their own logged set intact');
+}
+
+// Sep 29 2026 (audit finding, Tier 1 #1): nothing capped how many times a valid-but-stolen token
+// could guess an account's real password against /api/me/password, /api/me/delete-account, or
+// /api/me/reset-workouts. All three now share ONE 'pw-confirm:'+userId failCount/bumpFail/
+// clearFail counter (only WRONG guesses count against the cap, a correct one clears it) -- a
+// single shared budget across all three routes, not 10 per route, per a cold-review catch: since
+// all three check the exact same verifyPin(u,...) against the same password hash, a separate
+// counter per route would have let a stolen token get 3x the effective guesses just by rotating
+// which route it hit. reset-workouts.mjs's own guard-rail block separately covers that route's
+// password requirement itself; this block is what actually proves the counter is shared.
+console.log('\nrate limiting on the password-confirmation routes, shared across all three (Tier 1 #1)');
+{
+  const u = await reg('rl_' + Date.now(), 'pass1234', 'RL');
+  for (let i = 0; i < 10; i++) {
+    const r = await post('/api/me/password', { currentPassword: 'wrongpass', newPassword: 'irrelevant1' }, u.token);
+    ok(r.error === 'Current password is incorrect', `wrong guess ${i + 1}/10 is refused normally, not yet locked out (got ${JSON.stringify(r)})`);
+  }
+  const locked = await postRaw('/api/me/password', { currentPassword: 'wrongpass', newPassword: 'irrelevant1' }, u.token);
+  ok(locked.status === 429, `the 11th wrong guess in a row is rate-limited (got ${locked.status})`);
+  // A CORRECT guess right after must still be refused while locked out -- the lockout blocks the
+  // account for a while regardless of whether this particular attempt would have succeeded,
+  // exactly like the existing login lockout already behaves.
+  const correctWhileLocked = await postRaw('/api/me/password', { currentPassword: 'pass1234', newPassword: 'newpass12' }, u.token);
+  ok(correctWhileLocked.status === 429, 'even the right password is refused while locked out, same as the login lockout');
+  // The lockout carries over to the OTHER two password-confirmation routes too -- proves the
+  // counter is genuinely shared, not three separate 10-guess budgets an attacker could rotate
+  // between.
+  const lockedOnDelete = await postRaw('/api/me/delete-account', { password: 'pass1234' }, u.token);
+  ok(lockedOnDelete.status === 429, `the same lockout blocks delete-account too, even with the right password (got ${lockedOnDelete.status})`);
+  const lockedOnReset = await postRaw('/api/me/reset-workouts', { password: 'pass1234' }, u.token);
+  ok(lockedOnReset.status === 429, `and reset-workouts, same shared budget (got ${lockedOnReset.status})`);
+
+  // A separate account is entirely unaffected -- this is a per-account cap, not global.
+  const other = await reg('rl2_' + Date.now(), 'pass1234', 'RL2');
+  const otherOk = await post('/api/me/password', { currentPassword: 'pass1234', newPassword: 'newpass12' }, other.token);
+  ok(otherOk.ok === true, `a different account's own password change is unaffected (got ${JSON.stringify(otherOk)})`);
 }
 
 srv.kill();

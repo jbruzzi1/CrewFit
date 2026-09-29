@@ -9223,18 +9223,27 @@ async function notifDismissReinvite(id, reqId){
 // Irreversible and account-wide, so this gets its own explaining sheet rather than a bare
 // browser confirm() — the same severity Delete/Leave get, just spelled out further since this
 // touches every workout at once instead of one.
+// Sep 29 2026 (audit finding, Tier 1 #2): used to be a bare "tap to confirm" button -- Delete
+// account (just below) asks for your actual password for the same severity of action (erases
+// everything, no undo), so this now matches it exactly: same password field, same button
+// treatment, just copied over.
 function confirmResetWorkouts(){
   const inner = `<div class="sheet"><div class="sheet-head"><h2>Reset workouts</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
     <div class="muted" style="padding:0 2px 14px">This permanently deletes every workout, log, and personal record you've saved — there's no undo. Workouts you share with a friend who still has their own credit in them stay theirs; you're just taken off. Your account, username, and friends are not affected.</div>
-    <div class="sheet-list">
+    <label class="muted">Enter your password to confirm</label>
+    <input id="rwPass" type="password" autocomplete="current-password">
+    <div class="sheet-list" style="margin-top:14px">
       <button class="sheet-row red" onclick="doResetWorkouts()">Reset everything</button>
       <button class="sheet-row" onclick="closeSheet()">Cancel</button>
     </div>
   </div>`;
   openSheetHtml(inner);
+  setTimeout(()=>{ const i=$('rwPass'); if(i) i.focus(); }, 60);
 }
 async function doResetWorkouts(){
-  const r = await H.post('/api/me/reset-workouts', {confirm:true});
+  const pass = $('rwPass').value;
+  if(!pass){ alert('Enter your password to confirm.'); return; }
+  const r = await H.post('/api/me/reset-workouts', {password:pass});
   if(r && r.error){ alert(r.error); return; }
   ME.workoutsCompleted = 0;
   closeSheet();
@@ -9266,6 +9275,13 @@ async function doChangePassword(){
   if(nw !== nw2){ alert("New passwords don't match."); return; }
   const r = await H.post('/api/me/password', {currentPassword:cur, newPassword:nw});
   if(r && r.error){ alert(r.error); return; }
+  // Sep 29 2026 (audit finding, Tier 1 #3): changing your password now invalidates every
+  // outstanding token for this account (see the route's own comment) so other devices/sessions
+  // actually get signed out, which is the whole point -- but that would include THIS device's own
+  // token too, since it was issued before the moment just set server-side. The route mints this
+  // device a fresh one specifically so that doesn't happen; swap it in the same way login/register
+  // already do, no separate setToken() call needed since ME/nav don't change here.
+  if(r.token){ TOKEN = r.token; localStorage.setItem('crewfit_token', r.token); }
   closeSheet();
   alert('Password changed.');
 }
