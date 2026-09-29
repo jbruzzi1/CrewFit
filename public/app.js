@@ -1938,7 +1938,21 @@ async function viewPost(id, authorId, opts){
     const setsHtml = blocks || (hasHiddenPost
       ? `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">Sets not shared</div>`
       : `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">No sets logged</div>`);
-    return `<div class="pp-ex"><div class="pp-ex-name">${esc(heading)}</div></div>${setsHtml}`;
+    // Sep 29 2026 (Jeff, real bug report: "forgot to record a set... didn't allow to add a set
+    // or properly edit a set as if it was active. Clicked re-activate workout and nothing really
+    // happened... For small edits - we want to be able to make after its been posted without
+    // also needing to fully reactivate the workout"). editPostedSet/savePostedSet/deletePostedSet
+    // above already let you fix an EXISTING logged set on a posted workout with zero reactivation
+    // -- POST/PUT/DELETE /api/sessions/:id/log never checked finished/lock state to begin with
+    // (Log & Finish is a per-person HISTORY credit, not a session-wide lock; see /lock and
+    // /unlock's own comments). The one real gap was ADDING a brand-new set after posting, which
+    // had no entry point anywhere on this screen -- own-recap only (isAuthor), same gating as
+    // every other edit affordance here, and shown whether this exercise already has sets or reads
+    // "No sets logged" (a fully-skipped exercise is exactly as fixable as a short one).
+    const addSetBtn = isAuthor
+      ? `<button class="pp-add-set" onclick="addPostedSet('${id}','${authorId}','${e.id}','${jsq(heading)}')">+ Add set</button>`
+      : '';
+    return `<div class="pp-ex"><div class="pp-ex-name">${esc(heading)}</div></div>${setsHtml}${addSetBtn}`;
   }).join('');
   // Jeff, Aug 28: "I want to be able to add or change the picture i added later once its on my
   // profile and already logged." Delete-a-photo already existed (below); this adds the other half
@@ -2048,7 +2062,7 @@ async function viewPost(id, authorId, opts){
   // wherever you actually tapped in from. history.back() replays the same real browser-history
   // pop the hardware/gesture Back button already uses, landing on whatever screen pushed the
   // entry below this one (see viewPost's own navigated()/landOn() call just below this template).
-  const html = `<div class="wrap">\n    <div class="pp-head">${backLinkHtml('history.back()')}${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}${((s.logs&&s.logs[ME.id])||[]).length ? '<div class="muted" style="font-size:12px;margin:-4px 2px 10px">Tap one of your sets to edit it.</div>' : ''}\n    ${notesBlock}\n    <h2>Comments</h2><div class="card">${likedRow}<div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
+  const html = `<div class="wrap">\n    <div class="pp-head">${backLinkHtml('history.back()')}${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}${((s.logs&&s.logs[ME.id])||[]).length ? `<div class="muted" style="font-size:12px;margin:${isAuthor?'6px':'-4px'} 2px 10px">Tap one of your sets to edit it.</div>` : ''}\n    ${notesBlock}\n    <h2>Comments</h2><div class="card">${likedRow}<div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
   $('app').innerHTML = html;
   notesAutosize();
   if(!silent){ const st={t:'post', id, authorId}; fromHistory ? landOn(st) : navigated(st); }
@@ -2505,6 +2519,33 @@ async function deletePostedSet(id, authorId, logId){
 async function deletePostedSetConfirmed(id, authorId, logId){
   const epoch=UI_EPOCH;
   const s = await H.delete(`/api/sessions/${id}/log/${logId}`);
+  if(s && s.error){ alert(s.error); return; }
+  if(nothingNavigatedSince(epoch)){ closeSheet(); viewPost(id, authorId, {silent:true}); }
+}
+// Sep 29 2026 (Jeff): the "+ Add set" counterpart to editPostedSet just above -- same sheet
+// shape (Weight + Reps only, no set-type picker, matching editPostedSet's own existing scope
+// rather than inventing a bigger form), but POSTs a brand-new set instead of PUTing an existing
+// one. myUnit() (not unitOf(), which reads an existing log entry's stamped unit) since there's no
+// entry yet -- matches the account's own unit, same as the live log sheet's blank weight input.
+function addPostedSet(id, authorId, exerciseId, exerciseName){
+  openSheetHtml(`
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="sheet-head"><h2>Add set</h2><button class="icon-btn" onclick="closeSheet()" aria-label="Close">✕</button></div>
+      <div class="ex-sub">${esc(exerciseName)}</div>
+      <label class="muted" style="font-size:12px">Weight (${myUnit()})</label>
+      <input id="ppAddW" type="number" inputmode="decimal" step="any" placeholder="0">
+      <label class="muted" style="font-size:12px">Reps</label>
+      <input id="ppAddR" type="number" inputmode="tel" pattern="[0-9]*" placeholder="0">
+      <button class="blue" onclick="savePostedNewSet('${id}','${authorId}','${exerciseId}')">Add set</button>
+    </div>`);
+}
+async function savePostedNewSet(id, authorId, exerciseId){
+  const epoch=UI_EPOCH;
+  const w = document.getElementById('ppAddW').value, r = document.getElementById('ppAddR').value;
+  // Same "reps are what make a set a set" rule POST /log itself enforces server-side -- caught
+  // here too so a blank Reps box doesn't round-trip to the server just to bounce back.
+  if(!(Number(r)>0)){ alert('Enter the number of reps for this set'); return; }
+  const s = await H.post(`/api/sessions/${id}/log`, { exerciseId, weight:w, reps:r });
   if(s && s.error){ alert(s.error); return; }
   if(nothingNavigatedSince(epoch)){ closeSheet(); viewPost(id, authorId, {silent:true}); }
 }
@@ -4409,7 +4450,15 @@ async function reactivateWorkoutConfirmed(id, authorId){
   const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/unlock`, {});
   if(r && r.error){ alert(r.error); return; }
-  if(nothingNavigatedSince(epoch)) viewPost(id, authorId, {silent:true});
+  // Sep 29 2026 (Jeff, real bug: "Clicked re-activate workout and nothing really happened...
+  // The workout was properly re-activated" -- confirmed the unlock itself worked, but this used
+  // to land back on viewPost(), the same static recap screen either way, so nothing on screen
+  // visibly changed. Unlock only removes THIS user's s.history finish-credit row (see /unlock's
+  // own server comment); openSession's own hasFinished check reads that same row, so the live
+  // logging screen -- Log & Finish button, +Add, the works -- is what should actually show now
+  // that the workout is genuinely active again. authorId is dropped: openSession is never
+  // per-author the way viewPost is, it's just "the session, live."
+  if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
 }
 
 // ===== Inline edit mode for saved (posted) workouts =====
