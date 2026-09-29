@@ -1430,7 +1430,16 @@ async function openSession(id, opts){
       const disp = (byName||'?').split(' ')[0];
       decidedHtml += `<div class="card"><div class="req"><div class="rc">${esc(ed.swapTo)} <span class="swap-note">· swapped by ${esc(disp)}</span></div></div></div>`;
     }
-    // rejected: nothing shown
+    // Sep 29 2026 (audit finding, Tier 4e; Jeff, after seeing the first version of this fix -- a
+    // permanent "declined" line here -- on screen: "I don't want suggested changes just sitting
+    // there the whole time if something's declined... notifications already hosts what got
+    // approved or declined"). A rejected suggestion used to leave nothing behind at all -- the card
+    // just vanished, no confirmation your tap even registered. Jeff's pick ("toast only, nothing
+    // left behind"): reject()/notifRejectSuggestion() below now confirm with a brief toast instead
+    // -- the card still just disappears from here, same as always. The proposer's own durable
+    // record already exists in their Notifications ("Exercise not added"/"Swap not approved", see
+    // the reject route's own notify() below) -- this stack doesn't need a second, permanent copy.
+    // rejected: nothing shown (back to the original behavior, deliberately)
   }
   // The actual content of one pending suggestion's card -- shared between the plain single-card
   // path (nothing to page through, so no stack chrome) and the stacked-deck path below.
@@ -2800,7 +2809,10 @@ async function approve(id, editId){
 async function reject(id, editId){
   const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/suggest/${editId}/reject`, {});
-  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
+  // Sep 29 2026 (audit finding, Tier 4e; Jeff's pick): confirms the tap registered -- see the long
+  // comment above the removed "declined" line in openSession's suggestedEdits loop for why this
+  // replaced a permanent record instead of adding one.
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else { showToast('Declined'); if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true}); }
 }
 async function approveJoin(id, reqId){
   const epoch=UI_EPOCH;
@@ -5503,6 +5515,21 @@ function showUndoToast(msg, cb){
   document.body.appendChild(el);
   requestAnimationFrame(()=>el.classList.add('show'));
   UNDO_TIMER = setTimeout(dismissUndoToast, 6000);
+}
+// Plain confirmation toast -- same slot/anatomy as showUndoToast just above, minus the action
+// button (nothing to undo) and on a shorter float since there's nothing to tap before it's gone.
+// Sep 29 2026 (audit finding, Tier 4e; Jeff's pick, "toast only, nothing left behind"): the one
+// piece of feedback rejecting a suggestion was missing -- this confirms the tap registered
+// without leaving anything behind on screen once it's gone. Caller esc()s anything user-derived
+// in msg, same contract as showUndoToast.
+function showToast(msg){
+  dismissUndoToast();
+  const el = document.createElement('div');
+  el.id = 'undoToast';
+  el.innerHTML = `<span class="ut-msg">${msg}</span>`;
+  document.body.appendChild(el);
+  requestAnimationFrame(()=>el.classList.add('show'));
+  UNDO_TIMER = setTimeout(dismissUndoToast, 2200);
 }
 async function templateExercises(){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
@@ -8769,6 +8796,12 @@ async function renderNotifications(opts){
   // it doesn't strand it forever. approveRemoval/declineRemoval are the exact same functions the
   // in-session Approve/Decline buttons already call (see their own definitions).
   const removals = (data && data.removals) || [];
+  // Sep 29 2026 (audit finding, Tier 4e): a pending suggested add/swap this viewer created the
+  // workout for and hasn't decided on yet -- same "surfaced here too, not just the one push that
+  // created it" reasoning as removals/joinRequests above. approve()/reject() already exist for the
+  // in-session Approve/Reject buttons; notifApproveSuggestion/notifRejectSuggestion below call the
+  // same routes and refresh this screen instead of navigating into the session.
+  const suggestions = (data && data.suggestions) || [];
   // Sep 27 2026 (Jeff, part 1): a declined invitee who's since asked to be re-invited (see
   // reinviteAskSheet/POST .../reinvite-request) -- same "surfaced here too, not just the one push
   // that created it" reasoning as removals just above.
@@ -8828,6 +8861,20 @@ async function renderNotifications(opts){
           <button class="sm no" onclick="notifDeclineRemoval('${rm.sessionId}','${rm.reqId}')">Decline</button>
         </div>
       </div>`).join('') + `</div>` : '';
+  // Sep 29 2026 (audit finding, Tier 4e): same .req row shape as Join/Removal requests just above
+  // -- one more "still needs your action" kind, not a new look. Wording mirrors pendingCardInner's
+  // in-session phrasing (openSession, above): "suggests adding X" for a brand-new exercise,
+  // "suggests swapping to X" for a rename of an existing one -- same distinction, just spelled out
+  // with the workout's name too since this row isn't already inside that session's own screen.
+  const suggestionsHtml = suggestions.length ? `<h2>Suggested changes</h2><div class="card" style="padding:6px 12px">` + suggestions.map(sg => `
+      <div class="req">
+        ${avatarHtml(sg.from,'av')}
+        <div class="rc"><b>${esc(sg.from.displayName||sg.from.username)}</b> suggests ${sg.editType==='add'?'adding':'swapping to'} <i>${esc(sg.swapTo)}</i> in <i>${esc(sg.sessionName)}</i></div>
+        <div class="ra">
+          <button class="sm ok" onclick="notifApproveSuggestion('${sg.sessionId}','${sg.editId}')">Approve</button>
+          <button class="sm no" onclick="notifRejectSuggestion('${sg.sessionId}','${sg.editId}')">Reject</button>
+        </div>
+      </div>`).join('') + `</div>` : '';
   // Sep 27 2026 (Jeff, part 1): Jeff's own suggested UI, from the creator's side -- one-tap
   // "Re-invite" re-adds them exactly like a fresh invite (see the .../approve route); "Not now"
   // just clears the ask without re-inviting.
@@ -8874,21 +8921,17 @@ async function renderNotifications(opts){
   // functions the rest of the app already calls for each destination (openSession/viewPost/
   // profileView/crewView), not a new mechanism, so a row behaves exactly like tapping the
   // equivalent live row elsewhere (e.g. a Friends-tab profile row) would.
+  // Sep 29 2026 (audit finding, Tier 5): this used to be a second, hand-written copy of the same
+  // link.type branching openDeepLink() (below) already does for push-tap navigation -- a type
+  // added to one and not the other would silently work in one place and do nothing in the other.
+  // Both now read off the single DEEP_LINK_TYPES table (findDeepLinkType, defined next to
+  // openDeepLink below) so there's only one list left to keep in sync with server.js's notify().
   const historyTapAttrs = (n) => {
-    const l = n.link; if(!l || typeof l !== 'object') return '';
-    if(l.type === 'session' && l.sessionId) return ` onclick="openSession('${jsq(l.sessionId)}')" style="cursor:pointer"`;
-    // Sep 8 2026 (Jeff: "if brian commented in our crew or workout - it brings me to see his
-    // comments") -- these two land scrolled to the actual messages, same reasoning as
-    // openDeepLink()'s own session-chat/crew-chat cases a few screens down.
-    if(l.type === 'session-chat' && l.sessionId) return ` onclick="openSessionChat('${jsq(l.sessionId)}')" style="cursor:pointer"`;
-    if(l.type === 'post' && l.sessionId && l.authorId) return ` onclick="viewPost('${jsq(l.sessionId)}','${jsq(l.authorId)}')" style="cursor:pointer"`;
-    if(l.type === 'profile' && l.userId) return ` onclick="profileView('${jsq(l.userId)}')" style="cursor:pointer"`;
-    if(l.type === 'crew' && l.crewId) return ` onclick="crewView('${jsq(l.crewId)}')" style="cursor:pointer"`;
-    if(l.type === 'crew-chat' && l.crewId) return ` onclick="openCrewChat('${jsq(l.crewId)}')" style="cursor:pointer"`;
-    // Sep 27 2026: the "You declined" row -- tapping it opens the re-invite-request compose sheet
-    // (see reinviteAskSheet), same reasoning as openDeepLink's own 'reinvite-ask' case above.
-    if(l.type === 'reinvite-ask' && l.sessionId) return ` onclick="reinviteAskSheet('${jsq(l.sessionId)}')" style="cursor:pointer"`;
-    return '';   // {type:'notifications'} (already here) and anything unrecognized: inert, as before
+    const l = n.link;
+    const def = findDeepLinkType(l);
+    // {type:'notifications'} (already here) and anything unrecognized/missing-an-id: inert, as before.
+    if(!def || def.type === 'notifications') return '';
+    return ` onclick="openDeepLink(${esc(JSON.stringify(l))})" style="cursor:pointer"`;
   };
   // Sep 8 2026: on a touch screen `cursor:pointer` (historyTapAttrs, above) is invisible -- there's
   // no hover state to reveal it, so a tappable row and a dead one look identical until you try
@@ -8922,9 +8965,9 @@ async function renderNotifications(opts){
       ${historyToday.length ? `<h2 class="light">Today</h2><div class="card feed-strip">${historyToday.map(historyRow).join('')}</div>` : ''}
       ${historyEarlier.length ? `<h2 class="light">Last 7 days</h2><div class="card feed-strip">${historyEarlier.map(historyRow).join('')}</div>` : ''}` : '';
   // Discoverability rule (CLAUDE.md): never hide an empty state -- render it open, not a blank page.
-  const empty = (!invites.length && !followRequests.length && !joinRequests.length && !removals.length && !reinviteAsks.length && !history.length)
+  const empty = (!invites.length && !followRequests.length && !joinRequests.length && !removals.length && !suggestions.length && !reinviteAsks.length && !history.length)
     ? homeEmpty(ICON_BELL, "You're all caught up", 'Invites and requests will show up here.') : '';
-  $('app').innerHTML = `<div class="wrap">${head}${invitesHtml}${followHtml}${joinHtml}${removalsHtml}${reinviteAsksHtml}${historyHtml}${empty}</div>`;
+  $('app').innerHTML = `<div class="wrap">${head}${invitesHtml}${followHtml}${joinHtml}${removalsHtml}${suggestionsHtml}${reinviteAsksHtml}${historyHtml}${empty}</div>`;
   if(history.length) historySwipeInit($('app'));
   if(!silent){ const st = { t:'notifications' }; fromHistory ? landOn(st) : navigated(st); }
 }
@@ -9148,6 +9191,21 @@ async function notifDeclineRemoval(id, reqId){
   const epoch=UI_EPOCH;
   const r = await H.post(`/api/sessions/${id}/removal/${reqId}/decline`, {});
   if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
+}
+// Sep 29 2026 (audit finding, Tier 4e): same pipeline as notifApproveRemoval/notifDeclineRemoval
+// just above -- the exact routes approve()/reject() (openSession, above) already call, refreshing
+// this screen instead of navigating into the session.
+async function notifApproveSuggestion(id, editId){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/suggest/${editId}/approve`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
+}
+async function notifRejectSuggestion(id, editId){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/suggest/${editId}/reject`, {});
+  // Same toast confirmation as reject() above, for the identical action taken from Notifications
+  // instead of from inside the session.
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else { showToast('Declined'); if(nothingNavigatedSince(epoch)) renderNotifications({silent:true}); }
 }
 // Sep 27 2026 (Jeff, part 1): the creator's one-tap side of "wants back in" -- same pipeline shape
 // as notifApproveRemoval/notifDeclineRemoval just above (same server-route-then-refresh pattern).
@@ -10126,25 +10184,44 @@ if(typeof document !== 'undefined' && typeof document.addEventListener === 'func
 // whatever's already on screen rather than throwing. Returns whether a recognized type was
 // dispatched at all -- not whether the underlying fetch actually succeeded -- so callers know
 // whether to fall through to their own default (home()) or not.
+//
+// Sep 29 2026 (audit finding, Tier 5): this list used to be reimplemented a second time, by hand,
+// inside historyTapAttrs() (above) purely to build a notification-history row's onclick attribute.
+// DEEP_LINK_TYPES is now the one place that knows what each link.type means and what it needs --
+// both this function (real navigation) and historyTapAttrs (an onclick string) read off it, so
+// there's only one table left to keep in sync with server.js's notify() payloads.
+const DEEP_LINK_TYPES = [
+  { type: 'session', need: ['sessionId'], go: l => openSession(l.sessionId) },
+  // 'session-chat'/'crew-chat' (distinct from the plain 'session'/'crew' below) land scrolled to
+  // the actual comments, not just the top of the page -- see openSessionChat/openCrewChat and the
+  // comments above their notify() call sites in server.js.
+  { type: 'session-chat', need: ['sessionId'], go: l => openSessionChat(l.sessionId) },
+  { type: 'post', need: ['sessionId', 'authorId'], go: l => viewPost(l.sessionId, l.authorId) },
+  { type: 'profile', need: ['userId'], go: l => profileView(l.userId) },
+  { type: 'crew', need: ['crewId'], go: l => crewView(l.crewId) },
+  { type: 'crew-chat', need: ['crewId'], go: l => openCrewChat(l.crewId) },
+  // Sep 27 2026 (Jeff, part 1): the decliner's own "You declined" notification -- deliberately NOT
+  // openSession (they've dropped to sessionTier 'stranger'/'friend' and can't GET it anymore, see
+  // /decline's own comment in server.js) but a small compose sheet that sends a message to the
+  // host instead.
+  { type: 'reinvite-ask', need: ['sessionId'], go: l => reinviteAskSheet(l.sessionId) },
+  { type: 'notifications', need: [], go: () => renderNotifications() },
+];
+// Looks up link.type in DEEP_LINK_TYPES and confirms every id its handler needs is actually
+// present -- returns the matching entry, or null for an unrecognized type, a malformed link, or a
+// recognized type missing a required id (a gone-private target, an old pre-link-tagging
+// notification, etc.). Shared by openDeepLink and historyTapAttrs so "is this link real, and does
+// it have what it needs" is answered in exactly one place.
+function findDeepLinkType(l){
+  if(!l || typeof l !== 'object' || typeof l.type !== 'string') return null;
+  const def = DEEP_LINK_TYPES.find(d => d.type === l.type);
+  if(!def || !def.need.every(k => l[k])) return null;
+  return def;
+}
 async function openDeepLink(link){
-  if(!link || typeof link !== 'object' || typeof link.type !== 'string') return false;
-  try{
-    if(link.type === 'session' && link.sessionId){ await openSession(link.sessionId); return true; }
-    // Sep 8 2026: 'session-chat'/'crew-chat' (distinct from the plain 'session'/'crew' just above
-    // and below) land scrolled to the actual comments, not just the top of the page -- see
-    // openSessionChat/openCrewChat and the comments above their notify() call sites in server.js.
-    if(link.type === 'session-chat' && link.sessionId){ await openSessionChat(link.sessionId); return true; }
-    if(link.type === 'post' && link.sessionId && link.authorId){ await viewPost(link.sessionId, link.authorId); return true; }
-    if(link.type === 'profile' && link.userId){ await profileView(link.userId); return true; }
-    if(link.type === 'crew' && link.crewId){ await crewView(link.crewId); return true; }
-    if(link.type === 'crew-chat' && link.crewId){ await openCrewChat(link.crewId); return true; }
-    // Sep 27 2026 (Jeff, part 1): the decliner's own "You declined" notification -- deliberately
-    // NOT openSession (they've dropped to sessionTier 'stranger'/'friend' and can't GET it anymore,
-    // see /decline's own comment in server.js) but a small compose sheet that sends a message to
-    // the host instead.
-    if(link.type === 'reinvite-ask' && link.sessionId){ reinviteAskSheet(link.sessionId); return true; }
-    if(link.type === 'notifications'){ await renderNotifications(); return true; }
-  }catch(e){ /* best-effort deep link -- see comment above */ }
+  const def = findDeepLinkType(link);
+  if(!def) return false;
+  try{ await def.go(link); return true; }catch(e){ /* best-effort deep link -- see comment above */ }
   return false;
 }
 // Sep 27 2026 (Jeff, part 1): "message the chat for a re-invitation" -- since a decliner has no
