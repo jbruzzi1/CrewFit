@@ -42,7 +42,7 @@ async function api(path, method, token, body) {
   const r = await fetch(BASE + path, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }, body: body ? JSON.stringify(body) : undefined });
   return r.json();
 }
-const reg = (u) => api('/api/register', 'POST', null, { username: u + Math.random().toString(36).slice(2, 8), pin: '123456', displayName: u });
+const reg = (u) => api('/api/register', 'POST', null, { username: u + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: u });
 
 const browser = await chromium.launch(LAUNCH_OPTS);
 const errors = [];

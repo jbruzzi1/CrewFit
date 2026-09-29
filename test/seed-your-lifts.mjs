@@ -48,7 +48,7 @@ const stop = () => new Promise(r => { if (!srv) return r(); srv.on('exit', r); s
 async function newUser() {
   const u = 'u' + Math.floor(Math.random() * 1e9);
   const r = await fetch(B + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: u, pin: 'pass12', displayName: 'T' }) }).then(x => x.json());
+    body: JSON.stringify({ username: u, pin: 'pass1234', displayName: 'T' }) }).then(x => x.json());
   if (!r.token) throw new Error('register failed: ' + JSON.stringify(r));
   return { H: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + r.token }, username: u, id: r.user.id };
 }

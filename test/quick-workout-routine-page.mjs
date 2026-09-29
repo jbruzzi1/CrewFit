@@ -50,7 +50,7 @@ page.on('pageerror', e => errors.push(String(e)));
 await page.goto(BASE + '/');
 
 const reg = await page.evaluate(async (BASE) => {
-  const r = await fetch(BASE + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'qwr' + Math.random().toString(36).slice(2, 8), pin: '123456', displayName: 'Jeff' }) });
+  const r = await fetch(BASE + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'qwr' + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: 'Jeff' }) });
   return r.json();
 }, BASE);
 await page.evaluate((tok) => localStorage.setItem('crewfit_token', tok), reg.token);

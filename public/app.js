@@ -245,7 +245,7 @@ function authScreen(){
         <h2>New account</h2>
         <input id="rx" placeholder="username" autocomplete="off" oninput="checkUsername()">
         <div id="rxHint" class="muted" style="font-size:12px;margin:4px 0 0;min-height:14px"></div>
-        <input id="rp" placeholder="password (6+ characters)" type="password">
+        <input id="rp" placeholder="password (8+ characters)" type="password">
         <input id="rn" placeholder="display name (optional)">
         <button id="regBtn" onclick="doReg()">Create account</button>
       </div>
@@ -276,7 +276,7 @@ async function doReg(){ try {
   if(btn && btn.disabled) return;
   const u=($('rx').value||'').trim().toLowerCase();
   if(u){ try { const c=await H.get('/api/register/check?username='+encodeURIComponent(u)); if(c && c.available===false){ alert('username taken'); return; } } catch(e){} }
-  if(($('rp').value||'').length < 6){ alert('Password must be at least 6 characters.'); return; }
+  if(($('rp').value||'').length < 8){ alert('Password must be at least 8 characters.'); return; }
   const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value}); if(r.token){ setToken(r.token,r.user); home();
     // Cold-review catch: this call sits inside doReg's own try/catch, but the account is
     // ALREADY registered and logged in by this point -- a throw here has no business
@@ -8675,6 +8675,8 @@ function openSettings(opts){
     <h2>Profile</h2>
     <div class="sheet-list">
       <button class="sheet-row" onclick="document.getElementById('av').click()">Edit photo</button>
+      <button class="sheet-row" onclick="editDisplayNameSheet()">Display name <span class="row-val" id="settingsNameVal">${esc(ME.displayName||'')}</span></button>
+      <button class="sheet-row" onclick="editUsernameSheet()">Username <span class="row-val" id="settingsUsernameVal">@${esc(ME.username||'')}</span></button>
       <button class="sheet-row" onclick="editBio()">Edit bio</button>
       <button class="sheet-row" onclick="editDefaultGym()">Default gym <span class="row-val" id="settingsGymVal">${esc(ME.defaultGym || 'Not set')}</span></button>
       <!-- v190 (Sep 2026), Jeff: "the ability to make profiles private or public in the
@@ -8682,6 +8684,13 @@ function openSettings(opts){
            see your PRs/streak/activity and your posted workouts unless a post is itself made
            Public; Public = anyone can. Same on/off row shape as the two reminder toggles below. -->
       <button class="sheet-row" onclick="toggleProfileVisibility()">Profile visibility <span class="row-val" id="profileVisVal">${ME.profileVisibility==='private'?'Private':'Public'}</span></button>
+    </div>
+    <!-- Sep 29 2026 (Jeff: "add... a change password"). Its own section rather than folded into
+         Profile above -- a credential change reads as a different weight of action than a display
+         preference, same reasoning Danger zone already gets its own section below. -->
+    <h2>Account</h2>
+    <div class="sheet-list">
+      <button class="sheet-row" onclick="changePasswordSheet()">Change password</button>
     </div>
     <!-- Sep 2026 (app-store readiness): its own section rather than folded into Profile above --
          Block/Report live on the OTHER person's profile menu (see profileView), this is the one
@@ -8716,6 +8725,7 @@ function openSettings(opts){
     <h2>Danger zone</h2>
     <div class="sheet-list">
       <button class="sheet-row red" onclick="confirmResetWorkouts()">Reset workouts</button>
+      <button class="sheet-row red" onclick="confirmDeleteAccount()">Delete account</button>
     </div>
     <!-- v249, Jeff Aug 29 (video): "the log out button is the same size and very close to the
     reset workout button" -- they shared .sheet-row.red (Reset workouts' own destructive-red
@@ -9171,6 +9181,60 @@ async function doResetWorkouts(){
   ME.workoutsCompleted = 0;
   closeSheet();
   showTab('home'); // Sep 10 2026: not bare home() -- see cancelCreate()'s comment for why.
+}
+// Sep 29 2026 (Jeff: "add... a change password"). Real password-type inputs (masked, no
+// autocomplete guessing) rather than textEntrySheet -- that helper only ever renders one plain
+// field, this needs three, and unlike a display name/bio there is nothing here safe to prefill.
+function changePasswordSheet(){
+  const inner = `<div class="sheet"><div class="sheet-head"><h2>Change password</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <label class="muted">Current password</label>
+    <input id="cpCur" type="password" autocomplete="current-password">
+    <label class="muted" style="margin-top:10px;display:block">New password (8-64 characters)</label>
+    <input id="cpNew" type="password" autocomplete="new-password">
+    <label class="muted" style="margin-top:10px;display:block">Confirm new password</label>
+    <input id="cpNew2" type="password" autocomplete="new-password">
+    <button class="blue" style="width:100%;margin-top:16px" onclick="doChangePassword()">Change password</button>
+  </div>`;
+  openSheetHtml(inner);
+  setTimeout(()=>{ const i=$('cpCur'); if(i) i.focus(); }, 60);
+}
+async function doChangePassword(){
+  const cur = $('cpCur').value, nw = $('cpNew').value, nw2 = $('cpNew2').value;
+  if(!cur){ alert('Enter your current password.'); return; }
+  if(nw.length < 8){ alert('New password must be at least 8 characters.'); return; }
+  // Client-side mirror of the server's own 64-char ceiling (see pinProblem) so a too-long paste
+  // gets a clear reason here instead of a generic error after a round trip.
+  if(nw.length > 64){ alert('New password must be 64 characters or fewer.'); return; }
+  if(nw !== nw2){ alert("New passwords don't match."); return; }
+  const r = await H.post('/api/me/password', {currentPassword:cur, newPassword:nw});
+  if(r && r.error){ alert(r.error); return; }
+  closeSheet();
+  alert('Password changed.');
+}
+// Sep 29 2026 (Jeff: "add... account deletion"; app-store readiness -- Apple guideline 5.1.1(v)).
+// One sheet, not a separate confirm-then-confirm -- the password re-entry itself is already the
+// friction/proof-of-intent step (same bar /api/me/password requires for a change), so a second
+// "are you sure" in front of it would just be a second click to dismiss, not real protection.
+function confirmDeleteAccount(){
+  const inner = `<div class="sheet"><div class="sheet-head"><h2>Delete account</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="muted" style="padding:0 2px 14px">This permanently deletes your account — there's no undo. Your workouts, logs, and personal records are removed the same way Reset workouts removes them. You'll be signed out everywhere and your username will be freed up. Workouts you share with a friend who still has their own credit in them stay theirs; you're just taken off.</div>
+    <label class="muted">Enter your password to confirm</label>
+    <input id="daPass" type="password" autocomplete="current-password">
+    <div class="sheet-list" style="margin-top:14px">
+      <button class="sheet-row red" onclick="doDeleteAccount()">Delete my account</button>
+      <button class="sheet-row" onclick="closeSheet()">Cancel</button>
+    </div>
+  </div>`;
+  openSheetHtml(inner);
+  setTimeout(()=>{ const i=$('daPass'); if(i) i.focus(); }, 60);
+}
+async function doDeleteAccount(){
+  const pass = $('daPass').value;
+  if(!pass){ alert('Enter your password to confirm.'); return; }
+  const r = await H.post('/api/me/delete-account', {password:pass});
+  if(r && r.error){ alert(r.error); return; }
+  closeSheet();
+  logout();
 }
 function pickUnits(){
   const cur = myUnit();
@@ -9669,6 +9733,34 @@ function editDefaultGym(){
     // that span is still on screen, i.e. Settings is still what's showing; if the user has since
     // left, there's nothing to patch, and the next real visit to Settings reads ME.defaultGym fresh.
     onConfirm: v => { const epoch=UI_EPOCH; H.post('/api/me/default-gym',{defaultGym:v}).then(r=>{ if(r.defaultGym!==undefined){ ME.defaultGym=r.defaultGym; if(nothingNavigatedSince(epoch)){ const el=document.getElementById('settingsGymVal'); if(el) el.textContent = ME.defaultGym || 'Not set'; } } }); }
+  });
+}
+// Sep 29 2026 (Jeff: "add an edit display name or username"). Same in-place-patch shape as
+// editDefaultGym just above -- patches #settingsNameVal rather than reopening Settings. Unlike
+// bio/gym, an empty display name is refused server-side (see POST /api/me/display-name) since
+// every feed row/card renders it as the headline; the alert on error leaves the sheet's own value
+// as typed rather than silently reverting, so the user can just fix it and resubmit.
+function editDisplayNameSheet(){
+  textEntrySheet({
+    title:'Display name', label:'Shown on your posts and profile', value:ME.displayName||'', placeholder:'Your name',
+    onConfirm: v => { const epoch=UI_EPOCH; H.post('/api/me/display-name',{displayName:v}).then(r=>{
+      if(r && r.error){ alert(r.error); return; }
+      if(r.displayName!==undefined){ ME.displayName=r.displayName; if(nothingNavigatedSince(epoch)){ const el=document.getElementById('settingsNameVal'); if(el) el.textContent = ME.displayName; } }
+    }); }
+  });
+}
+// Reuses the exact same usernameProblem + case-insensitive uniqueness rule the registration screen
+// already enforces server-side (see POST /api/me/username) -- no separate live-availability check
+// here the way checkUsername() gives the register flow; a straight submit-and-report-the-error is
+// enough for an occasional change and keeps this one small, same call shape as every other Settings
+// row here.
+function editUsernameSheet(){
+  textEntrySheet({
+    title:'Username', label:'Your @handle', value:ME.username||'', placeholder:'username',
+    onConfirm: v => { const epoch=UI_EPOCH; H.post('/api/me/username',{username:v}).then(r=>{
+      if(r && r.error){ alert(r.error); return; }
+      if(r.username!==undefined){ ME.username=r.username; if(nothingNavigatedSince(epoch)){ const el=document.getElementById('settingsUsernameVal'); if(el) el.textContent = '@'+ME.username; } }
+    }); }
   });
 }
 // v190 (Sep 2026): Private/Public profile toggle. Flipping to Public also auto-accepts any

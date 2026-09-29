@@ -76,14 +76,14 @@ try {
 console.log('a password is never stored in the clear');
 {
   const u = nm();
-  const r = await reg(u, 'hunter2', 'T').then(x => x.json());
+  const r = await reg(u, 'hunter22', 'T').then(x => x.json());
   ok(!!r.token, 'the account is created');
   const raw = await readUserRaw();
-  ok(!raw.includes('hunter2'), 'the password does not appear anywhere in the stored user rows');
+  ok(!raw.includes('hunter22'), 'the password does not appear anywhere in the stored user rows');
   const rec = await findUser(u);
   ok(!rec.pin && !!rec.pinHash && !!rec.pinSalt, 'it is stored as a salted hash instead');
-  ok((await login(u, 'hunter2').then(x => x.json())).token, 'and the real password still logs in');
-  ok(!(await login(u, 'hunter3').then(x => x.json())).token, 'a wrong password does not');
+  ok((await login(u, 'hunter22').then(x => x.json())).token, 'and the real password still logs in');
+  ok(!(await login(u, 'hunter33').then(x => x.json())).token, 'a wrong password does not');
 }
 
 console.log('\ntwo people cannot hold the same name in different capitals');
@@ -105,12 +105,17 @@ for (const [bad, why] of [['ab', 'too short'], ['x'.repeat(21), 'too long'],
   ok(r.status === 400, `"${bad}" is refused — ${why} (got ${r.status})`);
 }
 {
+  // Sep 29 2026 (Jeff: "make it whatever they want as long as its longer than 6 characters"):
+  // floor moved 6 -> 8 (see pinProblem's own comment on why 8, not the literal "7" a strict
+  // reading of "longer than 6" would give). Otherwise unchanged -- still just length, no character
+  // restriction (this app's password field has taken free text, not digits-only, since before this
+  // change; see authScreen()'s own type="password" input).
   const r = await reg(nm(), '123', 'X');
   ok(r.status === 400, `a 3-character password is refused (got ${r.status})`);
-  const five = await reg(nm(), '12345', 'X');
-  ok(five.status === 400, `a 5-character password is refused — the minimum is now 6 (got ${five.status})`);
-  const six = await reg(nm(), 'abc123', 'X');
-  ok(six.status === 200, `a 6-character password is accepted (got ${six.status})`);
+  const seven = await reg(nm(), 'abc1234', 'X');
+  ok(seven.status === 400, `a 7-character password is refused — the minimum is now 8 (got ${seven.status})`);
+  const eight = await reg(nm(), 'abcd1234', 'X');
+  ok(eight.status === 200, `an 8-character password is accepted (got ${eight.status})`);
   const long = await reg(nm(), 'x'.repeat(65), 'X');
   ok(long.status === 400, `a 65-character password is refused (got ${long.status})`);
 }
