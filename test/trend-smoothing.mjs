@@ -157,6 +157,32 @@ console.log('\nSep 28 2026 audit finding (Jeff, live account): a REP-only improv
   ok(typeof lift.currentEst === 'number' && lift.currentEst > lift.points[0].est, `currentEst is also exposed as an alternative ("115 -> 123 lb (est.)") -- higher than the starting est, same direction as changePct (got ${lift.points[0].est} -> ${lift.currentEst})`);
 }
 
+console.log('\nSep 30 2026 audit finding: the driver row\'s own weight/reps range ("40x12 -> 45x15") must match whichever session changePct was actually computed against, not always the lift\'s all-time first session -- baselineWeight/baselineReps expose that session explicitly.');
+{
+  const u = await newUser();
+  const NAME = 'Incline Dumbbell Bench Press';
+  const daysAgo = n => new Date(Date.now() - n * 86400e3).toISOString();
+  // Two sessions older than the 6-week (PLATEAU_WEEKS) window -- the real baseline should be the
+  // HEAVIER of the two (70 days ago -> 100 lb is points[0], the all-time first session; 60 days ago
+  // -> 135 lb is heavier and still outside the window, so it's the true baseline).
+  await log(u, NAME, daysAgo(70), 100, 8);
+  await log(u, NAME, daysAgo(60), 135, 8);
+  // Three sessions inside the trailing 6-week window (PLATEAU_MIN_SESSIONS=3), so baselineOf
+  // actually runs its windowed logic instead of falling back to points[0].
+  await log(u, NAME, daysAgo(35), 140, 8);
+  await log(u, NAME, daysAgo(20), 145, 8);
+  await log(u, NAME, daysAgo(5), 150, 8);
+
+  const p = await progress(u);
+  const lift = (p.trend.lifts || []).find(l => l.name === NAME);
+  ok(!!lift, `${NAME} has a trend entry`);
+  ok(lift.points[0].weight === 100, `sanity: points[0] is still the all-time first, LIGHTER session (got ${lift.points[0].weight})`);
+  ok(lift.baselineWeight === 135, `baselineWeight is the TRUE baseline session (135), not points[0]'s 100 -- the exact bug the driver row's "from" side used to show (got ${lift.baselineWeight})`);
+  ok(lift.baselineReps === 8, `baselineReps matches that same baseline session (got ${lift.baselineReps})`);
+  const expectedPct = Number(((lift.currentEst / est(135, 8) - 1) * 100).toFixed(1));
+  ok(lift.changePct === expectedPct, `changePct is computed against that SAME 135 lb baseline, so the % and the weight range shown next to it can never disagree again (got ${lift.changePct}%, expected ${expectedPct}%)`);
+}
+
 } finally {
   await stop();
   await testDb.drop();

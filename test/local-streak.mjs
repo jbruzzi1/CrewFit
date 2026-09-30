@@ -103,8 +103,12 @@ console.log("\nGET /api/profile/me honors localToday the same way GET /api/me/st
   await creditDay(ivy.token, 'Day Two', '2024-11-21');
   const profile = await get('/api/profile/me?localToday=2024-11-21', ivy.token);
   ok(profile.streak === 2, `own profile's streak field respects localToday too (got ${profile.streak})`);
+  // Sep 30 2026 (Jeff, audit Tier 4c): Recent Activity no longer carries its own 'streak' line --
+  // the day-streak concept was dropped from every DISPLAY surface (the profile/crew pills, and this
+  // feed row), not just the pills originally named. profile.streak itself (the underlying number,
+  // asserted above) is untouched -- see buildActivityFor's own comment in server.js.
   const recap = (profile.recentActivity || []).find(a => a.type === 'streak');
-  ok(!!recap && /2 day workout streak/.test(recap.text), `and Recent Activity's own streak line agrees (saw: ${recap && recap.text})`);
+  ok(!recap, `Recent Activity no longer contains a 'streak' row (saw: ${recap && recap.text})`);
 }
 
 console.log("\nGET /api/profile/:id (viewing a FRIEND) never honors the VIEWER's localToday — a viewer's own local day is not the friend's timezone");

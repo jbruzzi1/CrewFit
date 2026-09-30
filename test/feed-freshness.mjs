@@ -250,7 +250,7 @@ console.log("\nSep 11 2026: finishing a workout with NO recap shows a real 'comp
   ok(feed.some(f => f.type === 'recap' && f.sessionId === sess.id), 'replaced by the real recap row');
 }
 
-console.log("\nv247: a 'streak' row used to be stamped new Date().toISOString() (now), same bug v239 already fixed for 'completed' — a fresh recap posted afterward must still sort above it");
+console.log("\nv247 (historical) fixed a 'streak' feed row that used to be stamped new Date().toISOString() at read-time instead of its real training day — same bug v239 already fixed for 'completed'. Sep 30 2026 (Jeff, audit Tier 4c): the 'streak' feed row/type was removed entirely (the per-calendar-day streak concept it announced was dropped app-wide, not just its profile/crew pills — see buildActivityFor's and emitFinishFeedEvents' own comments in server.js), so this block now locks in that a real 2-day streak produces NO streak row anywhere, rather than testing a freshness fix for a row that no longer exists.");
 {
   // Both brand-new accounts, friended only to each other — /api/feed now caps at 40 items, and
   // Alice's feed is already crowded with everything the earlier blocks in this file built, which
@@ -262,9 +262,10 @@ console.log("\nv247: a 'streak' row used to be stamped new Date().toISOString() 
   await post('/api/follow/' + faye.user.id, {}, dave.token);
   await post('/api/follow-requests/' + dave.user.id + '/accept', {}, faye.token);
 
-  // Build a real 2-day streak via two real /lock calls with explicit localDate (v247's own new
+  // Build a real 2-day streak via two real /lock calls with explicit localDate (v247's own
   // mechanism), matching currentStreak's own UTC-day definition of "today"/"yesterday" rather than
-  // reaching into the DB to fake it.
+  // reaching into the DB to fake it. currentStreak() itself is untouched by the Sep 30 removal —
+  // only the feed/activity DISPLAY of it is gone — so this still produces a real streak of 2.
   const utcToday = new Date().toISOString().slice(0, 10);
   const utcYesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString().slice(0, 10);
   const y = await post('/api/sessions', { name: 'Streak Day One', visibility: 'private',
@@ -281,30 +282,21 @@ console.log("\nv247: a 'streak' row used to be stamped new Date().toISOString() 
 
   let feed = await get('/api/feed', faye.token).then(r => r.json());
   const streakItem = feed.find(f => f.type === 'streak' && f.by === dave.user.id);
-  ok(!!streakItem, `Dave's streak row reached Faye's feed (saw: ${feed.filter(f=>f.by===dave.user.id).map(f=>f.type).join(', ') || 'nothing from Dave'})`);
-  ok(streakItem && /hit a 2-day streak/.test(streakItem.text), `and names it correctly (saw: ${streakItem && streakItem.text})`);
+  ok(!streakItem, `Dave's real 2-day streak produces no 'streak' row in Faye's feed (saw: ${feed.filter(f=>f.by===dave.user.id).map(f=>f.type).join(', ') || 'nothing from Dave'})`);
 
-  // Now Dave posts a recap seconds later — a genuinely fresher, real-timestamped event. If the
-  // streak row were still stamped "now" at feed-build time, it would tie or beat this every time
-  // the feed is re-requested; with the fix it carries the streak's actual last-trained day, always
-  // in the past relative to a recap posted after it.
+  // Dave posts a recap seconds later — still a real, fresh-timestamped feed row, unrelated to the
+  // now-removed streak row but worth confirming it still shows up correctly on its own.
   await post(`/api/sessions/${t.id}/post`, { notes: 'felt strong', visibility: 'public', media: [] }, dave.token);
   feed = await get('/api/feed', faye.token).then(r => r.json());
-  const iStreak = feed.findIndex(f => f.type === 'streak' && f.by === dave.user.id);
   const iRecap = feed.findIndex(f => f.type === 'recap' && f.sessionId === t.id);
-  ok(iRecap !== -1 && iStreak !== -1 && iRecap < iStreak,
-    `the fresh recap sorts above the streak row (recap at ${iRecap}, streak at ${iStreak})`);
+  ok(iRecap !== -1, `the recap still posts and appears in Faye's feed (index ${iRecap})`);
+  ok(!feed.some(f => f.type === 'streak' && f.by === dave.user.id), 'and still no streak row, even after the recap');
 
-  // And the profile's own Recent Activity gets the identical fix (buildActivityFor, not just the
-  // friends feed) — same assertion, on Dave's own profile.
+  // And the profile's own Recent Activity gets the identical treatment (buildActivityFor, not just
+  // the friends feed) — same assertion, on Dave's own profile.
   const daveProfile = await get(`/api/profile/${dave.user.id}`, dave.token).then(r => r.json());
   const own = daveProfile.recentActivity || [];
-  const iOwnStreak = own.findIndex(a => a.type === 'streak');
-  ok(iOwnStreak !== -1, "Dave's own profile also shows the streak");
-  // recentActivity has no recap rows (those are a feed-only, other-people-viewing concept), so
-  // instead assert directly: the streak's own timestamp is not within the last few seconds.
-  const streakAgeMs = Date.now() - new Date(own[iOwnStreak].at).getTime();
-  ok(streakAgeMs > 5000, `the streak's own timestamp is the real training day, not "just now" (age ${streakAgeMs}ms)`);
+  ok(!own.some(a => a.type === 'streak'), "Dave's own profile Recent Activity also shows no streak row");
 }
 
 console.log('\nSep 11 2026 cold-review fix: rank/challenge_started/joined_crew are CREW-scoped -- being connected to the actor is not enough, the viewer must actually be in that crew too (otherwise a dead crewView link, and an incidental leak of the crew\'s roster/challenge changes)');
@@ -348,17 +340,15 @@ console.log('\nSep 11 2026 cold-review fix: joined_crew fires for FOUNDING membe
     `Omar, added as a FOUNDING member at creation (not via a later edit), still gets a real joined_crew row (saw his types: ${feed.filter(f=>f.by===omar.user.id).map(f=>f.type).join(', ') || 'none'})`);
 }
 
-console.log("\nSep 11 2026 cold-review fix: the streak feed event uses the CLIENT's local date, not server UTC (creditFinish/currentStreak already had it on hand -- emitFinishFeedEvents was the one call site not threading it through)");
+console.log("\nSep 11 2026 (historical) cold-review fix made the (now-removed) streak feed event use the CLIENT's local date, not server UTC. Sep 30 2026: the streak feed event itself was removed (see the block above) -- this block now just confirms two client-local-dated consecutive finishes, which used to be exactly what triggered that event, still produce no streak row.");
 {
   const liv = await post('/api/register', { username: 'liv11', pin: 'pass1234', displayName: 'Liv' }).then(r => r.json());
   const moe = await post('/api/register', { username: 'moe11', pin: 'pass1234', displayName: 'Moe' }).then(r => r.json());
   await post('/api/follow/' + moe.user.id, {}, liv.token);
   await post('/api/follow-requests/' + liv.user.id + '/accept', {}, moe.token);
 
-  // Deliberately far-future, obviously CLIENT-supplied dates -- if this were still keying off
-  // server "now" (a bug that only shows up for roughly half the globe at any given moment, so
-  // easy to miss without forcing it), these two calendar days would never line up as consecutive
-  // and the streak would never even reach 2.
+  // Deliberately far-future, obviously CLIENT-supplied dates -- two real consecutive local days,
+  // same setup the old streak-feed-event test used to force a real streak of 2 with.
   const dayOne = '2099-01-01', dayTwo = '2099-01-02';
   const s1 = await post('/api/sessions', { name: 'Client Date Day One', visibility: 'private',
     scheduledAt: new Date().toISOString(), exercises: [{ name: 'Farmer Carry' }], inviteUsernames: [] }, moe.token).then(r => r.json());
@@ -372,8 +362,7 @@ console.log("\nSep 11 2026 cold-review fix: the streak feed event uses the CLIEN
 
   const feed = await get('/api/feed', liv.token).then(r => r.json());
   const streak = feed.find(f => f.type === 'streak' && f.by === moe.user.id);
-  ok(!!streak, `a real streak fired off two client-local-dated finishes (saw Moe's types: ${feed.filter(f=>f.by===moe.user.id).map(f=>f.type).join(', ') || 'none'})`);
-  ok(streak && streak.localDate === dayTwo, `the streak event's own localDate is the CLIENT's date (${dayTwo}), not server UTC "today" (saw: ${streak && streak.localDate})`);
+  ok(!streak, `two client-local-dated consecutive finishes still produce no 'streak' feed row (saw Moe's types: ${feed.filter(f=>f.by===moe.user.id).map(f=>f.type).join(', ') || 'none'})`);
 }
 
 console.log("\nSep 11 2026 cold-review fix: a completed_no_recap row is only superseded for a viewer who can actually SEE the recap that superseded it -- not for every viewer the moment ANY recap exists");
