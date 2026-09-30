@@ -146,10 +146,13 @@ console.log('\nv187: an invited participant gets their OWN Log & Finish AND thei
   ok(sink.html.includes('id="wkNotes"') && !sink.html.includes('>Edit<'), 'the participant DOES get their own tap-in Notes box (their own notes, unrelated to the plan), and no Edit button');
 
   console.log('\nJeff, Aug 20: tapping Leave before finishing now ASKS first — it does not silently assume Keep');
+  console.log('(Sep 30 2026 audit finding, Jeff\'s explicit call: nothing is logged yet here, so the sheet must not falsely warn about "unfinished sets" or offer a Save/Discard choice with only one real answer -- see leaveWorkout\'s comment in app.js)');
   sink.html = '';
   await vm.runInContext('leaveWorkout', ctx)(session.id, false);
-  ok(sink.html.includes('Save today\'s sets') && sink.html.includes('Discard today\'s sets'),
-     'the sheet offers both a Save and a Discard option');
+  ok(!sink.html.includes('Save today\'s sets') && !sink.html.includes('Discard today\'s sets'),
+     'nothing is logged yet, so the Save/Discard choice is not offered');
+  ok(sink.html.includes('Leave workout') && !sink.html.includes('unfinished sets'),
+     'a single plain "Leave workout" confirm is offered instead, with no false claim about unfinished sets');
   const dbBeforeChoice = await readDb(testDb.url);
   ok(dbBeforeChoice.sessions[session.id].participants.includes(participant.user.id),
      'and nothing has happened yet — just opening the sheet does not remove them');
@@ -480,8 +483,12 @@ console.log('\nSep 18 2026 (Jeff, real bug report on Home\'s swipe-to-delete): a
   ok(sink.html.includes('Delete workout?'), 'the same Delete-workout sheet opens first, same as always');
   sink.html = '';
   await vm.runInContext('deleteSessionConfirmed', ctx3)(joinedOnlySession.id, false);
-  ok(sink.html.includes('Save today\'s sets') && sink.html.includes('Discard today\'s sets'),
-     'tapping Delete redirects into the real Keep/Discard sheet instead of silently deleting');
+  // Sep 30 2026 (audit finding): nobody logged anything in this session either, so this now
+  // redirects into the single plain "Leave workout" confirm, not the Save/Discard choice -- same
+  // rule as the nothing-logged case above, reached this time via the Delete fallback instead of
+  // the Leave button directly.
+  ok(!sink.html.includes('Save today\'s sets') && !sink.html.includes('Discard today\'s sets') && sink.html.includes('Leave workout'),
+     'tapping Delete redirects into the real Leave-workout confirm instead of silently deleting');
   sink.html = '';
   await vm.runInContext('leaveWorkoutConfirmed', ctx3)(joinedOnlySession.id, false);
 

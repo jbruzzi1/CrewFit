@@ -107,7 +107,7 @@ console.log('Records list: a genuine volume record survives being shown even aft
   ok(text.includes('Best set: 40 lb × 15'), `Sep 23-equivalent 40 lb x 15 still shows, as the "Best set" caption, instead of having vanished (got: ${text.match(/Best set:[^\n]*/)?.[0] || 'no "Best set" caption found'})`);
 }
 
-console.log('\nHome: "N PRs this week" counts the volume record and the first-ever lift too, not just the current weight-record pool');
+console.log('\nHome: "N PRs this week" (Sep 30 2026 audit finding, Jeff: Home should match Profile\'s stricter definition, reversing the Sep 28 fix below this comment used to describe)');
 {
   await page.evaluate(() => window.showTab('home'));
   await page.waitForTimeout(300);
@@ -116,9 +116,14 @@ console.log('\nHome: "N PRs this week" counts the volume record and the first-ev
   const text = await page.evaluate(() => document.getElementById('app').innerText);
   const m = text.match(/(\d+)\s*PRs? this week/);
   ok(!!m, `Home shows a "PRs this week" stat at all (got: ${JSON.stringify(text.match(/.{0,20}PRs? this week/)?.[0])})`);
-  // 3 distinct events this week: Cable Fly's weight record (45x12), Cable Fly's volume record
-  // (40x15, a different set), and Barbell Row's first-ever weight record (95x8).
-  ok(m && Number(m[1]) === 3, `counts all 3 real events this week -- the weight PR, the separate volume PR, and the first-ever lift (got ${m && m[1]})`);
+  // Home now mirrors groupPrsForFeed's own count exactly (server.js, recent.length): one PR per
+  // qualifying EXERCISE (not the weight-record and volume-record events counted separately), and a
+  // first-ever lift of a brand-new exercise excluded, same as Profile's Recent Activity has always
+  // excluded it. Of the 3 real events here, only Cable Fly's current weight record (45x12) counts
+  // -- its own earlier 40x15 volume record lives on the SAME exercise entry, not a second one, and
+  // Barbell Row's 95x8 is a first-ever lift (firstLog:true), excluded exactly like Profile excludes
+  // it.
+  ok(m && Number(m[1]) === 1, `counts exactly the 1 real, non-first-ever PR this week, matching Profile's count (got ${m && m[1]})`);
 }
 
 console.log(errors.length ? '\nPAGE ERRORS:\n' + errors.join('\n') : '\nno page errors');

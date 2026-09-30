@@ -10,7 +10,23 @@ const H = {
   _req(method,p,b){ return fetch(API+p,{method,headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},body:b?JSON.stringify(b):undefined})
     .then(async res=>{
       let json=null; try{ json=await res.json(); }catch(e){}
-      if(res.status===401){
+      // Sep 30 2026 (audit finding, caught rendering the friendlier login-error fix -- see
+      // doLogin()): a bare `res.status===401` here swallowed EVERY 401 as "session expired,"
+      // including /api/login's own 401 for a wrong password ({error:'bad credentials'}) -- so
+      // doLogin() never actually saw 'bad credentials' to translate into a friendlier message; a
+      // wrong password always showed "Session expired — please log in again" instead, which is
+      // both confusing (nobody was ever logged in yet) and wrong. /api/login's 'bad credentials'
+      // is the ONE 401 in this app that must pass through untouched -- every other 401 (a stale/
+      // invalid token via auth()'s own 'unauthorized', or anything else a future route might ever
+      // 401 with) still gets the real "please log back in" treatment, same as before this fix.
+      // Carved out by blacklisting that one case rather than whitelisting a single expected one,
+      // so an unrelated future 401 defaults to the safer "log back in" path instead of silently
+      // falling through unhandled. Matched on the server's `code:'bad_credentials'` field (cold-
+      // review catch, same day: matching the DISPLAY string 'bad credentials' directly meant any
+      // future wording tweak to that message, made without also touching this line, would silently
+      // reintroduce the exact bug this fix is for -- `code` is a stable contract nothing shows to a
+      // person, so it can't drift out of sync with copy changes the way the string could).
+      if(res.status===401 && !(json && json.code==='bad_credentials')){
         // stale/invalid token: clear it and return to login instead of leaving the user broken
         localStorage.removeItem('crewfit_token'); TOKEN=''; ME=null;
         try{ authScreen(); }catch(e){}
@@ -239,10 +255,13 @@ function authScreen(){
       <input id="lx" placeholder="username">
       <input id="lp" placeholder="password" type="password">
       <button class="blue" onclick="doLogin()">Login</button>
-      <div style="text-align:center;margin-top:10px"><button class="linkbtn" onclick="showReg()">Create new user</button></div>
+      <div style="text-align:center;margin-top:10px"><button class="linkbtn" onclick="showReg()">Create account</button></div>
       <div style="text-align:center;margin-top:4px" class="muted sm-text">Forgot your password? Ask Jeff to reset it.</div>
       <div id="regbox" style="display:none;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
-        <h2>New account</h2>
+        <!-- Sep 29 2026 (audit finding, Jeff: "All say account - create new account, etc etc"): this
+             screen used to say "Create new user," "New account," and "Create account" for the same
+             thing across three lines. Unified to "account" everywhere. -->
+        <h2>Create account</h2>
         <input id="rx" placeholder="username" autocomplete="off" oninput="checkUsername()">
         <div id="rxHint" class="muted" style="font-size:12px;margin:4px 0 0;min-height:14px"></div>
         <input id="rp" placeholder="password (8+ characters)" type="password">
@@ -264,18 +283,28 @@ async function checkUsername(){
     try {
       const r = await H.get('/api/register/check?username='+encodeURIComponent(v));
       if(r.available){ hint.textContent='✓ username available'; hint.style.color='var(--green)'; btn.disabled=false; }
-      else { hint.textContent='✕ username taken'; hint.style.color='var(--red)'; btn.disabled=true; }
+      // Sep 29 2026 (audit finding): show the server's actual reason (too short, reserved, taken,
+      // etc.) instead of a hardcoded "username taken" that was wrong whenever the real problem was
+      // something else.
+      else { hint.textContent='✕ '+(r.reason||'username taken'); hint.style.color='var(--red)'; btn.disabled=true; }
     } catch(e){ hint.textContent=''; hint.style.color=''; btn.disabled=false; }
   }, 350);
 }
 // forgotFlow() is gone with the endpoints behind it — see the comment above /api/forgot in
 // server.js. It let anyone reset anyone's password from the login screen.
-async function doLogin(){ try { const r=await H.post('/api/login',{username:$('lx').value,pin:$('lp').value}); if(r.token){ setToken(r.token,r.user); home(); } else alert(r.error||'login failed'); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
+// Sep 29 2026 (audit finding): server.js deliberately keeps 'bad credentials' generic on purpose
+// (see the comment above POST /api/login -- not changing that, it's a real security reason), but
+// showing that raw dev string to an actual user reads as a bug, not a message. Mapped client-side
+// only, to Jeff's picked wording. Matched on `code:'bad_credentials'` rather than the `error`
+// display string itself (cold-review catch, Sep 30 2026, same reasoning as H._req's own carve-out
+// just above -- see its comment) so a future copy change to the server's message can't silently
+// break this mapping too.
+async function doLogin(){ try { const r=await H.post('/api/login',{username:$('lx').value,pin:$('lp').value}); if(r.token){ setToken(r.token,r.user); home(); } else alert(r.code==='bad_credentials' ? "That username or password isn't right." : (r.error||'login failed')); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
 async function doReg(){ try {
   const btn = document.getElementById('regBtn');
   if(btn && btn.disabled) return;
   const u=($('rx').value||'').trim().toLowerCase();
-  if(u){ try { const c=await H.get('/api/register/check?username='+encodeURIComponent(u)); if(c && c.available===false){ alert('username taken'); return; } } catch(e){} }
+  if(u){ try { const c=await H.get('/api/register/check?username='+encodeURIComponent(u)); if(c && c.available===false){ alert(c.reason||'username taken'); return; } } catch(e){} }
   if(($('rp').value||'').length < 8){ alert('Password must be at least 8 characters.'); return; }
   const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value}); if(r.token){ setToken(r.token,r.user); home();
     // Cold-review catch: this call sits inside doReg's own try/catch, but the account is
@@ -450,8 +479,10 @@ function notifBellHtml(cls, count){
 // straight off the row's dataset to decide whether "Delete workout?" can ever really delete, or
 // should skip straight to the real Leave flow instead of showing Delete language for an action that
 // can't actually delete.
-function swipeRowWrap(sid, action, hasFinished, innerHtml, hasOtherStake){
-  return `<div class="swipe-row" data-sid="${esc(sid)}" data-action="${action}" data-finished="${hasFinished?1:0}" data-other-stake="${hasOtherStake?1:0}">${innerHtml}</div>`;
+function swipeRowWrap(sid, action, hasFinished, innerHtml, hasOtherStake, hasLoggedSets){
+  // Sep 30 2026 (audit finding): carries whether the viewer has any of their own sets logged on
+  // this session, so a swipe-to-leave can show the right sheet without a fetch -- see leaveWorkout.
+  return `<div class="swipe-row" data-sid="${esc(sid)}" data-action="${action}" data-finished="${hasFinished?1:0}" data-other-stake="${hasOtherStake?1:0}" data-has-logged-sets="${hasLoggedSets?1:0}">${innerHtml}</div>`;
 }
 // Sep 20 2026 (Jeff, "Smarter routing"): mirrors server.js's own DELETE /api/sessions/:id guard
 // (othersWithCredit(s, me) OR any other current participant -- see its long comment there) so the
@@ -542,6 +573,7 @@ function swipeRowConfirm(row, fg){
   fg.style.transform = 'translateX(-100%)';
   fg.style.opacity = '0.25';
   const sid = row.dataset.sid, hasFinished = row.dataset.finished === '1';
+  const hasLoggedSets = row.dataset.hasLoggedSets === '1';
   // Jeff, Sep 20 2026 ("Smarter routing"): a creator's own row can never actually delete once
   // anyone else has a real stake in it (see sessionHasOtherStake/swipeRowWrap's own comment, and
   // DELETE /api/sessions/:id's matching guard in server.js) -- it always converts into a Leave with
@@ -573,7 +605,7 @@ function swipeRowConfirm(row, fg){
       if(hasFinished){
         confirmSheet('Leave workout?', "You'll keep credit for today's sets — this just takes you off the workout going forward.", 'Leave workout', () => leaveWorkoutConfirmed(sid, true), true, resetRow);
       } else {
-        leaveWorkout(sid, hasFinished, resetRow);
+        leaveWorkout(sid, hasFinished, resetRow, hasLoggedSets);
       }
     }
     else if(action === 'hide-joinable') hideJoinable(sid, resetRow);
@@ -685,18 +717,13 @@ async function home(opts){
   // changed, so `best` just below (which never had a documented reason to want firstLog excluded)
   // is unaffected either way.
   const earnedPrs = ((prog && prog.prs) || []).filter(p => p.source === 'earned');
-  // Counts the weight-record event AND the volume-record event for this week separately, unless
-  // they're literally the same set (same "genuinely different set" guard the Records list's own
-  // setPrCaption uses) -- so a set that wins both records only counts once, but Sep 23's 40x15
-  // (a genuine volume record, still standing -- see setPrLabel's own comment) counts alongside
-  // 45x12's weight record instead of being invisible to this tally the same way it used to be
-  // invisible on the Records list.
-  const prsThisWeek = earnedPrs.reduce((n, p) => {
-    if (new Date(p.at).getTime() >= weekAgoMs) n++;
-    const sameSet = p.setWeight === p.weight && p.setReps === p.reps;
-    if (p.setAt && !sameSet && new Date(p.setAt).getTime() >= weekAgoMs) n++;
-    return n;
-  }, 0);
+  // Sep 30 2026 (audit finding, Jeff: make Home match Profile's stricter definition -- reversing
+  // the Sep 28 fix above). Back to excluding firstLog (a first-ever log of a lift is real, but
+  // Profile's Recent Activity has never counted it as a PR, so Home showing a different number
+  // for the same week was the actual bug) and counting one PR per qualifying exercise, not the
+  // weight-record and volume-record events separately -- this now mirrors groupPrsForFeed's own
+  // count exactly (server.js, recent.length), so the two surfaces can't disagree again.
+  const prsThisWeek = earnedPrs.filter(p => !p.firstLog && new Date(p.at).getTime() >= weekAgoMs).length;
   // v249 (audit finding): this comment used to claim records "carry no unit field" and are
   // therefore safe to label with prog.unit, the page's current unit preference — that was true
   // only by accident, because rebuildAllPrs() (server.js) used to silently drop the unit a PR was
@@ -1008,9 +1035,12 @@ async function home(opts){
         // swipeRowWrap's own comment for the gesture itself.
         const isCreator = s.creatorId === ME.id;
         const hasFinished = (s.history||[]).some(h=>h.userId===ME.id);
+        // Sep 30 2026 (audit finding): sessionView already sends the viewer their OWN logs
+        // unconditionally (server.js, "yourself and nobody else"), so this is cheap and correct.
+        const hasLoggedSets = !!(s.logs && s.logs[ME.id] && s.logs[ME.id].length);
         const rowInner = `<div class="lib-item swipe-row-fg${live?' session-live':''}" onclick="openSession('${s.id}')">
           <div>${badge}<b>${esc(s.name)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}${withWho}</div></div></div>`;
-        html += swipeRowWrap(s.id, isCreator ? 'delete' : 'leave', hasFinished, rowInner, isCreator ? sessionHasOtherStake(s) : false);
+        html += swipeRowWrap(s.id, isCreator ? 'delete' : 'leave', hasFinished, rowInner, isCreator ? sessionHasOtherStake(s) : false, hasLoggedSets);
       }
       html += `</div>`;
       if(restRows.length > 3 && !showAll) html += `<div style="text-align:right;margin-top:-4px"><button class="txt-btn" onclick="window.HOME_ALL_SESSIONS=true; home({silent:true})">See all ${restRows.length}</button></div>`;
@@ -1548,7 +1578,7 @@ async function openSession(id, opts){
       // as its own pill (not folded into a menu) since it's the only secondary action a
       // participant ever has here -- one pill next to Log & Finish isn't the crowding problem the
       // creator's three-in-a-row was.
-      actions.push(`<button class="sec sm" onclick="leaveWorkout('${s.id}', ${hasFinished})">Leave workout</button>`);
+      actions.push(`<button class="sec sm" onclick="leaveWorkout('${s.id}', ${hasFinished}, null, ${!!(s.logs && s.logs[ME.id] && s.logs[ME.id].length)})">Leave workout</button>`);
     }
     if(actions.length) html += `<div class="sess-actions">${actions.join('')}</div>`;
   }
@@ -1607,7 +1637,12 @@ async function openSession(id, opts){
     // Only proposing a brand-new exercise is left here, since it has no card to hang off.
     // Sep 27 2026 (ownerless redesign): no host left to approve anything -- it's added right away
     // and everyone else votes on it whenever they get to it (wording is a first draft).
-    const addBlurb = isOwnerless ? "Want to add something new? Everyone can vote on it, anytime." : `Want to add something new? ${hostFirst} approves that too.`;
+    // Sep 30 2026 (Jeff, catching this fresh in a screenshot: "it says that person approves that
+    // too but shows nothing that is to be approved or no option to approve anything"): "too" was
+    // referring back to the swap-approval sentence ("the host approves it") that only actually
+    // appears inside the Swap → sheet (openSwapChoice), never on this page itself -- so on the
+    // page a person actually sees, "approves that too" pointed at nothing. Jeff's pick: drop "too".
+    const addBlurb = isOwnerless ? "Want to add something new? Everyone can vote on it, anytime." : `Want to add something new? ${hostFirst} approves it.`;
     html += `<h2 class="sep">Suggest a change</h2><div class="card">
       <div class="muted" style="font-size:12.5px;margin:2px 2px 8px">${addBlurb}</div>
       <button class="sec sm" style="background:var(--line)" onclick="openSuggestAddPicker('${s.id}')">Suggest adding an exercise →</button>
@@ -1903,7 +1938,13 @@ async function viewPost(id, authorId, opts){
   // Sep 28 2026 (same audit finding as exSetRowsHtml's PR badge above): a first-ever log showed a
   // PR badge here too, disagreeing with the Activity feed which already excludes first-ever logs
   // -- gated on !firstLog/!setFirstLog for the same reason, Records/profile untouched.
-  const setRows = (ls, mine) => { const badges = setBadges(ls); return `<div class="pp-sets">${ls.map((l,i)=>`<div class="pp-set${mine?' pp-set-mine':''}"${mine?` onclick="editPostedSet('${id}','${authorId}','${l.id}')"`:''}><span class="pp-set-n ${badges[i].c}">${badges[i].t}</span><span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)} × ${Number(l.reps)||0} reps</span>${l.isPr&&!l.firstLog?'<span class="pp-pr pp-pr-gold">PR</span>':''}${l.isSetPr&&!l.setFirstLog?'<span class="pp-pr">VOLUME</span>':''}</div>`).join('')}</div>`; };
+  // Sep 29 2026 (audit finding): RIR and load-type suffix ("each"/"added") showed while logging a
+  // set, then silently disappeared here once posted -- same data (l.rir, l.loadType), the posted
+  // view's template just never rendered it. Now reuses the exact same helpers the live log sheet
+  // uses (loadSuffixFor/rirSuffixFor, hoisted above exSetRowsHtml). libLoadType is the same
+  // fallback-for-legacy-sets lookup exSetRowsHtml's own caller does (LIBN by exercise name) --
+  // l.loadType itself wins whenever a set actually has it stamped.
+  const setRows = (ls, mine, libLoadType) => { const badges = setBadges(ls); return `<div class="pp-sets">${ls.map((l,i)=>`<div class="pp-set${mine?' pp-set-mine':''}"${mine?` onclick="editPostedSet('${id}','${authorId}','${l.id}')"`:''}><span class="pp-set-n ${badges[i].c}">${badges[i].t}</span><span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)}${loadSuffixFor(l,libLoadType)} × ${Number(l.reps)||0} reps${rirSuffixFor(l)}</span>${l.isPr&&!l.firstLog?'<span class="pp-pr pp-pr-gold">PR</span>':''}${l.isSetPr&&!l.setFirstLog?'<span class="pp-pr">VOLUME</span>':''}</div>`).join('')}</div>`; };
   // An approved swap replaces the exercise for the session, and openSession already titles the
   // card with the swapped-in name. This screen said the original, so the two disagreed about what
   // the lift even was. Same resolution here, so they agree.
@@ -1912,6 +1953,11 @@ async function viewPost(id, authorId, opts){
   // differently is exactly the bug this block was added to fix.
   for(const ed of (s.suggestedEdits||[]))
     if(ed.status==='approved' && !(ed.exerciseId in approvedFor)) approvedFor[ed.exerciseId] = ed.swapTo;
+  // Sep 30 2026 (audit finding, RIR/load-type suffix fix): libByName()'s own cached map, same
+  // lookup exLogBlockHtml uses (its local LIBN, a few hundred lines up -- out of scope here, this
+  // screen needed its own) -- setRows() below reads it as the fallback for a set logged before
+  // loadType started getting stamped per-set.
+  const LIBN = await libByName();
   const exList = s.exercises.map(e=>{
     const heading = approvedFor[e.id] || e.name;
     const blocks = logged.map(pid => {
@@ -1942,7 +1988,7 @@ async function viewPost(id, authorId, opts){
       const nmRaw = pid===ME.id ? 'You' : logNames[pid];
       const label = needLabel ? esc(isUnknownName(nmRaw) ? 'Someone' : String(nmRaw).split(' ')[0]) : '';
       const who = (label || note) ? `<div class="pp-who">${[label, note].filter(Boolean).join(' ')}</div>` : '';
-      return who + setRows(ls, pid===ME.id);
+      return who + setRows(ls, pid===ME.id, (LIBN[e.name] && LIBN[e.name].loadType) || '');
     }).filter(Boolean).join('');
     const setsHtml = blocks || (hasHiddenPost
       ? `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">Sets not shared</div>`
@@ -2602,7 +2648,17 @@ async function saveRoutine(id){
   textEntrySheet({
     title:'Save as routine', label:'Routine name', value:'Saved routine', placeholder:'e.g. Push Day',
     onConfirm: async v => {
-      const r = await H.post('/api/templates',{name:(v||'').trim()||'Saved routine',exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax}))});
+      // Sep 29 2026 (audit finding): this used to post {name, exercises} only, silently dropping
+      // the workout's own Location/Visibility/Note even though they're right there on the session
+      // this button is saving FROM -- finishTemplate() (the routine editor's own Save) already
+      // carries all three, this button just never had. Deliberately not carrying over an invite
+      // list: a posted workout's invited[] is who was asked to THIS one-off session, not a standing
+      // "invite these people whenever this routine gets used" -- there's no equivalent field to
+      // read here, and guessing one would be worse than leaving it for the routine's own Invite
+      // friends step to set explicitly next time it's used.
+      const r = await H.post('/api/templates',{name:(v||'').trim()||'Saved routine',
+        exercises:s.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax})),
+        location:s.location||'', creatorNote:s.creatorNote||'', visibility:s.visibility||'private'});
       if(r && r.error){ alert(r.error); return; }
       alert('Saved as routine: '+r.name);
     }
@@ -3276,6 +3332,14 @@ function setBadges(rows){
     n++; return {t:n,c:''};
   });
 }
+// Sep 29 2026 (audit finding): these two used to live only inside exSetRowsHtml (the live
+// in-workout log sheet), so setRows() below -- the POSTED-recap view of the exact same sets --
+// had no access to them and just dropped the suffix/RIR from its template entirely. The data was
+// never deleted, only the posted view's display forgot to render it. Hoisted so both share one
+// definition instead of setRows growing its own second copy.
+const loadSuffixFor = (l, loadType) => { const t = l.loadType || loadType || ''; return t==='pair' ? ' each' : t==='added' ? ' added' : ''; };
+// RIR is optional per set - only shown when actually tracked, never a fabricated "RIR 0".
+const rirSuffixFor = l => (l.rir!==undefined && l.rir!==null) ? ` · RIR ${l.rir}` : '';
 // The set rows inside a card. Same shape as the posted-workout view's rows (Jeff sent that
 // screenshot as the target): a W/D/F badge or the set number, "143 lb × 12 reps", PR, Edit.
 // Prefer the loadType stamped on the set when it was logged; fall back to the exercise's current
@@ -3285,9 +3349,6 @@ function exSetRowsHtml(sid, exId, exLogs, loadType, justLoggedId){
   const rows = (exLogs||[]).slice().sort((a,b)=>(a.set||0)-(b.set||0));
   if(!rows.length) return `<div class="ex-log-empty muted">No sets yet</div>`;
   const badges = setBadges(rows);
-  const suffixFor = l => { const t = l.loadType || loadType || ''; return t==='pair' ? ' each' : t==='added' ? ' added' : ''; };
-  // RIR is optional per set - only shown when actually tracked, never a fabricated "RIR 0".
-  const rirFor = l => (l.rir!==undefined && l.rir!==null) ? ` · RIR ${l.rir}` : '';
   return rows.map((l,i)=>{
     const b = badges[i];
     const pop = l.id===justLoggedId ? ' pr-pop' : '';
@@ -3312,7 +3373,7 @@ function exSetRowsHtml(sid, exId, exLogs, loadType, justLoggedId){
     // celebratory "you just hit a PR" badges are suppressed for a set with nothing to compare to.
     return `<div class="pp-set pp-set-mine" onclick="editLogSet('${sid}','${exId}','${l.id}')">
       <span class="pp-set-n ${b.c}">${b.t}</span>
-      <span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)}${suffixFor(l)} × ${Number(l.reps)||0} reps${rirFor(l)}</span>
+      <span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)}${loadSuffixFor(l,loadType)} × ${Number(l.reps)||0} reps${rirSuffixFor(l)}</span>
       ${l.isPr && !l.firstLog?`<span class="pp-pr pp-pr-gold${pop}">PR</span>`:''}
       ${l.isSetPr && !l.setFirstLog?`<span class="pp-pr${pop}">VOLUME</span>`:''}
     </div>`; }).join('');
@@ -4395,8 +4456,21 @@ async function deleteSessionConfirmed(id, alreadyFinished, onCancel){
 // credit blocks a real delete). If you've already finished your own portion, there is nothing left
 // to choose — your credit is already locked in either way (creditFinish is idempotent) — so this
 // skips straight to leaving instead of asking a question with only one real answer.
-function leaveWorkout(id, alreadyFinished, onCancel){
+// Sep 30 2026 (audit finding, Jeff: confirmed option B): this used to unconditionally claim "You
+// have sets logged here today that you haven't finished yet" even when nothing was logged at all
+// -- false, and CLAUDE.md's own rule against stating something about the user's history that
+// isn't true applies just as much here as anywhere else. `hasLoggedSets` is optional: the two
+// direct callers (Home's swipe row, the in-workout Leave button) already have `s.logs` in hand
+// and pass it for free; deleteSession's canLeave fallback (creator-only, reached after a DELETE
+// attempt) doesn't have a live session object at that point, so this fetches it rather than
+// guess. Either way, leaving still always confirms first (Jeff: "they should still confirm the
+// leave workout") -- only the copy/choice offered changes.
+async function leaveWorkout(id, alreadyFinished, onCancel, hasLoggedSets){
   if(alreadyFinished){ return leaveWorkoutConfirmed(id, true); }
+  if(hasLoggedSets === undefined){
+    try { const s = await H.get('/api/sessions/'+id); hasLoggedSets = !!(s && s.logs && s.logs[ME.id] && s.logs[ME.id].length); }
+    catch(e){ hasLoggedSets = true; }   // can't tell -- default to the more cautious Save/Discard sheet
+  }
   // This sheet is a raw openSheetHtml, not confirmSheet -- Save/Discard are both real actions, not
   // a single confirm/cancel pair -- so it arms SHEET_CANCEL_CB directly rather than through
   // confirmSheet's own param. Both buttons null it out before calling leaveWorkoutConfirmed, so its
@@ -4409,11 +4483,28 @@ function leaveWorkout(id, alreadyFinished, onCancel){
   // CONFIRM_EL pointing here doesn't change what tapping any of ITS OWN buttons does.
   stompPendingSwipeSheet();
   SHEET_CANCEL_CB = onCancel || null;
-  const inner = `<div class="sheet"><div class="sheet-head"><h2>Leave workout</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+  const inner = hasLoggedSets
+    ? `<div class="sheet"><div class="sheet-head"><h2>Leave workout</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
     <div class="muted" style="padding:0 2px 14px">You have sets logged here today that you haven't finished yet.</div>
     <div class="sheet-list">
       <button class="sheet-row" onclick="SHEET_CANCEL_CB=null; leaveWorkoutConfirmed('${id}', true)">Save today's sets</button>
       <button class="sheet-row red" onclick="SHEET_CANCEL_CB=null; leaveWorkoutConfirmed('${id}', false)">Discard today's sets</button>
+      <!-- Sep 30 2026 (Jeff, catching this fresh looking at the rendered screenshot: "this doesn't
+           look right" -- the only way out was the small header ✕, unlike every other confirm sheet
+           in the app which lists Cancel as its own row). closeSheet() already runs SHEET_CANCEL_CB
+           the exact same way the ✕ button does (see closeSheet's own comment), so this is a pure
+           add, not a behavior change -- just a second, more obvious way to trigger the same thing. -->
+      <button class="sheet-row" onclick="closeSheet()">Cancel</button>
+    </div>
+  </div>`
+    // Nothing logged yet, so there's nothing to Save or Discard -- a single plain confirm instead
+    // of a choice with only one real answer (same reasoning leaveWorkout's own comment above
+    // already applies to the alreadyFinished/hasFinished case).
+    : `<div class="sheet"><div class="sheet-head"><h2>Leave workout</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="sheet-list">
+      <button class="sheet-row red" onclick="SHEET_CANCEL_CB=null; leaveWorkoutConfirmed('${id}', false)">Leave workout</button>
+      <!-- Sep 30 2026 (Jeff, same catch as the Save/Discard variant above): same fix, same reasoning. -->
+      <button class="sheet-row" onclick="closeSheet()">Cancel</button>
     </div>
   </div>`;
   CONFIRM_EL = openSheetHtml(inner);
@@ -5748,9 +5839,18 @@ async function tplQuickSaveConfirm(){
   const n=$('tplName').value.trim(); if(!n){ alert('Name your routine first.'); return; }
   closeSheet();
   if(!DRAFT.exercises.length){ return alert('Add exercises first.'); }
+  // Sep 29 2026 (audit finding): this used to post {name, exercises} only, dropping the
+  // Location/Visibility/Invite friends already filled in on the create-flow screen sitting right
+  // behind this sheet -- same DRAFT, same #loc/#vis fields, as finishTemplate()'s fuller payload;
+  // closeSheet() only removes the sheet overlay, the underlying screen (and its fields) is still there.
+  const location = $('loc') ? $('loc').value : (DRAFT.location||'');
+  const creatorNote = DRAFT.creatorNote||'';
+  const visibility = $('vis') ? $('vis').value : (DRAFT.visibility||'private');
+  const inviteUsernames = DRAFT.inviteUsernames || [];
+  const payload = { name:n, exercises:DRAFT.exercises, location, creatorNote, visibility, inviteUsernames };
   const r = EDITING_TPL
-    ? await H.put('/api/templates/'+EDITING_TPL,{name:n,exercises:DRAFT.exercises})
-    : await H.post('/api/templates',{name:n,exercises:DRAFT.exercises});
+    ? await H.put('/api/templates/'+EDITING_TPL,payload)
+    : await H.post('/api/templates',payload);
   if(r.error) return alert(r.error);
   alert('Routine saved: '+n);
 }
@@ -6765,7 +6865,12 @@ async function progressScreen(opts){
           // floor; only the raw average (and the average half of the streak caption) waits for it.
           const ACTIVE_WEEKS_FLOOR = 2;
           const enoughData = active.length >= ACTIVE_WEEKS_FLOOR;
-          if(d.streakWeeks>0) return `<div class="streak-hero">${d.streakWeeks}<span class="hero-u"> week streak</span></div>
+          // Sep 30 2026 (audit finding, Jeff: "I like weekly streak" -- confirmed pick out of the
+          // two options offered): the app has two different "streak" numbers (this one counts
+          // consecutive WEEKS with any activity; the day pills elsewhere count consecutive DAYS)
+          // with nothing distinguishing them by name. Renamed the label itself rather than adding
+          // a separate explainer line.
+          if(d.streakWeeks>0) return `<div class="streak-hero">${d.streakWeeks}<span class="hero-u"> weekly streak</span></div>
              <div class="hero-cap">${enoughData ? `${avg} days/week average, ${cap}` : 'Keep it up — your weekly average will show here soon'}</div>`;
           // No active streak (0 weeks) falls back to the plain average as the hero, same as
           // before this change — nothing to lead with otherwise, once there's enough of it.
@@ -7165,13 +7270,25 @@ function openCreateEx(presetMuscle){
   // that's what actually gets submitted.
   const msel = LIB_MUSCLES.map(m=>`<option value="${m}" ${presetMuscle===m?'selected':''}>${esc(muscleLabel(m))}</option>`).join('');
   const eqOpts = EQ_FAMILY.map(f=>`<option value="${f.key}">${f.label}</option>`).join('');
+  // Sep 30 2026 (audit finding, Jeff, option B -- build the real field, not just relabel): this
+  // sheet had no Pattern field at all, so every custom exercise's detail sheet showed its own
+  // muscle group a second time under a "Pattern" label. Same closed vocabulary the built-in
+  // library already uses (see server.js's KNOWN_PATTERNS) so custom exercises sort into the same
+  // Push/Pull/Legs/Core/Cardio grouping plateausFor's own ordering already expects.
+  const patOpts = [['push','Push'],['pull','Pull'],['legs','Legs'],['core','Core'],['cardio','Cardio'],['other','Other']]
+    .map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
   history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet = document.createElement('div'); sheet.className='sheet-back';
   sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>Create exercise</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <!-- Sep 30 2026 (audit finding, Jeff: "build now" -- Edit/Delete for a custom exercise):
+           entry point placed here, next to where one gets created, rather than adding a new icon
+           to the already-tight library header row above. -->
+      <div style="text-align:right;margin:-6px 0 10px"><span class="how-link" onclick="closeSheet(); myCustomExercisesSheet();">Manage your exercises ›</span></div>
       <label class="muted">Name</label><input id="ceName" placeholder="e.g. Cable Crossover">
       <label class="muted">Primary muscle</label><select id="ceMg">${msel}</select>
+      <label class="muted">Pattern</label><select id="cePattern">${patOpts}</select>
       <label class="muted">Equipment</label><select id="ceEq">${eqOpts}</select>
       <label class="muted">Level</label><select id="ceLv"><option>beginner</option><option>intermediate</option><option>advanced</option></select>
       <label class="muted">Type</label><select id="ceType"><option value="0">Isolation</option><option value="1">Compound</option></select>
@@ -7181,12 +7298,102 @@ function openCreateEx(presetMuscle){
   requestAnimationFrame(()=>sheet.classList.add('show'));
   const ceBtn=document.getElementById('ceName'); if(ceBtn) setTimeout(()=>ceBtn.focus(),60);
 }
-async function submitCreateEx(){
+function submitCreateEx(){
   const name=($('ceName').value||'').trim(); if(!name) return alert('Enter a name');
+  // Sep 30 2026 (audit finding, Jeff, option A -- a heads-up against your OWN existing names only,
+  // never a block: "anyone should be able to use whatever name they like"). window._LIB2 already
+  // has every exercise including yours (the `mine` flag GET /api/exercises sends) -- checked here,
+  // client-side, so this is a plain confirm before anything is created, not a notice after the
+  // fact. Confirming just continues into the real submit below; nothing here restricts the name.
+  const dupe = (window._LIB2||[]).find(e=>e.mine && e.name===name);
+  if(dupe){
+    confirmSheet('You already have this one', `You already have a custom exercise named "${esc(name)}". Create another one with this name anyway?`, 'Create anyway', () => submitCreateExConfirmed(name), false);
+  } else submitCreateExConfirmed(name);
+}
+async function submitCreateExConfirmed(name){
   const muscle=$('ceMg').value;
-  const payload={ name, muscle_groups:[muscle], equipment:[eqLabel($('ceEq').value).toLowerCase()], level:$('ceLv').value, is_compound:$('ceType').value==='1' };
+  const payload={ name, muscle_groups:[muscle], pattern:$('cePattern').value, equipment:[eqLabel($('ceEq').value).toLowerCase()], level:$('ceLv').value, is_compound:$('ceType').value==='1' };
   const r = await H.post('/api/exercises/custom', payload);
-  if(r.error) alert(r.error); else { closeSheet(); if(LIB_STATE.view==='muscle') libOpenMuscle(LIB_STATE.muscle, {silent:true}); else library({silent:true}); }
+  // Cold-review catch (Sep 30 2026): this used to call libOpenMuscle's same-screen refresh
+  // WITHOUT refetching window._LIB2 first -- library() (the "else" branch below) always refetches
+  // on its own, but libOpenMuscle does not, it just re-filters whatever's already in _LIB2. Create
+  // a second same-named exercise back-to-back without leaving the muscle screen (the exact flow
+  // submitCreateEx's own dupe-name check exists for) and the list would still be missing the one
+  // just created, silently defeating that check. Refetch explicitly before the 'muscle' branch so
+  // it (and the exercise row itself) are actually current.
+  if(r.error) alert(r.error); else { closeSheet(); if(LIB_STATE.view==='muscle'){ window._LIB2 = await H.get('/api/exercises'); libOpenMuscle(LIB_STATE.muscle, {silent:true}); } else library({silent:true}); }
+}
+// Sep 30 2026 (audit finding, Jeff: "build now"). A dedicated management list rather than folding
+// Edit/Delete into exDetail()'s general-purpose sheet: exDetail is keyed by NAME and used for every
+// exercise app-wide (built-in and custom alike), and names are explicitly allowed to repeat now
+// (see the comment on POST /api/exercises/custom) -- a name alone can no longer reliably say WHICH
+// of possibly several same-named entries it means. This list is keyed by `e.id` (window._LIB2's
+// `mine` flag, from GET /api/exercises) instead, so Edit/Delete are always unambiguous, without
+// having to rework every OTHER place in the app that still, correctly, addresses exercises by name.
+async function myCustomExercisesSheet(){
+  const lib = window._LIB2 || (window._LIB2 = await H.get('/api/exercises'));
+  const mine = lib.filter(e=>e.mine);
+  const rows = mine.length ? mine.map(e=>`
+    <div class="friend-row">
+      <div class="meta"><div class="name">${esc(e.name)}</div><div class="handle">${esc(muscleLabel(e.muscle_groups[0]||''))}</div></div>
+      <button class="sm sec" onclick="closeSheet(); openEditEx('${e.id}')">Edit</button>
+      <button class="sm sec" style="margin-left:6px;color:var(--red);border-color:var(--red)" onclick="confirmDeleteCustomEx('${e.id}','${jsq(e.name)}')">Delete</button>
+    </div>`).join('')
+    : `<div class="muted" style="padding:14px 2px;text-align:center">You haven’t created any exercises yet.</div>`;
+  history.pushState({t:'sheet'}, '', location.href);
+  openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>My exercises</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="sheet-list" style="padding:0">${rows}</div></div>`);
+}
+// Edit: every field EXCEPT name (see the comment on PUT /api/exercises/custom/:id for why name
+// stays fixed after creation). Same form shape as Create, minus the Name input -- shown as plain
+// text instead so it's clear at a glance this one field isn't editable here.
+function openEditEx(id){
+  const e = (window._LIB2||[]).find(x=>x.id===id && x.mine); if(!e) return;
+  const msel = LIB_MUSCLES.map(m=>`<option value="${m}" ${(e.muscle_groups[0]===m)?'selected':''}>${esc(muscleLabel(m))}</option>`).join('');
+  const curFam = eqFamilies(e)[0] || '';
+  const eqOpts = EQ_FAMILY.map(f=>`<option value="${f.key}" ${curFam===f.key?'selected':''}>${f.label}</option>`).join('');
+  const patOpts = [['push','Push'],['pull','Pull'],['legs','Legs'],['core','Core'],['cardio','Cardio'],['other','Other']]
+    .map(([v,l])=>`<option value="${v}" ${(e.pattern||'other')===v?'selected':''}>${l}</option>`).join('');
+  history.pushState({t:'sheet'}, '', location.href);
+  const sheet = document.createElement('div'); sheet.className='sheet-back';
+  sheet.innerHTML=`
+    <div class="sheet" onclick="event.stopPropagation()">
+      <div class="sheet-head"><h2>Edit exercise</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+      <label class="muted">Name</label><div style="padding:10px 0;font-weight:600">${esc(e.name)}</div>
+      <label class="muted">Primary muscle</label><select id="ceMg">${msel}</select>
+      <label class="muted">Pattern</label><select id="cePattern">${patOpts}</select>
+      <label class="muted">Equipment</label><select id="ceEq">${eqOpts}</select>
+      <label class="muted">Level</label><select id="ceLv"><option ${e.level==='beginner'?'selected':''}>beginner</option><option ${e.level==='intermediate'?'selected':''}>intermediate</option><option ${e.level==='advanced'?'selected':''}>advanced</option></select>
+      <label class="muted">Type</label><select id="ceType"><option value="0" ${!e.is_compound?'selected':''}>Isolation</option><option value="1" ${e.is_compound?'selected':''}>Compound</option></select>
+      <button class="blue" style="margin-top:14px;width:100%" onclick="submitEditEx('${id}')">Save changes</button>
+    </div>`;
+  sheet.onclick=(ev)=>{ if(ev.target===sheet) closeSheet(); }; document.body.appendChild(sheet);
+  requestAnimationFrame(()=>sheet.classList.add('show'));
+}
+async function submitEditEx(id){
+  const payload={ muscle_groups:[$('ceMg').value], pattern:$('cePattern').value, equipment:[eqLabel($('ceEq').value).toLowerCase()], level:$('ceLv').value, is_compound:$('ceType').value==='1' };
+  const r = await H.put('/api/exercises/custom/'+id, payload);
+  // Cold-review catch (Sep 30 2026): this reaches here from the standalone "My exercises" sheet
+  // (myCustomExercisesSheet), which never touches LIB_STATE -- so LIB_STATE.view can still read
+  // 'muscle' from an earlier, unrelated visit to the exercise picker (it's a persistent global, not
+  // reset on navigating to Settings). Nulling _LIB2 and then calling libOpenMuscle SYNCHRONOUSLY
+  // used to be a real crash risk: libOpenMuscle does `window._LIB2.filter(...)` with no null check
+  // and no fetch of its own (unlike library(), the 'else' branch here, which always refetches) --
+  // `Cannot read properties of null (reading 'filter')`. Await the refetch before calling it.
+  if(r.error) alert(r.error); else { closeSheet(); if(LIB_STATE.view==='muscle'){ window._LIB2 = await H.get('/api/exercises'); libOpenMuscle(LIB_STATE.muscle, {silent:true}); } else library({silent:true}); }
+}
+function confirmDeleteCustomEx(id, name){
+  confirmSheet('Delete exercise?', `"${esc(name)}" will be gone from your exercise library. This can't be undone.`, 'Delete exercise', () => deleteCustomExConfirmed(id));
+}
+async function deleteCustomExConfirmed(id){
+  const r = await H.delete('/api/exercises/custom/'+id);
+  if(r && r.error){ alert(r.error); return; }
+  window._LIB2=null;
+  // confirmSheet's own dismissConfirm() already closed ITS sheet before calling this -- the stale
+  // "My exercises" list (still showing the just-deleted row) is what's left open underneath, so
+  // close that one too before opening a fresh copy, rather than stacking a second one on top of it.
+  closeSheet();
+  myCustomExercisesSheet();
 }
 // Sep 6 (audit: three 4-line "How it works" paragraphs on Progress). One blue line that opens
 // the explanation in a sheet -- the page reads at a glance, the rule is one tap away. `body` is
@@ -7388,15 +7595,19 @@ function openSheetHtml(inner){ UI_EPOCH++; history.pushState({t:'sheet'}, '', lo
 // removing any already-open text-entry sheet immediately before opening a new one, so at most one
 // ever exists and $('teVal') can only ever resolve to it.
 let TE_EL = null;
-function textEntrySheet({title, label, value, placeholder, multiline, confirmLabel, cancelLabel, onConfirm, onCancel}){
+function textEntrySheet({title, label, value, placeholder, multiline, confirmLabel, cancelLabel, onConfirm, onCancel, note}){
   if(TE_EL){ TE_EL.remove(); TE_EL = null; }
   const cur = value||'';
   const field = multiline
     ? `<textarea id="teVal" placeholder="${esc(placeholder||'')}" style="min-height:110px">${esc(cur)}</textarea>`
     : `<input id="teVal" placeholder="${esc(placeholder||'')}" value="${esc(cur)}" autocomplete="off">`;
+  // Sep 30 2026 (audit finding): optional one-line caption under the field, for the rare case
+  // where the field means more than it looks like (see editUsernameSheet's own use) -- every
+  // other caller leaves this unset and gets exactly the same sheet as before.
   TE_EL = openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>${esc(title)}</h2></div>
     ${label?`<label class="muted">${esc(label)}</label>`:''}
     ${field}
+    ${note?`<div class="fineprint" style="margin-top:4px">${esc(note)}</div>`:''}
     <div style="display:flex;gap:10px;margin-top:16px">
       <button class="sec" style="flex:1" onclick="_teCancel()">${esc(cancelLabel||'Cancel')}</button>
       <button class="blue" style="flex:1" onclick="_teConfirm()">✓ ${esc(confirmLabel||'Save')}</button>
@@ -8236,7 +8447,7 @@ async function challengeView(crewId, challengeId, opts){
       <span style="width:18px;flex:0 0 auto;text-align:center;font-weight:700;color:var(--muted);font-size:12.5px">${i+1}</span>
       ${avatarHtml(m,'avatar')}
       <div class="meta"><div class="name">${i===0 && m.count>0 ? flame+' ' : ''}${esc(m.displayName||m.username)}</div></div>
-      <b style="flex:0 0 auto">${m.count}</b>
+      <b style="flex:0 0 auto">${m.count==null?'—':m.count}</b>
     </div>`).join('');
   const leaderboard = isCustom ? '' : `<h2>Leaderboard</h2><div class="card" style="padding:0 12px">${lbRows}</div>`;
   // Every other challenge this crew has run, newest first, excluding whichever one is on screen --
@@ -9371,7 +9582,11 @@ async function profileView(id, opts){
     : `<div class="pavatar" style="background:${avatarColor(p.username)};color:#fff">${esc((p.displayName||p.username||'?')[0]||'?')}</div>`;
   const stats = `
     <div class="pstats">
-      <div class="pstat"><b>${p.workoutsCompleted}</b><span>Workouts</span></div>
+      <!-- Sep 30 2026 (audit finding): "Following"/"Followers" right next to this were already
+           tappable; "Workouts" was the one stat tile with no cursor/onclick at all, for a section
+           that's already further down this same screen -- Jeff's pick was to just jump to it
+           (#myWorkoutsSection below) rather than open a whole separate screen for it. -->
+      <div class="pstat" style="cursor:pointer" onclick="document.getElementById('myWorkoutsSection').scrollIntoView({behavior:'smooth'})"><b>${p.workoutsCompleted}</b><span>Workouts</span></div>
       <div class="pstat" style="cursor:pointer" onclick="followList('${p.id}','following')"><b>${p.following}</b><span>Following</span></div>
       <div class="pstat" style="cursor:pointer" onclick="followList('${p.id}','followers')"><b>${p.followers}</b><span>Followers</span></div>
     </div>`;
@@ -9549,10 +9764,9 @@ async function profileView(id, opts){
     ${actHtml}
     ${bioBlock}
     ${activityBlock}
-    <div class="sec-head"><h2>My Workouts</h2><div class="view-toggle"><button class="${wview==='list'?'on':''}" id="vtList" onclick="setWorkoutView('list','${id}')">☰ List</button><button class="${wview==='grid'?'on':''}" id="vtGrid" onclick="setWorkoutView('grid','${id}')">▦ Grid</button></div></div>
+    <div class="sec-head" id="myWorkoutsSection"><h2>${isMe?'My Workouts':esc((p.displayName||p.username))+"’s Workouts"}</h2><div class="view-toggle"><button class="${wview==='list'?'on':''}" id="vtList" onclick="setWorkoutView('list','${id}')">☰ List</button><button class="${wview==='grid'?'on':''}" id="vtGrid" onclick="setWorkoutView('grid','${id}')">▦ Grid</button></div></div>
     <div style="margin:8px 0 14px" id="workoutView">${wview==='grid'?gridHtml:listHtml}</div>
     ${isPrivate ? privateBlock : ''}
-    ${isMe?`<button class="sec" style="margin-top:18px" onclick="logout()">Log out</button>`:''}
   </div>`;
   if(!silent){ const st={t:'profile', id}; fromHistory ? landOn(st) : navigated(st); }
 }
@@ -9831,6 +10045,9 @@ function editDisplayNameSheet(){
 function editUsernameSheet(){
   textEntrySheet({
     title:'Username', label:'Your @handle', value:ME.username||'', placeholder:'username',
+    // Sep 30 2026 (audit finding, Jeff: confirmed option A): this is also the credential you log
+    // in with (POST /api/login takes username, not display name) -- nothing on this sheet said so.
+    note:'This is also what you use to log in.',
     onConfirm: v => { const epoch=UI_EPOCH; H.post('/api/me/username',{username:v}).then(r=>{
       if(r && r.error){ alert(r.error); return; }
       if(r.username!==undefined){ ME.username=r.username; if(nothingNavigatedSince(epoch)){ const el=document.getElementById('settingsUsernameVal'); if(el) el.textContent = '@'+ME.username; } }
@@ -9841,7 +10058,19 @@ function editUsernameSheet(){
 // follow requests already waiting on you server-side (POST /api/me/profile-visibility) -- there's
 // nothing left to approve once anyone can already see you, same reasoning as /api/follow/:id
 // skipping the request step entirely for an already-public profile.
-async function toggleProfileVisibility(){
+// Sep 30 2026 (audit finding, Jeff: "it could sit in profile that's fine but just the add
+// confirm"): this used to flip instantly on tap, no confirm either direction -- every other
+// consequential toggle in the app goes through confirmSheet (CLAUDE.md's own in-app-sheet
+// convention, never a browser confirm()). Section placement is unchanged, only the tap itself.
+function toggleProfileVisibility(){
+  const goingPrivate = ME.profileVisibility!=='private';
+  const body = goingPrivate
+    ? 'Only approved followers (and you) will be able to see your PRs, streak, activity, and posted workouts. You can switch back anytime.'
+    : 'Anyone will be able to see your PRs, streak, activity, and posted workouts. You can switch back anytime.';
+  confirmSheet(goingPrivate ? 'Make profile private?' : 'Make profile public?', body,
+    goingPrivate ? 'Make private' : 'Make public', () => toggleProfileVisibilityConfirmed(), false);
+}
+async function toggleProfileVisibilityConfirmed(){
   // Public is the default (unset counts as public, same rule as canSeeProfile server-side) --
   // only an explicit 'private' narrows it, so the toggle flips off of that, not off of 'public'.
   const next = ME.profileVisibility==='private' ? 'public' : 'private';

@@ -216,8 +216,13 @@ console.log('\na workout I joined but did not create: dragging past the threshol
   await page.waitForTimeout(500);
   const heading = await page.$eval('.sheet-head h2', el => el.textContent);
   ok(/leave workout/i.test(heading), `the exact same Leave Workout sheet the in-workout Leave button uses (got "${heading}")`);
-  const discardBtn = await page.$('button:has-text("Discard today\'s sets")');
-  ok(!!discardBtn, 'the Save/Discard choice sheet rendered (I have no logged sets yet, but the choice is still offered)');
+  // Sep 30 2026 (audit finding, Jeff's explicit call): nothing is logged here yet, so the sheet no
+  // longer offers a Save/Discard choice with only one real answer -- a single plain "Leave workout"
+  // confirm renders instead (see leaveWorkout's comment in app.js).
+  const discardBtnNone = await page.$('button:has-text("Discard today\'s sets")');
+  ok(!discardBtnNone, 'no logged sets yet, so the Save/Discard choice is NOT offered');
+  const leaveBtn = await page.$('button:has-text("Leave workout")');
+  ok(!!leaveBtn, 'a single plain "Leave workout" confirm renders instead');
   // Leave Workout's sheet is a raw openSheetHtml, not confirmSheet -- its ✕ is a genuinely different
   // codepath from the confirmSheet-based Cancel tested above (SHEET_CANCEL_CB armed directly by
   // leaveWorkout(), read by closeSheet() rather than dismissConfirm()) and worth covering on its own.
@@ -233,13 +238,16 @@ console.log('\na workout I joined but did not create: dragging past the threshol
   ok(meStillIn.some(s => s.id === invitedS.id), 'canceling did not actually remove me from the workout');
 }
 
-console.log('\nthe same workout, for real this time: dragging past the threshold and choosing Discard actually removes me as a participant');
+console.log('\nthe same workout, for real this time: dragging past the threshold and confirming Leave actually removes me as a participant');
 {
   const fg = await rowFg(invitedS.id);
   await dragFg(fg, -160, 12);
   await page.waitForTimeout(500);
-  const discardBtn = await page.$('button:has-text("Discard today\'s sets")');
-  await discardBtn.click();
+  // Nothing was ever logged on invitedS, so this is the single-button "Leave workout" sheet (see
+  // the Sep 30 2026 fix above), not a Save/Discard choice -- functionally the same real Leave
+  // either way (leaveWorkoutConfirmed with keep=false, nothing to keep).
+  const leaveBtn = await page.$('button:has-text("Leave workout")');
+  await leaveBtn.click();
   await page.waitForTimeout(400);
   const meAfter = await apiGet('/api/sessions', me.token);
   ok(!meAfter.some(s => s.id === invitedS.id), 'the workout no longer shows up for me at all');
@@ -428,9 +436,14 @@ console.log('\nJeff, real bug report + "Smarter routing" follow-up (Sep 18/20 20
   await page.waitForTimeout(500);
   const heading = await page.$eval('.sheet-head h2', el => el.textContent);
   ok(/leave workout/i.test(heading), `goes straight to the real Leave sheet -- no Delete-workout language shown at all (got "${heading}")`);
-  const discardBtn = await page.$('button:has-text("Discard today\'s sets")');
-  ok(!!discardBtn, 'the same Save/Discard choice a non-creator Leave gets');
-  await discardBtn.click();
+  // Neither of us has logged a single set here (see the comment above), so this is the single-
+  // button "Leave workout" confirm (Sep 30 2026 fix), not the Save/Discard choice -- same real
+  // Leave a non-creator gets in that same nothing-logged case.
+  const discardBtnAbsent = await page.$('button:has-text("Discard today\'s sets")');
+  ok(!discardBtnAbsent, 'nothing logged here either, so the Save/Discard choice is NOT offered');
+  const leaveBtnShared = await page.$('button:has-text("Leave workout")');
+  ok(!!leaveBtnShared, 'the same single "Leave workout" confirm a non-creator gets in this case');
+  await leaveBtnShared.click();
   await page.waitForTimeout(400);
 
   const direct = await fetch(BASE + `/api/sessions/${ownSharedS.id}`, { headers: { Authorization: 'Bearer ' + friend.token } });

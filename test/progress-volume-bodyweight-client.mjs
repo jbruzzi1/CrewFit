@@ -357,7 +357,10 @@ console.log('Consistency: streak leads the card (round Sep 2, replacing the aver
 
   ok(section.includes('class="streak-hero"'), 'the streak number uses the light-weight .streak-hero class, not the bold .hero class');
   ok(!/<div class="hero">5<span/.test(section), 'the streak digit itself is NOT rendered inside a bold .hero div (got a hero-wrapped "5")');
-  ok(section.includes('>5<') && section.includes('week streak'), `streak count and label render (got ${section.slice(0, 200)})`);
+  // Sep 30 2026 (audit finding, Jeff: "I like weekly streak" -- "streak" meant two different
+  // things in the app with nothing explaining why; this label was renamed "weekly streak" to say
+  // which kind it is, distinct from Home's day-streak wording).
+  ok(section.includes('>5<') && section.includes('weekly streak'), `streak count and label render (got ${section.slice(0, 200)})`);
   ok(section.includes('2.8 days/week average'), 'the average is demoted to the caption line, not the headline, when a streak exists');
   ok(!/style="[^"]*color:var\(--green\)/.test(section), 'the streak hero is NOT colored green (rejected -- green stays reserved for earned/celebratory moments)');
   ok(!section.includes('class="streak"'), 'the old small streak badge is gone, folded into the hero instead');
@@ -376,7 +379,7 @@ console.log('Consistency: no active streak falls back to the plain average as th
   const section = consistencySection(appEl.innerHTML);
   ok(section.includes('class="hero">2.0<span'), `with no streak and 2 active weeks, the average is the plain bold .hero (got ${section.slice(0, 300)})`);
   ok(!section.includes('class="streak-hero"'), 'no streak-hero markup renders when streakWeeks is 0');
-  ok(!section.includes('week streak'), 'no "week streak" text renders when streakWeeks is 0');
+  ok(!section.includes('weekly streak'), 'no "weekly streak" text renders when streakWeeks is 0');
 }
 
 console.log('Consistency: Sep 28 2026 audit finding -- "0.3 days/week average" reads as failure when it is really just 1 week of data. A single active week now hides the raw average entirely rather than showing a small, uninformative number (same "hide until it says something real" rule as the Home stat row never showing a zero).');
@@ -400,7 +403,7 @@ console.log('Consistency: the 2-active-week floor never hides a genuinely earned
   });
   await progressScreen({ silent: true });
   const section = consistencySection(appEl.innerHTML);
-  ok(section.includes('class="streak-hero"') && section.includes('>1<') && section.includes('week streak'), `a real 1-week streak still renders as the hero even with only 1 active week (got ${section.slice(0, 300)})`);
+  ok(section.includes('class="streak-hero"') && section.includes('>1<') && section.includes('weekly streak'), `a real 1-week streak still renders as the hero even with only 1 active week (got ${section.slice(0, 300)})`);
   ok(!section.includes('days/week average'), 'the numeric average is withheld from the caption under the floor');
   ok(section.includes('your weekly average will show here soon'), 'caption explains the average is still coming, rather than going blank');
 }

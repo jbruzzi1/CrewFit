@@ -3,6 +3,12 @@ const webpush = require('web-push');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+// Sep 30 2026 (audit finding, Jeff: custom exercise names should stay open -- "anyone should be
+// able to use whatever name they like - barring racial slurs and such"). A maintained word list
+// beats a hand-rolled one for exactly the words this is meant to catch; used only as a hard
+// content-safety gate on exercise names, never as a naming-uniqueness rule (see the comment on
+// POST /api/exercises/custom below -- duplicate real names are explicitly fine).
+const profanityFilter = require('leo-profanity');
 
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const LIB_FILE = path.join(__dirname, 'exercise-library.json');
@@ -689,8 +695,14 @@ app.post('/api/register', async (req, res) => {
 app.get('/api/register/check', async (req, res) => {
   const username = (req.query.username || '').trim();
   if (!username) return res.json({ available: false });
-  if (usernameProblem(username)) return res.json({ available: false });
-  res.json({ available: !findUserByName(username) });
+  // Sep 29 2026 (audit finding): usernameProblem() already has a differentiated message for each
+  // real reason (too short/invalid characters, reserved word, the deleted_ prefix) -- this was the
+  // one place that swallowed it into a bare available:false, so the client always showed
+  // "username taken" even when that had nothing to do with the actual problem.
+  const problem = usernameProblem(username);
+  if (problem) return res.json({ available: false, reason: problem });
+  if (findUserByName(username)) return res.json({ available: false, reason: 'That username is already taken' });
+  res.json({ available: true });
 });
 
 app.post('/api/login', async (req, res) => {
@@ -723,7 +735,13 @@ app.post('/api/login', async (req, res) => {
   if (!u || u.deleted || !verifyPin(u, pin)) {
     noteLoginFail(ipKey);
     bumpFail('acct:' + uname, 60 * 60 * 1000);
-    return res.status(401).json({ error: 'bad credentials' });
+    // `code` added Sep 30 2026 (cold-review catch on the friendlier-login-error fix): the client's
+    // H._req/doLogin used to match the DISPLAY string 'bad credentials' itself to tell this one 401
+    // apart from a real expired-session 401 -- a silent wording change here (punctuation, a
+    // friendlier phrase, anything) would have reintroduced the exact bug that fix was for, with
+    // nothing enforcing the coupling. `code` is the stable, never-shown-to-a-person contract the two
+    // sides actually match on now; `error` stays free to reword for display without breaking it.
+    return res.status(401).json({ error: 'bad credentials', code: 'bad_credentials' });
   }
   delete LOGIN_FAILS[ipKey];
   clearFail('acct:' + uname);
@@ -819,9 +837,21 @@ function sanitizeExercise(e) {
     is_compound: !!e.is_compound,
   });
 }
+// Sep 30 2026 (audit finding). Two separate, deliberately different rules -- asked and confirmed
+// with Jeff, not to be merged into one:
+//   - NAME UNIQUENESS: none, on purpose, not even per-user. "Anyone should be able to use whatever
+//     name they like" -- two different people (or the same person) can both have a "Band Pull
+//     Apart". findExLibEntry's own comment covers the one real bug this caused (a lookup could
+//     resolve to the wrong PERSON's entry) and how that's mitigated without touching naming at all.
+//   - CONTENT SAFETY: a hard line, not a naming rule -- "barring racial slurs and such". Checked
+//     against a maintained word list (leo-profanity, required above) rather than one hand-rolled
+//     here. This blocks the word regardless of who's creating it or whether it's already in use.
+const KNOWN_PATTERNS = new Set(['push', 'pull', 'legs', 'core', 'cardio']);
 app.post('/api/exercises/custom', auth, async (req, res) => {
   const { name, muscle_groups, equipment, level, is_compound, pattern } = req.body || {};
   if (!name || !Array.isArray(muscle_groups) || !muscle_groups.length) return res.status(400).json({ error: 'name + muscle_groups required' });
+  const cleanName = capStr(name, 80);
+  if (profanityFilter.check(cleanName)) return res.status(400).json({ error: 'That name isn’t allowed. Please pick something else.' });
   // A custom exercise is shown to every other user, so treat these as hostile. Muscle groups are
   // a closed vocabulary — there is no reason to accept anything outside it.
   const KNOWN_MG = new Set(EX_LIB.flatMap(x => x.muscle_groups || []));
@@ -831,9 +861,18 @@ app.post('/api/exercises/custom', auth, async (req, res) => {
   // every render of that muscle group — for every user, permanently, from one bad POST.
   const equip = (Array.isArray(equipment) ? equipment : [])
     .filter(x => typeof x === 'string').map(x => x.slice(0, 40)).slice(0, 8);
+  // Sep 30 2026 (audit finding, Jeff: build the real Pattern field now): this used to default an
+  // unrecognized/missing pattern to the muscle group's own name -- which is exactly what made the
+  // exercise detail sheet's "Pattern" row read as a mislabeled duplicate of "Primary muscle"
+  // rather than an actual movement pattern. Same closed vocabulary the built-in library already
+  // uses (push/pull/legs/core/cardio); anything else falls back to 'other', same as a library
+  // entry with no real pattern of its own.
+  const pat = KNOWN_PATTERNS.has(pattern) ? pattern : 'other';
+  DB.customExercises[req.userId] = DB.customExercises[req.userId] || [];
   const ex = {
-    name: capStr(name, 80),
-    pattern: capStr(pattern, 40) || (mg[0] || 'other'),
+    id: crypto.randomUUID(),   // Sep 30 2026: stable address for PUT/DELETE below -- see migrateCustomExerciseIds' comment on why name alone can't be one
+    name: cleanName,
+    pattern: pat,
     category: mg[0] || 'other',                         // a validated group, never raw req.body
     muscle_groups: mg,
     equipment: equip,
@@ -842,7 +881,6 @@ app.post('/api/exercises/custom', auth, async (req, res) => {
     defaultSets: 3, defaultReps: 10,
     custom: true, ownerId: req.userId
   };
-  DB.customExercises[req.userId] = DB.customExercises[req.userId] || [];
   // Every custom exercise persists into the one data.json AND is served to every user, so an
   // unbounded push is a slow wedge. 500 is far past any real athlete's own library (the built-in
   // one is 203).
@@ -851,6 +889,68 @@ app.post('/api/exercises/custom', auth, async (req, res) => {
   DB.customExercises[req.userId].push(ex);
   await save(DB);
   res.json(ex);
+});
+// Sep 30 2026 (audit finding, Jeff: "build now" -- there was no way to edit or delete a custom
+// exercise you made). Deliberately does NOT let name be changed: every logged set/session
+// exercise/history row references a custom exercise by its NAME string, not this id (id exists
+// solely so THIS route can find the right row when duplicate names are allowed -- see the comment
+// above POST). Propagating a rename across every place a name is stored is real, separate work
+// (the closest existing precedent, migrateExerciseRenames, only ever runs once at boot against a
+// fixed table of BUILT-IN renames, not a live per-request rename) -- out of scope here, so name
+// stays fixed after creation the same way the built-in library's own names are effectively fixed.
+// Every other field (muscle groups, equipment, level, type, pattern) is freely editable, same
+// validation as creation.
+function findMyCustomExercise(userId, id) {
+  return ((DB.customExercises || {})[userId] || []).find(x => x.id === id) || null;
+}
+app.put('/api/exercises/custom/:id', auth, async (req, res) => {
+  const ex = findMyCustomExercise(req.userId, req.params.id);
+  if (!ex) return res.status(404).json({ error: 'not found' });
+  const { muscle_groups, equipment, level, is_compound, pattern } = req.body || {};
+  if (!Array.isArray(muscle_groups) || !muscle_groups.length) return res.status(400).json({ error: 'muscle_groups required' });
+  const KNOWN_MG = new Set(EX_LIB.flatMap(x => x.muscle_groups || []));
+  const mg = muscle_groups.filter(m => typeof m === 'string' && KNOWN_MG.has(m));
+  if (!mg.length) return res.status(400).json({ error: 'muscle_groups must be from the library' });
+  const equip = (Array.isArray(equipment) ? equipment : [])
+    .filter(x => typeof x === 'string').map(x => x.slice(0, 40)).slice(0, 8);
+  ex.muscle_groups = mg;
+  ex.category = mg[0] || 'other';
+  ex.equipment = equip;
+  ex.is_compound = !!is_compound;
+  ex.level = capStr(level, 20) || 'beginner';
+  ex.pattern = KNOWN_PATTERNS.has(pattern) ? pattern : 'other';
+  await save(DB);
+  res.json(ex);
+});
+// Sep 30 2026 (audit finding). A custom exercise's name is the only link a logged set/session
+// exercise/history row ever stores back to it (see the comment above PUT) -- deleting the
+// DEFINITION can never delete anyone's actual logged data, but it WOULD orphan volume/muscle-group
+// credit for any set already logged against it (findExLibEntry would no longer find a match).
+// Refused whenever the name has ever been logged by anyone, anywhere -- not narrowed to just this
+// owner's own logs, because two different people's custom exercises can share a name on purpose
+// (Jeff's own confirmed rule above) and nothing links a stored log entry back to which OWNER's
+// definition it meant, only the name string. This can occasionally over-refuse (blocking a delete
+// over some OTHER person's same-named entry actually being the one that was logged) but never
+// silently breaks anyone's real training history, which is the direction that actually matters.
+function exerciseNameEverLogged(name) {
+  for (const s of Object.values(DB.sessions || {})) {
+    if ((s.exercises || []).some(e => e && e.name === name)) return true;
+    for (const arr of Object.values(s.logs || {})) {
+      if ((arr || []).some(l => l && l.exerciseName === name)) return true;
+    }
+    if ((s.history || []).some(h => Array.isArray(h.exercises) && h.exercises.includes(name))) return true;
+  }
+  return false;
+}
+app.delete('/api/exercises/custom/:id', auth, async (req, res) => {
+  const list = (DB.customExercises || {})[req.userId] || [];
+  const ex = list.find(x => x.id === req.params.id);
+  if (!ex) return res.status(404).json({ error: 'not found' });
+  if (exerciseNameEverLogged(ex.name))
+    return res.status(409).json({ error: 'This exercise has sets logged against it, so it can’t be deleted. You can still stop using it going forward.' });
+  DB.customExercises[req.userId] = list.filter(x => x.id !== req.params.id);
+  await save(DB);
+  res.json({ ok: true });
 });
 
 // ---- Favorite exercises (per-user) ----
@@ -1611,7 +1711,13 @@ app.get('/api/users/search', auth, async (req, res) => {
     if (un.startsWith(q) || dn.startsWith(q)) return 1;       // then "starts with"
     return 2;                                                 // then anywhere in the name
   };
-  const hits = Object.values(DB.users).filter(u => u.id!==me && (
+  // Sep 29 2026 (audit finding, Jeff: "if they are blocked they shouldn't show at all - similar to
+  // how instagram is"): isBlocked() is already bidirectional (either side blocking hides both from
+  // each other, see its own comment) -- this route was the one place that never checked it, so a
+  // blocked person could still be found by name and would only hit the block on an actual follow
+  // attempt. Filtering them out of results entirely means there's no longer a raw server error to
+  // word better either -- they just don't turn up, same as Instagram.
+  const hits = Object.values(DB.users).filter(u => u.id!==me && !isBlocked(u.id, me) && (
     normUser(u.username).includes(q) || normUser(u.displayName).includes(q)
   )).sort((a,b) => score(a)-score(b) || normUser(a.username).localeCompare(normUser(b.username)))
     .slice(0,20).map(u => ({ ...publicUser(u.id), requestStatus:
@@ -2672,7 +2778,11 @@ app.get('/api/templates', auth, async (req, res) => {
   // driven by the client's undo toast); once that moment passes it stays out of your list even
   // if you unfriend and re-friend them later.
   const myConnections = connectionsOf(req.userId);
-  const friendT = all.filter(t => myConnections.includes(t.ownerId)
+  // Sep 29 2026 (audit finding): the Private/Public toggle on a routine (t.visibility, set in
+  // POST/PUT /api/templates) was saved but never actually read anywhere -- a routine marked
+  // Private still showed up here, in every connection's friend-shared list. Unset counts as
+  // public, same convention canSeeProfile already uses for profiles.
+  const friendT = all.filter(t => myConnections.includes(t.ownerId) && t.visibility !== 'private'
     && !(t.hiddenBy && t.hiddenBy.includes(req.userId)));
   // v239: shared rows carry WHO shared them - two friends' "Legs - Random" were otherwise
   // indistinguishable (Jeff's real list, Aug 28). Display name only; never the id-to-name map.
@@ -4116,6 +4226,41 @@ app.delete('/api/sessions/:id', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Sep 29 2026 (audit finding, dedup): /leave and /remove-mine each carried an identical ~35-line
+// block of "who to notify now that this person is gone" logic (the creator's resolved removal
+// votes, any auto-applied suggestions, and the pivot/departure broadcast to whoever's left) --
+// two copies of the same thing that had to be kept in sync by hand. Same shape as
+// notifyWipePivots further down, which already does this once for reset-workouts/delete-account.
+// One shared function, two call sites.
+function notifyDeparturePivots(s, me, { resolvedRemovals, autoApplied, wasOwner, alreadyOwnerless }) {
+  if (s.creatorId) {
+    for (const pr of resolvedRemovals) {
+      notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } });
+    }
+  }
+  for (const edit of autoApplied) {
+    if (!isBlocked(me, edit.proposedBy)) {
+      notify(edit.proposedBy, { title: 'Suggestion approved', body: `${edit.swapTo} was approved automatically — the host left before deciding`, link: { type: 'session', sessionId: s.id } });
+    }
+  }
+  // Doc tab 07: two distinct broadcasts. The pivot itself ("Workout host left") only when THIS
+  // departure is what caused it; a plain "[Name] left the workout" for any departure (owner or
+  // not) once the session was ALREADY ownerless beforehand -- an owned session's ordinary
+  // participant leaving is unaffected (no notification), same as before the ownerless redesign.
+  const stillHere = (s.participants || []).filter(id => id !== me);
+  if (wasOwner) {
+    for (const uid_ of stillHere) {
+      if (!DB.users[uid_] || isBlocked(me, uid_)) continue;
+      notify(uid_, { title: s.name || 'Workout', body: 'Workout host left — this workout has no host now, but everyone can still add or swap exercises.', link: { type: 'session', sessionId: s.id } });
+    }
+  } else if (alreadyOwnerless) {
+    const whoLeft = (DB.users[me] && DB.users[me].displayName) || 'Someone';
+    for (const uid_ of stillHere) {
+      if (!DB.users[uid_] || isBlocked(me, uid_)) continue;
+      notify(uid_, { title: s.name || 'Workout', body: `${whoLeft} left the workout.`, link: { type: 'session', sessionId: s.id } });
+    }
+  }
+}
 // Take yourself out of a shared workout without destroying it for the people still in it.
 // Removes your live participation and your in-progress sets always. Whether your PERMANENT
 // credit (history row) survives is your own choice via `keep` — see the v187 redesign note below.
@@ -4256,41 +4401,11 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // Sep 23 2026: resolvedRemovals notified s.creatorId specifically -- with ownership never
   // handed off anymore, an ownerless session has no creatorId to notify, so this now only ever
   // fires for a still-owned session (unchanged for that case).
-  // Sep 29 2026 (audit finding, Tier 4e -- awaiting Jeff's actual sign-off, see the audit doc):
-  // this used to push:false -- silent, in-app only -- while the identical "Removal approved"
-  // event pushes for real when it resolves because every required approver actually taps Approve
-  // (see the unmodified notify() further down this file). Unlike this route, s.creatorId is
-  // already nulled out above when the departing person IS the owner (wasOwner), so this never
-  // self-notifies -- the recipient here is always someone other than whoever's leaving. Pushing it
-  // every time, regardless of which path resolved it, so the creator hears about it the same way
-  // either way -- flagged for Jeff to actually confirm, not yet a decision he's made.
-  if (s.creatorId) {
-    for (const pr of resolvedRemovals) {
-      notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } });
-    }
-  }
-  for (const edit of autoApplied) {
-    if (!isBlocked(me, edit.proposedBy)) {
-      notify(edit.proposedBy, { title: 'Suggestion approved', body: `${edit.swapTo} was approved automatically — the host left before deciding`, link: { type: 'session', sessionId: s.id } });
-    }
-  }
-  // Doc tab 07: two distinct broadcasts. The pivot itself ("Workout host left") only when THIS
-  // leave is what caused it; a plain "[Name] left the workout" for any departure (owner or not)
-  // once the session was ALREADY ownerless beforehand -- an owned session's ordinary participant
-  // leaving is unaffected (no notification), same as before this redesign.
-  const stillHere = (s.participants || []).filter(id => id !== me);
-  if (wasOwner) {
-    for (const uid_ of stillHere) {
-      if (!DB.users[uid_] || isBlocked(me, uid_)) continue;
-      notify(uid_, { title: s.name || 'Workout', body: 'Workout host left — this workout has no host now, but everyone can still add or swap exercises.', link: { type: 'session', sessionId: s.id } });
-    }
-  } else if (alreadyOwnerless) {
-    const whoLeft = (DB.users[me] && DB.users[me].displayName) || 'Someone';
-    for (const uid_ of stillHere) {
-      if (!DB.users[uid_] || isBlocked(me, uid_)) continue;
-      notify(uid_, { title: s.name || 'Workout', body: `${whoLeft} left the workout.`, link: { type: 'session', sessionId: s.id } });
-    }
-  }
+  // Sep 29 2026: pushes for real every time now, matching the identical "Removal approved" event
+  // when every required approver actually taps Approve -- s.creatorId is already nulled out above
+  // when the departing person IS the owner (wasOwner), so this never self-notifies; the recipient
+  // here is always someone other than whoever's leaving.
+  notifyDeparturePivots(s, me, { resolvedRemovals, autoApplied, wasOwner, alreadyOwnerless });
   res.json({ ok: true, left: true });
 });
 
@@ -4329,7 +4444,14 @@ app.post('/api/sessions/:id/participants/:pid/remove', auth, async (req, res) =>
   const resolvedNow = dropRequiredApprover(s, target);
   await save(DB);
   const hostName = DB.users[s.creatorId] ? DB.users[s.creatorId].displayName : 'The organizer';
-  notify(target, { title: 'Removed from workout', body: `${hostName} removed you from ${s.name}. Your logged sets are still saved.`, link: { type: 'session', sessionId: s.id } });
+  // Sep 29 2026 (audit finding): a kicked person with no logged sets on this workout resolves to
+  // sessionTier() === 'stranger' the instant they're removed (no participant/creator/logs left to
+  // grant any tier), so GET /api/sessions/:id 403s them the moment they tap this -- a guaranteed
+  // dead link, same failure mode the crew-removal notification already avoids on purpose (see the
+  // "guaranteed dead tap" comment on crew member removal, above). Someone who DID log sets keeps
+  // 'alumni' tier and the link still works for them, so only null it when it would actually 403.
+  const keepsAccess = sessionTier(s, target) !== 'stranger';
+  notify(target, { title: 'Removed from workout', body: `${hostName} removed you from ${s.name}. Your logged sets are still saved.`, link: keepsAccess ? { type: 'session', sessionId: s.id } : null });
   // Sep 29 2026 (audit finding, Tier 4e; cold-review catch on the fix below): /leave and
   // /remove-mine's matching blocks were changed to always push "Removal approved" (see their own
   // comments) because in BOTH of those routes, when the actor IS the creator, s.creatorId is
@@ -4468,34 +4590,10 @@ app.post('/api/sessions/:id/remove-mine', auth, async (req, res) => {
   const resolvedRemovals = dropRequiredApprover(s, me);
   rebuildAllPrs();
   await save(DB);
-  // Sep 29 2026 (audit finding, Tier 4e -- awaiting Jeff's actual sign-off, see the audit doc):
-  // same push-consistency fix as /leave's identical block above, same reasoning: s.creatorId is
-  // already nulled out above when the departing person IS the owner, so this never self-notifies
-  // either -- always push "Removal approved," whether it resolved by someone actually approving
-  // or by dropping out here.
-  if (s.creatorId) {
-    for (const pr of resolvedRemovals) {
-      notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } });
-    }
-  }
-  for (const edit of autoApplied) {
-    if (!isBlocked(me, edit.proposedBy)) {
-      notify(edit.proposedBy, { title: 'Suggestion approved', body: `${edit.swapTo} was approved automatically — the host left before deciding`, link: { type: 'session', sessionId: s.id } });
-    }
-  }
-  const stillHere = (s.participants || []).filter(id => id !== me);
-  if (wasOwner) {
-    for (const uid_ of stillHere) {
-      if (!DB.users[uid_] || isBlocked(me, uid_)) continue;
-      notify(uid_, { title: s.name || 'Workout', body: 'Workout host left — this workout has no host now, but everyone can still add or swap exercises.', link: { type: 'session', sessionId: s.id } });
-    }
-  } else if (alreadyOwnerless) {
-    const whoLeft = (DB.users[me] && DB.users[me].displayName) || 'Someone';
-    for (const uid_ of stillHere) {
-      if (!DB.users[uid_] || isBlocked(me, uid_)) continue;
-      notify(uid_, { title: s.name || 'Workout', body: `${whoLeft} left the workout.`, link: { type: 'session', sessionId: s.id } });
-    }
-  }
+  // Sep 29 2026: same push-consistency fix as /leave's identical block, same reasoning --
+  // s.creatorId is already nulled out above when the departing person IS the owner, so this
+  // never self-notifies either.
+  notifyDeparturePivots(s, me, { resolvedRemovals, autoApplied, wasOwner, alreadyOwnerless });
   res.json({ ok: true, removed: true });
 });
 
@@ -5978,11 +6076,24 @@ const MUSCLE_ORDER = Object.keys(MUSCLE_TARGETS);
 function exMuscles(lib) {
   return ((lib && lib.muscle_groups) || []).concat((lib && lib.secondary) || []);
 }
-function findExLibEntry(name, userId) {
+// Sep 30 2026 (audit finding, Jeff: real names stay open to everyone -- "anyone should be able to
+// use whatever name they like" -- this is purely about the app not getting confused internally,
+// never about restricting what someone names their own exercise). The global "first match" fallback
+// below is still genuinely ambiguous when it fires, but `s` (the session the set was logged
+// against) narrows it in the one case that matters most in practice: whoever built the workout
+// picked its exercises, so the CREATOR's own custom list is checked before the fully-blind
+// global scan -- still a fallback, not a guarantee, since a session carries no owner tag per
+// exercise (and never will -- see POST /api/exercises/custom's own comment on why ownerId isn't
+// exposed to other users at all), but it resolves the common real case instead of only the rare one.
+function findExLibEntry(name, userId, s) {
   const hit = EX_LIB.find(x => x.name === name);
   if (hit) return hit;
   const mine = ((DB.customExercises || {})[userId] || []).find(x => x.name === name);
   if (mine) return mine;
+  if (s && s.creatorId && s.creatorId !== userId) {
+    const creatorsOwn = ((DB.customExercises || {})[s.creatorId] || []).find(x => x.name === name);
+    if (creatorsOwn) return creatorsOwn;
+  }
   for (const arr of Object.values(DB.customExercises || {})) {
     const c = (arr || []).find(x => x.name === name);
     if (c) return c;
@@ -6036,7 +6147,7 @@ function volumeFor(userId, weeks = 1, localToday) {
     if (at < a || at >= b) continue;
     for (const l of mine) {
       if (!isWorkingSet(l)) continue;
-      const lib = findExLibEntry(logExerciseName(s, l, userId), userId);
+      const lib = findExLibEntry(logExerciseName(s, l, userId), userId, s);
       if (!lib) continue;
       for (const m of exMuscles(lib)) if (sets.hasOwnProperty(m)) sets[m]++;
     }
@@ -6082,7 +6193,7 @@ function volumeTrendFor(userId, weeks, localToday) {
     if (!bucket) continue;
     for (const l of mine) {
       if (!isWorkingSet(l)) continue;
-      const lib = findExLibEntry(logExerciseName(s, l, userId), userId);
+      const lib = findExLibEntry(logExerciseName(s, l, userId), userId, s);
       if (!lib) continue;
       for (const m of exMuscles(lib)) if (bucket.sets.hasOwnProperty(m)) bucket.sets[m]++;
     }
@@ -6127,7 +6238,7 @@ function everTrainedMusclesFor(userId) {
     if (!mine || !mine.length) continue;
     for (const l of mine) {
       if (!isWorkingSet(l)) continue;
-      const lib = findExLibEntry(logExerciseName(s, l, userId), userId);
+      const lib = findExLibEntry(logExerciseName(s, l, userId), userId, s);
       if (!lib) continue;
       for (const m of exMuscles(lib)) touched.add(m);
     }
@@ -6315,16 +6426,59 @@ function trendFor(userId) {
   // bestPointOfWindow()/currentEst()/TREND_SMOOTH_SESSIONS themselves now live at module scope
   // (see above liftHistoryFor) so topLiftsFor() can share them -- unchanged otherwise.
 
+  // Sep 30 2026 (audit finding, Jeff: confirmed option A -- "what's driving it" and the plateau
+  // card should use the same window, long term): this used to baseline everything against
+  // l.points[0] -- the lift's literal all-time first session, no window at all -- while
+  // plateausFor() (below) already judges progress over a trailing PLATEAU_WEEKS window. Almost
+  // everyone is better than their very first-ever session forever, so "what's driving it" nearly
+  // always said "improving" while the plateau card, looking at the same lift over the last 6
+  // weeks, could honestly say "stalled" -- both technically true, but answering different
+  // questions dressed up as the same one. Baseline is now the smoothed (bestPointOfWindow, same
+  // helper "now" already uses) value AS OF PLATEAU_WEEKS ago, so both cards measure the identical
+  // stretch of training and can't contradict each other. A lift with no history older than the
+  // window falls back to l.points[0] automatically (bestPointOfWindow's own behavior when nothing
+  // is that old yet) -- unchanged behavior for anyone who's only ever logged it recently.
+  const trendWindowStart = new Date(); trendWindowStart.setUTCDate(trendWindowStart.getUTCDate() - PLATEAU_WEEKS * 7);
+  const trendWindowStartStr = trendWindowStart.toISOString().slice(0, 10);
+  // Sep 30 2026 (real regression caught in test/trend-smoothing.mjs, fixed same day as the window
+  // change above): the first attempt at this baseline used bestPointOfWindow(l.points,
+  // trendWindowStartStr, ...) -- the BEST session among whatever is at-or-before that date. That
+  // breaks whenever a lift's entire history predates the window (e.g. logged twice, both 7+ weeks
+  // ago, nothing since): every point qualifies as "at or before the window start," so instead of
+  // falling back to the true first session, it picks whichever of those (all old) sessions
+  // happened to be best -- which can be the exact same point currentEst() above lands on for "now"
+  // (same "best of the last few sessions" pool, nothing more recent to tell "then" from "now"
+  // apart). Baseline and current collapse to the same number and changePct reads 0%, erasing a
+  // real improvement between those old sessions -- exactly what test/trend-smoothing.mjs's Cable
+  // Fly case caught.
+  //
+  // The actual fix mirrors plateausFor()'s OWN gating, not just its window: plateausFor() only
+  // ever judges a lift "stalled" when it has >= PLATEAU_MIN_SESSIONS within the trailing window
+  // AND at least one session before it to compare against (see its comments below) -- any other
+  // lift is simply never flagged, so there is no contradiction for "what's driving it" to avoid in
+  // the first place. So the window-based baseline (bestBefore, same "best/least-assist of every
+  // prior-window point" plateausFor itself uses -- not a smoothed last-3-sessions pick, the exact
+  // number the plateau card would show) only replaces l.points[0] in that same exact case. Every
+  // other lift -- not enough recent training to be judged, or no history predating the window --
+  // falls back to l.points[0], the true all-time first session, unchanged from before Sep 30 2026.
+  const baselineOf = l => {
+    const assisted = loadTypeForName(l.name) === 'assisted';
+    const windowPoints = l.points.filter(p => p.at >= trendWindowStartStr);
+    const priorPoints = l.points.filter(p => p.at < trendWindowStartStr);
+    if (windowPoints.length < PLATEAU_MIN_SESSIONS || !priorPoints.length) return l.points[0].est;
+    return assisted ? Math.min(...priorPoints.map(p => p.est)) : Math.max(...priorPoints.map(p => p.est));
+  };
   // Overall stays computed from EVERY eligible lift, never just the picked/displayed subset --
   // it is a holistic "how is your training going" number, and shrinking it to whatever chips
   // happen to be picked would make it lie by omission the moment someone picks fewer than 5.
   const dates = [...new Set(lifts.flatMap(l => l.points.map(p => p.at)))].sort();
-  const wsum = lifts.reduce((a, l) => a + l.points[0].est, 0);
+  const wsum = lifts.reduce((a, l) => a + baselineOf(l), 0);
   const overall = !lifts.length ? [] : dates.map(d => {
     let acc = 0;
     for (const l of lifts) {
       const assisted = loadTypeForName(l.name) === 'assisted';
       const cur = currentEst(l.points, d, assisted);
+      const start = baselineOf(l);
       // A normal lift's ratio is cur/start (>1 = up = good). An assisted lift's improvement is a
       // DROP in assist weight, so the ratio is inverted (start/cur) to keep ">1 = good" true for
       // every lift feeding this blend, regardless of loadType.
@@ -6333,9 +6487,9 @@ function trendFor(userId) {
       // toChip's changePct below uses, ratio 2 == +100%) instead of Infinity/NaN, which would
       // otherwise corrupt this WHOLE user's overall blended trend, not just this one lift's line.
       const ratio = assisted
-        ? (cur > 0 ? (l.points[0].est / cur) : (l.points[0].est > 0 ? 2 : 1))
-        : (cur / l.points[0].est);
-      acc += ratio * (l.points[0].est / wsum);
+        ? (cur > 0 ? (start / cur) : (start > 0 ? 2 : 1))
+        : (cur / start);
+      acc += ratio * (start / wsum);
     }
     return { at: d, pct: Number(((acc - 1) * 100).toFixed(1)) };
   });
@@ -6347,9 +6501,12 @@ function trendFor(userId) {
     // assisted lift's assist weight has genuinely dropped, not just when est happens to be higher.
     // Same bestPoint.est===0 guard as the overall blend above (a fully-unassisted best set would
     // otherwise divide by zero) -- capped at +100% ("maxed out") rather than Infinity/NaN.
+    // Sep 30 2026 (audit finding): baselineOf() (same PLATEAU_WEEKS-window baseline the overall
+    // blend above now uses), not l.points[0] -- see the comment above trendWindowStartStr.
+    const start = baselineOf(l);
     const changePct = assisted
-      ? (bestPoint.est > 0 ? (l.points[0].est / bestPoint.est - 1) * 100 : (l.points[0].est > 0 ? 100 : 0))
-      : (bestPoint.est / l.points[0].est - 1) * 100;
+      ? (bestPoint.est > 0 ? (start / bestPoint.est - 1) * 100 : (start > 0 ? 100 : 0))
+      : (bestPoint.est / start - 1) * 100;
     return {
       name: l.name,
       // Sep 24 2026 audit round 4 (HIGH finding, cold-review): l.points was being handed to the
@@ -6777,8 +6934,15 @@ app.get('/api/progress', auth, async (req, res) => {
   // comment above weeksFor for what this fixes.
   const w = weeksFor(req.userId, weeks, req.query.localToday);
   const trained = w.reduce((a, x) => a + x.days, 0);
+  // Sep 29 2026 (audit finding): this used to walk backward through `w`, which is capped at
+  // whatever the caller's range picker asked for (4/13/26 weeks) -- so switching to a shorter
+  // range visibly shrank your own streak, even though nothing about your training history
+  // changed. Home (weeksFor(...,26,...)) and the recap screen both already hardcode 26 weeks
+  // specifically to dodge this; streak here now does the same, independent of `weeks`/the
+  // picker, instead of being the one place still coupled to the display range.
+  const streakWindow = weeks === 26 ? w : weeksFor(req.userId, 26, req.query.localToday);
   let streak = 0;
-  for (let i = w.length - 1; i >= 0; i--) { if (w[i].days > 0) streak++; else break; }
+  for (let i = streakWindow.length - 1; i >= 0; i--) { if (streakWindow[i].days > 0) streak++; else break; }
   res.json({
     unit: rec.unit,
     ready: rec.ready,
@@ -7175,6 +7339,23 @@ function migrateExerciseRenames() {
     for (const e of t.exercises) if (e && typeof e.name === 'string') e.name = ren(e.name);
   }
   if (n) console.log('migrateExerciseRenames: moved ' + n + ' stored reference(s) to current library names');
+  return n;
+}
+
+// Sep 30 2026 (audit finding, custom exercise edit/delete): every custom exercise created before
+// today has no `id` -- POST /api/exercises/custom never assigned one, and name alone can't address
+// one to edit/delete now that duplicate names are explicitly allowed (see that route's own
+// comment) -- two of a user's own exercises can share a name on purpose. Backfills a stable id
+// once, here, rather than generating one fresh on every read (which would be a different id each
+// time and useless for a later PUT/DELETE to actually find the same row again).
+function migrateCustomExerciseIds() {
+  let n = 0;
+  for (const arr of Object.values(DB.customExercises || {})) {
+    for (const e of (arr || [])) {
+      if (e && typeof e === 'object' && !e.id) { e.id = crypto.randomUUID(); n++; }
+    }
+  }
+  if (n) console.log('migrateCustomExerciseIds: assigned ' + n + ' id(s)');
   return n;
 }
 
@@ -7841,6 +8022,7 @@ app.use((err, req, res, next) => {
   migratePostAndSessionVisibilityBinary();   // 3-way post + 2-way session visibility -> one binary rule
   migrateExerciseNames();     // before rebuildAllPrs, which groups by the name
   migrateExerciseRenames();   // after the stamp above (it walks exerciseName), before the PR regroup
+  migrateCustomExerciseIds(); // backfill ids for edit/delete -- order doesn't matter, nothing else depends on them yet
   rebuildAllPrs();
   migrateLoadTypes();
   pruneOldNotifications();    // storage hygiene, not a schema migration -- see its own comment
