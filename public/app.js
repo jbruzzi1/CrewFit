@@ -4658,6 +4658,15 @@ function renderWorkoutEdit(s){
          look. The bottom sticky-bar's own Cancel/Save changes pair is untouched -- this adds a
          second way to reach Save, it doesn't replace the first. -->
     <div class="edit-banner"><span>✎ Editing</span><button class="sm blue" onclick="saveWorkoutEdit('${s.id}')">Save</button></div>
+    <!-- Sep 30 2026 (audit finding, Jeff: "add a short note explaining it" -- confirmed pick):
+         the ⋯ menu's "Edit session" opens THIS restricted editor once you've posted your own
+         recap, vs. the full create-flow draft (date/time/location/visibility/invites, via
+         editSession()) beforehand -- same button, same label, silently different capabilities,
+         with nothing telling you why. Rather than merge the two editors or relabel the menu item
+         (routing through here happens from several places, not just that one menu), a single
+         one-line note right where the difference actually shows up: the fields that quietly
+         disappeared. -->
+    <div class="muted fineprint" style="margin:-4px 0 10px">Once posted, you can edit the name, exercises, photos and notes here — date, time and location are locked.</div>
     <label class="muted">Workout name</label><input id="editWName" placeholder="e.g. Chest & Back" value="${esc(s.name||'')}" oninput="markDirty()">
     <div class="muted sess-meta">${fmtWhen(s.scheduledAt)}</div>
     <h2>Workout</h2>
@@ -6322,10 +6331,15 @@ function trendChart(d, U){
   // improvement at the same weight used to render as "40 → 40 lb ▲ 7%", which reads as broken even
   // though the % is correct. Now shows the actual reps alongside the weight ("40×12 → 40×15") so a
   // rep-driven gain is visibly a real change, not a mismatched number next to an arrow.
+  // Sep 30 2026 (audit finding): l.points[0] (the lift's all-time first session) used to anchor
+  // the "from" side here even after the server moved changePct itself to a trailing-window
+  // baseline (see baselinePointOf/baselineWeight in trendFor(), server.js) -- same self-
+  // contradicting-number shape as the fix above, just on the other end of the arrow. Now uses
+  // baselineWeight/baselineReps, the actual session the % was computed against.
   const drivers = isOverall ? `<div class="drv-head">What's driving it</div>${
     t.lifts.slice().sort((a,b)=>b.changePct-a.changePct).map(l=>`<div class="drv">
       <div class="drv-n">${esc(l.name)}</div>
-      <div class="drv-w">${l.points[0].weight}×${l.points[0].reps} → ${l.currentWeight}×${l.currentReps} ${U}${l.lessIsMore?' assist':''}</div>
+      <div class="drv-w">${l.baselineWeight}×${l.baselineReps} → ${l.currentWeight}×${l.currentReps} ${U}${l.lessIsMore?' assist':''}</div>
       <div class="drv-p ${l.changePct>0.5?'up':'flat'}">${l.changePct>0.5?'▲ '+Math.round(l.changePct)+'%':'—'}</div>
     </div>`).join('')}` : '';
 
@@ -8176,12 +8190,20 @@ async function crewView(crewId, opts){
   if(!silent) UI_EPOCH++;
   const [c, messages] = await Promise.all([H.get('/api/crews/'+crewId), H.get('/api/crews/'+crewId+'/messages')]);
   if(c && c.error){ alert(c.error); return; }
-  const flame = flameSvg();
   const memberRows = c.members.map(m=>`<div class="friend-row" onclick="profileView('${jsq(m.id)}')" style="cursor:pointer;padding:8px 4px">
     ${avatarHtml(m,'avatar')}
-    <div class="meta"><div class="name">${esc(m.displayName||m.username)}${m.id===c.ownerId?' <span class="muted" style="font-weight:400">· owner</span>':''}</div>
-    ${m.streak>1?`<div class="streak-pill">${flame}${m.streak} day streak</div>`:''}</div>
+    <div class="meta"><div class="name">${esc(m.displayName||m.username)}${m.id===c.ownerId?' <span class="muted" style="font-weight:400">· owner</span>':''}</div></div>
   </div>`).join('');
+  // Sep 30 2026 (Jeff, catching the audit's Tier 4c "two streak numbers" finding fresh): this row
+  // used to show a "day streak" pill (consecutive CALENDAR DAYS with a finished workout) right next
+  // to the Progress tab's own "week streak" hero (consecutive WEEKS with any activity) -- same word,
+  // two different meanings, and the day version gets broken by any single rest day, which makes it
+  // a worse number for basically every real training pattern (nobody trains all 7 days). Jeff: "we
+  // don't need the consecutive days... Leave only the week in progress." Dropped here and on the
+  // profile pill below; the underlying currentStreak()/m.streak value itself is untouched -- it
+  // still powers the separate streak-LOSS-REMINDER push feature (streakStatusFor,
+  // usersAtRiskOfLosingStreak), which is a different, deliberately-built feature Jeff didn't ask to
+  // change, just no longer rendered as a user-facing "day streak" pill anywhere.
   // A system row (the crew hitting a challenge target -- see checkCrewChallenges in server.js)
   // renders as its own centered celebration line, never attributed to anyone -- distinct from the
   // UNKNOWN_NAME ("Someone") fallback just below, which is specifically for a REAL person's old
@@ -9698,7 +9720,7 @@ async function profileView(id, opts){
   const activityBlock = activity.length
     ? `<h2 class="light">Recent Activity</h2><div class="card feed-strip">${activityRows}</div>`
     : (isMe ? `<h2 class="light">Recent Activity</h2>${p.workoutsCompleted>0
-        ? homeEmpty(ICON_FEED, 'No activity this week', 'New PRs, streaks and completions from the last 7 days show up here.')
+        ? homeEmpty(ICON_FEED, 'No activity this week', 'New PRs and completions from the last 7 days show up here.')
         : homeEmpty(ICON_FEED, 'No activity yet', 'Log a workout to see it here.')}` : '');
   const workouts = p.myWorkouts||[];
   function woCard(w){
@@ -9756,7 +9778,11 @@ async function profileView(id, opts){
       <div class="pinfo">
         <div class="pname">${esc(p.displayName||p.username)}</div>
         <div class="muted">@${esc(p.username)}</div>
-        ${p.streak>=2?`<div class="streak-pill" style="margin-top:6px">${flameSvg()}${p.streak} day streak</div>`:''}
+        <!-- Sep 30 2026 (Jeff, audit Tier 4c): the "day streak" pill here read as the same concept
+             as Progress's "week streak" hero but used a different, weaker definition (consecutive
+             CALENDAR DAYS -- killed by any single rest day). "We don't need the consecutive days...
+             Leave only the week in progress." Removed; no replacement pill here -- the week streak
+             stays exactly where it already lived, on the Progress tab. -->
       </div>
       ${notifBtn}${settingsBtn}${profileDots}
     </div>

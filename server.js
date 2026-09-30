@@ -1196,9 +1196,11 @@ function groupPrsForFeed(prs, weekAgo) {
     : `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`;
   return [{ type: 'pr', at, text: `hit ${recent.length} new PRs this week (${label})` }];
 }
-// Recent activity for a single user: PRs, weekly completions, streaks (most recent first)
-// localToday: only ever pass this when userId is the caller themselves (see the comment above
-// currentStreak) — profileOf only forwards it on a self-view, never a friend's.
+// Recent activity for a single user: PRs and weekly completions (most recent first). No longer
+// includes a day-streak row -- see the comment where that used to be pushed, below.
+// localToday: unused within this function as of Sep 30 2026 (the one thing it fed, the streak
+// row, is gone) but left on the signature/call sites rather than threading a removal through
+// profileOf too, in case a future recentActivity item needs a caller-local "today" again.
 function buildActivityFor(userId, localToday) {
   const items = [];
   const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
@@ -1218,8 +1220,14 @@ function buildActivityFor(userId, localToday) {
   // yesterday (see currentStreak), which is always inside this 7-day window, so `latest` already
   // reflects it correctly without a second history scan.
   if (count > 0) items.push({ type: 'completed', at: new Date(latest).toISOString(), text: `completed ${count} workout${count > 1 ? 's' : ''} this week` });
-  const streak = currentStreak(userId, localToday);
-  if (streak >= 2) items.push({ type: 'streak', at: new Date(latest).toISOString(), text: `hit a ${streak} day workout streak` });
+  // Sep 30 2026 (Jeff, audit Tier 4c, cold-review catch): this used to also push a
+  // "hit a N day workout streak" row here -- the exact per-calendar-day streak concept Jeff asked
+  // to drop everywhere ("we don't need the consecutive days with a finished workout -- as this
+  // will ALWAYS be killed by a rest day. Leave only the week in progress"). Removing just the
+  // profile/crew pills and leaving this text row was an incomplete read of that instruction -- a
+  // cold review of the pill-removal screenshots caught this same text still rendering right below
+  // the stats row it was supposed to be gone from. currentStreak() itself is untouched (still
+  // powers the separate streak-loss-reminder push below).
   items.sort((a, b) => new Date(b.at) - new Date(a.at));
   return items;
 }
@@ -2319,20 +2327,16 @@ function emitFinishFeedEvents(s, userId, ranksBefore, localDate) {
   emitFeedEvent('completed_no_recap', userId, { sessionId: s.id, text: `completed ${s.name || 'a workout'}`,
     at: perfDate(s.scheduledAt, new Date().toISOString()) });
 
-  // Streak -- at most one per user per LOCAL day, so finishing a SECOND workout the same day
-  // doesn't re-announce the same streak number as if it were new news. currentStreak is purely
-  // computed, never persisted (see its own comment) -- "already announced today" is tracked by
-  // scanning today's own feed events rather than a stored per-user flag. `at` mirrors
-  // buildActivityFor's own already-fixed 'streak'/'completed' rows (v247, see that function's own
-  // comment) -- the credited LOCAL day turned into a real date, not "now": a streak isn't tied to
-  // one session's scheduledAt the way completed_no_recap/pr are, it's tied to the calendar day it
-  // was credited on.
-  const streak = currentStreak(userId, today);
-  if (streak >= 2) {
-    const alreadyToday = Object.values(DB.feedEvents).some(e => e.type === 'streak' && e.by === userId && e.localDate === today);
-    if (!alreadyToday) emitFeedEvent('streak', userId, { streak, localDate: today, text: `hit a ${streak}-day streak`,
-      at: new Date(today + 'T00:00:00.000Z').toISOString() });
-  }
+  // Streak feed event REMOVED Sep 30 2026 (Jeff, audit Tier 4c, cold-review catch): this used to
+  // emit a "hit a N-day streak" row into the Home/Friends' Activity feed, at most once per user per
+  // LOCAL day. Same per-calendar-day streak concept Jeff asked to drop everywhere ("we don't need
+  // the consecutive days with a finished workout -- as this will ALWAYS be killed by a rest day.
+  // Leave only the week in progress") -- a cold review of the profile/crew pill-removal screenshots
+  // caught this still emitting live, on a different surface than the pills the original ask named.
+  // currentStreak() itself is untouched (still powers the separate streak-loss-reminder push).
+  // compactRowHtml's ff.type==='streak' render branch in app.js is deliberately left in place --
+  // harmless, and still renders any already-emitted historical 'streak' rows already sitting in
+  // DB.feedEvents correctly rather than silently blanking them.
 
   // Crew-challenge rank change -- deliberately scoped to just these two creditFinish call sites
   // (not every place challengeProgress could theoretically shift), the same explicit scope
@@ -4232,10 +4236,22 @@ app.delete('/api/sessions/:id', auth, async (req, res) => {
 // two copies of the same thing that had to be kept in sync by hand. Same shape as
 // notifyWipePivots further down, which already does this once for reset-workouts/delete-account.
 // One shared function, two call sites.
-function notifyDeparturePivots(s, me, { resolvedRemovals, autoApplied, wasOwner, alreadyOwnerless }) {
+//
+// Sep 30 2026 (audit finding, Tier 5 dedup): the creator-kicks-a-participant route (below) carried
+// its own THIRD, near-identical copy of just the resolvedRemovals half of this -- never the
+// autoApplied/wasOwner/alreadyOwnerless pivot broadcasts, which don't apply to a kick (ownership
+// never changes when the creator kicks someone; only /leave and /remove-mine can make a session
+// ownerless). Rather than leave that copy unshared, `resolvedPush` lets the kick route reuse this
+// SAME function with autoApplied/wasOwner/alreadyOwnerless all passed as empty/false (no-ops, same
+// as the resolvedRemovals-only work kick actually needs) and its own, different push behavior: kick
+// is creator-only, so the person resolving the removal vote and the person being notified about it
+// are always the SAME account -- muted (push:false) so the creator never gets buzzed about the
+// button they themselves just tapped, unlike /leave and /remove-mine where the creator is someone
+// ELSE and a real push is exactly right (the default here, unchanged for both of them).
+function notifyDeparturePivots(s, me, { resolvedRemovals, autoApplied, wasOwner, alreadyOwnerless, resolvedPush = true }) {
   if (s.creatorId) {
     for (const pr of resolvedRemovals) {
-      notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } });
+      notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } }, { push: resolvedPush });
     }
   }
   for (const edit of autoApplied) {
@@ -4461,9 +4477,11 @@ app.post('/api/sessions/:id/participants/:pid/remove', auth, async (req, res) =>
   // just tapped the kick button that resolved it. That's exactly the self-notification case
   // notify()'s own opts.push===false comment describes ("a push would just be telling someone
   // about the button they themselves just tapped") -- kept muted here, unlike its two siblings.
-  for (const pr of resolvedNow) {
-    notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } }, { push: false });
-  }
+  // Sep 30 2026 (audit finding, Tier 5 dedup): now routes through notifyDeparturePivots (see its
+  // own comment) instead of its own inline copy of this exact loop -- autoApplied/wasOwner/
+  // alreadyOwnerless don't apply to a kick, so they're passed as no-ops; resolvedPush:false keeps
+  // the muted self-notify behavior above, unchanged.
+  notifyDeparturePivots(s, target, { resolvedRemovals: resolvedNow, autoApplied: [], wasOwner: false, alreadyOwnerless: false, resolvedPush: false });
   res.json(sessionView(s, req.userId));
 });
 
@@ -6461,13 +6479,26 @@ function trendFor(userId) {
   // number the plateau card would show) only replaces l.points[0] in that same exact case. Every
   // other lift -- not enough recent training to be judged, or no history predating the window --
   // falls back to l.points[0], the true all-time first session, unchanged from before Sep 30 2026.
-  const baselineOf = l => {
+  //
+  // Sep 30 2026 (audit finding, Jeff: confirmed while checking the fix above -- the driver row's
+  // own "40x12 -> 45x15" weight/reps range was still hardcoded to l.points[0], the all-time first
+  // session, even after changePct itself moved to the windowed baseline. Same self-contradicting-
+  // number shape as the Sep 5/Sep 28 fixes above -- e.g. a lift logged for 8 months could show
+  // "▲ +4%" (a real, small, recent gain, correctly windowed) right next to an 8-month-old starting
+  // weight that has nothing to do with the number beside it. baselinePointOf returns the ACTUAL
+  // point baselineOf's number came from (not just its .est), so the client can show a weight/reps
+  // range that matches whatever session the % was really computed against.
+  const baselinePointOf = l => {
     const assisted = loadTypeForName(l.name) === 'assisted';
     const windowPoints = l.points.filter(p => p.at >= trendWindowStartStr);
     const priorPoints = l.points.filter(p => p.at < trendWindowStartStr);
-    if (windowPoints.length < PLATEAU_MIN_SESSIONS || !priorPoints.length) return l.points[0].est;
-    return assisted ? Math.min(...priorPoints.map(p => p.est)) : Math.max(...priorPoints.map(p => p.est));
+    if (windowPoints.length < PLATEAU_MIN_SESSIONS || !priorPoints.length) return l.points[0];
+    return priorPoints.reduce((best, p) => {
+      const better = assisted ? p.est < best.est : p.est > best.est;
+      return better ? p : best;
+    }, priorPoints[0]);
   };
+  const baselineOf = l => baselinePointOf(l).est;
   // Overall stays computed from EVERY eligible lift, never just the picked/displayed subset --
   // it is a holistic "how is your training going" number, and shrinking it to whatever chips
   // happen to be picked would make it lie by omission the moment someone picks fewer than 5.
@@ -6503,7 +6534,8 @@ function trendFor(userId) {
     // otherwise divide by zero) -- capped at +100% ("maxed out") rather than Infinity/NaN.
     // Sep 30 2026 (audit finding): baselineOf() (same PLATEAU_WEEKS-window baseline the overall
     // blend above now uses), not l.points[0] -- see the comment above trendWindowStartStr.
-    const start = baselineOf(l);
+    const basePoint = baselinePointOf(l);
+    const start = basePoint.est;
     const changePct = assisted
       ? (bestPoint.est > 0 ? (start / bestPoint.est - 1) * 100 : (start > 0 ? 100 : 0))
       : (bestPoint.est / start - 1) * 100;
@@ -6533,6 +6565,14 @@ function trendFor(userId) {
       // green up-arrow (see the comment above bestPointOfWindow). Now unit-converted too (same
       // fix as points above -- bestPoint.weight/unit are the untouched raw values).
       currentWeight: inUnit(bestPoint.weight, bestPoint.unit || 'lb', displayUnit),
+      // Sep 30 2026 (audit finding, same fix as basePoint/start just above): the "from" side of
+      // the driver row's weight/reps range used to be hardcoded to l.points[0] (the all-time first
+      // session) client-side, which could now disagree with whatever session `start`/changePct
+      // actually came from. baselineWeight/baselineReps are THAT session's own numbers, unit-
+      // converted the same way currentWeight/currentReps already are -- so the range the client
+      // shows always matches the % next to it, however far back the real baseline turned out to be.
+      baselineWeight: inUnit(basePoint.weight, basePoint.unit || 'lb', displayUnit),
+      baselineReps: basePoint.reps,
       // Sep 28 2026 (audit finding, Jeff: "the 7% is from reps (12 → 15), but showing the weight
       // unchanged next to an up-arrow looks like a bug even though it isn't"). "What's driving it"
       // only ever showed weight-vs-weight, but changePct is scored off est (weight AND reps via
