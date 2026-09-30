@@ -1,7 +1,7 @@
 {
   "name": "crew-fit",
   "version": "0.1.0",
-  "description": "CrewFit \u2014 social fitness app for training partners (create, invite, swap, log together)",
+  "description": "CrewFit — social fitness app for training partners (create, invite, swap, log together)",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "express": "^4.19.2",
+    "leo-profanity": "^1.9.0",
     "web-push": "^3.6.7"
   },
   "devDependencies": {
