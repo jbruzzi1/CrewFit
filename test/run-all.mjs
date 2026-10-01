@@ -63,6 +63,7 @@ const files = [
   'test/audit10-feed-hero-fixes.mjs', 'test/audit10-avatar-photo-everywhere.mjs',
   'test/posted-workout-add-set.mjs', 'test/account-settings.mjs',
   'test/audit-sep30-fixes.mjs', 'test/custom-exercise-library-refresh.mjs',
+  'test/audit-oct1-tier1-fixes.mjs', 'test/password-confirm-sheet-double-tap.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

@@ -852,6 +852,23 @@ app.post('/api/exercises/custom', auth, async (req, res) => {
   if (!name || !Array.isArray(muscle_groups) || !muscle_groups.length) return res.status(400).json({ error: 'name + muscle_groups required' });
   const cleanName = capStr(name, 80);
   if (profanityFilter.check(cleanName)) return res.status(400).json({ error: 'That name isn’t allowed. Please pick something else.' });
+  // Oct 1 2026 (audit finding, round-2 Tier 1 #2): this didn't used to check the new name against
+  // the BUILT-IN library at all -- only GET /api/exercises did, by silently filtering any custom
+  // row whose name exactly matches a library one out of every response it returns (its own comment,
+  // a few lines up, explains that filter exists for the library LATER adopting a name someone's
+  // custom exercise already had -- not for a brand-new custom exercise being created under an
+  // existing library name from the start). The save itself used to succeed either way, so an
+  // ordinary name like "Push-Up" or "Plank" created a row that vanished from every screen forever:
+  // unreachable to edit or delete, permanently burning one of the user's 500 slots, with
+  // findExLibEntry always resolving that name to the real library entry instead (it checks EX_LIB
+  // first) so none of the custom fields ever took effect. Same exact (case-sensitive) comparison
+  // the GET filter and findExLibEntry both already use, so this rejects precisely the names that
+  // would otherwise disappear -- nothing stricter. Deliberately separate from, and does not touch,
+  // this route's own no-uniqueness-between-custom-exercises rule just above (Jeff: "anyone should
+  // be able to use whatever name they like") -- that rule was never about colliding with the
+  // built-in library, only with each other.
+  if (EX_LIB.some(e => e.name === cleanName))
+    return res.status(400).json({ error: 'That’s already a library exercise — search for it instead of creating a new one.' });
   // A custom exercise is shown to every other user, so treat these as hostile. Muscle groups are
   // a closed vocabulary — there is no reason to accept anything outside it.
   const KNOWN_MG = new Set(EX_LIB.flatMap(x => x.muscle_groups || []));
@@ -1345,15 +1362,37 @@ app.post('/api/me/display-name', auth, async (req, res) => {
 // comparison was a real bug). findUserByName's own match has to be excluded when it's just this
 // account matching itself (e.g. re-submitting the same username unchanged, or a same-username-
 // different-case correction like "Jordan" -> "jordan").
+// Sep 30 2026 (audit finding, round-2 Tier 1 #1): username IS the login credential (/api/login
+// authenticates by username, server.js:708-756) and password reset is permanently disabled
+// (/api/forgot below, "ask Jeff") -- yet this route used to change it with nothing but a valid
+// session token, no proof the caller actually knows the account's password. A stolen/leaked token
+// alone was enough to silently rename someone out of their own account, with no self-service way
+// back in. Now requires the current password, same bar and same shared 'pw-confirm:' counter as
+// /api/me/password, /api/me/reset-workouts and /api/me/delete-account (see /api/me/password's own
+// comment on why it's one shared 10/hour budget across all four routes, not 10 per route). No
+// tokensValidFrom bump here, unlike a real password change -- the old session's token is still
+// valid for the same account id either way; what this closes is an ATTACKER without the password
+// being able to make the change at all, not a need to sign other devices out afterward.
 app.post('/api/me/username', auth, async (req, res) => {
-  const { username } = req.body || {};
+  if (failCount('pw-confirm:' + req.userId) >= 10)
+    return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+  const { username, password } = req.body || {};
+  const u = DB.users[req.userId];
+  // 400, not 401 -- same reasoning as POST /api/me/password: this request already carries a VALID
+  // auth token, so a wrong confirmation password must not trip app.js's global "any 401 means your
+  // session died" handler and force a surprise logout.
+  if (!password || !verifyPin(u, password)) {
+    bumpFail('pw-confirm:' + req.userId, 60 * 60 * 1000);
+    return res.status(400).json({ error: 'Password is incorrect' });
+  }
+  clearFail('pw-confirm:' + req.userId);
   const uProblem = usernameProblem(username);
   if (uProblem) return res.status(400).json({ error: uProblem });
   const existing = findUserByName(username);
   if (existing && existing.id !== req.userId) return res.status(409).json({ error: 'username taken' });
-  DB.users[req.userId].username = String(username).trim();
+  u.username = String(username).trim();
   await save(DB);
-  res.json({ username: DB.users[req.userId].username });
+  res.json({ username: u.username });
 });
 // Distinct from the disabled /api/forgot + /api/reset above (which took no proof of identity at
 // all — see the long comment there on why they're off) — this requires the CURRENT password,
