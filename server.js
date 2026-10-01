@@ -2460,10 +2460,15 @@ app.get('/api/notifications', auth, async (req, res) => {
   // someone who may never have sent it. s.invitedBy[req.userId] is the real inviter when this
   // invite was created/edited after the field existed; older invites have no entry there and keep
   // the old creatorId fallback exactly as before.
+  // Oct 1 2026 (audit finding, round-2 Tier 2): this had no block filter at all, unlike
+  // followRequests/joinRequests/removals/suggestions right below -- all of which already check
+  // isBlocked against whoever the item is attributed to. A pending invite from (or to) someone you
+  // later blocked kept showing "X invited you" here, actionable Accept button included, regardless.
+  // Filtered the same way, against fromId -- the identity actually shown in this list item.
   const invites = Object.values(DB.sessions)
     .filter(s => Array.isArray(s.invited) && s.invited.includes(req.userId))
     .map(s => ({ s, fromId: (s.invitedBy && s.invitedBy[req.userId]) || s.creatorId }))
-    .filter(({ fromId }) => DB.users[fromId])
+    .filter(({ fromId }) => DB.users[fromId] && !isBlocked(fromId, req.userId))
     .map(({ s, fromId }) => ({ type: 'invite', sessionId: s.id, sessionName: s.name || 'Workout', exerciseCount: (s.exercises || []).length, from: publicUser(fromId) }));
   const followRequests = (me.followReqs || [])
     .filter(id => DB.users[id])
@@ -3688,7 +3693,25 @@ function sessionTier(s, viewerId) {
   if (!s || !viewerId) return 'stranger';
   if (s.creatorId === viewerId) return 'member';
   if ((s.participants || []).includes(viewerId)) return 'member';
-  if (Array.isArray(s.invited) && s.invited.includes(viewerId)) return 'invited';
+  // Oct 1 2026 (audit finding, round-2 Tier 2): every sibling gate in this file (canSeeProfile,
+  // canSeePostAuthor, the member-tier filters just below) checks isBlocked before granting
+  // anything -- this one didn't, so a PENDING invite kept working as a live, full-plan-revealing
+  // 'invited' tier even after either side blocked the other. GET /api/sessions/:id was handing
+  // over the full plan -- location, notes, exercises -- under the unguarded 'invited' tier, and
+  // this session kept showing up in GET /api/sessions (Home's invite banner, Notifications) too.
+  // Resolved against the actual inviter, not the bare s.creatorId: a session can go ownerless
+  // (s.creatorId === null, permanently, once its creator /leave's -- see the "ownerless" comment
+  // on that route) while an invite someone sent before leaving is still pending, since /leave
+  // never clears s.invited/s.invitedBy. isBlocked(null, viewerId) always evaluates false (no
+  // user's own .blocked array can contain the literal null), so checking the bare creatorId would
+  // silently stop catching a block the instant the session went ownerless -- the exact gap a
+  // cold-review pass on this fix caught. Same resolution GET /api/notifications' own invites list
+  // already uses for this reason (see its comment) and the same one sessionView's own 'invited'/
+  // 'invitedById' fields use below. Falls through to the same 'stranger'/'alumni' resolution below
+  // a genuine non-invitee gets -- a blocked pending invite is not silently promoted to anything,
+  // it is simply no longer 'invited'.
+  const inviterId = (s.invitedBy && s.invitedBy[viewerId]) || s.creatorId;
+  if (Array.isArray(s.invited) && s.invited.includes(viewerId) && !isBlocked(inviterId, viewerId)) return 'invited';
   // v190 (Sep 2026): a "joinable" session used to mean "the creator's friends"; now it means
   // "whoever can see the creator's profile" (canSeeProfile) -- followers-only if they're Private,
   // anyone if they're Public. Tier kept named 'friend' internally (it's never shown to a user,
@@ -4911,7 +4934,14 @@ app.post('/api/sessions/:id/accept', auth, async (req, res) => {
   // log sheet, everything). Refuse rather than silently letting a blocked relationship become
   // co-participants; the invite itself just sits there unaccepted (matching /join's own behavior
   // when canSeeProfile already fails block-aware, before a request can even be filed).
-  if (isBlocked(s.creatorId, req.userId)) return res.status(400).json({ error: 'blocked' });
+  // Oct 1 2026 (audit finding, round-2 Tier 2, cold-review catch): this checked the bare
+  // s.creatorId, same bug as sessionTier's own pre-fix version (see that function's comment) --
+  // once a session goes ownerless (s.creatorId === null, permanent) with a still-pending invite,
+  // isBlocked(null, req.userId) always evaluates false, so a block against the ORIGINAL inviter
+  // (tracked in s.invitedBy) would not stop this route from making them full co-participants.
+  // Resolved the same way sessionTier/the notifications list do.
+  const inviterId = (s.invitedBy && s.invitedBy[req.userId]) || s.creatorId;
+  if (isBlocked(inviterId, req.userId)) return res.status(400).json({ error: 'blocked' });
   s.invited = s.invited.filter(x => x !== req.userId);
   if (!s.participants.includes(req.userId)) s.participants.push(req.userId);
   // Sep 27 2026 (ownerless redesign, doc tab 04): a still-invited person can stash one private
@@ -5070,7 +5100,18 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
   const isParticipant = s.participants.includes(req.userId);
   const approvedJoin = s.joinRequests.find(j => j.userId === req.userId && j.status === 'approved');
   const invited = Array.isArray(s.invited) && s.invited.includes(req.userId);
-  if (!isParticipant && !approvedJoin && !invited) return res.status(403).json({ error: 'not a participant' });
+  // Oct 1 2026 (audit finding, round-2 Tier 2, cold-review follow-up catch): "invited" above was a
+  // bare s.invited.includes() check with zero block-awareness -- unlike sessionTier()'s own
+  // 'invited' tier and the /accept route (both fixed earlier this same round), which both require
+  // !isBlocked(inviterId, viewerId) before granting anything on a pending invite. That left this
+  // route reachable directly even after a block: a blocked still-invited caller could still create
+  // a real suggestedEdits row here, visible to non-blocked co-participants and approvable by the
+  // creator -- a genuine interaction with someone they'd blocked, the exact thing the block
+  // contract forbids, even though GET /api/sessions/:id had already stopped showing them the plan
+  // at all. Resolved the same way: inviterId through s.invitedBy, falling back to s.creatorId,
+  // same ownerless-session-safe resolution as the other two fixes.
+  const inviterId = (s.invitedBy && s.invitedBy[req.userId]) || s.creatorId;
+  if (!isParticipant && !approvedJoin && (!invited || isBlocked(inviterId, req.userId))) return res.status(403).json({ error: 'not a participant' });
   // Jeff, Aug 31: "add the ability to add an exercise to a workout, not just suggest a swap."
   // Same approval-gated shape a swap suggestion already has (creator still decides) -- just
   // proposing a brand-new exercise instead of replacing an existing one, so there's no exerciseId
@@ -5298,6 +5339,19 @@ app.post('/api/sessions/:id/variation', auth, async (req, res) => {
 async function voteOwnerless(req, res, s, edit, decision) {
   if (edit.privatePreJoin) return res.status(400).json({ error: 'not a group suggestion' });
   if (!s.participants.includes(req.userId)) return res.status(403).json({ error: 'not a participant' });
+  // Oct 1 2026 (audit finding, round-2 Tier 2 follow-up, cold-review catch, Jeff: "yes fix it
+  // all"): same gap as the owned-session approve/reject fix just above this function -- voting on
+  // someone's suggestion is a real interaction with their authored content (their proposed
+  // swapTo), and sessionView's own suggestedEdits filter already hides a blocked proposer's
+  // pending row from this voter's own GET response regardless of whether the proposer is still a
+  // current participant (see that filter's comment) -- but the vote itself had no isBlocked check
+  // at all, so a stale/cached editId could still cast a real vote (applyOwnerlessVote sets the
+  // voter's own s.variations entry to the blocked proposer's swapTo) and, for an 'add' edit, still
+  // count toward (or permanently block, via reject) the unanimous-consensus requirement
+  // maybeResolveOwnerlessAdd checks against every current participant. Membership itself stays
+  // untouched either way -- this only refuses the one vote action, same scope as the owned-path
+  // fix.
+  if (isBlocked(req.userId, edit.proposedBy)) return res.status(400).json({ error: 'blocked' });
   if (edit.type === 'add' && edit.status !== 'pending') return res.status(400).json({ error: 'already settled' });
   const prev = (edit.votes || {})[req.userId];
   if (prev === decision) return res.json(sessionView(s, req.userId)); // already their vote -- no-op, nobody re-notified
@@ -5325,6 +5379,20 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
   if (!edit) return res.status(404).json({ error: 'edit not found' });
   if (s.creatorId === null) return voteOwnerless(req, res, s, edit, 'approved');
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator approves' });
+  // Oct 1 2026 (audit finding, round-2 Tier 2 follow-up, cold-review catch): this had no isBlocked
+  // check at all, even though sessionView's own suggestedEdits filter already hides a blocked
+  // proposer's pending row from the creator's own GET response (see that filter's own comment) --
+  // so a creator who'd blocked the proposer couldn't SEE this suggestion on screen anymore, but a
+  // direct POST with the still-live editId (a stale cached id, a second tab, or just a replay)
+  // could still approve it: renaming the shared exercise for everyone AND rewriting the blocked
+  // proposer's own already-logged sets below, a real, unilateral mutation of a blocked person's
+  // data. Matches sessionView's filter exactly (isBlocked(creator, proposedBy), not conditioned on
+  // whether the proposer happens to still be a current participant) -- approving/rejecting someone
+  // you've blocked is an action refused here the same way canSeePostAuthor re-checks block even
+  // for existing participants' posts; it is not a membership question, so blockUser's own "doesn't
+  // touch an already-joined member" scope boundary (see that function's comment) doesn't apply --
+  // the proposer stays a full member either way, only this one approve/reject action is refused.
+  if (isBlocked(req.userId, edit.proposedBy)) return res.status(400).json({ error: 'blocked' });
   // v252 (audit finding): without this, a double-tap or a stale second tab could approve AND
   // reject the same suggestion -- approve already renames logged sets and rebuilds PRs below, none
   // of which reject undoes, so the edit would end up marked 'rejected' while its effects were still
@@ -5411,6 +5479,11 @@ app.post('/api/sessions/:id/suggest/:editId/reject', auth, async (req, res) => {
   if (!edit) return res.status(404).json({ error: 'edit not found' });
   if (s.creatorId === null) return voteOwnerless(req, res, s, edit, 'rejected');
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator approves' });
+  // Oct 1 2026 (audit finding, round-2 Tier 2 follow-up): same fix, same reasoning as approve
+  // above -- see its comment. Reject's own mutation is narrower (just a status flip, no shared
+  // rename or logged-set rewrite) but it is still an action against a blocked person's data and
+  // kept symmetric with approve rather than quietly allowed through.
+  if (isBlocked(req.userId, edit.proposedBy)) return res.status(400).json({ error: 'blocked' });
   // v252: same guard as approve above -- a stale reject after it's already been approved (or
   // already rejected) must not silently flip a decided edit back and forth.
   if (edit.status !== 'pending') return res.status(400).json({ error: 'already decided' });

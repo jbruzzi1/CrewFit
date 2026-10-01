@@ -64,6 +64,7 @@ const files = [
   'test/posted-workout-add-set.mjs', 'test/account-settings.mjs',
   'test/audit-sep30-fixes.mjs', 'test/custom-exercise-library-refresh.mjs',
   'test/audit-oct1-tier1-fixes.mjs', 'test/password-confirm-sheet-double-tap.mjs',
+  'test/audit-oct1-tier2-invite-block.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
