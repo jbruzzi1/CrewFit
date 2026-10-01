@@ -2609,7 +2609,14 @@ async function savePostedNewSet(id, authorId, exerciseId){
 // fixed elsewhere (toggleFollow, the posted-workout cluster, etc.) -- tap Accept, then switch tabs
 // before the request resolves, and the stale response used to yank the screen back to the session
 // regardless of where the user had moved on to. Guarded the same way with nothingNavigatedSince().
-async function acceptInvite(id){ const epoch=UI_EPOCH; await H.post(`/api/sessions/${id}/accept`,{}); if(nothingNavigatedSince(epoch)) openSession(id); }
+// Oct 1 2026 (audit finding, round-2 Tier 2): this also discarded the response entirely and opened
+// the session unconditionally -- the one real way it could fail, POST .../accept's own
+// isBlocked(s.creatorId, viewerId) check (server.js, 400 {error:'blocked'}), was silently eaten.
+// With the invite itself now also hidden server-side once blocked (see sessionTier's own comment),
+// this path should be unreachable in normal use -- kept as the same defensive, consistent-with-
+// every-sibling-handler check (requestJoin/approveJoin/rejectJoin all alert(r.error) and stop
+// rather than navigate) rather than trusting that server-side filtering alone always wins the race.
+async function acceptInvite(id){ const epoch=UI_EPOCH; const r = await H.post(`/api/sessions/${id}/accept`,{}); if(r && r.error){ alert(r.error); if(nothingNavigatedSince(epoch)) home({silent:true}); return; } if(nothingNavigatedSince(epoch)) openSession(id); }
 // Sep 27 2026 (Jeff, part 2): "add a 'reason for declining message' and the owner will get this
 // message." Reuses textEntrySheet (the same in-app text-entry sheet as bio/notes/template-naming)
 // rather than confirmSheet's plain Cancel/Decline pair, since this now needs a real (optional)
@@ -9386,9 +9393,15 @@ function historySwipeInit(container){
 // just refreshing THIS screen afterward instead of home() -- kept as separate functions rather
 // than threading a "where do I refresh" parameter through the originals, so neither side has to
 // know the other exists.
+// Oct 1 2026 (audit finding, round-2 Tier 2): same fix as acceptInvite above -- this discarded the
+// response and opened the session regardless, silently eating a blocked-relationship 400. See
+// acceptInvite's own comment for why this should now be unreachable in normal use (the invite is
+// hidden from this very list once blocked -- see GET /api/notifications' own comment) and kept
+// anyway as the same defensive, sibling-consistent check.
 async function notifAcceptInvite(id){
   const epoch=UI_EPOCH;
-  await H.post(`/api/sessions/${id}/accept`,{});
+  const r = await H.post(`/api/sessions/${id}/accept`,{});
+  if(r && r.error){ alert(r.error); if(nothingNavigatedSince(epoch)) renderNotifications({silent:true}); return; }
   if(nothingNavigatedSince(epoch)) openSession(id);
 }
 async function notifDeclineInvite(id){ declineInviteSheet(id, () => renderNotifications({silent:true})); }
