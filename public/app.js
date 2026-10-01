@@ -7616,8 +7616,11 @@ function textEntrySheet({title, label, value, placeholder, multiline, confirmLab
     ? `<textarea id="teVal" placeholder="${esc(placeholder||'')}" style="min-height:110px">${esc(cur)}</textarea>`
     : `<input id="teVal" placeholder="${esc(placeholder||'')}" value="${esc(cur)}" autocomplete="off">`;
   // Sep 30 2026 (audit finding): optional one-line caption under the field, for the rare case
-  // where the field means more than it looks like (see editUsernameSheet's own use) -- every
-  // other caller leaves this unset and gets exactly the same sheet as before.
+  // where the field means more than it looks like -- every other caller leaves this unset and
+  // gets exactly the same sheet as before. (editUsernameSheet, the original motivating case, has
+  // since moved to its own custom sheet -- round-2 audit, Oct 1 2026 -- since it also needs a
+  // password-confirmation field this generic single-field sheet has no room for; left here as a
+  // real, reusable option for the next caller that needs just a caption.)
   TE_EL = openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>${esc(title)}</h2></div>
     ${label?`<label class="muted">${esc(label)}</label>`:''}
     ${field}
@@ -9452,6 +9455,21 @@ async function notifDismissReinvite(id, reqId){
   const r = await H.post(`/api/sessions/${id}/reinvite-request/${reqId}/dismiss`, {});
   if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
 }
+// Oct 1 2026 (cold-review catch on the round-2 Tier 1 #1 fix, Jeff: "lets fix the small gap you
+// found too"): all four password-confirmation sheets below (Reset workouts, Change password,
+// Delete account, and editUsernameSheet further down) had the exact same double-tap-stacking gap
+// TE_EL/CONFIRM_EL were already fixed for elsewhere in this file (v250/v251) -- a fast double-tap
+// on whatever opens one of these could stack two copies, each with the same field ids, so
+// $('rwPass')/$('cpCur')/$('daPass')/$('euVal') resolves to the FIRST (hidden, stale) one; the
+// visible sheet's button then reads and submits that stale sheet's empty/old values. For sheets
+// that exist specifically to prove you know your own password, a stuck/wrong-field submit is worse
+// than the generic double-tap annoyance elsewhere -- it can read as "my password didn't work" when
+// the real problem is a hidden zombie field. One shared guard (not four separate ones) is enough:
+// these four are never open at the same time in normal use (each covers the whole screen, so you
+// cannot tap a second one of these onto an already-open one) -- the only real collision is the SAME
+// sheet stacked on itself, and a single shared element-tracking variable closes that for all four
+// with one pattern, the same shape TE_EL/CONFIRM_EL already use.
+let PWCONFIRM_EL = null;
 // Task #64, Jeff Aug 21: "Can you delete all of my workouts and history to let me start over?"
 // Irreversible and account-wide, so this gets its own explaining sheet rather than a bare
 // browser confirm() — the same severity Delete/Leave get, just spelled out further since this
@@ -9461,6 +9479,7 @@ async function notifDismissReinvite(id, reqId){
 // everything, no undo), so this now matches it exactly: same password field, same button
 // treatment, just copied over.
 function confirmResetWorkouts(){
+  if(PWCONFIRM_EL){ PWCONFIRM_EL.remove(); PWCONFIRM_EL = null; }
   const inner = `<div class="sheet"><div class="sheet-head"><h2>Reset workouts</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
     <div class="muted" style="padding:0 2px 14px">This permanently deletes every workout, log, and personal record you've saved — there's no undo. Workouts you share with a friend who still has their own credit in them stay theirs; you're just taken off. Your account, username, and friends are not affected.</div>
     <label class="muted">Enter your password to confirm</label>
@@ -9470,7 +9489,7 @@ function confirmResetWorkouts(){
       <button class="sheet-row" onclick="closeSheet()">Cancel</button>
     </div>
   </div>`;
-  openSheetHtml(inner);
+  PWCONFIRM_EL = openSheetHtml(inner);
   setTimeout(()=>{ const i=$('rwPass'); if(i) i.focus(); }, 60);
 }
 async function doResetWorkouts(){
@@ -9486,6 +9505,7 @@ async function doResetWorkouts(){
 // autocomplete guessing) rather than textEntrySheet -- that helper only ever renders one plain
 // field, this needs three, and unlike a display name/bio there is nothing here safe to prefill.
 function changePasswordSheet(){
+  if(PWCONFIRM_EL){ PWCONFIRM_EL.remove(); PWCONFIRM_EL = null; }
   const inner = `<div class="sheet"><div class="sheet-head"><h2>Change password</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
     <label class="muted">Current password</label>
     <input id="cpCur" type="password" autocomplete="current-password">
@@ -9495,7 +9515,7 @@ function changePasswordSheet(){
     <input id="cpNew2" type="password" autocomplete="new-password">
     <button class="blue" style="width:100%;margin-top:16px" onclick="doChangePassword()">Change password</button>
   </div>`;
-  openSheetHtml(inner);
+  PWCONFIRM_EL = openSheetHtml(inner);
   setTimeout(()=>{ const i=$('cpCur'); if(i) i.focus(); }, 60);
 }
 async function doChangePassword(){
@@ -9523,6 +9543,7 @@ async function doChangePassword(){
 // friction/proof-of-intent step (same bar /api/me/password requires for a change), so a second
 // "are you sure" in front of it would just be a second click to dismiss, not real protection.
 function confirmDeleteAccount(){
+  if(PWCONFIRM_EL){ PWCONFIRM_EL.remove(); PWCONFIRM_EL = null; }
   const inner = `<div class="sheet"><div class="sheet-head"><h2>Delete account</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
     <div class="muted" style="padding:0 2px 14px">This permanently deletes your account — there's no undo. Your workouts, logs, and personal records are removed the same way Reset workouts removes them. You'll be signed out everywhere and your username will be freed up. Workouts you share with a friend who still has their own credit in them stay theirs; you're just taken off.</div>
     <label class="muted">Enter your password to confirm</label>
@@ -9532,7 +9553,7 @@ function confirmDeleteAccount(){
       <button class="sheet-row" onclick="closeSheet()">Cancel</button>
     </div>
   </div>`;
-  openSheetHtml(inner);
+  PWCONFIRM_EL = openSheetHtml(inner);
   setTimeout(()=>{ const i=$('daPass'); if(i) i.focus(); }, 60);
 }
 async function doDeleteAccount(){
@@ -10068,17 +10089,49 @@ function editDisplayNameSheet(){
 // here the way checkUsername() gives the register flow; a straight submit-and-report-the-error is
 // enough for an occasional change and keeps this one small, same call shape as every other Settings
 // row here.
+// Sep 30 2026 (audit finding, Jeff: confirmed option A): added the "this is also what you use to
+// log in" note -- it belongs right under the USERNAME field, since that's the field it explains
+// (why changing it matters enough to confirm with a password). Oct 1 2026 (round-2 audit, Tier 1
+// #1): moved off the generic single-field textEntrySheet onto a custom sheet -- username is also
+// the login credential, and password reset is permanently disabled in this app, so this now
+// requires the current password before changing it, the same proof-of-identity bar
+// /api/me/password and the danger-zone routes already require for comparable actions (see POST
+// /api/me/username's own comment). A valid session token alone used to be enough to rename
+// someone out of their own account; that gap is what this closes.
+// Cold-review catch (same day): the note was first placed directly above the Save button, right
+// after the PASSWORD field -- with no visual tie to either field, bare fineprint text sitting
+// right before Save reads as captioning whichever field is directly above it, so it read as
+// explaining the password requirement instead of the username. Moved back up under the username
+// field it was written for.
+// Cold-review catch, round 2 (same day, Jeff: "lets fix the small gap you found too"): this sheet
+// had no guard against a double-tap stacking two copies of itself (the same bug class TE_EL/
+// CONFIRM_EL were already fixed for elsewhere in this file) -- now shares the PWCONFIRM_EL guard
+// with the other three password-confirmation sheets (confirmResetWorkouts, changePasswordSheet,
+// confirmDeleteAccount), see that variable's own comment just above confirmResetWorkouts.
 function editUsernameSheet(){
-  textEntrySheet({
-    title:'Username', label:'Your @handle', value:ME.username||'', placeholder:'username',
-    // Sep 30 2026 (audit finding, Jeff: confirmed option A): this is also the credential you log
-    // in with (POST /api/login takes username, not display name) -- nothing on this sheet said so.
-    note:'This is also what you use to log in.',
-    onConfirm: v => { const epoch=UI_EPOCH; H.post('/api/me/username',{username:v}).then(r=>{
-      if(r && r.error){ alert(r.error); return; }
-      if(r.username!==undefined){ ME.username=r.username; if(nothingNavigatedSince(epoch)){ const el=document.getElementById('settingsUsernameVal'); if(el) el.textContent = '@'+ME.username; } }
-    }); }
-  });
+  if(PWCONFIRM_EL){ PWCONFIRM_EL.remove(); PWCONFIRM_EL = null; }
+  const inner = `<div class="sheet"><div class="sheet-head"><h2>Username</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <label class="muted">Your @handle</label>
+    <input id="euVal" value="${esc(ME.username||'')}" placeholder="username" autocomplete="off">
+    <div class="fineprint" style="margin-top:4px">This is also what you use to log in.</div>
+    <label class="muted" style="margin-top:10px;display:block">Current password</label>
+    <input id="euPass" type="password" autocomplete="current-password">
+    <button class="blue" style="width:100%;margin-top:16px" onclick="doEditUsername()">Save</button>
+  </div>`;
+  PWCONFIRM_EL = openSheetHtml(inner);
+  setTimeout(()=>{ const i=$('euVal'); if(i) i.focus(); }, 60);
+}
+async function doEditUsername(){
+  const v = $('euVal').value, pass = $('euPass').value;
+  if(!pass){ alert('Enter your current password to confirm.'); return; }
+  const epoch = UI_EPOCH;
+  const r = await H.post('/api/me/username', {username:v, password:pass});
+  if(r && r.error){ alert(r.error); return; }
+  if(r.username!==undefined){
+    ME.username = r.username;
+    if(nothingNavigatedSince(epoch)){ const el=document.getElementById('settingsUsernameVal'); if(el) el.textContent = '@'+ME.username; }
+  }
+  closeSheet();
 }
 // v190 (Sep 2026): Private/Public profile toggle. Flipping to Public also auto-accepts any
 // follow requests already waiting on you server-side (POST /api/me/profile-visibility) -- there's

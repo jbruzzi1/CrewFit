@@ -66,26 +66,44 @@ console.log('\nusername');
   const uname2 = 'un2_' + Math.floor(Math.random() * 1e9);
   const a = await reg(uname1, 'pass1234', 'A');
   const b = await reg(uname2, 'pass1234', 'B');
-  const taken = await post('/api/me/username', { username: uname2 }, a.token);
+
+  // Sep 30 2026 (audit finding, round-2 Tier 1 #1): username IS the login credential and
+  // password reset is permanently disabled, so a stolen/leaked session token alone used to be
+  // enough to silently rename someone out of their own account, with no self-service way back
+  // in. The route now requires the current password, same bar as /api/me/password,
+  // /api/me/reset-workouts and /api/me/delete-account -- and the same 400-not-401 status (a
+  // wrong confirmation password must not trip the client's global "401 means your session died"
+  // auto-logout, since the request already carries a valid token).
+  const noPass = await postRaw('/api/me/username', { username: 'un1nopass_' + Math.floor(Math.random() * 1e9) }, a.token);
+  const noPassBody = await noPass.json();
+  ok(noPass.status === 400 && !!noPassBody.error, `changing username with no password at all is refused, not silently accepted (got ${noPass.status}, ${JSON.stringify(noPassBody)})`);
+  const wrongPass = await postRaw('/api/me/username', { username: 'un1wrongpass_' + Math.floor(Math.random() * 1e9), password: 'nope1234' }, a.token);
+  const wrongPassBody = await wrongPass.json();
+  ok(wrongPass.status === 400 && wrongPassBody.error === 'Password is incorrect',
+     `a wrong password is refused with the same status+message as the other password-confirm routes (got ${wrongPass.status}, ${JSON.stringify(wrongPassBody)})`);
+  const stillOldName = await login(uname1, 'pass1234');
+  ok(!!stillOldName.token, 'and the username genuinely did not change after either refused attempt');
+
+  const taken = await post('/api/me/username', { username: uname2, password: 'pass1234' }, a.token);
   ok(taken.error, `changing to an already-taken username is refused (got ${JSON.stringify(taken)})`);
-  const takenCase = await post('/api/me/username', { username: uname2.toUpperCase() }, a.token);
+  const takenCase = await post('/api/me/username', { username: uname2.toUpperCase(), password: 'pass1234' }, a.token);
   ok(takenCase.error, 'refused case-insensitively too, not just an exact match');
-  const bad = await post('/api/me/username', { username: 'ab' }, a.token);
+  const bad = await post('/api/me/username', { username: 'ab', password: 'pass1234' }, a.token);
   ok(bad.error, 'the same 3-20 char rule registration uses is enforced here too');
-  const reserved = await post('/api/me/username', { username: 'admin' }, a.token);
+  const reserved = await post('/api/me/username', { username: 'admin', password: 'pass1234' }, a.token);
   ok(reserved.error, 'a reserved name is refused');
-  const deletedPrefix = await post('/api/me/username', { username: 'deleted_abc12345' }, a.token);
+  const deletedPrefix = await post('/api/me/username', { username: 'deleted_abc12345', password: 'pass1234' }, a.token);
   ok(deletedPrefix.error, 'a "deleted_" prefixed name is refused -- reserved for anonymized accounts');
   const newName = 'un1renamed_' + Math.floor(Math.random() * 1e9);
-  const r = await post('/api/me/username', { username: newName }, a.token);
-  ok(r.username === newName, `a genuinely free username is accepted (got ${JSON.stringify(r)})`);
+  const r = await post('/api/me/username', { username: newName, password: 'pass1234' }, a.token);
+  ok(r.username === newName, `a genuinely free username, WITH the correct current password, is accepted (got ${JSON.stringify(r)})`);
   const loggedIn = await login(newName, 'pass1234');
   ok(!!loggedIn.token, 'and immediately logs in under the new name');
   const oldGone = await login(uname1, 'pass1234');
   ok(!oldGone.token, 'the old username no longer logs in');
   // Re-submitting your OWN current username (unchanged, or just a different capitalisation) must
   // not trip the "taken" check against yourself.
-  const same = await post('/api/me/username', { username: newName.toUpperCase() }, a.token);
+  const same = await post('/api/me/username', { username: newName.toUpperCase(), password: 'pass1234' }, a.token);
   ok(!same.error, `re-submitting your own name in a different case is allowed, not refused as "taken" (got ${JSON.stringify(same)})`);
 }
 
@@ -237,7 +255,11 @@ console.log('\ndelete account');
 // counter per route would have let a stolen token get 3x the effective guesses just by rotating
 // which route it hit. reset-workouts.mjs's own guard-rail block separately covers that route's
 // password requirement itself; this block is what actually proves the counter is shared.
-console.log('\nrate limiting on the password-confirmation routes, shared across all three (Tier 1 #1)');
+// Sep 30 2026 (audit finding, round-2 Tier 1 #1): /api/me/username joined the same four-way
+// shared budget when it gained its own password requirement (see that route's comment in
+// server.js) -- the block below now also proves a lockout driven from ANY of the four routes
+// blocks username changes too, not a 4th, separately-resettable 10-guess budget.
+console.log('\nrate limiting on the password-confirmation routes, shared across all four (Tier 1 #1)');
 {
   const u = await reg('rl_' + Date.now(), 'pass1234', 'RL');
   for (let i = 0; i < 10; i++) {
@@ -258,6 +280,8 @@ console.log('\nrate limiting on the password-confirmation routes, shared across 
   ok(lockedOnDelete.status === 429, `the same lockout blocks delete-account too, even with the right password (got ${lockedOnDelete.status})`);
   const lockedOnReset = await postRaw('/api/me/reset-workouts', { password: 'pass1234' }, u.token);
   ok(lockedOnReset.status === 429, `and reset-workouts, same shared budget (got ${lockedOnReset.status})`);
+  const lockedOnUsername = await postRaw('/api/me/username', { username: 'rl_newname_' + Date.now(), password: 'pass1234' }, u.token);
+  ok(lockedOnUsername.status === 429, `and username change -- the round-2 Tier 1 #1 fix -- shares the exact same budget too, even with the right password (got ${lockedOnUsername.status})`);
 
   // A separate account is entirely unaffected -- this is a per-account cap, not global.
   const other = await reg('rl2_' + Date.now(), 'pass1234', 'RL2');
