@@ -219,7 +219,7 @@ console.log('\na workout I joined but did not create: dragging past the threshol
   // Sep 30 2026 (audit finding, Jeff's explicit call): nothing is logged here yet, so the sheet no
   // longer offers a Save/Discard choice with only one real answer -- a single plain "Leave workout"
   // confirm renders instead (see leaveWorkout's comment in app.js).
-  const discardBtnNone = await page.$('button:has-text("Discard today\'s sets")');
+  const discardBtnNone = await page.$('button:has-text("Discard your sets")');
   ok(!discardBtnNone, 'no logged sets yet, so the Save/Discard choice is NOT offered');
   const leaveBtn = await page.$('button:has-text("Leave workout")');
   ok(!!leaveBtn, 'a single plain "Leave workout" confirm renders instead');
@@ -304,7 +304,7 @@ console.log('\ncold-review catch (Sep 18): a non-creator row whose viewer alread
 
   const heading = await page.$eval('.sheet-head h2', el => el.textContent);
   ok(/leave workout/i.test(heading), `a real confirm sheet opened, not a silent leave (got "${heading}")`);
-  const discardBtn2 = await page.$('button:has-text("Discard today\'s sets")');
+  const discardBtn2 = await page.$('button:has-text("Discard your sets")');
   ok(!discardBtn2, 'this is the lightweight single-button sheet, not the Save/Discard two-choice one -- already finished, nothing left to choose between');
   const cancelBtn2 = await page.$('.sheet-row:not(.red)');
   ok(!!cancelBtn2, 'a real Cancel control exists on this sheet');
@@ -332,7 +332,8 @@ console.log('\ncold-review catch (Sep 18): a non-creator row whose viewer alread
   await confirmBtn3.click();
   await page.waitForTimeout(400);
   // This branch calls leaveWorkoutConfirmed(sid, true) -- a KEEP-leave, deliberately, the same
-  // "you'll keep credit for today's sets" the sheet's own body text promises. That's a real
+  // "you'll keep credit for the sets you logged" the sheet's own body text promises (Oct 2 2026:
+  // no longer says "today's" -- see swipeRowConfirm's own comment in app.js). That's a real
   // difference from the not-yet-finished Discard test just above: a keep-leave's history row
   // survives (see sessionTier's 'alumni' branch and its long comment in server.js), so the
   // workout is SUPPOSED to keep showing up in my own /api/sessions -- that's the credit being
@@ -439,7 +440,7 @@ console.log('\nJeff, real bug report + "Smarter routing" follow-up (Sep 18/20 20
   // Neither of us has logged a single set here (see the comment above), so this is the single-
   // button "Leave workout" confirm (Sep 30 2026 fix), not the Save/Discard choice -- same real
   // Leave a non-creator gets in that same nothing-logged case.
-  const discardBtnAbsent = await page.$('button:has-text("Discard today\'s sets")');
+  const discardBtnAbsent = await page.$('button:has-text("Discard your sets")');
   ok(!discardBtnAbsent, 'nothing logged here either, so the Save/Discard choice is NOT offered');
   const leaveBtnShared = await page.$('button:has-text("Leave workout")');
   ok(!!leaveBtnShared, 'the same single "Leave workout" confirm a non-creator gets in this case');
