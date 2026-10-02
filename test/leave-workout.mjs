@@ -149,7 +149,7 @@ console.log('\nv187: an invited participant gets their OWN Log & Finish AND thei
   console.log('(Sep 30 2026 audit finding, Jeff\'s explicit call: nothing is logged yet here, so the sheet must not falsely warn about "unfinished sets" or offer a Save/Discard choice with only one real answer -- see leaveWorkout\'s comment in app.js)');
   sink.html = '';
   await vm.runInContext('leaveWorkout', ctx)(session.id, false);
-  ok(!sink.html.includes('Save today\'s sets') && !sink.html.includes('Discard today\'s sets'),
+  ok(!sink.html.includes('Save your sets') && !sink.html.includes('Discard your sets'),
      'nothing is logged yet, so the Save/Discard choice is not offered');
   ok(sink.html.includes('Leave workout') && !sink.html.includes('unfinished sets'),
      'a single plain "Leave workout" confirm is offered instead, with no false claim about unfinished sets');
@@ -157,7 +157,7 @@ console.log('\nv187: an invited participant gets their OWN Log & Finish AND thei
   ok(dbBeforeChoice.sessions[session.id].participants.includes(participant.user.id),
      'and nothing has happened yet — just opening the sheet does not remove them');
 
-  console.log('\nchoosing "Save today\'s sets" credits whatever they had (here: nothing), same as the old unconditional behavior');
+  console.log('\nchoosing "Save your sets" credits whatever they had (here: nothing), same as the old unconditional behavior');
   sink.html = '';
   await vm.runInContext('leaveWorkoutConfirmed', ctx)(session.id, true);
   const db = await readDb(testDb.url);
@@ -192,7 +192,7 @@ console.log('\nJeff, Aug 20: "what if I just want to leave a workout and not kee
   vm.runInContext(`TOKEN = ${JSON.stringify(participant.token)}; ME = ${JSON.stringify(participant.user)};`, ctx);
   sink.html = '';
   await vm.runInContext('leaveWorkout', ctx)(offDay.id, false);
-  ok(sink.html.includes('Discard today\'s sets'), 'the discard option is offered here too');
+  ok(sink.html.includes('Discard your sets'), 'the discard option is offered here too');
 
   sink.html = '';
   await vm.runInContext('leaveWorkoutConfirmed', ctx)(offDay.id, false);
@@ -420,7 +420,7 @@ console.log('\nJeff, Aug 20 (cold-review catch): the "remove it from your profil
   ok(sink.html.includes('Delete workout?'), 'deleteSession opens the in-app confirm sheet first (v233)');
   sink.html = '';
   await vm.runInContext('deleteSessionConfirmed', ctx)(bugSession.id, false);
-  ok(sink.html.includes('Save today\'s sets') && sink.html.includes('Discard today\'s sets'),
+  ok(sink.html.includes('Save your sets') && sink.html.includes('Discard your sets'),
      'the delete-fallback opens the same Keep/Discard sheet Leave uses, instead of posting an empty {} leave body');
   const dbMid = await readDb(testDb.url);
   ok(!(dbMid.sessions[bugSession.id].history || []).some(h => h.userId === creator.user.id),
@@ -487,7 +487,7 @@ console.log('\nSep 18 2026 (Jeff, real bug report on Home\'s swipe-to-delete): a
   // redirects into the single plain "Leave workout" confirm, not the Save/Discard choice -- same
   // rule as the nothing-logged case above, reached this time via the Delete fallback instead of
   // the Leave button directly.
-  ok(!sink.html.includes('Save today\'s sets') && !sink.html.includes('Discard today\'s sets') && sink.html.includes('Leave workout'),
+  ok(!sink.html.includes('Save your sets') && !sink.html.includes('Discard your sets') && sink.html.includes('Leave workout'),
      'tapping Delete redirects into the real Leave-workout confirm instead of silently deleting');
   sink.html = '';
   await vm.runInContext('leaveWorkoutConfirmed', ctx3)(joinedOnlySession.id, false);
@@ -739,6 +739,38 @@ console.log("\nv248 (audit finding): /leave never touched s.joinRequests, so a d
   ok(!!removed.removed, `remove-mine works (got ${JSON.stringify(removed)})`);
   const logAfterRemove = await fetch(B + '/api/sessions/' + s2.id + '/log', { method: 'POST', headers: { ...J, Authorization: 'Bearer ' + joiner.token }, body: JSON.stringify({ exerciseId: s2.exercises[0].id, weight: 50, reps: 10 }) });
   ok(logAfterRemove.status === 403, `remove-mine also revokes the approved join request, not just /leave (got ${logAfterRemove.status})`);
+}
+
+console.log('\nOct 2 2026 (Tier 3 audit, Jeff: "Leave workout" warning claims sets logged \'today\' without a real date check) -- the warning text must never claim a specific day, since this sheet has no way to know when the unfinished sets were actually logged');
+{
+  const wUser = await reg('leave_wording_owner', 'pass1234', 'Wording Owner');
+  const wSession = await post('/api/sessions', {
+    name: 'Wording Check Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Lat Pulldown' }],
+    inviteUsernames: [], visibility: 'private',
+  }, wUser.token);
+  await post('/api/sessions/' + wSession.id + '/log', { exerciseId: wSession.exercises[0].id, weight: 70, reps: 10 }, wUser.token);
+
+  const ctx = makeCtx();
+  vm.runInContext(`TOKEN = ${JSON.stringify(wUser.token)}; ME = ${JSON.stringify(wUser.user)};`, ctx);
+  sink.html = '';
+  await vm.runInContext('leaveWorkout', ctx)(wSession.id, false);
+  ok(sink.html.includes('Save your sets') && sink.html.includes('Discard your sets'),
+     'the Save/Discard choice is still offered -- this fix is about the WORDING, not whether the choice is shown');
+  ok(!/\btoday\b/i.test(sink.html),
+     `the sheet never claims the sets were logged "today" -- it has no real date check to back that up (got: ${JSON.stringify(sink.html.match(/[^.]*\btoday\b[^.]*/i))})`);
+
+  // Same fix, the OTHER wording spot -- the already-finished swipe-to-leave path
+  // (swipeRowConfirm's own confirmSheet call in app.js). That branch decides which sheet to show
+  // purely off the swiped row's OWN dataset.finished flag (never re-checked against the server),
+  // so a synthetic row with finished:'1' exercises the exact same client-side branch a real
+  // days-later swipe would reach.
+  sink.html = '';
+  const row = { dataset: { sid: wSession.id, finished: '1', action: 'leave', hasLoggedSets: '1' }, style: {} };
+  const fg = { style: {} };
+  vm.runInContext('swipeRowConfirm', ctx)(row, fg);
+  await new Promise(r => setTimeout(r, 400));
+  ok(sink.html.includes('Leave workout?'), 'the already-finished swipe-leave confirm sheet opened');
+  ok(!/\btoday\b/i.test(sink.html), `and it also never says "today" (got: ${JSON.stringify(sink.html.match(/[^.]*\btoday\b[^.]*/i))})`);
 }
 
 try { srv && srv.kill(); } catch {}
