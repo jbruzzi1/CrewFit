@@ -603,7 +603,10 @@ function swipeRowConfirm(row, fg){
     // reason, no exceptions for who technically created it.
     else if(action === 'leave'){
       if(hasFinished){
-        confirmSheet('Leave workout?', "You'll keep credit for today's sets — this just takes you off the workout going forward.", 'Leave workout', () => leaveWorkoutConfirmed(sid, true), true, resetRow);
+        // Oct 2 2026 (Tier 3 audit, same "today" fix as leaveWorkout's own comment below): this
+        // finished-row path can be reached days after the workout was actually finished, so the
+        // credit being kept isn't necessarily "today's" either.
+        confirmSheet('Leave workout?', "You'll keep credit for the sets you logged — this just takes you off the workout going forward.", 'Leave workout', () => leaveWorkoutConfirmed(sid, true), true, resetRow);
       } else {
         leaveWorkout(sid, hasFinished, resetRow, hasLoggedSets);
       }
@@ -4472,6 +4475,17 @@ async function deleteSessionConfirmed(id, alreadyFinished, onCancel){
 // attempt) doesn't have a live session object at that point, so this fetches it rather than
 // guess. Either way, leaving still always confirms first (Jeff: "they should still confirm the
 // leave workout") -- only the copy/choice offered changes.
+// Oct 2 2026 (Tier 3 audit, Jeff: "Leave workout" warning claims sets logged "today" without a
+// real date check): the Sep 30 fix above stopped the warning from firing on NOTHING logged, but
+// the copy it DOES show still unconditionally says "today" -- true the overwhelming majority of
+// the time (you're usually leaving a workout you're actively in), but not always: an unfinished
+// workout can sit around for days with sets logged on an earlier day (the Save/Discard choice
+// still needs to exist either way -- there is still real unsaved data at stake -- only the WORD
+// "today" was ever a lie). Rather than compute and show the actual date (a genuinely new claim
+// that could itself be wrong in some timezone edge case, and is exactly the kind of wording call
+// CLAUDE.md says to ask about first), this drops the specific-day claim entirely -- "sets logged
+// here" / "your sets" says only what's actually known to be true, for every caller, with no
+// per-case branching needed.
 async function leaveWorkout(id, alreadyFinished, onCancel, hasLoggedSets){
   if(alreadyFinished){ return leaveWorkoutConfirmed(id, true); }
   if(hasLoggedSets === undefined){
@@ -4492,10 +4506,10 @@ async function leaveWorkout(id, alreadyFinished, onCancel, hasLoggedSets){
   SHEET_CANCEL_CB = onCancel || null;
   const inner = hasLoggedSets
     ? `<div class="sheet"><div class="sheet-head"><h2>Leave workout</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
-    <div class="muted" style="padding:0 2px 14px">You have sets logged here today that you haven't finished yet.</div>
+    <div class="muted" style="padding:0 2px 14px">You have sets logged here that you haven't finished yet.</div>
     <div class="sheet-list">
-      <button class="sheet-row" onclick="SHEET_CANCEL_CB=null; leaveWorkoutConfirmed('${id}', true)">Save today's sets</button>
-      <button class="sheet-row red" onclick="SHEET_CANCEL_CB=null; leaveWorkoutConfirmed('${id}', false)">Discard today's sets</button>
+      <button class="sheet-row" onclick="SHEET_CANCEL_CB=null; leaveWorkoutConfirmed('${id}', true)">Save your sets</button>
+      <button class="sheet-row red" onclick="SHEET_CANCEL_CB=null; leaveWorkoutConfirmed('${id}', false)">Discard your sets</button>
       <!-- Sep 30 2026 (Jeff, catching this fresh looking at the rendered screenshot: "this doesn't
            look right" -- the only way out was the small header ✕, unlike every other confirm sheet
            in the app which lists Cancel as its own row). closeSheet() already runs SHEET_CANCEL_CB
@@ -4741,9 +4755,22 @@ function removeInex(id){ const el=document.querySelector('.inex-row[data-ex="'+i
 // (so PUT never treats it as removed at all, and no approval request ever opens) and instead marks
 // each one hidden from just this viewer's own card list.
 let REMOVAL_CHOICE = null;
-function openRemovalChoiceSheet(id, exercises, notes, name, s, touched){
+// Oct 2 2026 (Tier 3 audit, task #150): `onAsk`/`onJustMe` are optional -- the ORIGINAL caller
+// (saveWorkoutEdit, the in-workout "Edit session" exercise-list editor) omits them and gets back
+// the exact same two hardcoded completions as before this change, untouched. submitSession (the
+// full-form create/edit wizard, reached via the ⋯ menu's "Edit session" on the workout's own
+// detail/recap page) had NO equivalent contested-removal check at all -- Save there went straight
+// to PUT, which the server silently answers 200 for while actually opening a pending-removal
+// request behind the scenes (see PUT /api/sessions/:id's own comment) rather than really removing
+// anything, with nothing telling the user that's what just happened. Rather than duplicate this
+// whole sheet for that second editor, or force its very different save shape (schedule/location/
+// visibility/invites all in one PUT, no `notes`) through saveWorkoutEditConfirmed/hideForMeAndSave
+// (built specifically for the OTHER editor's save pipeline), both completions are now pluggable.
+function openRemovalChoiceSheet(id, exercises, notes, name, s, touched, onAsk, onJustMe){
   stompPendingSwipeSheet();
-  REMOVAL_CHOICE = { id, exercises, notes, name, s, touched };
+  REMOVAL_CHOICE = { id, exercises, notes, name, s, touched,
+    onAsk: onAsk || (st => saveWorkoutEditConfirmed(st.id, st.exercises, st.notes, st.name)),
+    onJustMe: onJustMe || (st => hideForMeAndSave(st.id, st.exercises, st.notes, st.name, st.s, st.touched)) };
   const names = touched.map(t=>t.name).join(', ');
   const themPlural = touched.length===1 ? 'them' : 'everyone';
   const inner = `<div class="sheet"><div class="sheet-head"><h2>Remove ${touched.length===1?'this exercise':'these exercises'}?</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
@@ -4760,13 +4787,13 @@ function removalChoiceAsk(){
   const st = REMOVAL_CHOICE; REMOVAL_CHOICE = null;
   if(!st) return;
   closeSheet();
-  saveWorkoutEditConfirmed(st.id, st.exercises, st.notes, st.name);
+  st.onAsk(st);
 }
 function removalChoiceJustMe(){
   const st = REMOVAL_CHOICE; REMOVAL_CHOICE = null;
   if(!st) return;
   closeSheet();
-  hideForMeAndSave(st.id, st.exercises, st.notes, st.name, st.s, st.touched);
+  st.onJustMe(st);
 }
 // See the comment above putWorkoutExercises/finishWorkoutEditSave for why this writes the real
 // exercise list FIRST (via putWorkoutExercises, not the all-in-one saveWorkoutEditConfirmed) and
@@ -4970,16 +4997,73 @@ async function submitSession(){
   const location=$('loc').value; const lengthMin=$('len').value; const creatorNote=DRAFT.creatorNote||''; const name=$('wname').value;   // Sep 7: no note field on the form any more (Jeff) -- an existing note is carried through edits untouched and still renders on the session page
   if(!DRAFT.exercises.length) return alert('Add at least one exercise');
   if(SUBMIT_BUSY) return;
+  const scheduledAt = dt? new Date(dt).toISOString() : new Date().toISOString();
+  const payload={scheduledAt,visibility:vis,name,exercises:DRAFT.exercises,inviteUsernames:DRAFT.inviteUsernames,location,lengthMin:lengthMin?Number(lengthMin):null,creatorNote};
+  const editing = EDITING_SESSION;                 // captured: it is cleared before we navigate
+  const epoch=UI_EPOCH;
+  // Oct 2 2026 (Tier 3 audit #150: "editSession/submitSession has no check for contested
+  // exercises before PUT, unlike enterWorkoutEdit which asks 'Ask them to confirm' vs 'Just for
+  // me'. Server silently opens a pending-removal and returns 200."). Same contested-removal check
+  // saveWorkoutEdit already runs for the OTHER editor (the in-workout "Edit session" exercise-list
+  // form, reached from the ⋯ menu on an already-posted recap) now runs here too -- this full-form
+  // create/edit wizard (editSession/createFlow, reached from the ⋯ menu's plain "Edit" on a
+  // not-yet-posted session) reaches the EXACT SAME PUT route, which keeps a contested exercise in
+  // place and opens a pendingRemovals entry instead of actually removing it, returning a plain 200
+  // either way (see that route's own comment in server.js). With no check here, Save silently
+  // "succeeded" while the removed exercise was invisibly still there the whole time, waiting on a
+  // sign-off from people nobody told was needed.
+  if(editing){
+    const s = await H.get('/api/sessions/'+editing);
+    // Cold-review catch (Oct 2 2026): a failed/errored safety-check GET used to silently fall
+    // through to the write below with the contested-removal check simply skipped -- quietly
+    // disabling the protection this whole block exists for, rather than telling the user anything
+    // went wrong. saveWorkoutEdit alerts and aborts on the identical condition (see its own `if
+    // (!s||s.error)` guard); matched here for the same reason -- a safety check that can silently
+    // fail open is not a safety check.
+    if(!s || s.error){ alert(s && s.error ? s.error : 'Session not found'); return; }
+    const origIds=(s.exercises||[]).map(e=>e.id);
+    const newIds=payload.exercises.map(e=>e.id);
+    const removedIds=origIds.filter(x=>!newIds.includes(x));
+    const touched=[]; // {id, name} -- same detection saveWorkoutEdit uses: anyone OTHER than me with logged sets on it
+    for(const rid of removedIds){
+      const ex=(s.exercises||[]).find(e=>e.id===rid);
+      const who=Object.keys(s.logs||{}).filter(pid=>pid!==ME.id && (s.logs[pid]||[]).some(l=>l.exerciseId===rid));
+      if(who.length) touched.push({ id: rid, name: (ex&&ex.name)||'exercise' });
+    }
+    if(touched.length){
+      // Same stale-navigation gate saveWorkoutEdit uses before popping its own version of this
+      // sheet: the sheet is a UI action, not the write, so a user who's already moved on while
+      // this GET was in flight doesn't get barged in on with no context.
+      if(nothingNavigatedSince(epoch)) openRemovalChoiceSheet(editing, payload.exercises, null, name, s, touched,
+        () => submitSessionWrite(payload, editing, epoch),
+        // "Just for me": restore the touched exercises into the payload (so PUT never treats
+        // them as removed, and no approval request opens at all) and hide them from just this
+        // viewer instead -- same choice, same end state hideForMeAndSave gives the other editor.
+        () => submitSessionWrite(Object.assign({}, payload, { exercises: [...payload.exercises,
+          ...touched.map(t => (s.exercises||[]).find(e => e.id === t.id)).filter(Boolean)] }), editing, epoch, touched));
+      return;
+    }
+  }
+  return submitSessionWrite(payload, editing, epoch);
+}
+// The actual write -- split out of submitSession (Oct 2 2026) so the contested-removal confirm
+// sheet above can sit between "Save tapped" and "the PUT actually fires", the same split
+// saveWorkoutEdit/saveWorkoutEditConfirmed already has for the other editor. `hideTouched`, when
+// present (the "Just for me" choice), is the set of exercises to hide-for-me AFTER the write
+// succeeds -- write first, hide second, same ordering and same reasoning as hideForMeAndSave's own
+// comment: the thing the user tapped Save for either fully succeeds or fully doesn't, with nothing
+// left half-done if hiding fails partway through afterward.
+async function submitSessionWrite(payload, editing, epoch, hideTouched){
+  if(SUBMIT_BUSY) return;
   SUBMIT_BUSY = true;
   try {
-    const scheduledAt = dt? new Date(dt).toISOString() : new Date().toISOString();
-    const payload={scheduledAt,visibility:vis,name,exercises:DRAFT.exercises,inviteUsernames:DRAFT.inviteUsernames,location,lengthMin:lengthMin?Number(lengthMin):null,creatorNote};
-    const editing = EDITING_SESSION;                 // captured: it is cleared before we navigate
-    const epoch=UI_EPOCH;
     const r = editing
       ? await H.put('/api/sessions/'+editing, payload)
       : await H.post('/api/sessions', payload);
     if(r.error){ alert(r.error); return; }
+    if(hideTouched && hideTouched.length){
+      for(const t of hideTouched){ const hr = await H.post(`/api/sessions/${editing}/exercises/${t.id}/hide-for-me`, {}); if(hr&&hr.error){ alert(hr.error); return; } }
+    }
     // MUST be cleared. Nothing cleared it on success before, so the next "+ New workout" would have
     // saved itself over the workout you had just edited.
     EDITING_SESSION = null;
@@ -7444,13 +7528,24 @@ function openEditEx(id){
   const eqOpts = EQ_FAMILY.map(f=>`<option value="${f.key}" ${curFam===f.key?'selected':''}>${f.label}</option>`).join('');
   const patOpts = [['push','Push'],['pull','Pull'],['legs','Legs'],['core','Core'],['cardio','Cardio'],['other','Other']]
     .map(([v,l])=>`<option value="${v}" ${(e.pattern||'other')===v?'selected':''}>${l}</option>`).join('');
+  // Oct 2 2026 (audit finding, Jeff: "I agree, there should be a disclaimer for this also" --
+  // see the comment on PUT /api/exercises/custom/:id for the full mechanism). `historyLocked`
+  // comes from GET /api/exercises -- once this exercise has a logged set anywhere, the server
+  // refuses a muscle-group change (409), so the dropdown is disabled here to match rather than
+  // let the user pick a new muscle, hit Save, and get turned away with no warning beforehand.
+  // Disclaimer wording is Jeff's own pick (asked via the three options surfaced alongside this
+  // build -- CLAUDE.md hard rule #9, never lock in subjective copy unasked).
+  const lockNote = e.historyLocked
+    ? `<div class="muted" style="font-size:12px;margin:4px 0 10px">🔒 Locked — this exercise has logged sets. Changing its muscle group would rewrite your past Progress stats. Create a new exercise instead.</div>`
+    : '';
   history.pushState({t:'sheet'}, '', location.href);
   const sheet = document.createElement('div'); sheet.className='sheet-back';
   sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>Edit exercise</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
       <label class="muted">Name</label><div style="padding:10px 0;font-weight:600">${esc(e.name)}</div>
-      <label class="muted">Primary muscle</label><select id="ceMg">${msel}</select>
+      <label class="muted">Primary muscle</label><select id="ceMg" ${e.historyLocked?'disabled style="opacity:.55"':''}>${msel}</select>
+      ${lockNote}
       <label class="muted">Pattern</label><select id="cePattern">${patOpts}</select>
       <label class="muted">Equipment</label><select id="ceEq">${eqOpts}</select>
       <label class="muted">Level</label><select id="ceLv"><option ${e.level==='beginner'?'selected':''}>beginner</option><option ${e.level==='intermediate'?'selected':''}>intermediate</option><option ${e.level==='advanced'?'selected':''}>advanced</option></select>
@@ -7461,6 +7556,8 @@ function openEditEx(id){
   requestAnimationFrame(()=>sheet.classList.add('show'));
 }
 async function submitEditEx(id){
+  // `.value` still reads correctly off a disabled <select> -- the historyLocked dropdown is
+  // disabled only to stop the user from PICKING a new one, not to blank out what's already there.
   const payload={ muscle_groups:[$('ceMg').value], pattern:$('cePattern').value, equipment:[eqLabel($('ceEq').value).toLowerCase()], level:$('ceLv').value, is_compound:$('ceType').value==='1' };
   const r = await H.put('/api/exercises/custom/'+id, payload);
   // Cold-review catch (Sep 30 2026): this reaches here from the standalone "My exercises" sheet
@@ -8455,6 +8552,22 @@ function crewChallengeHtml(c){
   // same way it already does on a muscle-group card; the "Start a new challenge" link inside stops
   // its own tap from bubbling into that navigation (same pattern as the notifications invite row's
   // Accept/Decline buttons).
+  // Oct 2 2026 (Tier 3 audit #159, Jeff: this card could show "No one's logged yet" directly
+  // under a meter already reading real, nonzero numbers): root cause was publicChallenge
+  // (server.js) nulling OUT a blocked crew-mate's own count on the leaderboard (Sep 24 2026 fix,
+  // so a blocked pair can't see each other's exact weekly number here, same privacy rule as the
+  // roster's streak field) -- but ch.total/the meter above is computed by challengeProgress
+  // BEFORE any of that blocking logic runs, so it still includes a blocked contributor's real
+  // sets. leaderRows below filters on m.count>0, and null>0 is false, so the ONE person who'd
+  // actually logged something could get filtered out of the leaderboard while still counted in
+  // the meter -- "No one's logged yet" printed directly under a meter that disagreed with it.
+  // Gating the empty-state text on ch.total===0 (an actual, checkable fact) instead of
+  // "leaderRows happened to be empty" fixes the contradiction directly: if the meter shows real
+  // progress, this line never claims otherwise. In the (rare) case where total>0 but every
+  // contributor is hidden-from-this-viewer by a block, nothing renders here at all -- no
+  // leaderboard rows to show, and no false "no one" claim either; the meter above still tells
+  // the honest story on its own.
+  const emptyLeaderboard = ch.total===0 ? '<div class="muted" style="font-size:12px">No one\'s logged yet — be first.</div>' : '';
   return `<div class="card" style="padding:12px;margin-bottom:12px;cursor:pointer;position:relative" onclick="challengeView('${jsq(c.id)}','${jsq(ch.id)}')">
     <div class="mg-chev" style="position:absolute;top:12px;right:12px">›</div>
     <div style="padding-right:14px">
@@ -8467,7 +8580,7 @@ function crewChallengeHtml(c){
       <div class="mv-track"><div class="mv-fill${ch.completed?' mv-met':''}" style="width:${pct}%"></div></div>
     </div>
     ${!ch.completed ? `<div class="muted" style="font-size:11px;margin-bottom:6px">${ch.daysLeft} day${ch.daysLeft===1?'':'s'} left</div>` : ''}
-    ${leaderRows || '<div class="muted" style="font-size:12px">No one\'s logged yet — be first.</div>'}
+    ${leaderRows || emptyLeaderboard}
     ${pastLine}
     ${ch.completed && c.isOwner ? `<div class="he-cta" style="margin-top:10px" onclick="event.stopPropagation();newChallengeView('${jsq(c.id)}')">Start a new challenge →</div>` : ''}
     </div>
@@ -9738,6 +9851,34 @@ async function profileView(id, opts){
   // trip's worth of latency, not two -- only ever needed on your OWN profile, where the bell
   // (mirroring the settings gear beside it) shows.
   const [p, notif] = await Promise.all([H.get('/api/profile/'+id), isMe ? H.get('/api/notifications') : Promise.resolve(null)]);
+  // Oct 2 2026 (Tier 3 #157, Jeff's expanded spec: "you should not be able to view a blocked
+  // profile - that profile should no longer be viewable after they are blocked... The person who
+  // was blocked will not be able to see them anywhere."): profileOf (server.js) now returns just
+  // {id, blocked:true} for either side of a block -- deliberately withholding name/avatar/bio/
+  // counts/myWorkouts/everything else this screen reads below. Before this, a blocked
+  // relationship fell through to the exact same markup a merely-private-and-not-following
+  // profile gets (full name/avatar/bio + a Follow button that always 403'd + "This profile is
+  // private"), which is the mislabeling bug itself -- it told both sides "private," never "you
+  // can't see this at all." Renders a distinct, dead-end screen instead, same early-return shape
+  // followList() already uses a few hundred lines down for its own gated ("This list is private")
+  // response. Deliberately doesn't say WHY the profile isn't available -- same "never confirm a
+  // block either way" rule as the 403 on POST /api/follow and isBlocked's own comment server-side.
+  // The one place either side's identity still shows is Settings -> Blocked accounts
+  // (blockedAccountsScreen, reading GET /api/blocked directly) -- that screen never calls
+  // profileView/profileOf at all, so it's untouched by this and keeps working as the carve-out.
+  if(p && p.blocked){
+    if(!silent) PROFILE_SHOWS_BACK = true;
+    const backBtn0 = PROFILE_SHOWS_BACK ? `<div style="margin:0 0 10px">${backLinkHtml('history.back()')}</div>` : '';
+    $('app').innerHTML = `<div class="wrap">${backBtn0}
+      <div class="card" style="text-align:center;padding:36px 16px;margin-top:10px">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" style="color:var(--muted)"><circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/></svg>
+        <div style="font-weight:700;margin-top:8px">This profile isn't available.</div>
+        <div class="muted" style="margin-top:4px;font-size:13px">It may have been removed, or you may not have permission to view it.</div>
+      </div>
+    </div>`;
+    if(!silent){ const st={t:'profile', id}; fromHistory ? landOn(st) : navigated(st); }
+    return;
+  }
   const notifCount = (notif && notif.count) || 0;
   const avatar = p.avatar
     ? `<img class="pavatar" src="${esc(p.avatar)}" alt="">`
@@ -10021,12 +10162,14 @@ async function doBlockUser(id){
   const epoch = UI_EPOCH;
   const r = await H.post('/api/block/'+id, {});
   if(r && r.error){ alert(r.error); return; }
-  // profileView(id) re-renders the SAME profile silently -- now behind the block, so it comes
-  // back showing the same "this profile is private"-shaped limited view a private stranger's
-  // profile shows (canSeeProfile returns false for a blocked relationship exactly like it does
-  // for an unapproved private profile -- see canSeeProfile's own comment server-side). Also used
-  // from Settings -> Blocked accounts' own list, which re-renders itself instead -- see
-  // blockedAccountsScreen below.
+  // profileView(id) re-renders the SAME profile silently -- now behind the block, so (Oct 2 2026,
+  // Tier 3 #157) it comes back as profileOf's new {id, blocked:true} shape and renders the "This
+  // profile isn't available" dead-end screen, not a thinner private-profile view -- per Jeff's own
+  // spec, blocking someone is not supposed to leave their profile reachable to YOU either, only
+  // from Settings -> Blocked accounts (blockedAccountsScreen, which has its own Unblock button and
+  // never goes through profileView/profileOf at all -- the one place either side's identity still
+  // shows). Still re-rendered silently here, same as before, so the menu/Follow button that was on
+  // screen a moment ago is gone rather than left stale and clickable.
   if(nothingNavigatedSince(epoch) && CURRENT_NAV_STATE && CURRENT_NAV_STATE.t==='profile') profileView(id, {silent:true});
   else if(nothingNavigatedSince(epoch) && CURRENT_NAV_STATE && CURRENT_NAV_STATE.t==='blockedAccounts') blockedAccountsScreen({silent:true});
 }
@@ -10262,9 +10405,16 @@ async function doEditUsername(){
 // convention, never a browser confirm()). Section placement is unchanged, only the tap itself.
 function toggleProfileVisibility(){
   const goingPrivate = ME.profileVisibility!=='private';
+  // Oct 2 2026 (Tier 3 audit, Jeff's own pick): "streak" dropped from this sentence -- the app no
+  // longer surfaces a day-streak concept anywhere on the profile itself (see the Sep 30 2026
+  // comments on the removed profile/crew "day streak" pills, directly below in profileView), so
+  // naming it here as one of the things this toggle controls visibility of was stale and no
+  // longer matched what the profile actually shows. profileOf's real gated fields (prCount/prs/
+  // streak/recentActivity -- streak still exists server-side, it's just not named in this copy
+  // any more) are untouched; this is a wording-only fix.
   const body = goingPrivate
-    ? 'Only approved followers (and you) will be able to see your PRs, streak, activity, and posted workouts. You can switch back anytime.'
-    : 'Anyone will be able to see your PRs, streak, activity, and posted workouts. You can switch back anytime.';
+    ? 'Only approved followers (and you) will be able to see your PRs, activity, and posted workouts. You can switch back anytime.'
+    : 'Anyone will be able to see your PRs, activity, and posted workouts. You can switch back anytime.';
   confirmSheet(goingPrivate ? 'Make profile private?' : 'Make profile public?', body,
     goingPrivate ? 'Make private' : 'Make public', () => toggleProfileVisibilityConfirmed(), false);
 }

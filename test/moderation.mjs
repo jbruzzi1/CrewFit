@@ -65,8 +65,16 @@ console.log('block/unblock and bidirectional enforcement');
   ok(blockedList.json.some(u => u.id === BID), "bob appears in alice's /api/blocked list");
   ok((await api('POST', `/api/follow/${AID}`, B)).status === 403, 'bob cannot re-follow alice once blocked');
   ok((await api('POST', `/api/follow/${BID}`, A)).status === 403, 'alice (the blocker) also cannot follow bob -- block is bidirectional');
+  // Oct 2 2026 (Tier 3 #157, Jeff's expanded spec): this used to assert the OLDER, narrower
+  // behavior -- a blocked profile merely hiding prCount/streak/activity like a private one,
+  // with everything else (name/avatar/bio/follower counts/myWorkouts) still returned. Jeff asked
+  // for a blocked profile to be fully unviewable, not just thinner, so profileOf now returns a
+  // minimal {id, blocked:true} shape with nothing else in it at all -- see the dedicated coverage
+  // in test/audit-oct2-blocked-profile.mjs for the full before/after/bidirectional/carve-out
+  // picture. This assertion is updated to match rather than duplicate that coverage here.
   const aliceProfileForBob = await api('GET', `/api/profile/${AID}`, B);
-  ok(aliceProfileForBob.json.prCount === null, "bob viewing alice's profile sees gated fields (prCount) hidden by the block");
+  ok(aliceProfileForBob.json.blocked === true && aliceProfileForBob.json.prCount === undefined,
+     "bob viewing alice's profile gets the fully-unviewable blocked shape, not just gated fields");
   ok((await api('POST', `/api/unblock/${BID}`, A)).status === 200, 'alice unblocks bob');
   const blockedAfter = await api('GET', '/api/blocked', A);
   ok(!blockedAfter.json.some(u => u.id === BID), 'bob no longer in blocked list after unblock');

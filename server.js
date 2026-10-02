@@ -799,7 +799,16 @@ app.get('/api/exercises', async (req, res) => {
   // missing/invalid token just means every custom exercise reads as not-mine, same as a guest.
   const myId = userIdFromToken((req.headers['authorization'] || '').replace(/^Bearer\s/, ''));
   const custom = Object.values(DB.customExercises || {}).flat()
-    .map(({ ownerId, ...rest }) => Object.assign(sanitizeExercise(rest), { mine: !!myId && ownerId === myId }))
+    .map(({ ownerId, ...rest }) => {
+      const mine = !!myId && ownerId === myId;
+      const sanitized = sanitizeExercise(rest);
+      // Oct 2 2026 (audit finding -- see the comment on PUT /api/exercises/custom/:id for the
+      // full mechanism): only the OWNER's own edit sheet needs to know a custom exercise's muscle
+      // group is locked, so this skips the exerciseNameEverLogged scan entirely for every exercise
+      // that isn't `mine` -- same reasoning as `mine` itself being the only per-row thing computed
+      // against the caller's identity here.
+      return Object.assign(sanitized, { mine, historyLocked: mine && exerciseNameEverLogged(sanitized.name) });
+    })
     // a custom exercise someone made under a name the library has SINCE adopted (the Sep 2026
     // audit added Dumbbell Romanian Deadlift, Incline Dumbbell Fly, ...) would list twice --
     // findExLibEntry already resolves that name to the library entry, so show only that one
@@ -928,6 +937,36 @@ app.put('/api/exercises/custom/:id', auth, async (req, res) => {
   const KNOWN_MG = new Set(EX_LIB.flatMap(x => x.muscle_groups || []));
   const mg = muscle_groups.filter(m => typeof m === 'string' && KNOWN_MG.has(m));
   if (!mg.length) return res.status(400).json({ error: 'muscle_groups must be from the library' });
+  // Oct 2 2026 (audit finding, Jeff: "I agree, there should be a disclaimer for this also" --
+  // flagging that editing a custom exercise's muscle group silently rewrites PAST Progress
+  // stats). Confirmed mechanism: every Progress computation that credits a logged set to a
+  // muscle group (volumeFor / volumeTrendFor / everTrainedMusclesFor -- see each one's own
+  // comment) resolves the exercise LIVE by name through findExLibEntry every single time it
+  // runs. There is no snapshot of which muscle(s) a set counted toward at the moment it was
+  // logged, so changing muscle_groups here doesn't just affect future sets -- it retroactively
+  // changes what every ALREADY-LOGGED set under this name counts toward, silently, with nothing
+  // on the Progress page hinting anything changed. Same shape of problem DELETE already guards
+  // against (see exerciseNameEverLogged's own comment, directly below) -- once the name has ever
+  // been logged by anyone, anywhere, muscle_groups (and category, which is only ever mg[0]) are
+  // frozen, exactly like DELETE's name-based, not owner-scoped, check. Create a new exercise if a
+  // different muscle group is genuinely needed. The other fields below (equipment / level /
+  // is_compound / pattern) are NOT read by any Progress computation -- only display and the
+  // add-time default-target suggestion (defaultTargetFor) -- so they stay freely editable even
+  // once logged; only muscle_groups/category is locked.
+  //
+  // Cold-review catch (Oct 2 2026): comparing mg/ex.muscle_groups by JSON.stringify-of-the-raw-
+  // array falsely flags a pure REORDER as a change -- exMuscles()/every real Progress computation
+  // credits muscle groups by SET MEMBERSHIP in a loop (see exMuscles' own comment), never by
+  // position, so ['chest','shoulders'] and ['shoulders','chest'] are identical as far as Progress
+  // is concerned. The only thing position affects is `category` (mg[0], display-only, confirmed
+  // above). Not reachable through today's UI (both call sites always send a single-element array,
+  // where order can't vary), but the route itself should still only block an ACTUAL set change,
+  // not a coincidental reorder from some other future or direct-API caller. Compared sorted.
+  const mgChanged = exerciseNameEverLogged(ex.name) &&
+    JSON.stringify([...mg].sort()) !== JSON.stringify([...ex.muscle_groups].sort());
+  if (mgChanged) {
+    return res.status(409).json({ error: 'This exercise has logged sets, so its muscle group is locked to protect your past Progress stats. Create a new exercise instead.' });
+  }
   const equip = (Array.isArray(equipment) ? equipment : [])
     .filter(x => typeof x === 'string').map(x => x.slice(0, 40)).slice(0, 8);
   ex.muscle_groups = mg;
@@ -1051,6 +1090,27 @@ function canSeeProfile(id, viewerId) {
 function profileOf(id, viewerId, localToday) {
   const u = DB.users[id];
   if (!u) return null;
+  // Oct 2 2026 (Tier 3 #157, Jeff: "you should not be able to view a blocked profile - that
+  // profile should no longer be viewable after they are blocked. The person that blocked them has
+  // access to seeing the profile only in the blocked section. The person who was blocked will not
+  // be able to see them anywhere."): canSeeProfile already folded isBlocked into isApproved below,
+  // but isApproved only ever gated the PRs/streak/activity block -- the rest of this function
+  // (publicUser's name/avatar/bio/follower-counts, myWorkouts, youFollow, workoutsCompleted) kept
+  // returning in full, so a blocked relationship rendered as a thinner PRIVATE profile instead of
+  // no profile at all. That's the exact mislabeling bug: client-side this was indistinguishable
+  // from "private, not following," right down to reusing "This profile is private" copy and a
+  // Follow button that always 403'd (POST /api/follow also resolves through canSeeProfile).
+  // Short-circuits with a minimal, deliberately unidentifying shape -- no name, avatar, bio, or
+  // counts in either direction -- before any of the real profile is assembled. Bidirectional and
+  // symmetric, same as isBlocked itself: it doesn't matter who blocked whom, neither party's
+  // client gets anything to render as a profile. The one deliberate exception is Settings ->
+  // Blocked accounts (GET /api/blocked), which never calls profileOf at all -- it reads
+  // publicUser() directly off the blocker's own me.blocked array, so the carve-out ("the blocker
+  // can still see who they blocked, but only from that list") already works without this function
+  // needing to know about it.
+  if (viewerId && id !== viewerId && isBlocked(id, viewerId)) {
+    return { id, blocked: true };
+  }
   const selfToday = id === viewerId ? localToday : undefined;
   // workouts completed: distinct sessions with a history entry by this user,
   // OR sessions this user posted (saved) — both count as a completed workout
