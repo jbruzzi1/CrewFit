@@ -1267,7 +1267,15 @@ function followListFor(id, viewerId, kind) {
   if (!u) return null;
   ensureFollowArrays(u);
   if (!canSeeProfile(id, viewerId)) return { error: 'forbidden' };
-  return (u[kind] || []).filter(fid => DB.users[fid]).map(fid => publicUser(fid));
+  // Oct 1 2026 (Jeff, re-raising the Sep 29 "if they are blocked they shouldn't show at all --
+  // similar to how instagram is" rule, this time against OTHER people's follower/following lists,
+  // not just the search box): canSeeProfile just above only checks the relationship between the
+  // viewer and THIS profile's owner (id) -- it says nothing about the people actually IN the list.
+  // Browsing some third party's followers was a real way to find someone you'd blocked (or who'd
+  // blocked you) by name, exactly the search-box leak that was already closed, just reached from a
+  // different screen. Filtered the same bidirectional way isBlocked() always is -- the entry simply
+  // isn't in the list, no error, same as a blocked search result just not turning up.
+  return (u[kind] || []).filter(fid => DB.users[fid] && !isBlocked(fid, viewerId)).map(fid => publicUser(fid));
 }
 app.get('/api/profile/:id/followers', auth, async (req, res) => {
   const list = followListFor(req.params.id, req.userId, 'followers');
@@ -2540,6 +2548,17 @@ app.get('/api/notifications', auth, async (req, res) => {
       reinviteAsks.push({ type: 'reinviteAsk', sessionId: s.id, reqId: rr.id, sessionName: s.name || 'Workout', message: rr.message || '', from: publicUser(rr.userId) });
     }
   }
+  // Oct 2 2026 (routine-sharing redesign): a routine explicitly shared with me (POST
+  // /api/templates/:id/share) that I haven't yet accepted or declined -- same "surfaced here too,
+  // not just the one push that created it" reasoning as every other pending-action list above,
+  // and the same isBlocked re-check they all already carry (a block can happen any time between
+  // the share and now).
+  const routineShares = [];
+  for (const t of Object.values(DB.templates || {})) {
+    if (!Array.isArray(t.sharedTo) || !t.sharedTo.includes(req.userId)) continue;
+    if (!DB.users[t.ownerId] || isBlocked(t.ownerId, req.userId)) continue;
+    routineShares.push({ type: 'routineShare', routineId: t.id, routineName: t.name, exerciseCount: (t.exercises || []).length, from: publicUser(t.ownerId) });
+  }
   const cutoff = Date.now() - NOTIFICATION_HISTORY_DAYS * 86400000;
   const history = Object.values(DB.notifications)
     .filter(n => n.userId === req.userId && new Date(n.createdAt).getTime() >= cutoff)
@@ -2548,7 +2567,7 @@ app.get('/api/notifications', auth, async (req, res) => {
     .map(n => ({ type: 'history', id: n.id, title: n.title, body: n.body, at: n.createdAt, link: n.link || null }));
   const seenAt = me.notificationsSeenAt ? new Date(me.notificationsSeenAt).getTime() : 0;
   const unseenHistory = history.filter(n => new Date(n.at).getTime() > seenAt).length;
-  res.json({ invites, followRequests, joinRequests, removals, suggestions, reinviteAsks, history, count: invites.length + followRequests.length + joinRequests.length + removals.length + suggestions.length + reinviteAsks.length + unseenHistory });
+  res.json({ invites, followRequests, joinRequests, removals, suggestions, reinviteAsks, routineShares, history, count: invites.length + followRequests.length + joinRequests.length + removals.length + suggestions.length + reinviteAsks.length + routineShares.length + unseenHistory });
 });
 // Stamps "I have now looked at the notifications page" -- called by renderNotifications() in
 // app.js when it actually lands on the page, deliberately NOT by GET /api/notifications itself
@@ -2810,36 +2829,41 @@ app.get('/api/feed', auth, async (req, res) => {
 // template object -- GET's mine/shared, POST's create response, PUT's update response -- strips
 // it before the object leaves the server. (DELETE only ever returns {ok:true}, nothing to strip.)
 const stripHidden = t => { const { hiddenBy, ...rest } = t; return rest; };
+// Oct 2 2026 (Jeff, full redesign): "remove the visibility and the details for location, and
+// inviting friends. You should solely be able to edit the exercises in the routine and then
+// share the routine with others. that person should then get a notification that a routine was
+// shared with them and they can then click on that be brought to the routine and accept the
+// routine or decline it." This replaces the old PASSIVE share model (any 'public'-visibility
+// routine silently appeared in every connection's "Shared by friends" list below, no action, no
+// notification -- the old `friendT` filter that used to live here) with an ACTIVE one: a routine
+// is only ever shared when its owner explicitly picks someone via POST .../share, which is the
+// only thing that ever adds to t.sharedTo (a list of still-pending recipient user ids). `shared`
+// below is now "routines explicitly, still-pending shared WITH ME", not "anything my connections
+// happen to own and haven't marked private." Old t.location/t.visibility/t.invited left on
+// existing routines are harmless, inert legacy data -- tplUse() (app.js) still legitimately reads
+// them to pre-fill a brand-new WORKOUT session from an old routine; nothing here deletes or
+// migrates them, and POST/PUT below simply stop accepting new values for them.
 app.get('/api/templates', auth, async (req, res) => {
   const all = Object.values(DB.templates || {});
   const mine = all.filter(t => t.ownerId === req.userId);
-  // also templates shared by friends
-  //
-  // Jeff, Aug 28: "I want to be able to delete friend shared routines having that option also."
-  // A shared routine is ONE object owned by your friend -- the "Delete" button on your OWN
-  // routines below (owner-only, and a real DELETE that erases the row for everyone) can't just
-  // be reused here: you deleting it would delete your friend's routine out from under them too.
-  // So "delete" a friend's routine means take it out of MY OWN Routines list only -- t.hiddenBy
-  // below, exactly the same "remove it for me, leave everyone else's copy alone" shape as
-  // POST /api/sessions/:id/remove-mine (Aug 28, above the session routes). Never surfaced to the
-  // owner or any other friend. Since v240 removal is undoable for a moment (POST /unhide below,
-  // driven by the client's undo toast); once that moment passes it stays out of your list even
-  // if you unfriend and re-friend them later.
-  const myConnections = connectionsOf(req.userId);
-  // Sep 29 2026 (audit finding): the Private/Public toggle on a routine (t.visibility, set in
-  // POST/PUT /api/templates) was saved but never actually read anywhere -- a routine marked
-  // Private still showed up here, in every connection's friend-shared list. Unset counts as
-  // public, same convention canSeeProfile already uses for profiles.
-  const friendT = all.filter(t => myConnections.includes(t.ownerId) && t.visibility !== 'private'
-    && !(t.hiddenBy && t.hiddenBy.includes(req.userId)));
+  // Oct 2 2026: pending shares -- someone else's routine, explicitly shared with me via
+  // POST /api/templates/:id/share, that I haven't yet accepted or declined. Block-filtered the
+  // same way every other pending-action list in GET /api/notifications already is (invites,
+  // joinRequests, removals, suggestions, reinviteAsks) -- sharing itself can't target a blocked
+  // connection (resolveInvites only ever resolves against connectionsOf, which blockUser() already
+  // keeps block-free), but a block can still happen AFTER the share and BEFORE it's accepted, and
+  // this list must not keep showing that person's routine once it has.
+  const pendingShares = all.filter(t => Array.isArray(t.sharedTo) && t.sharedTo.includes(req.userId)
+    && DB.users[t.ownerId] && !isBlocked(t.ownerId, req.userId));
   // v239: shared rows carry WHO shared them - two friends' "Legs - Random" were otherwise
   // indistinguishable (Jeff's real list, Aug 28). Display name only; never the id-to-name map.
-  // v306: `invited` (see POST/PUT below -- a routine can now optionally carry a saved invite
-  // list, same fields a full workout has) is the owner's own connections, specific people --
-  // stripped from every SHARED row for the same reason hiddenBy and a session's joinRequests
-  // are owner-only elsewhere in this file. It stays on `mine` rows (own routines) untouched.
+  // Every SHARED row also strips `invited` (legacy per-routine invite list, see POST/PUT below)
+  // and `sharedTo` itself -- a recipient has no business seeing the full list of everyone else
+  // this routine was also shared with, same reasoning hiddenBy is owner-only for everywhere else
+  // in this file. Both stay on `mine` rows (your own routines) untouched -- sharedTo there is how
+  // the owner's own "Share" sheet knows who it's already pending with.
   res.json({ mine: mine.map(stripHidden),
-    shared: friendT.map(t => { const { invited, ...rest } = stripHidden(t);
+    shared: pendingShares.map(t => { const { invited, sharedTo, ...rest } = stripHidden(t);
       return { ...rest, ownerName: (DB.users[t.ownerId] && (DB.users[t.ownerId].displayName || DB.users[t.ownerId].username)) || '' }; }),
     // Sep 21 2026: the pre-made library (see starterTemplates() above). Static, same array for
     // every caller, not filtered by connections/hidden -- these aren't owned by anyone.
@@ -2847,6 +2871,12 @@ app.get('/api/templates', auth, async (req, res) => {
 });
 // The non-owner half of "delete a routine": hides it from MY list, never touches the owner's
 // row. See the comment above GET /api/templates for why this can't just be DELETE /:id.
+// Oct 2 2026: left in place, unused by any current client code, after the active/explicit-share
+// redesign retired the passive "any connection's public routine shows in my Shared list" model
+// this was built for (see GET /api/templates's own comment) -- a routine the new flow actually
+// shares with you is either pending (decline it, POST .../decline-share below) or yours outright
+// once accepted (a real owned copy -- Delete, not Remove). Not deleted: it's a harmless no-op
+// surface now, and removing it buys nothing while risking breaking some old client still calling it.
 app.post('/api/templates/:id/hide', auth, async (req, res) => {
   const t = DB.templates && DB.templates[req.params.id];
   if (!t) return res.status(404).json({ error: 'not found' });
@@ -2893,25 +2923,22 @@ const resolveInvites = (userId, usernames) => {
   }
   return out;
 };
+// Oct 2 2026 (Jeff, full redesign): routine create/edit is now solely name + exercises --
+// location/creatorNote/visibility/inviteUsernames (v306, "repeat a workout" folded into
+// Routines) are no longer accepted here. A routine created or edited from today has none of
+// those fields at all; an OLD routine that already has them keeps them untouched forever (this
+// route never deletes a field it isn't told about) purely as inert legacy data -- tplUse()
+// (app.js) still reads them to pre-fill a brand-new WORKOUT session, which this redesign
+// deliberately does not touch. Sharing is its own explicit action now (POST .../share below),
+// not something baked into create/edit.
 app.post('/api/templates', auth, async (req, res) => {
-  const { name, exercises, location, creatorNote, visibility, inviteUsernames } = req.body || {};
+  const { name, exercises } = req.body || {};
   if (!name || !Array.isArray(exercises) || !exercises.length) return res.status(400).json({ error: 'name + exercises required' });
   // v253 (audit finding, see isPlainExercise above) -- a non-object element would have thrown
   // inside withDefaults below, returning a generic 500 instead of a clean 400.
   if (!exercises.every(isPlainExercise)) return res.status(400).json({ error: 'invalid exercise' });
   const id = 't_' + uid();
   const t = { id, ownerId: req.userId, name: capStr(name, 80), exercises: exercises.map(withDefaults) };
-  // v306 (Jeff, Sep 3): "repeat a workout" folded into Routines instead of a second feature --
-  // a routine can now optionally carry the same full-workout details a session has (location,
-  // note, visibility, invited friends), alongside its exercises. Every one of these is genuinely
-  // optional and only ever set when truthy, so a plain exercises-only routine (the only kind that
-  // existed before this) is stored byte-for-byte the way it always was -- no new blank fields on
-  // old-shaped objects, nothing for existing routines or clients to migrate.
-  if (typeof location === 'string' && location) t.location = capStr(location, 120);
-  if (typeof creatorNote === 'string' && creatorNote) t.creatorNote = capStr(creatorNote, 2000);
-  if (visibility) t.visibility = visibility === 'public' ? 'public' : 'private';
-  const invites = resolveInvites(req.userId, inviteUsernames);
-  if (invites.length) t.invited = invites;
   if (!DB.templates) DB.templates = {};
   DB.templates[id] = t;
   await save(DB);
@@ -2921,22 +2948,12 @@ app.put('/api/templates/:id', auth, async (req, res) => {
   const t = DB.templates && DB.templates[req.params.id];
   if (!t) return res.status(404).json({ error: 'not found' });
   if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
-  const { name, exercises, location, creatorNote, visibility, inviteUsernames } = req.body || {};
+  const { name, exercises } = req.body || {};
   if (name) t.name = capStr(name, 80);
   if (Array.isArray(exercises) && exercises.length) {
     // v253 (audit finding, see isPlainExercise above) -- same generic-500 risk as POST /api/templates.
     if (!exercises.every(isPlainExercise)) return res.status(400).json({ error: 'invalid exercise' });
     t.exercises = exercises.map(withDefaults);
-  }
-  // v306: typeof-string checks (not truthy), matching PUT /api/sessions/:id's own pattern just
-  // above -- so clearing a field back to blank on an edit actually clears it instead of a falsy
-  // '' silently leaving the old value stuck forever.
-  if (typeof location === 'string') { if (location) t.location = capStr(location, 120); else delete t.location; }
-  if (typeof creatorNote === 'string') { if (creatorNote) t.creatorNote = capStr(creatorNote, 2000); else delete t.creatorNote; }
-  if (visibility) t.visibility = visibility === 'public' ? 'public' : 'private';
-  if (Array.isArray(inviteUsernames)) {
-    const invites = resolveInvites(req.userId, inviteUsernames);
-    if (invites.length) t.invited = invites; else delete t.invited;
   }
   await save(DB);
   // stripHidden matters here specifically: once a friend has hidden this routine, t.hiddenBy is
@@ -2950,6 +2967,65 @@ app.delete('/api/templates/:id', auth, async (req, res) => {
   if (!t) return res.status(404).json({ error: 'not found' });
   if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
   delete DB.templates[req.params.id];
+  await save(DB);
+  res.json({ ok: true });
+});
+// ---- Routine sharing (Oct 2 2026 redesign) ----
+// The owner's explicit "share this with specific people" action -- the only thing that ever adds
+// to t.sharedTo. Reuses resolveInvites, same as a session's own invite list: scoped to the
+// CALLER's connections, which is automatically block-safe (blockUser() severs the follow graph
+// both directions the instant either side blocks, so a blocked relationship can never resolve
+// here in the first place -- see resolveInvites' own comment and blockUser's).
+app.post('/api/templates/:id/share', auth, async (req, res) => {
+  const t = DB.templates && DB.templates[req.params.id];
+  if (!t) return res.status(404).json({ error: 'not found' });
+  if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
+  const targets = resolveInvites(req.userId, (req.body || {}).usernames);
+  if (!targets.length) return res.status(400).json({ error: 'pick at least one person to share with' });
+  t.sharedTo = t.sharedTo || [];
+  const newlyShared = targets.filter(id => !t.sharedTo.includes(id));
+  for (const id of newlyShared) t.sharedTo.push(id);
+  await save(DB);
+  // history:false -- already shown live as an actionable "Routine shared" row in GET
+  // /api/notifications while it's unanswered, same pattern as a workout invite's own notify()
+  // call just above in this file; accept/decline (below) get their own notify().
+  for (const id of newlyShared) notify(id, { title: 'Routine shared', body: `${DB.users[req.userId].displayName} shared "${t.name}" with you`, link: { type: 'routine', routineId: t.id } }, { history: false });
+  res.json(stripHidden(t));
+});
+// Accept: makes you the owner of a brand-new, fully independent COPY of the routine -- same
+// "copy, not a live shared object" semantics tplEditCopy() already uses for a friend's old
+// passively-shared routine, since routines have no collaborative-editing concept anywhere in
+// this codebase. The ORIGINAL stays exactly where it is, owned by whoever shared it; this is not
+// a transfer. Removes you from the pending t.sharedTo either way once decided.
+app.post('/api/templates/:id/accept-share', auth, async (req, res) => {
+  const t = DB.templates && DB.templates[req.params.id];
+  if (!t) return res.status(404).json({ error: 'not found' });
+  if (!Array.isArray(t.sharedTo) || !t.sharedTo.includes(req.userId)) return res.status(403).json({ error: 'not shared with you' });
+  // Defensive re-check at the moment ownership would actually be granted -- same reasoning as
+  // POST /api/sessions/:id/accept's own isBlocked re-check (see its comment): the share itself
+  // was created before any block could have existed between these two, but a block can happen
+  // any time between then and now, and resolveInvites being block-safe at SHARE time says nothing
+  // about block state at ACCEPT time. Refuse rather than letting a blocked owner's routine become
+  // your own real, owned data; the pending share just sits there unaccepted (it's already
+  // invisible in GET /api/templates' `shared` list and GET /api/notifications' routineShares once
+  // blocked, so there's nothing left for either side to even see or act on).
+  if (isBlocked(t.ownerId, req.userId)) return res.status(400).json({ error: 'blocked' });
+  const id = 't_' + uid();
+  const copy = { id, ownerId: req.userId, name: t.name, exercises: t.exercises.map(withDefaults) };
+  if (!DB.templates) DB.templates = {};
+  DB.templates[id] = copy;
+  t.sharedTo = t.sharedTo.filter(x => x !== req.userId);
+  await save(DB);
+  res.json({ ok: true, id });
+});
+// Decline: just removes you from the pending list, no copy made. Always safe regardless of
+// block state (removing your own pending entry can never hand anyone anything), so no isBlocked
+// check here -- matching POST /api/sessions/:id/decline's own shape just above in this file.
+app.post('/api/templates/:id/decline-share', auth, async (req, res) => {
+  const t = DB.templates && DB.templates[req.params.id];
+  if (!t) return res.status(404).json({ error: 'not found' });
+  if (!Array.isArray(t.sharedTo) || !t.sharedTo.includes(req.userId)) return res.status(403).json({ error: 'not shared with you' });
+  t.sharedTo = t.sharedTo.filter(x => x !== req.userId);
   await save(DB);
   res.json({ ok: true });
 });

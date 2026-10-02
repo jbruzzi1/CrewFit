@@ -166,20 +166,18 @@ console.log('\nTier 3 #9 (Jeff: duplicate custom-exercise names are explicitly a
   ok(volSets('biceps') === 0, 'and specifically NOT credited to zed\'s biceps definition -- the exact ambiguity this fix narrows');
 }
 
-console.log('\nTier 2 #14-adjacent (Jeff, Sep 29, private-routine toggle): GET /api/templates -- a Private routine no longer shows up in a friend\'s shared list; Public still does');
-{
-  const holly = await reg('sep30holly');
-  const ivan = await reg('sep30ivan');
-  await post('/api/follow/' + holly.user.id, {}, ivan.token);   // connectionsOf is one-directional-OK -- a real connection either way
-
-  const priv = await post('/api/templates', { name: 'Holly Private Routine', visibility: 'private', exercises: [{ name: 'Squat' }] }, holly.token);
-  const pub = await post('/api/templates', { name: 'Holly Public Routine', visibility: 'public', exercises: [{ name: 'Bench Press' }] }, holly.token);
-  ok(!!priv.id && !!pub.id, 'setup: both routines created');
-
-  const ivansView = await api('/api/templates', 'GET', ivan.token).then(r => r.body);
-  ok(!ivansView.shared.some(t => t.id === priv.id), 'the PRIVATE routine does not appear in the friend\'s shared list');
-  ok(ivansView.shared.some(t => t.id === pub.id), 'the PUBLIC routine still does');
-}
+// RESOLVED Oct 2 2026 (routine-sharing redesign) -- this sub-test checked the Sep 29 fix for the
+// old PASSIVE share model: a routine's visibility toggle (private vs. public) decided whether it
+// silently showed up in every connection's own "shared" list, no action, no notification. Jeff's
+// Oct 2 redesign retired that model outright -- POST/PUT /api/templates no longer even accepts a
+// visibility field (see server.js's own comment on POST /api/templates), and GET /api/templates'
+// `shared` now means "explicitly, still-pending shared with me" via the new t.sharedTo, which has
+// nothing to do with visibility. The PRIVATE half of the old assertion (a private routine never
+// auto-shows) is still true, but now trivially so -- nothing a plain POST/PUT /api/templates call
+// does can EVER make a routine show up in someone else's `shared` list any more, public or
+// private, so asserting that is no longer a meaningful regression check for this route. Coverage
+// for the real replacement feature (explicit share -> notify -> accept/decline, including its
+// own block-awareness) lives in test/audit-oct2-routine-share.mjs instead.
 
 console.log('\nTier 2 #2-adjacent (kick route, Sep 29 audit finding): the removal notification\'s link is a real, usable one only when the kicked person keeps SOME access, never a guaranteed dead tap');
 {

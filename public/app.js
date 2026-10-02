@@ -5381,51 +5381,87 @@ async function templatesPage(opts){
   }
 }
 // The detail screen Jeff asked for: tap a routine on the list, see every exercise it has, with
-// the same ⋯ menu (Edit / Delete, or Edit a copy / Remove for a friend's shared routine) the
-// list row used to carry, now up in the header next to Back -- same pp-head/pp-dots/pp-menu
-// anatomy openSession uses for its own Edit session/Delete session pair. "Use routine" sits in the
-// same header, so viewing a routine before starting it doesn't cost an extra trip back.
+// the same ⋯ menu (Edit / Share / Delete, owner-only) the list row used to carry, now up in the
+// header next to Back -- same pp-head/pp-dots/pp-menu anatomy openSession uses for its own Edit
+// session/Delete session pair. "Use routine" sits in the same header, so viewing a routine before
+// starting it doesn't cost an extra trip back.
+//
+// Oct 2 2026 (Jeff, full redesign): the old non-owner "Edit a copy"/"Remove" menu (for a friend's
+// passively-shared routine) is gone along with the passive-share model itself -- the only way to
+// see a routine you don't own now is a starter routine (view-only, unchanged) or a routine someone
+// explicitly shared with you that's still pending your decision (`shared` in GET /api/templates
+// is now exactly that list -- see its own comment). A pending share gets Accept/Decline here
+// instead of the usual ⋯ menu + Use routine, since it isn't yours to edit, delete, or start a
+// workout from until you've decided. Once accepted it's a brand-new, fully-owned routine in
+// `mine` (tplAcceptShare below routes straight there) -- this screen never has to represent a
+// "half-yours" state.
 async function tplView(id, opts){
   const fromHistory = !!(opts && opts.fromHistory);
   const { mine, shared, starter } = await H.get('/api/templates');
-  const t = [...mine, ...shared, ...(starter||[])].find(x=>x.id===id);
-  // Gone (deleted, or a friend un-shared it) since the list was last drawn -- e.g. a stale link
-  // via Back/Forward. Nothing to show; land back on the list rather than stranding on a dead page.
+  // shared rows are tagged __pending so this merged lookup doesn't lose which bucket a routine
+  // came from -- needed below to tell "pending share, not yet mine" apart from every other case.
+  const t = [...mine, ...shared.map(x => ({ ...x, __pending: true })), ...(starter || [])].find(x => x.id === id);
+  // Gone (deleted, accepted/declined elsewhere, or un-shared) since the list was last drawn --
+  // e.g. a stale link via Back/Forward. Nothing to show; land back on the list rather than
+  // stranding on a dead page.
   if(!t){ templatesPage({replace:true}); return; }
   const isOwner = t.ownerId===ME.id;
-  const menuItems = isOwner
-    ? `<button onclick="tplEdit('${id}')">Edit</button><button class="danger" onclick="tplDelete('${id}')">Delete</button>`
-    : `<button onclick="tplEditCopy('${id}')">Edit a copy</button><button class="danger" onclick="tplHide('${id}')">Remove</button>`;
-  // Sep 21 2026: a starter routine isn't owned by anyone and can't be hidden/edited-in-place (see
+  const pending = !!t.__pending;
+  const menuItems = `<button onclick="tplEdit('${id}')">Edit</button><button onclick="tplShareSheet('${id}')">Share</button><button class="danger" onclick="tplDelete('${id}')">Delete</button>`;
+  // Sep 21 2026: a starter routine isn't owned by anyone and can't be edited/shared/deleted (see
   // the comment above STARTER_TEMPLATES in server.js) -- no ⋯ menu at all for one, just Back +
-  // Use routine. The pp-dots-wrap span itself is omitted, not just left with empty contents --
-  // .pp-right is a flex row with `gap:8px`, so an empty-but-present span would still cost 8px of
-  // dead space before the Use routine button.
-  const dots = t.starter ? '' : `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">⋯</button><div class="pp-menu" id="ppMenu-${id}" style="display:none">${menuItems}</div>`;
+  // Use routine. Same for a still-pending share (not yours yet, see above) -- in both cases
+  // isOwner is false, so gating on isOwner alone covers both with no extra branch. The
+  // pp-dots-wrap span itself is omitted, not just left with empty contents -- .pp-right is a flex
+  // row with `gap:8px`, so an empty-but-present span would still cost 8px of dead space before
+  // whatever sits to its right.
+  const dots = isOwner ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">⋯</button><div class="pp-menu" id="ppMenu-${id}" style="display:none">${menuItems}</div>` : '';
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
+  // Oct 2 2026: a pending share's header right side is Accept/Decline instead of the usual
+  // ⋯ menu + Use routine -- matching Jeff's spec verbatim ("accept the routine or decline it").
+  // Accept is the primary action (blue, matches every other "Accept" button in the app --
+  // notifAcceptInvite's Accept, follow-request Accept) and sits LEFT, same order Jeff picked for
+  // this exact screen (Oct 2 2026: "accept should also be on the left and decline on the right") --
+  // matches the order the routineSharesHtml banner in renderNotifications already used. Decline is
+  // the muted secondary, sm/gray, same as every other Decline/Reject button in the app.
+  // Oct 2 2026 (Jeff, after seeing the ⋯ menu float away from the dots toward mid-screen): the
+  // dots used to sit BEFORE "Use routine," so they were never the rightmost thing in the row --
+  // .pp-menu's CSS (`position:absolute; right:0`) is right-aligned to .pp-dots-wrap itself, not
+  // the page edge, so with Use routine sitting to its right, the dots (and the menu hanging off
+  // them) landed short of the true right margin, reading as floating in the middle. Every OTHER
+  // ⋯ menu in the app (openSession's Edit/Delete session, viewPost's own menu, profile's) has the
+  // dots as the LAST element in its header row, flush against the real right edge, which is what
+  // keeps their menus anchored correctly. Moving Use routine before the dots matches that.
+  const rightHtml = pending
+    ? `<button class="sm blue" onclick="tplAcceptShare('${id}')">Accept</button><button class="sm gray" onclick="tplDeclineShare('${id}')">Decline</button>`
+    : `<button class="blue sm" onclick="tplUse('${id}')">Use routine</button>${dots?`<span class="pp-dots-wrap">${dots}</span>`:''}`;
   // Sep 7: the primary action moves up into the header (Jeff, v304: "I like having the save
-  // buttons at the top") -- Back on the left, ⋯ + "Use routine" on the right, same as New workout's
-  // Back / Create workout row. Nothing left dangling under the list.
+  // buttons at the top") -- Back on the left, the right-side actions on the right, same as New
+  // workout's Back / Create workout row. Nothing left dangling under the list.
   $('app').innerHTML = `<div class="wrap">
     <div class="pp-head tpl-head">
       ${backLinkHtml('history.back()')}
-      <div class="pp-right">${dots?`<span class="pp-dots-wrap">${dots}</span>`:''}<button class="blue sm" onclick="tplUse('${id}')">Use routine</button></div>
+      <div class="pp-right">${rightHtml}</div>
     </div>
     <h1 class="tpl-h1" style="margin-bottom:4px">${esc(t.name)}</h1>
     <div class="muted" style="font-size:13px;margin:0 2px 14px">${tplSubtitle(t)}${t.ownerName?` · from ${esc(t.ownerName)}`:''}</div>
     <div class="card">${t.exercises.map(e=>`<div class="lib-item"><div style="flex:1;min-width:0;font-weight:600">${esc(e.name)}</div><span class="draft-chip">${e.defaultSets} × ${repLabel(e)}</span></div>`).join('')}</div>
   </div>`;
   const st = {t:'routineView', id};
-  fromHistory ? landOn(st) : navigated(st);
+  // Oct 2 2026: opts.replace -- same meaning as templatesPage()'s own replace mode (see its
+  // comment) -- used by tplAcceptShare, which swaps this exact screen from a pending share onto
+  // the brand-new owned copy Accept just created. A plain fromHistory/navigated push would leave
+  // a dead routineView(pendingId) entry one Back press away, the same stale-entry shape v304's
+  // own comments elsewhere in this file already warn against.
+  if(opts && opts.replace){ CURRENT_NAV_STATE = st; history.replaceState(st, '', location.href); }
+  else fromHistory ? landOn(st) : navigated(st);
   // Baseline depth for tplReturnToList()'s history.go() math -- see TPL_VIEW_ENTRY_LEN's own comment.
   // Captured AFTER the push/land above so it already counts this routineView entry itself.
   TPL_VIEW_ENTRY_LEN = history.length;
 }
 function tplNew(){
   TPL_MODE.active=true; TPL_MODE.id=null; TPL_MODE.name=''; TPL_MODE.copy=false;
-  // inviteUsernames must be an array from the start -- toggleInvite() calls .includes/.push on
-  // it directly with no fallback, same requirement createFlow()'s own DRAFT already has.
-  DRAFT={ exercises:[], inviteUsernames:[] }; EDITING_TPL=null;
+  DRAFT={ exercises:[] }; EDITING_TPL=null;
   TPL_VIEW_ENTRY_LEN = null;   // entered straight from the list -- no routineView entry was pushed
   openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Name routine</h2></div>
     <label class="muted">Routine name</label>
@@ -5441,21 +5477,15 @@ function tplConfirmName(){
   if(!n){ alert('Name your routine first.'); return; }
   TPL_MODE.name=n; closeSheet(); templateExercises();
 }
+// Oct 2 2026 (Jeff, full redesign): templateExercises() no longer reads/renders location, visibility,
+// or invited friends (see its own comment) -- so DRAFT no longer needs any of them populated here,
+// and this no longer needs its own /api/friends round trip just to resolve the now-dead `invited`
+// field back to usernames.
 async function tplEdit(id){
   const { mine } = await H.get('/api/templates');
   const t = mine.find(x=>x.id===id); if(!t) return;
   TPL_MODE.active=true; TPL_MODE.id=id; TPL_MODE.name=t.name; TPL_MODE.copy=false;
-  // v306: resolve t.invited (stored as user ids, see POST/PUT /api/templates) back to usernames
-  // the same way editSession() already does for a session's own invite list, so the editor's
-  // checkboxes can show who's currently invited.
-  let invitedUsernames = [];
-  if(t.invited && t.invited.length){
-    const friends = await H.get('/api/friends');
-    const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
-    invitedUsernames = t.invited.map(fid=>{ const f=friendList.find(x=>x.id===fid); return f?f.username:''; }).filter(Boolean);
-  }
-  DRAFT={ exercises:t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax})),
-    location:t.location||'', creatorNote:t.creatorNote||'', visibility:t.visibility||'private', inviteUsernames:invitedUsernames };
+  DRAFT={ exercises:t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax})) };
   EDITING_TPL=id;
   templateExercises();
 }
@@ -5465,15 +5495,15 @@ async function tplEdit(id){
 // change); the friend's original is untouched and stays in your Shared list until you Remove it.
 // The menu item says "Edit a copy" and the save button "Save as my routine" so nobody expects
 // their edit to reach the friend.
+// Oct 2 2026: unreachable from tplView() now, same reasoning and same fate as tplHide() below
+// (see its own comment) -- `shared` means a pending share now, which gets Accept/Decline instead
+// of "Edit a copy." Left in place, unused, for the same harmless-no-op-surface-not-worth-the-
+// risk-of-deleting reasoning.
 async function tplEditCopy(id){
   const { shared } = await H.get('/api/templates');
   const t = shared.find(x=>x.id===id); if(!t) return;
   TPL_MODE.active=true; TPL_MODE.id=null; TPL_MODE.name=t.name; TPL_MODE.copy=true;
-  // v306: location/creatorNote/visibility carry into the copy same as exercises do -- `invited`
-  // never reaches here at all (server strips it from every shared row, see GET /api/templates),
-  // so a copy never auto-invites someone from the original owner's own connections.
-  DRAFT={ exercises:t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax})),
-    location:t.location||'', creatorNote:t.creatorNote||'', visibility:t.visibility||'private', inviteUsernames:[] };
+  DRAFT={ exercises:t.exercises.map(e=>({name:e.name,defaultSets:e.defaultSets,defaultReps:e.defaultReps,defaultRepsMax:e.defaultRepsMax})) };
   EDITING_TPL=null;
   templateExercises();
 }
@@ -5579,6 +5609,10 @@ async function tplDelete(id){
 // Jeff, Aug 28: the non-owner half of "delete a routine" -- takes a friend's shared routine out
 // of YOUR list only. v240: removal now gets an undo moment (toast below) instead of being
 // instantly permanent, so the confirm copy no longer claims "there's no undo".
+// Oct 2 2026: unreachable from tplView() now (see its own comment) -- the passive-share model
+// this existed for is gone, and a pending explicit share gets Decline (below) instead. Left in
+// place, unused, same reasoning as server.js's own POST .../hide route comment: a harmless no-op
+// surface, not worth deleting for the risk of breaking some path this pass missed.
 async function tplHide(id){
   const { shared } = await H.get('/api/templates');
   const t = shared.find(x=>x.id===id); if(!t) return;
@@ -5598,6 +5632,68 @@ async function tplUnhide(id){
   // and yanking someone back to Routines from another tab because they tapped Undo is worse
   // than letting the restored routine simply be there next time they look
   if(document.querySelector('.tpl-page')) templatesPage({replace:true});
+}
+// ---- Routine sharing (Oct 2 2026 redesign) ----
+// Owner-only: opens a friend-picker sheet, same inv-row/checkbox anatomy the old Invite friends
+// section used (templateExercises(), before this redesign removed it from the editor) -- sharing
+// a routine is still fundamentally "pick some of my connections," just moved to its own explicit
+// action on the routine's detail screen instead of being folded into create/edit.
+let SHARE_TPL_ID = null, SHARE_TARGETS = [];
+async function tplShareSheet(id){
+  const { mine } = await H.get('/api/templates');
+  const t = mine.find(x=>x.id===id); if(!t) return;
+  const friends = await H.get('/api/friends');
+  const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
+  // t.sharedTo is visible on your OWN routine (server only strips it from a row shared TO you,
+  // see GET /api/templates) -- pre-checked and locked so re-sharing with someone already pending
+  // can't be unchecked into a confusing double-share, and so Jeff can actually see at a glance who
+  // this is already out to.
+  const already = t.sharedTo || [];
+  SHARE_TPL_ID = id; SHARE_TARGETS = [];
+  const rows = friendList.length ? friendList.map(f=>{
+    const ini = (f.displayName||f.username||'?')[0]||'?';
+    const av = f.avatar ? `<img class="inv-av" src="${esc(f.avatar)}" alt="">` : `<div class="inv-av" style="background:${avatarColor(f.username)};color:#fff">${esc(ini)}</div>`;
+    const pend = already.includes(f.id);
+    return `<label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap">${av}</div><div class="inv-text"><div class="name">${esc(f.displayName||f.username)}</div><div class="handle">@${esc(f.username)}${pend?' · already shared, pending':''}</div></div></div><span class="check"><input type="checkbox" value="${esc(f.username)}" ${pend?'checked disabled':''} onchange="toggleShareTarget(this)"><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`;
+  }).join('') : '<div class="muted">No friends yet — add some in Friends tab.</div>';
+  openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Share "${esc(t.name)}"</h2></div>
+    <div class="muted" style="margin:0 2px 10px">They'll get a notification and can accept it as their own copy of this routine, or decline.</div>
+    <div id="shareTargetList" class="card">${rows}</div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="sec" style="flex:1" onclick="closeSheet()">Cancel</button>
+      <button class="blue" style="flex:1" onclick="tplShareConfirm()">Share</button>
+    </div></div>`);
+}
+function toggleShareTarget(cb){ const u=cb.value; if(cb.checked){ if(!SHARE_TARGETS.includes(u)) SHARE_TARGETS.push(u); } else { SHARE_TARGETS=SHARE_TARGETS.filter(x=>x!==u); } }
+async function tplShareConfirm(){
+  if(!SHARE_TARGETS.length){ alert('Pick at least one person to share with.'); return; }
+  const id = SHARE_TPL_ID;
+  const r = await H.post('/api/templates/'+id+'/share', { usernames: SHARE_TARGETS });
+  SHARE_TARGETS = []; SHARE_TPL_ID = null;
+  if(r && r.error) return alert(r.error);
+  closeSheet();
+  showToast('Routine shared');
+}
+// Accept: makes you the owner of a brand-new, independent copy (server's accept-share route) --
+// swaps this exact screen from the pending share onto that new copy via tplView's own
+// opts.replace (see its comment), same screen, same Back behavior, now showing it as fully
+// yours. No confirm step, matching every other "Accept" in the app (notifAcceptInvite, follow
+// requests) -- Accept is never the one that needs a second thought; Decline (below) is.
+async function tplAcceptShare(id){
+  const epoch=UI_EPOCH;
+  const r = await H.post('/api/templates/'+id+'/accept-share', {});
+  if(r && r.error){ alert(r.error); return; }
+  if(nothingNavigatedSince(epoch)){ showToast('Added to your routines'); tplView(r.id, {replace:true}); }
+}
+// Decline: removes you from the pending list, no copy made, nothing left behind -- same shape as
+// notifRejectFollow/notifRejectJoin (direct, no confirm sheet); a routine share carries none of a
+// workout invite's own "add a reason the host will see" feature (declineInviteSheet), so there's
+// nothing here that needs a second screen.
+async function tplDeclineShare(id){
+  const epoch=UI_EPOCH;
+  const r = await H.post('/api/templates/'+id+'/decline-share', {});
+  if(r && r.error){ alert(r.error); return; }
+  if(nothingNavigatedSince(epoch)) tplReturnToList();
 }
 // ---- Undo toast (v240) ----
 // A single transient bar above the nav offering to take back the action just taken. Same slot
@@ -5638,37 +5734,20 @@ function showToast(msg){
   requestAnimationFrame(()=>el.classList.add('show'));
   UNDO_TIMER = setTimeout(dismissUndoToast, 2200);
 }
+// Oct 2 2026 (Jeff, full redesign): "remove the visibility and the details for location, and
+// inviting friends. You should solely be able to edit the exercises in the routine and then
+// share the routine with others." The old v306/v307 Details (Location/Visibility) and Invite
+// friends sections are gone -- this editor is now solely Name + Exercises. Sharing moved to its
+// own explicit action on the routine's detail screen (tplView()'s "Share" button, below), reached
+// only once a routine exists, rather than being folded into create/edit. DRAFT.location/
+// visibility/inviteUsernames are no longer read or written anywhere in this function; old values
+// a routine might still carry (pre-redesign data) ride along untouched in the stored object and
+// are simply never surfaced here again.
 async function templateExercises(){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
   const nameField = (TPL_MODE.id || TPL_MODE.copy)
     ? `<input id="tplNameEdit" class="tpl-name-edit" value="${esc(TPL_MODE.name||'')}" placeholder="Routine name" autocomplete="off">`
     : `<h1>${esc(TPL_MODE.name||'Routine')}</h1>`;
-  // v306 (Jeff, Sep 3): optional full-workout details -- Location/Note/Visibility/Invite friends,
-  // same fields createFlow() has, same ids too (#loc/#note/#vis) so openAddExercises()'s existing
-  // stash-before-excursion guard (search "stash details typed so far") already preserves these
-  // across "+ Add exercise" with zero new code -- it stashes into DRAFT generically by element id,
-  // and this screen and createFlow() are never on screen at once. Deliberately riding on DRAFT
-  // (already the vessel for this screen's exercises, see tplNew()/tplEdit()) rather than adding
-  // more fields to TPL_MODE: TPL_MODE's reset is already hand-duplicated at four call sites, and
-  // two real bugs this session (see TPL_VIEW_ENTRY_LEN's and resetTransientModes()'s own comments)
-  // came from exactly that kind of miss. All optional: leave them blank and a routine saves
-  // exactly like it always has, exercises only.
-  // v307 (Jeff, Sep 3): "clean up the placement and visual of the fields." Invite friends had
-  // been squeezed under Visibility as just another <label>, the one field here that's really a
-  // sub-list rather than a single input -- promoted to its own <h2>Invite friends</h2> + card,
-  // matching how createFlow() itself already treats its own Invite friends section (and how this
-  // same screen already treats Exercises). Gives the screen the same three-beat rhythm as New
-  // Workout: Details fields, then a clearly separate Invite friends card, then Exercises.
-  const [friends, crews] = await Promise.all([H.get('/api/friends'), H.get('/api/crews')]);
-  CREW_PICKER = Array.isArray(crews) ? crews : [];
-  const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
-  const invNames = DRAFT.inviteUsernames || [];
-  const invRows = friendList.length ? friendList.map(f=>{
-    const ini = (f.displayName||f.username||'?')[0]||'?';
-    const av = f.avatar ? `<img class="inv-av" src="${esc(f.avatar)}" alt="">` : `<div class="inv-av" style="background:${avatarColor(f.username)};color:#fff">${esc(ini)}</div>`;
-    const on = invNames.includes(f.username) ? 'checked' : '';
-    return `<label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap">${av}</div><div class="inv-text"><div class="name">${esc(f.displayName||f.username)}</div><div class="handle">@${esc(f.username)}</div></div></div><span class="check"><input type="checkbox" value="${esc(f.username)}" ${on} onchange="toggleInvite(this)"><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`;
-  }).join('') : '<div class="muted">No friends yet — add some in Friends tab.</div>';
   // v304, Jeff: "I like having the save buttons at the top instead of the bottom. I feel its more
   // instinctive having that at the top for how users normally work." Save moves up next to Back --
   // same pp-head row/pushed-to-the-far-right shape openSession's Edit/Delete dots and Settings'
@@ -5682,12 +5761,7 @@ async function templateExercises(){
     </div>
     ${nameField}
     <h2 class="light" style="margin-top:14px">Exercises</h2><div id="draftList" class="card"></div>
-    <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button>
-    <h2>Details <span class="muted" style="font-weight:400;text-transform:none;font-size:12px">(optional)</span></h2>
-    <label class="muted">Location</label><input id="loc" placeholder="e.g. Gold's Gym" value="${esc(DRAFT.location||'')}">
-    <label class="muted">Visibility</label>
-    ${visSegHtml(DRAFT.visibility)}
-    <h2>Invite friends</h2>${crewQuickInviteHtml()}<div id="invList" class="card">${invRows}</div></div>`;
+    <button class="sec" onclick="tplOpenPicker()">+ Add exercise</button></div>`;
   pageScrollTop();
   renderDraft();
 }
@@ -5762,15 +5836,10 @@ async function finishTemplate(){
   if(!DRAFT.exercises.length){ alert('Add at least one exercise'); return; }
   const liveName = ((TPL_MODE.id || TPL_MODE.copy) && $('tplNameEdit')) ? $('tplNameEdit').value.trim() : TPL_MODE.name.trim();
   if(!liveName){ alert('Name your routine first.'); return; }
-  // v306: read straight off the still-live form, same as createFlow()'s own submitSession() --
-  // openAddExercises()'s stash only fires on the "+ Add exercise" excursion, not on every
-  // keystroke, so DRAFT itself isn't guaranteed current; the DOM is. inviteUsernames is the one
-  // exception -- toggleInvite() already keeps DRAFT.inviteUsernames live on every checkbox tap.
-  const location = $('loc') ? $('loc').value : (DRAFT.location||'');
-  const creatorNote = DRAFT.creatorNote||'';   // Sep 7: no note field on the form (see submitSession)
-  const visibility = $('vis') ? $('vis').value : (DRAFT.visibility||'private');
-  const inviteUsernames = DRAFT.inviteUsernames || [];
-  const payload = { name:liveName, exercises:DRAFT.exercises, location, creatorNote, visibility, inviteUsernames };
+  // Oct 2 2026 (Jeff, full redesign): the editor is solely Name + Exercises now -- no more
+  // location/creatorNote/visibility/inviteUsernames to read off the form or DRAFT. See
+  // templateExercises()'s own comment.
+  const payload = { name:liveName, exercises:DRAFT.exercises };
   const epoch=UI_EPOCH;   // v304: same barge-in guard as tplDelete/tplHideConfirmed above
   const r = TPL_MODE.id
     ? await H.put('/api/templates/'+TPL_MODE.id, payload)
@@ -9049,6 +9118,10 @@ async function renderNotifications(opts){
   // reinviteAskSheet/POST .../reinvite-request) -- same "surfaced here too, not just the one push
   // that created it" reasoning as removals just above.
   const reinviteAsks = (data && data.reinviteAsks) || [];
+  // Oct 2 2026 (routine-sharing redesign): a routine explicitly shared with me, still awaiting my
+  // Accept/Decline -- same "surfaced here too, not just the one push that created it" reasoning as
+  // every section above.
+  const routineShares = (data && data.routineShares) || [];
   const history = (data && data.history) || [];
   // Sep 5 (Jeff: a push for something that already happened -- someone followed you, a reaction,
   // an accepted invite -- showed nothing here, and he asked for past notifications to show for a
@@ -9141,6 +9214,21 @@ async function renderNotifications(opts){
           <button class="sm no" onclick="notifDismissReinvite('${ra.sessionId}','${ra.reqId}')">Not now</button>
         </div>
       </div>`).join('') + `</div>` : '';
+  // Oct 2 2026 (routine-sharing redesign): same .inv-banner/.inv-card shape as the workout-invite
+  // banner just above (invitesHtml) -- same "someone shared something with you, accept or
+  // decline" feature, just a routine instead of a workout. Tapping the card (not the actions)
+  // goes to the routine's detail screen, same as invitesHtml's own onclick -- tplView() renders
+  // the real Accept/Decline for this exact pending state (see its own comment), so the two
+  // buttons here are a shortcut, not a second implementation of the decision.
+  const routineSharesHtml = routineShares.length ? `<h2>Routine shared</h2><div class="inv-banner">` + routineShares.map(rs => `
+      <div class="inv-card" onclick="tplView('${rs.routineId}')">
+        <div class="inv-info"><b>${esc(rs.from.displayName||rs.from.username)}</b> shared a routine<div class="tag">${esc(rs.routineName)} · ${plur(rs.exerciseCount,'exercise')}</div>
+          <div class="inv-open">See the routine →</div></div>
+        <div class="row inv-actions" onclick="event.stopPropagation()">
+          <button class="sm blue" onclick="notifAcceptRoutineShare('${rs.routineId}')">Accept</button>
+          <button class="sm gray" onclick="notifDeclineRoutineShare('${rs.routineId}')">Decline</button>
+        </div>
+      </div>`).join('') + `</div>` : '';
   // Past notifications -- read-only, no action row (unlike the three sections above, there's
   // nothing left to accept/decline/approve here, just a record that it happened). Same
   // .feed-item/.feed-lead shape as Home's "Friends' Activity" strip, reused rather than inventing
@@ -9208,9 +9296,9 @@ async function renderNotifications(opts){
       ${historyToday.length ? `<h2 class="light">Today</h2><div class="card feed-strip">${historyToday.map(historyRow).join('')}</div>` : ''}
       ${historyEarlier.length ? `<h2 class="light">Last 7 days</h2><div class="card feed-strip">${historyEarlier.map(historyRow).join('')}</div>` : ''}` : '';
   // Discoverability rule (CLAUDE.md): never hide an empty state -- render it open, not a blank page.
-  const empty = (!invites.length && !followRequests.length && !joinRequests.length && !removals.length && !suggestions.length && !reinviteAsks.length && !history.length)
+  const empty = (!invites.length && !followRequests.length && !joinRequests.length && !removals.length && !suggestions.length && !reinviteAsks.length && !routineShares.length && !history.length)
     ? homeEmpty(ICON_BELL, "You're all caught up", 'Invites and requests will show up here.') : '';
-  $('app').innerHTML = `<div class="wrap">${head}${invitesHtml}${followHtml}${joinHtml}${removalsHtml}${suggestionsHtml}${reinviteAsksHtml}${historyHtml}${empty}</div>`;
+  $('app').innerHTML = `<div class="wrap">${head}${invitesHtml}${followHtml}${joinHtml}${removalsHtml}${suggestionsHtml}${reinviteAsksHtml}${routineSharesHtml}${historyHtml}${empty}</div>`;
   if(history.length) historySwipeInit($('app'));
   if(!silent){ const st = { t:'notifications' }; fromHistory ? landOn(st) : navigated(st); }
 }
@@ -9405,6 +9493,24 @@ async function notifAcceptInvite(id){
   if(nothingNavigatedSince(epoch)) openSession(id);
 }
 async function notifDeclineInvite(id){ declineInviteSheet(id, () => renderNotifications({silent:true})); }
+// Oct 2 2026 (routine-sharing redesign): same shape as notifAcceptInvite/notifDeclineInvite just
+// above -- surface the error instead of blindly navigating, exactly the fix this app's workout-
+// invite accept/decline just got hardened with earlier this same round (Oct 1 2026, Tier 2) --
+// deliberately not regressed in this brand-new feature. Accept lands on the new, fully-owned
+// copy the server just created (r.id, NOT the routineId this card was shown for -- see
+// POST .../accept-share's own comment); Decline just refreshes this screen in place, no sheet
+// (see tplDeclineShare's own comment for why a routine share carries no reason-for-the-host step).
+async function notifAcceptRoutineShare(id){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/templates/${id}/accept-share`,{});
+  if(r && r.error){ alert(r.error); if(nothingNavigatedSince(epoch)) renderNotifications({silent:true}); return; }
+  if(nothingNavigatedSince(epoch)) tplView(r.id);
+}
+async function notifDeclineRoutineShare(id){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/templates/${id}/decline-share`,{});
+  if(r && r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) renderNotifications({silent:true});
+}
 // Exact same pipeline as acceptFollow/rejectFollow (Friends tab, above) -- refreshes this screen
 // instead of friends().
 async function notifAcceptFollow(id){
@@ -10537,6 +10643,11 @@ const DEEP_LINK_TYPES = [
   { type: 'profile', need: ['userId'], go: l => profileView(l.userId) },
   { type: 'crew', need: ['crewId'], go: l => crewView(l.crewId) },
   { type: 'crew-chat', need: ['crewId'], go: l => openCrewChat(l.crewId) },
+  // Oct 2 2026 (routine-sharing redesign): the "Routine shared" push's own link -- tplView()
+  // already renders the real Accept/Decline for a still-pending share (see its own comment), so
+  // this is the single destination for both a push-notification tap and this list's own row tap,
+  // exactly the one-source-of-truth point the comment below was written to make.
+  { type: 'routine', need: ['routineId'], go: l => tplView(l.routineId) },
   // Sep 27 2026 (Jeff, part 1): the decliner's own "You declined" notification -- deliberately NOT
   // openSession (they've dropped to sessionTier 'stranger'/'friend' and can't GET it anymore, see
   // /decline's own comment in server.js) but a small compose sheet that sends a message to the
