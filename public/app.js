@@ -29,6 +29,12 @@ const H = {
       if(res.status===401 && !(json && json.code==='bad_credentials')){
         // stale/invalid token: clear it and return to login instead of leaving the user broken
         localStorage.removeItem('crewfit_token'); TOKEN=''; ME=null;
+        // Oct 2 2026 (deep audit finding): authScreen() repaints #app with a fresh login form, but
+        // any open sheet (Change password, Delete account, etc -- appended to document.body, not
+        // #app, so repainting #app alone never touches it) stayed stacked on top, sometimes
+        // blocking the new login form entirely. closeAllSheets() first so a forced-logout never
+        // leaves a stale sheet floating over the screen the user actually needs to use.
+        try{ closeAllSheets(); }catch(e){}
         try{ authScreen(); }catch(e){}
         return { error:'Session expired — please log in again', _expired:true };
       }
@@ -744,7 +750,18 @@ async function home(opts){
   const best = earnedPrs
     .filter(p => Number(p.weight) > 0 && (libn[p.exercise] || {}).loadType !== 'assisted')
     .sort((a,b) => Number(b.weight) - Number(a.weight))[0] || null;
-  const withFriends = mine.filter(s => (s.participants||[]).some(x => x && x !== ME.id)).length;
+  // Oct 2 2026 (deep audit finding): this used to iterate live s.participants -- the exact bug
+  // class already fixed on this same data for viewPost's "with @X" line (Sep 23) and the Profile
+  // tab's collaborator line (Sep 24), both for the identical reason: a co-trainee who later Left
+  // (even keeping their credit) or was kicked silently drops out of s.participants, so a workout
+  // that genuinely happened with a friend quietly stopped counting toward this stat. Use the same
+  // post.trainedWith snapshot those two already switched to, falling back to live participants
+  // only when I haven't posted a recap on this session yet (no snapshot exists).
+  const withFriends = mine.filter(s => {
+    const myPost = s.posts && s.posts[ME.id];
+    const collabIds = (myPost && Array.isArray(myPost.trainedWith)) ? myPost.trainedWith : (s.participants||[]);
+    return collabIds.some(x => x && x !== ME.id);
+  }).length;
   // Sep 7 (Jeff: "do we feel like they actually add value, or is it just cool design"): week
   // streak and days-this-week are gone from this pool. Days-this-week went because the week strip
   // right below now shows the exact same fact visually (a green check IS "1 day this week") --
@@ -1231,17 +1248,28 @@ async function openSession(id, opts){
   // keeping them in sync here means a copy change only has to happen once.
   // NOTE for Jeff: this exact wording ("you said yes/no", "open vote") is a first draft, same as
   // the two ownerless notification texts already flagged -- easy to change once you've seen it.
+  // Oct 2 2026 (#183, deep audit finding, Jeff: "Add a Cancel button for the proposer"
+  // (Recommended)): the proposer of a still-pending suggestion used to have no way to take it back
+  // short of leaving the workout outright -- just a "waiting on creator" tag (owned) or their own
+  // vote buttons (ownerless, which only ever flip their OWN vote, never remove the suggestion for
+  // everyone else). Cancel is additive here, never replacing the existing tag/vote UI -- matches
+  // POST .../suggest/:editId/cancel's own scoping (server.js): only ever offered to ed.proposedBy
+  // themselves, and in ownerless mode only while nobody else has voted yet, so the button simply
+  // isn't there to tap once it'd 400 anyway rather than rendering a dead control.
+  const canCancel = ed => ed.proposedBy===ME.id
+    && (!isOwnerless || !Object.keys(ed.votes||{}).some(uid=>uid!==ME.id));
+  const cancelBtn = ed => canCancel(ed) ? `<button class="sm gray" onclick="cancelSuggestion('${s.id}','${ed.id}')">Cancel</button>` : '';
   const suggestActionsHtml = (ed) => {
     if(!isOwnerless){
       return isCreator
         ? `<button class="sm ok" onclick="approve('${s.id}','${ed.id}')">Approve</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">Reject</button>`
-        : `<span class="tag">waiting on creator</span>`;
+        : `<span class="tag">waiting on creator</span>${cancelBtn(ed)}`;
     }
     if(!isParticipant) return `<span class="tag">open vote</span>`;
     const myVote = (ed.votes||{})[ME.id];
     const voteNote = myVote==='approved' ? `<span class="tag">you said yes</span>`
                    : myVote==='rejected' ? `<span class="tag">you said no</span>` : '';
-    return `${voteNote}<button class="sm ok" onclick="approve('${s.id}','${ed.id}')">${myVote==='approved'?'Approved':'Approve'}</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">${myVote==='rejected'?'Declined':'Reject'}</button>`;
+    return `${voteNote}<button class="sm ok" onclick="approve('${s.id}','${ed.id}')">${myVote==='approved'?'Approved':'Approve'}</button><button class="sm no" onclick="reject('${s.id}','${ed.id}')">${myVote==='rejected'?'Declined':'Reject'}</button>${cancelBtn(ed)}`;
   };
   // suggested edits, keyed by target exercise id (compact one-line inline row, C style)
   const editByEx = {};
@@ -1389,7 +1417,7 @@ async function openSession(id, opts){
       const byName = nameCache[ed.proposedBy] || ed.proposedBy;
       if(ed.status==='pending'){
         // the status line above already named who; this row is for WHAT and what happens next
-        sub += `<div class="req"><div class="rc">${esc(e.name)} → <b>${esc(ed.swapTo)}</b></div>`;
+        sub += `<div class="req req-sw"><div class="rc">${esc(e.name)} → <b>${esc(ed.swapTo)}</b></div>`;
         sub += `<div class="ra">${suggestActionsHtml(ed)}</div>`;
         sub += `</div>`;
       }
@@ -1481,7 +1509,7 @@ async function openSession(id, opts){
     const head = ed.type==='add'
       ? `${byName==='You' ? 'You suggested adding' : esc(byName)+' suggests adding'} ${esc(ed.swapTo)}`
       : `${byName==='You' ? 'You suggested' : esc(byName)+' suggests'} → ${esc(ed.swapTo)}`;
-    return `<div class="req"><div class="rc">${head}</div><div class="ra">${suggestActionsHtml(ed)}</div></div>`;
+    return `<div class="req req-sw"><div class="rc">${head}</div><div class="ra">${suggestActionsHtml(ed)}</div></div>`;
   };
   let edits;
   if(pendingEdits.length <= 1){
@@ -2879,6 +2907,17 @@ async function reject(id, editId){
   // comment above the removed "declined" line in openSession's suggestedEdits loop for why this
   // replaced a permanent record instead of adding one.
   if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else { showToast('Declined'); if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true}); }
+}
+// Oct 2 2026 (#183, deep audit finding, Jeff: "Add a Cancel button for the proposer" (Recommended)):
+// same wrapper shape as approve/reject just above, for the proposer withdrawing their own
+// still-pending suggestion instead of the creator/a voter deciding it. No toast on success (unlike
+// reject's "Declined") -- the card simply disappearing from the stack already reads as "that's
+// gone now," since it's the one person who just tapped Cancel doing it to their own suggestion,
+// not a decision landing on them from someone else.
+async function cancelSuggestion(id, editId){
+  const epoch=UI_EPOCH;
+  const r = await H.post(`/api/sessions/${id}/suggest/${editId}/cancel`, {});
+  if(!r || r.error) alert((r && r.error) || 'That did not go through. Try again.'); else if(nothingNavigatedSince(epoch)) openSession(id, {quiet:true});
 }
 async function approveJoin(id, reqId){
   const epoch=UI_EPOCH;
@@ -6496,12 +6535,19 @@ function trendChart(d, U){
   // baseline (see baselinePointOf/baselineWeight in trendFor(), server.js) -- same self-
   // contradicting-number shape as the fix above, just on the other end of the arrow. Now uses
   // baselineWeight/baselineReps, the actual session the % was computed against.
+  // Oct 2 2026 (#175, deep audit finding, Jeff: "Yes, add one"): this used to only ever classify a
+  // lift as 'up' (changePct>0.5) or 'flat' (everything else, rendered as a bare '—') -- a lift that
+  // actually dropped below its own trailing-window baseline (changePct<-0.5, the same half-percent
+  // deadzone 'up' already uses to ignore rounding noise) looked IDENTICAL to one that's genuinely
+  // holding steady, with no way to tell "this one needs attention" from "nothing's changed." Same
+  // ▲/▼ arrow convention the rest of the app already uses for a real increase/decrease.
+  const trendDir = l => l.changePct>0.5 ? 'up' : (l.changePct<-0.5 ? 'down' : 'flat');
   const drivers = isOverall ? `<div class="drv-head">What's driving it</div>${
-    t.lifts.slice().sort((a,b)=>b.changePct-a.changePct).map(l=>`<div class="drv">
+    t.lifts.slice().sort((a,b)=>b.changePct-a.changePct).map(l=>{ const dir=trendDir(l); return `<div class="drv">
       <div class="drv-n">${esc(l.name)}</div>
       <div class="drv-w">${l.baselineWeight}×${l.baselineReps} → ${l.currentWeight}×${l.currentReps} ${U}${l.lessIsMore?' assist':''}</div>
-      <div class="drv-p ${l.changePct>0.5?'up':'flat'}">${l.changePct>0.5?'▲ '+Math.round(l.changePct)+'%':'—'}</div>
-    </div>`).join('')}` : '';
+      <div class="drv-p ${dir}">${dir==='up'?'▲ '+Math.round(l.changePct)+'%':dir==='down'?'▼ '+Math.round(Math.abs(l.changePct))+'%':'—'}</div>
+    </div>`;}).join('')}` : '';
 
   return `<div class="sec-head"><h2>Strength trend</h2><button class="txt-btn" style="margin-left:auto"
     onclick="openTrendPicker()" title="Pick which lifts to show">Pick lifts</button></div>${chips}<div class="card">
@@ -8277,6 +8323,18 @@ async function newCrewSheet(editCrewId){
   if(editingCrew && editingCrew.error){ alert(editingCrew.error); return; }
   const friendList = (friends && friends.friends) ? friends.friends : [];
   CREW_SHEET_MEMBERS = editingCrew ? editingCrew.members.filter(m=>m.id!==editingCrew.ownerId).map(m=>m.id) : [];
+  // Oct 2 2026 (deep audit finding): the picker pool used to be friendList alone (my CURRENT live
+  // connections) -- crew membership is deliberately untouched when either side unfollows (see
+  // validCrewMemberIds' own comment), so a member who's still genuinely in the crew but no longer
+  // a live connection got no checkbox row at all. CREW_SHEET_MEMBERS still included their id (set
+  // just above), but with nothing to render for it, the owner had no way to ever uncheck/remove
+  // them -- permanently stuck, even though the server-side save path fully supports dropping them.
+  // Union in any disconnected-but-still-a-member row, using the crew's own member data (same
+  // id/displayName/username/avatar shape crewMemberRowHtml already expects) rather than skipping
+  // them for lack of a /api/friends entry.
+  const pickerPool = editingCrew
+    ? [...friendList, ...editingCrew.members.filter(m => m.id!==editingCrew.ownerId && !friendList.some(f=>f.id===m.id))]
+    : friendList;
   // Sep 11 2026 (Jeff, real bug report -- "a brand-new user with no friends yet is exactly who
   // the onboarding tour points at that button, and for them it's a dead end with zero
   // explanation"): this used to be one small muted caption line sitting in an otherwise-empty
@@ -8297,8 +8355,8 @@ async function newCrewSheet(editCrewId){
   // comment) -- app-wide, a card only ever wraps CONTENT, never an empty state, so the empty
   // case skips the .card entirely instead of nesting homeEmpty inside the same boxed, scrolling
   // 40vh member-list container built for actual rows.
-  const membersBlock = friendList.length
-    ? `<div class="card" id="crewMemberList" style="padding:6px 12px;max-height:40vh;overflow-y:auto">${friendList.map(f=>crewMemberRowHtml(f, CREW_SHEET_MEMBERS.includes(f.id))).join('')}</div>`
+  const membersBlock = pickerPool.length
+    ? `<div class="card" id="crewMemberList" style="padding:6px 12px;max-height:40vh;overflow-y:auto">${pickerPool.map(f=>crewMemberRowHtml(f, CREW_SHEET_MEMBERS.includes(f.id))).join('')}</div>`
     : homeEmpty(ICON_PEOPLE, 'Find a training partner first', 'Search for people to train with — or create the crew now and invite them once you have some people.', `<span class="he-cta" onclick="focusConnectionsSearch()">Find people to follow →</span>`);
   const sheet = openSheetHtml(`
     <div class="sheet" onclick="event.stopPropagation()">
@@ -10585,7 +10643,16 @@ function meScreen(){ profileView(ME.id, {silent:true, tabRoot:true}); }
 // library() visit so no live path was found that actually shows a stale value today, but clearing
 // it here removes the possibility outright for a second account signing in on the same device
 // before the library screen happens to be revisited.
-function logout(){ localStorage.removeItem('crewfit_token'); TOKEN=''; ME=null; window._LIB2=null; $('nav').classList.add('hidden'); authScreen(); }
+// Oct 2 2026 (#182, deep audit finding, Jeff: "Just sign out this device"): this used to be purely
+// local -- clear the token, show the login screen -- so the token itself stayed valid server-side
+// for up to 90 days (TOKEN_TTL_DAYS) regardless, "Log out" notwithstanding. POST /api/logout
+// (server.js) revokes exactly this ONE token; fired before the local token is cleared (it needs
+// the still-current Authorization header to tell the server WHICH token), but not awaited -- a
+// slow or failed network call must never delay or block the actual sign-out the user tapped for,
+// and H._req's own .catch already reduces any failure to a harmless {error} this ignores. Every
+// OTHER device this account is logged in on is deliberately untouched (matches the server route's
+// own "never the account-wide hammer" comment) -- this signs out THIS device, nothing else.
+function logout(){ H.post('/api/logout',{}).catch(()=>{}); localStorage.removeItem('crewfit_token'); TOKEN=''; ME=null; window._LIB2=null; $('nav').classList.add('hidden'); try{ closeAllSheets(); }catch(e){} authScreen(); }
 
 // ---- Push ----
 async function setupPush(){

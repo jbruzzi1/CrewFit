@@ -571,10 +571,46 @@ function loadOrCreateSecret() {
   return AUTH_SECRET;
 }
 const b64u = b => Buffer.from(b).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+// Oct 2 2026 (#182, deep audit finding, Jeff: "Just sign out this device"): `j` is new -- a random
+// per-token id, present purely so ONE issued token can be individually named and revoked later
+// (see revokeToken/userIdFromToken below) without touching any other token the same account has
+// outstanding on other devices. Nothing else about the token (what it proves, how it's verified)
+// changes; a token from before this change simply has no `j` and can never be individually
+// revoked (only ever by the existing account-wide tokensValidFrom bump) -- never a validity
+// problem, since userIdFromToken's revocation check below is additive, not required.
 function signToken(userId) {
-  const body = b64u(JSON.stringify({ u: userId, t: Date.now() }));
+  const body = b64u(JSON.stringify({ u: userId, t: Date.now(), j: crypto.randomBytes(9).toString('base64url') }));
   const sig = b64u(crypto.createHmac('sha256', AUTH_SECRET).update(body).digest());
   return body + '.' + sig;
+}
+// Decodes+verifies a token's signature and shape without checking expiry/revocation/user
+// existence -- the one piece userIdFromToken and POST /api/logout (below) both need (the latter
+// to know exactly which token id to revoke), split out so there's one HMAC-verify/JSON-parse
+// implementation instead of two copies drifting apart, same reasoning as every other
+// shared-implementation comment in this file (see blockUser's own, for one).
+function parseToken(token) {
+  if (typeof token !== 'string' || token.indexOf('.') < 0) return null;
+  const [body, sig] = token.split('.');
+  if (!body || !sig) return null;
+  const want = b64u(crypto.createHmac('sha256', AUTH_SECRET).update(body).digest());
+  const a = Buffer.from(sig), b = Buffer.from(want);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;   // constant time
+  let payload;
+  try { payload = JSON.parse(Buffer.from(body.replace(/-/g,'+').replace(/_/g,'/'), 'base64').toString('utf8')); }
+  catch (e) { return null; }
+  if (!payload || !payload.u || !payload.t) return null;
+  return payload;
+}
+// Oct 2 2026 (#182): revoked token ids are kept as { [jti]: issuedAtMs } rather than a bare array,
+// so they can be pruned -- a jti whose own issuedAt is already past TOKEN_TTL_DAYS would have
+// failed userIdFromToken's expiry check on its own anyway, so there's no reason to keep tracking
+// it forever. Pruned on every revoke (logout), which is the only time this list is written, so it
+// never grows past "however many devices logged out in the last 90 days."
+function revokeToken(u, jti, issuedAt) {
+  if (!u.revokedJtis) u.revokedJtis = {};
+  const cutoff = Date.now() - TOKEN_TTL_DAYS * 864e5;
+  for (const j of Object.keys(u.revokedJtis)) if (u.revokedJtis[j] < cutoff) delete u.revokedJtis[j];
+  u.revokedJtis[jti] = issuedAt;
 }
 // Sep 24 2026 (audit finding): recap media was served from /uploads with no auth at all and no
 // link back to canSeePostAuthor -- once a viewer had a photo's URL (from normal viewing, browser
@@ -609,21 +645,19 @@ function verifyMediaToken(token) {
   return payload;
 }
 function userIdFromToken(token) {
-  if (typeof token !== 'string' || token.indexOf('.') < 0) return null;
-  const [body, sig] = token.split('.');
-  if (!body || !sig) return null;
-  const want = b64u(crypto.createHmac('sha256', AUTH_SECRET).update(body).digest());
-  const a = Buffer.from(sig), b = Buffer.from(want);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;   // constant time
-  let payload;
-  try { payload = JSON.parse(Buffer.from(body.replace(/-/g,'+').replace(/_/g,'/'), 'base64').toString('utf8')); }
-  catch (e) { return null; }
-  if (!payload || !payload.u || !payload.t) return null;
+  const payload = parseToken(token);
+  if (!payload) return null;
   if (Date.now() - payload.t > TOKEN_TTL_DAYS * 864e5) return null;          // expired
   const u = DB.users[payload.u];
   if (!u) return null;
   // lets a single account be signed out everywhere, e.g. after a password change
   if (u.tokensValidFrom && payload.t < Date.parse(u.tokensValidFrom)) return null;
+  // Oct 2 2026 (#182): THIS one token, individually revoked via POST /api/logout -- every other
+  // token the account still holds (other devices) is untouched, unlike tokensValidFrom just
+  // above, which is deliberately all-or-nothing. payload.j is only absent on a token issued
+  // before this change ever shipped; such a token was never put in revokedJtis by anything, so
+  // the lookup below simply misses and that token keeps working exactly as it already did.
+  if (payload.j && u.revokedJtis && Object.prototype.hasOwnProperty.call(u.revokedJtis, payload.j)) return null;
   return payload.u;
 }
 
@@ -693,6 +727,15 @@ app.post('/api/register', async (req, res) => {
 });
 // Live username availability check (used by the register popup as the user types)
 app.get('/api/register/check', async (req, res) => {
+  // Oct 2 2026 (deep audit finding): unlike every other auth-adjacent route in this file, this one
+  // had no rate limit at all -- unauthenticated, and findUserByName does a full linear scan of
+  // DB.users per call, so it was both a cheap CPU-exhaustion vector as the user table grows and a
+  // free, unthrottled username-enumeration oracle. The client only debounces at 350ms (a UI nicety,
+  // not a server cap) -- same overLimit() shape as /api/register itself, just a looser budget since
+  // normal typing can fire this several times per second while someone is still choosing a name.
+  const ip = clientIp(req);
+  if (ip && overLimit('regcheck:' + ip, 120, 5 * 60 * 1000))
+    return res.status(429).json({ available: false, reason: 'Too many checks — try again in a moment.' });
   const username = (req.query.username || '').trim();
   if (!username) return res.json({ available: false });
   // Sep 29 2026 (audit finding): usernameProblem() already has a differentiated message for each
@@ -754,6 +797,30 @@ app.post('/api/login', async (req, res) => {
   // Public is the default (unset counts as public, same rule as canSeeProfile) -- only an
   // explicit 'private' narrows it.
   res.json({ token: signToken(u.id), user: { ...publicUser(u.id), defaultGym: u.defaultGym || '', profileVisibility: u.profileVisibility === 'private' ? 'private' : 'public' } });
+});
+
+// Oct 2 2026 (#182, deep audit finding, Jeff: "Just sign out this device"): logout() in app.js
+// used to be purely client-side -- clear the local token, show the login screen -- which is fine
+// for the device doing it, but did nothing server-side at all. The token itself stayed valid
+// (signed, not remembered -- see signToken's own comment) for up to TOKEN_TTL_DAYS, so anyone who
+//'d captured it off that device beforehand (synced browser storage, a shared/public computer, a
+// backup) could keep using it right up until expiry, "Log out" notwithstanding. This revokes
+// exactly the ONE token presented -- never u.tokensValidFrom, which is the account-wide "every
+// device, everywhere" hammer /api/me/password and /api/me/delete-account already use and which
+// would defeat the entire point of a per-DEVICE sign-out (every other logged-in device would be
+// kicked too, including the one someone's mid-workout on).
+// auth() has already validated this exact token by the time this handler runs, so parseToken's
+// own signature/shape check here can't fail -- it's just the cleanest way to read back payload.j
+// (parseToken is the single shared implementation userIdFromToken's own revocation check also
+// reads from, see its comment above).
+app.post('/api/logout', auth, async (req, res) => {
+  const payload = parseToken((req.headers['authorization'] || '').replace(/^Bearer\s/, ''));
+  const u = DB.users[req.userId];
+  if (u && payload && payload.j) {
+    revokeToken(u, payload.j, payload.t);
+    await save(DB);
+  }
+  res.json({ ok: true });
 });
 
 // ---- Password reset: DISABLED, deliberately ----
@@ -1082,6 +1149,38 @@ function canSeeProfile(id, viewerId) {
   if (u.profileVisibility !== 'private') return true;
   return (u.followers || []).includes(viewerId);
 }
+// Pre-existing (profileOf's own local viewerCanSee closure, now just given a name): a workout's
+// full detail -- name, date, exercise list, collaborators, recap -- appears on the myWorkouts grid
+// only if the viewer could legitimately reach it: their own, a post whose own visibility admits
+// them, or a workout they were actually a member/invited of. Session-reader-privacy.mjs's own "a
+// Public profile must not broadcast a Private-visibility session's metadata to a stranger" is what
+// this guards.
+function sessionViewableOnProfile(s, profileOwnerId, viewerId) {
+  if (profileOwnerId === viewerId) return true;
+  if (canSeePostAuthor(s.posts && s.posts[profileOwnerId], profileOwnerId, viewerId, s)) return true;
+  const t = sessionTier(s, viewerId);
+  return t === 'member' || t === 'invited';
+}
+// Oct 2 2026 (deep audit finding): the PR/Recent-Activity leak this closes is narrower than
+// myWorkouts' own -- a PR is just the profile owner's OWN bare achievement number (exercise,
+// weight, reps), not the full workout detail myWorkouts renders, and this app's profile model
+// already treats that as the owner's to show to anyone who can see their profile at all ("the
+// guest's own best lift is the guest's to show their own friend -- that is what a profile is",
+// exposure.mjs's own comment; follow.mjs's whole flow is bob's own PR from his own PRIVATE,
+// never-posted session reaching an approved follower). The ACTUAL Oct 2 audit finding was
+// specifically about POSTS: "User A posts a session 'private' ... Recent Activity/prs still
+// handed over the exact weight/reps" to someone who was never in that session -- i.e. a PR must
+// respect the profile owner's OWN explicit privacy choice on a recap THEY posted, but there is
+// nothing to additionally restrict when they never made that choice at all. sessionViewableOnProfile
+// (above) was this function's first draft, reusing myWorkouts' own stricter member/invited-tier
+// rule wholesale -- caught breaking exactly those two pre-existing tests the same day, since that
+// tier requirement silently applies even when there's no post at all to be strict ABOUT.
+function achievementViewableOnProfile(s, profileOwnerId, viewerId) {
+  if (profileOwnerId === viewerId) return true;
+  const post = s.posts && s.posts[profileOwnerId];
+  if (!post) return true;
+  return canSeePostAuthor(post, profileOwnerId, viewerId, s);
+}
 // ---- Profile (per-user, viewable by anyone logged in) ----
 // localToday: the CALLER's own local day (see the comment above currentStreak) — only honored
 // below when id === viewerId, i.e. this is genuinely a self-view. Whoever is viewing someone
@@ -1119,7 +1218,6 @@ function profileOf(id, viewerId, localToday) {
     if ((s.history || []).some(h => h.userId === id)) completed.add(s.id);
     else if (s.posts && s.posts[id]) completed.add(s.id);
   }
-  const prs = (DB.prs && DB.prs[id]) ? Object.values(DB.prs[id]) : [];
   // v190: gated on canSeeProfile now -- a Public profile admits anyone; a Private one, only you and
   // approved followers, same as before.
   const isApproved = canSeeProfile(id, viewerId);
@@ -1143,12 +1241,37 @@ function profileOf(id, viewerId, localToday) {
   // them used to mean a session marked Private still broadcast its name/date/exercise list to
   // anyone who could see the owner's profile at all — trivially everyone, once profiles default
   // to Public (Sep 2026 audit finding).
-  const viewerCanSee = s => {
-    if (id === viewerId) return true;
-    if (canSeeMyPost(s)) return true;
-    const t = sessionTier(s, viewerId);
-    return t === 'member' || t === 'invited';
+  const viewerCanSee = s => sessionViewableOnProfile(s, id, viewerId);
+  // Oct 2 2026 (deep audit finding, HIGH privacy leak): rebuildAllPrs() builds DB.prs[id] from
+  // every session's logs with zero visibility check -- prs/recentActivity only ever gated on
+  // isApproved (profile-level follow approval), never on the individual session's OWN
+  // post.visibility. Concretely: User A posts a session 'private' ("only the creator or who was
+  // part of it" -- Jeff's own words) and sets a PR in it; User B, who was never in that session
+  // but can see A's profile (Public by default, or an approved follower), could not see the
+  // workout itself in myWorkouts, but Recent Activity and the prs array still handed over the
+  // exact exercise/weight/reps. Fixed via achievementViewableOnProfile, deliberately NOT the same
+  // viewerCanSee/sessionViewableOnProfile myWorkouts uses just below -- see that function's own
+  // comment for why a bare PR number and a full workout tile need two different rules here, and
+  // the same-day cold-review catch (two pre-existing tests, follow.mjs/exposure.mjs) that proved
+  // it. A PR whose session has since been deleted fails closed (hidden) for anyone but the owner,
+  // same instinct as every other "can't resolve it, so don't show it" fallback in this file.
+  const prVisibleToViewer = pr => {
+    const s = pr.sessionId && DB.sessions[pr.sessionId];
+    if (!s || !achievementViewableOnProfile(s, id, viewerId)) return null;
+    // A set-PR (VOLUME pill) can come from a DIFFERENT session than the weight-PR on the same
+    // record -- if that second session isn't visible to this viewer, strip just the set-PR
+    // fields rather than hiding the whole (otherwise-visible) weight record over it.
+    if (pr.setSessionId && pr.setSessionId !== pr.sessionId) {
+      const s2 = DB.sessions[pr.setSessionId];
+      if (!s2 || !achievementViewableOnProfile(s2, id, viewerId)) {
+        const { setWeight, setReps, setUnit, setAt, setFirstLog, setSessionId, ...rest } = pr;
+        return rest;
+      }
+    }
+    return pr;
   };
+  const rawPrs = (DB.prs && DB.prs[id]) ? Object.values(DB.prs[id]) : [];
+  const prs = id === viewerId ? rawPrs : rawPrs.map(prVisibleToViewer).filter(Boolean);
   const myWorkouts = Object.values(DB.sessions)
     .filter(s => (s.posts && s.posts[id]) || (s.history || []).some(h => h.userId === id))
     .filter(viewerCanSee)
@@ -1236,7 +1359,7 @@ function profileOf(id, viewerId, localToday) {
     prCount: isApproved ? prs.length : null,
     prs: isApproved ? prs.slice().sort((a,b)=> new Date(b.at) - new Date(a.at)) : [],
     streak: isApproved ? currentStreak(id, selfToday) : null,
-    recentActivity: isApproved ? buildActivityFor(id, selfToday) : [],
+    recentActivity: isApproved ? buildActivityFor(id, viewerId, selfToday) : [],
     limited: !isApproved        // so the profile can say why it is thin rather than look empty
   };
 }
@@ -1278,13 +1401,40 @@ function groupPrsForFeed(prs, weekAgo) {
 // localToday: unused within this function as of Sep 30 2026 (the one thing it fed, the streak
 // row, is gone) but left on the signature/call sites rather than threading a removal through
 // profileOf too, in case a future recentActivity item needs a caller-local "today" again.
-function buildActivityFor(userId, localToday) {
+function buildActivityFor(userId, viewerId, localToday) {
   const items = [];
   const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
-  const prs = (DB.prs && DB.prs[userId]) ? Object.values(DB.prs[userId]) : [];
+  // Oct 2 2026 (deep audit finding, HIGH privacy leak): same gap as profileOf's own `prs` -- these
+  // PR items used to come straight from DB.prs[userId] with no per-session visibility check at
+  // all, so a private workout's exact PR (exercise/weight/reps) still surfaced in Recent Activity
+  // to anyone who could merely see the profile. Filter through achievementViewableOnProfile, the
+  // same rule profileOf's own `prs` uses and for the same reason (NOT sessionViewableOnProfile --
+  // see that function's own comment on why a bare achievement number and a full workout tile need
+  // two different rules), same as there a PR whose session has since been deleted fails closed for
+  // anyone but the owner.
+  const rawPrs = (DB.prs && DB.prs[userId]) ? Object.values(DB.prs[userId]) : [];
+  const prs = userId === viewerId ? rawPrs : rawPrs
+    .map(pr => {
+      const s = pr.sessionId && DB.sessions[pr.sessionId];
+      if (!s || !achievementViewableOnProfile(s, userId, viewerId)) return null;
+      if (pr.setSessionId && pr.setSessionId !== pr.sessionId) {
+        const s2 = DB.sessions[pr.setSessionId];
+        if (!s2 || !achievementViewableOnProfile(s2, userId, viewerId)) {
+          const { setWeight, setReps, setUnit, setAt, setFirstLog, setSessionId, ...rest } = pr;
+          return rest;
+        }
+      }
+      return pr;
+    })
+    .filter(Boolean);
   items.push(...groupPrsForFeed(prs, weekAgo));
+  // Same visibility rule applied to the weekly-completion count/text -- lower severity than the
+  // PR leak above (it's just a number, no exercise/weight detail), but the same class of gap:
+  // "completed N workouts this week" used to count every session with a history entry regardless
+  // of that session's own privacy.
   let count = 0, latest = 0;
   for (const s of Object.values(DB.sessions)) {
+    if (userId !== viewerId && !achievementViewableOnProfile(s, userId, viewerId)) continue;
     for (const h of (s.history || [])) {
       if (h.userId === userId) { const t = new Date(h.date).getTime(); if (t >= weekAgo) { count++; if (t > latest) latest = t; } }
     }
@@ -1870,7 +2020,14 @@ const CREW_MSG_MAX = 2000;        // same cap as session/post comments above
 
 function ensureCrewShape(c) {
   if (!Array.isArray(c.memberIds)) c.memberIds = [];
-  if (!c.memberIds.includes(c.ownerId)) c.memberIds.push(c.ownerId);
+  // Oct 2 2026 (#178, deep audit finding): guarded on c.ownerId being truthy -- see the
+  // "ownerless crew" comment on POST /api/me/delete-account's cleanup loop below for why
+  // c.ownerId can now legitimately be null. Without this guard, the very next read of an
+  // ownerless crew would push the literal value `null` into memberIds (`[].includes(null)` is
+  // false, same as any other missing id), which would then render as a phantom roster row,
+  // double-count against CREW_MAX_MEMBERS, and corrupt challenge-progress math that iterates
+  // memberIds expecting every entry to be a real user id.
+  if (c.ownerId && !c.memberIds.includes(c.ownerId)) c.memberIds.push(c.ownerId);
   if (!Array.isArray(c.messages)) c.messages = [];
   if (!Array.isArray(c.challenges)) c.challenges = [];
 }
@@ -2838,7 +2995,20 @@ app.get('/api/feed', auth, async (req, res) => {
     if (new Date(ev.at).getTime() < weekAgo) continue;
     let visible;
     if (ev.by === null) {
-      visible = Array.isArray(ev.memberIds) && ev.memberIds.includes(req.userId);
+      // Oct 2 2026 (deep audit finding): this used to be the frozen ev.memberIds snapshot ALONE
+      // (who was in the crew the moment the challenge completed) -- unlike every other crew-scoped
+      // type below, it never re-checked CURRENT membership, so a member who later left the crew
+      // kept seeing (and could keep reacting to) this card for the rest of FEED_EVENT_RETENTION_DAYS,
+      // the one crew-feed type that didn't disappear on departure like 'joined_crew'/'left_crew'/
+      // 'rank'/'crew_renamed' all correctly do. Re-check live isCrewMember the same way those do;
+      // ev.memberIds itself is untouched (still the honest "who actually achieved it" snapshot for
+      // the card's own copy) -- only visibility now also requires still being a member today. Not
+      // adding isBlocked here: this card has no single actor to check a block against (it's the
+      // crew's shared win, same aggregate-only shape already accepted for challengeProgress.total),
+      // and crew-internal block-blindness is itself an established, deliberate pattern elsewhere
+      // (chat, lifecycle notify) -- flagged to Jeff rather than assumed silently.
+      const crew = ev.crewId && DB.crews[ev.crewId];
+      visible = !!crew && isCrewMember(crew, req.userId);
     } else if (CREW_SCOPED_FEED_TYPES.has(ev.type)) {
       // See CREW_SCOPED_FEED_TYPES' own comment -- Sep 13 2026, Jeff loosened this: crew
       // membership alone is enough, connection to the actor is no longer required.
@@ -4447,7 +4617,13 @@ app.delete('/api/sessions/:id', auth, async (req, res) => {
 // button they themselves just tapped, unlike /leave and /remove-mine where the creator is someone
 // ELSE and a real push is exactly right (the default here, unchanged for both of them).
 function notifyDeparturePivots(s, me, { resolvedRemovals, autoApplied, wasOwner, alreadyOwnerless, resolvedPush = true }) {
-  if (s.creatorId) {
+  // Oct 2 2026 (deep audit finding): this was the one notify() in this function without an
+  // isBlocked guard -- the autoApplied loop and both stillHere broadcasts right below it already
+  // check isBlocked(me, ...), and resolvePendingRemoval's own direct approve/decline paths fire
+  // this exact same "Removal approved"/"Removal declined" message with the identical guard. Only
+  // this pivot-triggered path (fired when the departing participant's own leave/remove-mine
+  // auto-resolves a pending removal they were a required approver for) was missing it.
+  if (s.creatorId && !isBlocked(me, s.creatorId)) {
     for (const pr of resolvedRemovals) {
       notify(s.creatorId, { title: 'Removal approved', body: `${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } }, { push: resolvedPush });
     }
@@ -5120,6 +5296,15 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   if (!Array.isArray(s.invited) || !s.invited.includes(req.userId)) return res.status(403).json({ error: 'not invited' });
+  // Oct 2 2026 (deep audit finding): s.invited is never purged on block, so a stale invite
+  // survives a block either direction -- unlike /accept just above (which re-checks at the moment
+  // of grant and refuses outright), Decline should still always succeed for the decliner (getting
+  // out of a stale invite shouldn't itself be blockable), but the notify two lines below must not
+  // carry the decliner's free-text reason to someone they're blocked with either direction. Same
+  // inviterId resolution /accept uses, so this is block-aware for an ownerless session's original
+  // inviter too, not just a live s.creatorId.
+  const inviterId = (s.invitedBy && s.invitedBy[req.userId]) || s.creatorId;
+  const declinerBlocked = isBlocked(inviterId, req.userId);
   s.invited = s.invited.filter(x => x !== req.userId);
   // Sep 24 2026 (audit finding): this left the decliner's s.invitedBy entry behind. PUT
   // /api/sessions/:id's invite-rewrite only ever SETS invitedBy for an id that doesn't already
@@ -5153,8 +5338,11 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   // below is where an actual back-and-forth belongs).
   const reason = typeof (req.body && req.body.reason) === 'string' ? req.body.reason.trim().slice(0, 300) : '';
   await save(DB);
-  // Same reasoning as /accept just above: an ownerless workout has no creator to tell.
-  if (s.creatorId) notify(s.creatorId, { title: 'Invite declined', body: `${DB.users[req.userId].displayName} declined your workout${reason ? `: "${reason}"` : ''}`, link: { type: 'session', sessionId: s.id } });
+  // Same reasoning as /accept just above: an ownerless workout has no creator to tell. Also skip
+  // entirely when blocked either direction (see declinerBlocked above) -- same privacy rule as
+  // every other notify() in this file, so a blocked relationship never receives this message or
+  // the decliner's free-text reason.
+  if (s.creatorId && !declinerBlocked) notify(s.creatorId, { title: 'Invite declined', body: `${DB.users[req.userId].displayName} declined your workout${reason ? `: "${reason}"` : ''}`, link: { type: 'session', sessionId: s.id } });
   // Sep 27 2026 (Jeff, part 1): the decliner themselves used to get no notification of their own
   // decline at all -- nothing for "changed your mind" to hook into later. This is the tap target:
   // link:{type:'reinvite-ask'} opens a small compose sheet (client-side) rather than the session
@@ -5183,6 +5371,20 @@ app.post('/api/sessions/:id/reinvite-request', auth, async (req, res) => {
   }
   if (isBlocked(req.userId, s.creatorId)) return res.status(403).json({ error: 'not found' });
   const message = typeof (req.body && req.body.message) === 'string' ? req.body.message.trim().slice(0, 300) : '';
+  // Oct 2 2026 (deep audit finding): every other "ask again" flow in this app (join requests
+  // re-flipping an existing row to pending instead of duplicating, ownerless swap re-proposals,
+  // template-share) reuses one row per requester instead of piling up duplicates -- this route was
+  // the one place that pattern wasn't applied, so repeat taps (person thinks it didn't go through,
+  // or just asks again days later) spammed the creator with a separate notification + Notifications
+  // row per tap. Reuse the same pending row (refreshing message/timestamp) instead of pushing a new
+  // one, and skip the duplicate notify -- the creator already has a live request to act on.
+  const existing = s.reinviteRequests.find(r => r.userId === req.userId);
+  if (existing) {
+    existing.message = message;
+    existing.at = new Date().toISOString();
+    await save(DB);
+    return res.json({ ok: true });
+  }
   const rr = { id: 'rr_' + uid(), userId: req.userId, message, at: new Date().toISOString() };
   s.reinviteRequests.push(rr);
   await save(DB);
@@ -5643,6 +5845,99 @@ app.post('/api/sessions/:id/suggest/:editId/reject', auth, async (req, res) => {
   res.json(sessionView(s, req.userId));
 });
 
+// Oct 2 2026 (#183, deep audit finding, Jeff: "Add a Cancel button for the proposer" (Recommended)):
+// the only way to withdraw your OWN still-pending suggestion used to be leaving the workout
+// outright (stripUserFromSession's inline suggestedEdits filter, reused by /leave and
+// /remove-mine) -- changing your mind about a swap or an add while you're still very much in the
+// workout had no path at all; the creator's own approve/reject were the only routes that could
+// ever resolve it. Scoped narrowly and deliberately: only the ORIGINAL proposer can cancel (never
+// the creator -- approve/reject above are still their only tools), and only while it's still
+// genuinely undecided and nobody else has acted on it yet -- an owned edit whose status is no
+// longer 'pending', or an ownerless edit someone ELSE has already cast their own vote on, or an
+// ownerless 'add' that's already reached unanimous consensus, are all past the point where
+// withdrawing it would silently retract a decision someone else already made. That's exactly the
+// failure mode the ownerless redesign's own leave/remove-mine comment already flags and refuses
+// to do ("the proposer leaving must not retract every OTHER current participant's own independent
+// vote") -- this reuses that same boundary for a voluntary cancel, not just a departure.
+app.post('/api/sessions/:id/suggest/:editId/cancel', auth, async (req, res) => {
+  const s = DB.sessions[req.params.id];
+  if (!s) return res.status(404).json({ error: 'not found' });
+  ensureSessionShape(s);
+  const edit = s.suggestedEdits.find(e => e.id === req.params.editId);
+  if (!edit) return res.status(404).json({ error: 'edit not found' });
+  if (edit.proposedBy !== req.userId) return res.status(403).json({ error: 'only the person who proposed this can cancel it' });
+  // A still-invited person's own private pre-join stash (suggestOwnerless's privatePreJoin
+  // branch) -- never shown to anyone else, never voted on, so there's nothing it could be
+  // retracting out from under anyone. Just drop it.
+  if (edit.privatePreJoin) {
+    s.suggestedEdits = s.suggestedEdits.filter(e => e !== edit);
+    await save(DB);
+    return res.json(sessionView(s, req.userId));
+  }
+  if (s.creatorId === null) {
+    // Ownerless group proposal: proposing one casts the proposer's own automatic "yes"
+    // (applyOwnerlessVote(...,'approved') in suggestOwnerless) -- safe to fully withdraw only
+    // while that's still the ONLY vote on it. Once another current participant has cast their
+    // own real vote, it's their independent decision now, not just the proposer's pitch.
+    const othersVoted = Object.keys(edit.votes || {}).some(id => id !== req.userId);
+    if (othersVoted) return res.status(400).json({ error: "someone else has already weighed in — it's too late to cancel" });
+    if (edit.type === 'add') {
+      // maybeResolveOwnerlessAdd only ever settles an 'add' once EVERY current participant has
+      // voted yes -- which the othersVoted check just above already ruled out whenever
+      // s.participants.length > 1, so this is really only reachable (status something other than
+      // 'pending') in the one-person-workout edge case. Guarded anyway rather than assumed.
+      if (edit.status !== 'pending') return res.status(400).json({ error: 'already settled' });
+      // Doc tab 05: an ownerless 'add' creates the real, shared exercise immediately (just hidden
+      // from everyone but the proposer by default) -- so cancelling has a real exercise to remove,
+      // unlike the owned path's 'add', which never creates one until approved. If ANYONE has
+      // already logged real sets against it, this is no longer "nothing happened yet" -- refuse
+      // rather than silently discarding logged data; the normal removal flow (which routes through
+      // every current credit-holder's approval) is what that actually needs.
+      // Cold-review catch (same day): this used to check only req.userId's (the proposer's) own
+      // logs -- but hiddenFor/unhide-for-me is a completely separate, vote-independent mechanism
+      // (any current participant can call it on any exercise id, including this still-pending
+      // one, same as sessionView already exposes its id via suggestedEdits) and /log never checks
+      // hiddenFor at all, so another participant can unhide this exercise and log real sets on it
+      // without ever casting a vote -- othersVoted above would never catch that. Checking every
+      // current participant's logs, not just the proposer's, is what actually makes "nobody has
+      // real data on this yet" true.
+      const hasLogs = Object.keys(s.logs || {}).some(uid_ => (s.logs[uid_] || []).some(l => l.exerciseId === edit.exerciseId));
+      if (hasLogs) return res.status(400).json({ error: "someone has already logged sets on this — use the normal remove flow instead" });
+      s.exercises = s.exercises.filter(e => e.id !== edit.exerciseId);
+      if (s.hiddenFor) delete s.hiddenFor[edit.exerciseId];
+    } else {
+      // Undoes the proposer's own auto-yes variation, same "only clear if it's still the exact
+      // thing THIS edit set" guard applyOwnerlessVote's reject branch already applies -- it's a
+      // no-op if the proposer already changed their own card some other way since proposing.
+      applyOwnerlessVote(s, edit, req.userId, 'rejected');
+    }
+    s.suggestedEdits = s.suggestedEdits.filter(e => e !== edit);
+    await save(DB);
+    // Nobody but the proposer has ever seen or acted on this (othersVoted just ruled that out),
+    // so there's no one to tell -- same "nobody is told" shape as the privatePreJoin branch above.
+    return res.json(sessionView(s, req.userId));
+  }
+  // Owned session: a single, straightforward pending proposal the creator hasn't decided on yet.
+  if (edit.status !== 'pending') return res.status(400).json({ error: 'already decided' });
+  s.suggestedEdits = s.suggestedEdits.filter(e => e !== edit);
+  await save(DB);
+  // Mirrors the propose-side notify in POST /suggest above -- everyone who was told "X wants to
+  // swap/add..." gets told it's off the table again, instead of being left to wonder why a
+  // suggestion they saw never resolved. Same isBlocked guard as every other notify on this route.
+  const who = DB.users[req.userId].displayName;
+  if (edit.type === 'add') {
+    if (!isBlocked(req.userId, s.creatorId)) notify(s.creatorId, { title: 'Suggestion withdrawn', body: `${who} withdrew their suggestion to add ${edit.swapTo}`, link: { type: 'session', sessionId: s.id } });
+  } else {
+    const fromEx = s.exercises.find(e => e.id === edit.exerciseId);
+    const fromName = fromEx ? fromEx.name : 'an exercise';
+    for (const uid_ of new Set([s.creatorId, ...s.participants])) {
+      if (uid_ === req.userId || !DB.users[uid_] || isBlocked(req.userId, uid_)) continue;
+      notify(uid_, { title: 'Suggestion withdrawn', body: `${who} withdrew their swap: ${fromName} → ${edit.swapTo}`, link: { type: 'session', sessionId: s.id } });
+    }
+  }
+  res.json(sessionView(s, req.userId));
+});
+
 // join request (public-visibility sessions)
 app.post('/api/sessions/:id/join', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
@@ -5736,7 +6031,13 @@ app.post('/api/sessions/:id/join/:reqId/reject', auth, async (req, res) => {
   if (jr.status !== 'pending') return res.status(400).json({ error: 'already decided' });
   jr.status = 'rejected';
   await save(DB);
-  notify(jr.userId, { title: 'Join declined', body: `${DB.users[s.creatorId].displayName} declined your join request`, link: { type: 'session', sessionId: s.id } });
+  // Oct 2 2026 (deep audit finding): /approve right above re-checks isBlocked at the moment of
+  // decision since a block can form between request-filed and decision -- reject never had the
+  // same re-check before notifying. Reject grants nothing, so this doesn't need to refuse the
+  // action itself, just skip telling a now-blocked requester who declined them.
+  if (!isBlocked(jr.userId, req.userId)) {
+    notify(jr.userId, { title: 'Join declined', body: `${DB.users[s.creatorId].displayName} declined your join request`, link: { type: 'session', sessionId: s.id } });
+  }
   res.json(sessionView(s, req.userId));
 });
 
@@ -6077,6 +6378,63 @@ app.post('/api/me/delete-account', auth, async (req, res) => {
     if (Array.isArray(other.blocked)) other.blocked = other.blocked.filter(x => x !== me);
   }
   delete DB.pushSubs[me];   // stop push delivery dead rather than let it 404/410 itself out later
+
+  // Oct 2 2026 (deep audit finding): wipeUserFromAllSessions above cleans up every pending-action
+  // type that lives on DB.sessions (invites, join requests, removals, suggestions, reinvite-asks),
+  // but DB.templates (routines) was never wired into any cleanup pass -- the Oct 2 routine-sharing
+  // redesign introduced t.sharedTo (a real pending-action list, same shape as the others) without
+  // adding the equivalent teardown. Left alone: a deleted owner's own routines sit in DB.templates
+  // forever, unreachable by anyone, and their id keeps dangling in t.sharedTo on anyone else's
+  // routine THEY shared with (or were shared a routine by) this account -- the recipient's pending-
+  // shares list keeps showing it attributed to "Deleted user" indefinitely, and can still actually
+  // accept-share it to get a working copy, long after the account is gone. Mirrors the follow-graph
+  // severance loop just above: strip `me` from every other routine's sharedTo, then remove every
+  // routine `me` owned outright (a routine has no collaborative-editing concept -- see /accept's own
+  // comment -- so there is no "hand off ownership" equivalent to build here, unlike sessions/crews).
+  for (const t of Object.values(DB.templates || {})) {
+    if (Array.isArray(t.sharedTo) && t.sharedTo.includes(me)) t.sharedTo = t.sharedTo.filter(x => x !== me);
+  }
+  for (const tid of Object.keys(DB.templates || {})) {
+    if (DB.templates[tid].ownerId === me) delete DB.templates[tid];
+  }
+
+  // Oct 2 2026 (#178, deep audit finding): a crew the deleted account OWNED was never touched by
+  // this route at all. Unlike a routine (no collaborative-editing concept -- see the comment on
+  // the templates cleanup just above, "remove every routine me owned outright"), a crew is a real
+  // shared group its other members are still actively using, so deleting it out from under them
+  // the way a routine is deleted here would be the wrong call for anyone with co-members. The
+  // crew's own existing design already anticipated an owner going away -- "The owner can't
+  // 'leave' -- ... the owner deletes the crew instead of leaving it orphaned" (see POST
+  // /api/crews/:id/leave's comment) -- but that escape hatch assumes the owner is still around to
+  // make the call. Account deletion is permanent and bypasses /leave entirely, so without this,
+  // c.ownerId keeps pointing at an id that can never log in and match `c.ownerId === req.userId`
+  // again: PUT/DELETE /api/crews/:id and POST .../challenge (every owner-gated action) silently
+  // 403 for literally everyone, forever -- an unrenamable, unmanageable, undeletable zombie crew.
+  // Mirrors sessions' own ownerless redesign (s.creatorId -> null, "ownership now simply clears
+  // and NEVER comes back" -- see wipeUserFromAllSessions' comment): c.ownerId -> null is the same
+  // permanent, one-way signal, and ensureCrewShape (above) already tolerates it. Deliberately NOT
+  // building crews an equivalent of sessions' full ownerless voting system (new owner-gated
+  // actions like rename/add-member/start-challenge simply stay unavailable to everyone once a
+  // crew is ownerless, rather than opening them up to every member) -- that's a real product
+  // decision with no signal from Jeff either way, flagged rather than silently built out, same
+  // spirit as the username-reuse note on u.deleted above.
+  //
+  // A solo crew (the deleted owner was the only member -- memberIds is kept in sync with
+  // CREW_MAX_MEMBERS checks everywhere else, so this is the one place that can safely assume it's
+  // accurate) has no one left to leave it ownerless FOR, so it's deleted outright instead, same
+  // as the ownerless-but-empty edge case sessions already collapse to a hard delete for.
+  for (const cid of Object.keys(DB.crews || {})) {
+    const c = DB.crews[cid];
+    if (c.ownerId !== me) continue;
+    ensureCrewShape(c);
+    const others = c.memberIds.filter(id => id !== me);
+    if (!others.length) { delete DB.crews[cid]; continue; }
+    c.ownerId = null;
+    for (const mid of others) {
+      if (!DB.users[mid] || isBlocked(me, mid)) continue;
+      notify(mid, { title: c.name, body: 'The crew owner\'s account was deleted — this crew has no owner now.', link: { type: 'crew', crewId: c.id } });
+    }
+  }
 
   // Cold-review catch (Sep 29 2026): u.avatar='' below only clears the REFERENCE -- same gap
   // POST /api/me/avatar's own comment already documents for a re-upload landing under a different
@@ -6603,7 +6961,17 @@ function liftHistoryFor(userId) {
     }
     for (const name of Object.keys(perEx)) {
       const point = {
-        at: perfDate(s.scheduledAt).slice(0, 10),
+        // Oct 2 2026 (deep audit finding, HIGH): this used to be perfDate(s.scheduledAt) -- WHEN
+        // the workout was PLANNED to start, not when it actually happened -- the exact bug class
+        // the Sep 28 2026 fix already closed for volumeFor/volumeTrendFor/weeksFor (see
+        // sessionDateFor's own comment above). A session scheduled weeks ago but left open and
+        // only actually finished/logged today used to date its lift points back to the original
+        // schedule, which could misdate a genuinely recent PR into the past -- corrupting the
+        // trend's "current" smoothing (bestPointOfWindow) and, worse, feeding plateausFor a false
+        // baseline that could flag a genuinely improving lift as plateaued. sessionDateFor already
+        // prefers the real finish date (the caller's own h.date) and only falls back to scheduledAt
+        // for a session that's been logged into but not yet finished -- same rule, same fallback.
+        at: sessionDateFor(s, userId),
         // est is always Epley-scored off toLb() inside estMax() above, regardless of what unit
         // this particular set was typed in -- it is canonically a POUNDS number internally, used
         // that way for every comparison in this file (bestPointOfWindow, currentEst, the overall
@@ -6654,7 +7022,7 @@ function bestPointOfWindow(points, asOfDate, assisted) {
 }
 function currentEst(points, asOfDate, assisted) { return bestPointOfWindow(points, asOfDate, assisted).est; }
 
-function trendFor(userId) {
+function trendFor(userId, localToday) {
   const lifts = liftHistoryFor(userId);
   // Sep 24 2026 audit round 4: the unit every number below gets displayed in. All the ratio/
   // smoothing math above and below stays in liftHistoryFor()'s canonical lb points, untouched --
@@ -6704,7 +7072,15 @@ function trendFor(userId) {
   // stretch of training and can't contradict each other. A lift with no history older than the
   // window falls back to l.points[0] automatically (bestPointOfWindow's own behavior when nothing
   // is that old yet) -- unchanged behavior for anyone who's only ever logged it recently.
-  const trendWindowStart = new Date(); trendWindowStart.setUTCDate(trendWindowStart.getUTCDate() - PLATEAU_WEEKS * 7);
+  // Oct 2 2026 (deep audit finding, HIGH, same root cause as liftHistoryFor's own `at` fix above):
+  // this used to anchor the window to the bare SERVER clock (new Date()) instead of accepting
+  // localToday the way weeksFor/volumeFor/volumeTrendFor all do -- so the window boundary itself
+  // could land on a different calendar day than the caller's own "today" near midnight UTC,
+  // compounding the misdated-points bug above. Same isValidLocalDateStr fallback those siblings use.
+  const todayStr = isValidLocalDateStr(localToday) ? localToday : new Date().toISOString().slice(0, 10);
+  const [twy, twm, twd] = todayStr.split('-').map(Number);
+  const trendWindowStart = new Date(Date.UTC(twy, twm - 1, twd));
+  trendWindowStart.setUTCDate(trendWindowStart.getUTCDate() - PLATEAU_WEEKS * 7);
   const trendWindowStartStr = trendWindowStart.toISOString().slice(0, 10);
   // Sep 30 2026 (real regression caught in test/trend-smoothing.mjs, fixed same day as the window
   // change above): the first attempt at this baseline used bestPointOfWindow(l.points,
@@ -6927,7 +7303,7 @@ const PLATEAU_WEEKS = 6;
 const PLATEAU_MIN_SESSIONS = 3;
 const PLATEAU_THRESHOLD = 0.02; // must beat the prior best by >2% to count as real progress
 
-function plateausFor(userId) {
+function plateausFor(userId, localToday) {
   const unit = (DB.users[userId] && DB.users[userId].units) || 'lb';
   const byName = {};
   for (const s of Object.values(DB.sessions)) {
@@ -6952,7 +7328,15 @@ function plateausFor(userId) {
       if (better) perEx[name] = { e, l, w };
     }
     for (const name of Object.keys(perEx)) {
-      const at = perfDate(s.scheduledAt).slice(0, 10);
+      // Oct 2 2026 (#174, part of the same misdated-points fix as liftHistoryFor()/trendFor()
+      // above): this used to date each point by perfDate(s.scheduledAt) -- when the session was
+      // SCHEDULED, not when it was actually logged. A lift trained late, or finished after
+      // midnight relative to its scheduled slot, landed its point on the wrong side of the
+      // PLATEAU_WEEKS window boundary below, which can make a genuinely improving lift read as
+      // "stuck" just because its most recent sessions got dated into the prior period instead of
+      // the current one. sessionDateFor() (shared with liftHistoryFor()) prefers the real logged
+      // date from s.history and only falls back to the scheduled date when that's unavailable.
+      const at = sessionDateFor(s, userId);
       const l = perEx[name].l;
       (byName[name] = byName[name] || []).push({
         at, est: perEx[name].e,
@@ -6961,7 +7345,15 @@ function plateausFor(userId) {
     }
   }
 
-  const windowStart = new Date(); windowStart.setUTCDate(windowStart.getUTCDate() - PLATEAU_WEEKS * 7);
+  // Oct 2 2026 (#174, same localToday-aware window fix as trendFor()'s trendWindowStart above):
+  // a bare `new Date()` here uses the SERVER's clock instant, which can already be "tomorrow"
+  // relative to the caller's local day (or still "yesterday"), shifting the window boundary by a
+  // day and flipping which side of it a borderline session lands on. isValidLocalDateStr's
+  // fallback to the server date keeps this safe for any caller that doesn't pass localToday.
+  const todayStr2 = isValidLocalDateStr(localToday) ? localToday : new Date().toISOString().slice(0, 10);
+  const [pwy, pwm, pwd] = todayStr2.split('-').map(Number);
+  const windowStart = new Date(Date.UTC(pwy, pwm - 1, pwd));
+  windowStart.setUTCDate(windowStart.getUTCDate() - PLATEAU_WEEKS * 7);
   const windowStartStr = windowStart.toISOString().slice(0, 10);
 
   const out = [];
@@ -7240,8 +7632,8 @@ app.get('/api/progress', auth, async (req, res) => {
     thisWeek: w.length ? w[w.length - 1].days : 0,
     avgPerWeek: w.length ? Number((trained / w.length).toFixed(1)) : 0,
     streakWeeks: streak,
-    trend: trendFor(req.userId),
-    plateaus: plateausFor(req.userId),
+    trend: trendFor(req.userId, req.query.localToday),
+    plateaus: plateausFor(req.userId, req.query.localToday),
     prs: recordsFor(req.userId),
     // Sep 1, round 5/6: widened from just This week (1) + 4-wk avg to a 3-range picker (This
     // week/Month/3 months) so Volume trend's card can offer a matching range control instead of a
@@ -7787,6 +8179,12 @@ function rebuildAllPrs() {
         Object.defineProperty(l, '_performedAt', {
           value: perfDate(post && post.at, perfDate(hist && hist.at, perfDate(s.scheduledAt, l.at))),
           enumerable: false, configurable: true });
+        // Oct 2 2026 (deep audit finding, privacy leak): non-persisted, same shape as _performedAt
+        // -- which session this set actually came from, carried through to the final PR record
+        // below so profileOf/buildActivityFor can gate a PR on ITS OWN session's post.visibility,
+        // not just profile-level follow approval (see the comment on `prs`/`viewerCanSee` in
+        // profileOf for the full reasoning).
+        Object.defineProperty(l, '_sessionId', { value: s.id, enumerable: false, configurable: true });
         const name = logExerciseName(s, l, userId);
         groups[userId] = groups[userId] || {};
         groups[userId][name] = groups[userId][name] || [];
@@ -7925,6 +8323,9 @@ function rebuildAllPrs() {
         DB.prs[userId][name] = { exercise: name, weight: Number(bestLog.weight) || 0,
           reps: Number(bestLog.reps) || 0, unit: bestLog.unit || 'lb',
           at: bestLog._performedAt || bestLog.at, firstLog,
+          // Oct 2 2026 (deep audit finding): which session this record was actually set in --
+          // see the comment on l._sessionId above and on `prs`/`viewerCanSee` in profileOf.
+          sessionId: bestLog._sessionId,
           // bestSetLog is null for assisted (see the comment above) — the set*/VOLUME fields are
           // simply omitted rather than written as zeros, so recordsFor()'s
           // `earnedPr.setWeight !== undefined` check (and GET /api/progress's identical one) reads
@@ -7933,7 +8334,12 @@ function rebuildAllPrs() {
           // of contributing undefined-valued keys, which `!== undefined` would still see as present.
           ...(bestSetLog ? { setWeight: Number(bestSetLog.weight) || 0, setReps: Number(bestSetLog.reps) || 0,
             setUnit: bestSetLog.unit || 'lb', setAt: bestSetLog._performedAt || bestSetLog.at,
-            setFirstLog } : {}) };
+            setFirstLog,
+            // bestSetLog (the VOLUME/set-record winner) can be a DIFFERENT session than bestLog
+            // (the weight-record winner) for the same exercise -- its own sessionId, so a viewer
+            // who can see the weight record's session but not the set record's session doesn't
+            // get the set record's weight/reps leaked through anyway.
+            setSessionId: bestSetLog._sessionId } : {}) };
       }
     }
   }
@@ -8211,8 +8617,11 @@ app.post('/api/sessions/:id/posts/:authorId/react', auth, async (req, res) => {
 app.post('/api/feed-events/:id/react', auth, async (req, res) => {
   const ev = DB.feedEvents[req.params.id];
   if (!ev) return res.status(404).json({ error: 'not found' });
+  // Oct 2 2026 (deep audit finding): same current-membership fix as GET /api/feed's own
+  // ev.by===null branch -- a departed member could otherwise keep reacting to their old crew's
+  // challenge-completed card forever (see that comment for the full reasoning).
   const allowed = ev.by === null
-    ? Array.isArray(ev.memberIds) && ev.memberIds.includes(req.userId)
+    ? (() => { const crew = ev.crewId && DB.crews[ev.crewId]; return !!crew && isCrewMember(crew, req.userId); })()
     : ev.by === req.userId || connectionsOf(req.userId).includes(ev.by);
   if (!allowed) return res.status(403).json({ error: 'forbidden' });
   ev.reactions = Array.isArray(ev.reactions) ? ev.reactions.filter(x => typeof x === 'string') : [];
