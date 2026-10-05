@@ -43,6 +43,16 @@ async function readNotificationsFor(userId) {
   pg.close();
   return r.rows.map(row => JSON.parse(row.data)).filter(n => n.userId === userId);
 }
+// Direct-Postgres read of the crews table -- used by the #178 solo-crew-deletion check below,
+// since the only account that was ever a member of that crew is the one just deleted (and so can
+// no longer authenticate at all, 401, before the request ever reaches the crew lookup) -- there's
+// no other user whose own token could ask the API whether the row is gone.
+async function readCrew(crewId) {
+  const pg = new PgConnection(parseConnString(testDb.url));
+  const r = await pg.query('SELECT id FROM crews WHERE id = $1', [crewId]);
+  pg.close();
+  return r.rows[0] || null;
+}
 // A tiny real 1x1 PNG, base64-encoded -- small enough to inline, still a real image POST
 // /api/me/avatar's own content-type sniff (data:image/png;base64,...) accepts.
 const TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
@@ -137,6 +147,43 @@ console.log('\nchange password');
   ok(freshTokenWorks.status === 200, `but the FRESH token the route handed back keeps this device logged in, no surprise logout right after changing your own password (got ${freshTokenWorks.status})`);
   const device2AfterChange = await postRaw('/api/me/display-name', { displayName: 'device 2?' }, device2.token);
   ok(device2AfterChange.status === 401, `the OTHER device's session is genuinely signed out (got ${device2AfterChange.status})`);
+}
+
+// Oct 2 2026 (#182, deep audit finding, Jeff: "Just sign out this device"): "Log out" used to be
+// purely client-side -- the token itself stayed valid server-side regardless, for up to
+// TOKEN_TTL_DAYS. POST /api/logout now revokes exactly the one token it's called with; this
+// proves that's per-DEVICE, not the account-wide "every session, everywhere" hammer
+// /api/me/password (just above) and /api/me/delete-account already use.
+console.log('\nlogout (#182)');
+{
+  const uname = 'lo_' + Date.now();
+  const u = await reg(uname, 'pass1234', 'LO');
+  const device2 = await login(uname, 'pass1234');
+  ok(!!device2.token, 'sanity: a second device logs in fine');
+
+  const before = await fetch(B + '/api/profile/me', { headers: { Authorization: 'Bearer ' + u.token } });
+  ok(before.status === 200, `sanity: device 1's token works before logging out (got ${before.status})`);
+
+  const out = await postRaw('/api/logout', {}, u.token);
+  ok(out.status === 200, `device 1 logs out (got ${out.status})`);
+
+  const afterD1 = await fetch(B + '/api/profile/me', { headers: { Authorization: 'Bearer ' + u.token } });
+  ok(afterD1.status === 401, `device 1's own token is now rejected (got ${afterD1.status})`);
+  const afterD2 = await fetch(B + '/api/profile/me', { headers: { Authorization: 'Bearer ' + device2.token } });
+  ok(afterD2.status === 200, `but device 2's token still works -- this was a per-device sign-out, not account-wide (got ${afterD2.status})`);
+
+  // Calling it again with the already-revoked token (e.g. a double-tap, or a retry after a flaky
+  // network response) must not throw or corrupt anything -- it's already logged out, which is a
+  // success, not an error.
+  const outAgain = await postRaw('/api/logout', {}, u.token);
+  ok(outAgain.status === 401, `a second logout with the same already-revoked token is just an ordinary 401 (already logged out), not a crash (got ${outAgain.status})`);
+
+  // A login right after logging out gets a genuinely fresh, un-revoked token -- a device signing
+  // back in must not find itself immediately logged back out again.
+  const backIn = await login(uname, 'pass1234');
+  ok(!!backIn.token, 'logging back in after logging out works normally');
+  const afterBackIn = await fetch(B + '/api/profile/me', { headers: { Authorization: 'Bearer ' + backIn.token } });
+  ok(afterBackIn.status === 200, `and the fresh token from that login works immediately (got ${afterBackIn.status})`);
 }
 
 console.log('\ndelete account');
@@ -244,6 +291,50 @@ console.log('\ndelete account');
   ok(sessAfter && sessAfter.creatorId === null, `the workout pivoted to ownerless, same as reset-workouts (got ${JSON.stringify(sessAfter)})`);
   ok(sessAfter && Array.isArray(sessAfter.participants) && sessAfter.participants.includes(friend.user.id),
      'and the friend is still a real current participant, with their own logged set intact');
+}
+
+// Oct 2 2026 (#178, deep audit finding): a crew the deleted account OWNED was never touched by
+// delete-account at all -- c.ownerId kept pointing at an id that can never log in again, so every
+// owner-gated crew route (rename/membership/delete/start-challenge) silently 403'd for literally
+// everyone, forever. Two cases: a crew with other real members pivots to ownerless (c.ownerId:
+// null, mirroring sessions' own creatorId pivot), a solo crew (deleted owner was the only member)
+// is deleted outright instead, same as the ownerless-but-empty edge case sessions collapse to a
+// hard delete for.
+console.log('\ndelete account -- crew ownership (#178)');
+{
+  const owner = await reg('co_' + Math.floor(Math.random() * 1e9), 'pass1234', 'CrewOwner');
+  const member = await reg('cm_' + Math.floor(Math.random() * 1e9), 'pass1234', 'CrewMember');
+  const solo = await reg('cs_' + Math.floor(Math.random() * 1e9), 'pass1234', 'SoloOwner');
+  await post('/api/follow/' + member.user.id, {}, owner.token);
+  await post('/api/follow-requests/' + owner.user.id + '/accept', {}, member.token);
+  await post('/api/follow/' + owner.user.id, {}, member.token);
+  await post('/api/follow-requests/' + member.user.id + '/accept', {}, owner.token);
+
+  const crew = await post('/api/crews', { name: 'Leg Day Crew', memberIds: [member.user.id] }, owner.token);
+  ok(crew.id && crew.members && crew.members.length === 2, `crew created with owner + member (got ${JSON.stringify(crew)})`);
+  const soloCrew = await post('/api/crews', { name: 'Solo Crew', memberIds: [] }, solo.token);
+  ok(soloCrew.id, `solo-member crew created (got ${JSON.stringify(soloCrew)})`);
+
+  const ownerDel = await post('/api/me/delete-account', { password: 'pass1234' }, owner.token);
+  ok(ownerDel.ok === true, `crew owner deletes their account (got ${JSON.stringify(ownerDel)})`);
+  const soloDel = await post('/api/me/delete-account', { password: 'pass1234' }, solo.token);
+  ok(soloDel.ok === true, `solo crew owner deletes their account (got ${JSON.stringify(soloDel)})`);
+
+  const crewAfter = await fetch(B + '/api/crews/' + crew.id, { headers: { Authorization: 'Bearer ' + member.token } }).then(r => r.json());
+  ok(crewAfter && crewAfter.ownerId === null, `the crew pivoted to ownerless, not left pointing at the deleted account (got ownerId ${crewAfter && crewAfter.ownerId})`);
+  ok(crewAfter && crewAfter.isOwner === false, 'and nobody -- including the remaining member -- reads as owner');
+  ok(crewAfter && Array.isArray(crewAfter.members) && crewAfter.members.length === 2 && crewAfter.members.some(m => m.displayName === 'Deleted user'),
+     `the deleted owner stays a member, displaying as "Deleted user" rather than vanishing or breaking the roster (got ${JSON.stringify(crewAfter && crewAfter.members)})`);
+
+  const put = await fetch(B + '/api/crews/' + crew.id, { method: 'PUT', headers: { ...J, Authorization: 'Bearer ' + member.token }, body: JSON.stringify({ name: 'New Name' }) }).then(r => r.json());
+  ok(!!put.error, `an ownerless crew can no longer be renamed by anyone, including a current member (got ${JSON.stringify(put)})`);
+  const challenge = await postRaw('/api/crews/' + crew.id + '/challenge', { type: 'workouts' }, member.token);
+  ok(challenge.status === 403, `and no one can start a new challenge on an ownerless crew either (got ${challenge.status})`);
+  const leave = await post('/api/crews/' + crew.id + '/leave', {}, member.token);
+  ok(leave.ok === true, 'but a current member can still leave an ownerless crew normally');
+
+  const soloCrewAfter = await readCrew(soloCrew.id);
+  ok(!soloCrewAfter, `a solo-member crew is deleted outright rather than left ownerless with no one in it (got ${JSON.stringify(soloCrewAfter)})`);
 }
 
 // Sep 29 2026 (audit finding, Tier 1 #1): nothing capped how many times a valid-but-stolen token

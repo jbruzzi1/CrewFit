@@ -779,6 +779,34 @@
     .req .rc { flex:1; font-size:12px; line-height:1.35; color:var(--fg); }
     .req .ra { display:flex; gap:6px; flex:0 0 auto; }
     .req .ra .sm { background:transparent; border:1px solid var(--line); color:var(--fg); font-weight:600; font-size:12px; padding:2px 10px; width:auto; margin:0; }
+    /* Oct 5 2026 (Jeff, looking at the new #183 Cancel button on a swap-suggestion row: "Everything
+       seems squished. And I feel will look worse with the overflow lines with longer exercise
+       names"). Same shape problem Sep 27's .reinv-row fix solved ("the box with the most amount of
+       text is squish... or 'not now' underneath?") -- .req's side-by-side .rc/.ra split only has
+       room for a short status word plus ONE button; adding the proposer's own Cancel pill next to
+       an already-present tag/vote-buttons (and right beside a potentially long swapTo exercise
+       name in .rc, which only gets flex:1's leftover space) squeezes both. Used on the two .req
+       rows that render suggestActionsHtml() specifically (the per-exercise inline swap row and the
+       ownerless suggestion-stack card) -- every other .req usage (join/follow requests, removal
+       rows) is untouched, still one line, matching Jeff's "keep the styling the way it already was
+       page for page" rule from that same Sep 27 pass.
+       .rc gets flex-basis:100% so it always claims its own full-width line first (room for a long
+       name to wrap normally, never squeezed into a sliver) and .ra wraps to a second full-width
+       line, right-aligned to match the trailing-edge action placement used everywhere else in the
+       app; .ra itself can still wrap internally as a last resort on the crowded ownerless case
+       (vote tag + Approve + Reject + Cancel).
+       Oct 5 2026 round 2 (Jeff, looking at the republished version: "The waiting on creator and
+       cancel button are synced to match at the height for each but that looks slightly weird. Id
+       rather it be centered" -- then, re: the ownerless row: "Same with you said yes etc"). Cause:
+       .ra never set its own align-items, so it inherited flex's default (stretch) -- the plain
+       .tag text span (no padding/border of its own) stretched to match the taller bordered .sm
+       button's height, and its text then sat at the TOP of that stretched box instead of in the
+       middle of it, next to the button's own (actually centered) label. align-items:center makes
+       every child -- tag or button -- sit on its own natural height, centered on the row, so the
+       tag's text lines up with the button label's vertical center instead of the row's top edge. */
+    .req.req-sw { flex-wrap:wrap; row-gap:6px; }
+    .req.req-sw .rc { flex:1 1 100%; min-width:0; }
+    .req.req-sw .ra { flex:1 1 100%; justify-content:flex-end; align-items:center; flex-wrap:wrap; }
     /* Design cleanup, Aug 27: both buttons were identical flat gray, told apart only by their
        text -- Approve/Reject match the same pattern the app uses for a session invite's Accept
        (.sm.blue) and Decline (.sm.gray, a plain card/line pill -- not red; declining isn't framed
@@ -1598,6 +1626,15 @@
     .drv-w { font-size:11.5px; color:var(--muted); white-space:nowrap; }
     .drv-p { width:52px; text-align:right; font-size:13px; font-weight:700; }
     .drv-p.up { color:#067a06; } .drv-p.flat { color:var(--muted); }
+    /* Oct 2 2026 (#175, deep audit finding, Jeff: "Yes, add one"): a lift that's trending DOWN
+       used to render identically to one that's genuinely flat -- both fell through to the same
+       '—' dash in var(--muted), the "nothing to see here" color. A real decline (someone's
+       actually lifting less than their own trailing-window baseline, not just rounding noise)
+       deserves its own visual signal, same as .up's green does for a real gain. Uses var(--red),
+       the same negative-state color .danger-text/.t-fail/etc. already use everywhere else in
+       this file, so it reads consistently as "this one needs attention" rather than introducing
+       a brand-new color meaning. */
+    .drv-p.down { color:var(--red); }
     .eg-wrap { margin-top:16px; padding-top:12px; border-top:1px dashed var(--line); text-align:left; }
     .eg-cap { font-size:10px; font-weight:700; letter-spacing:.6px; text-transform:uppercase;
               color:var(--muted); text-align:center; margin-bottom:2px; }
@@ -1805,6 +1842,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Activity</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=476"></script>
+  <script src="app.js?v=478"></script>
 </body>
 </html>
