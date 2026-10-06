@@ -1975,7 +1975,26 @@ async function viewPost(id, authorId, opts){
   // uses (loadSuffixFor/rirSuffixFor, hoisted above exSetRowsHtml). libLoadType is the same
   // fallback-for-legacy-sets lookup exSetRowsHtml's own caller does (LIBN by exercise name) --
   // l.loadType itself wins whenever a set actually has it stamped.
-  const setRows = (ls, mine, libLoadType) => { const badges = setBadges(ls); return `<div class="pp-sets">${ls.map((l,i)=>`<div class="pp-set${mine?' pp-set-mine':''}"${mine?` onclick="editPostedSet('${id}','${authorId}','${l.id}')"`:''}><span class="pp-set-n ${badges[i].c}">${badges[i].t}</span><span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)}${loadSuffixFor(l,libLoadType)} × ${Number(l.reps)||0} reps${rirSuffixFor(l)}</span>${l.isPr&&!l.firstLog?'<span class="pp-pr pp-pr-gold">PR</span>':''}${l.isSetPr&&!l.setFirstLog?'<span class="pp-pr">VOLUME</span>':''}</div>`).join('')}</div>`; };
+  // Oct 6 2026 (Jeff, re-scoped from an earlier reactivate-only draft: "I just want to be able to
+  // edit sets to a published workout - I don't need to reactivate it at this time. Just want the
+  // reorder function when editing sets to a posted workout and adding a missed set"): drag-to-
+  // reorder lives right here, in the exact same "small edits without reactivating" surface as
+  // editPostedSet/addPostedSet above -- same `mine` gate (your own sets only, same as every other
+  // edit affordance on this screen), no reactivation required. Reuses the exact drag-reorder engine
+  // already shipped for the routine builder's exercise list (dragReorder()/.draft-ex/.drag-handle,
+  // see renderDraft/dragReorder far below) rather than a second implementation -- same pointer+
+  // touch handling, same floating-card drag visual, zero new CSS. data-ex on the container lets
+  // initPostedSetDrag (below) find this exercise's own set list after render; data-idx on each row
+  // is its index into the SAME sorted array initPostedSetDrag rebuilds independently from s.logs --
+  // both sort by the identical (Number(a.set)||0)-(Number(b.set)||0) comparator over the identical
+  // underlying array (ls is already sorted that way above), so the two stay in lockstep without
+  // passing the array itself through this HTML string. onclick="event.stopPropagation()" on the
+  // handle keeps a plain tap-without-drag on the grip icon from bubbling into the row's own onclick
+  // (editPostedSet) -- same bug class already hit once in the screenshot-review Artifact's lightbox
+  // (a child control's click swallowed/misfired by its parent's own drag handling), guarded against
+  // here from the start instead of after Jeff catches it.
+  const dragHandle = `<div class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder" onclick="event.stopPropagation()"></div>`;
+  const setRows = (ls, mine, libLoadType, exId) => { const badges = setBadges(ls); return `<div class="pp-sets"${mine?` data-ex="${esc(exId)}"`:''}>${ls.map((l,i)=>`<div class="pp-set${mine?' pp-set-mine draft-ex':''}"${mine?` data-idx="${i}" onclick="editPostedSet('${id}','${authorId}','${l.id}')"`:''}>${mine?dragHandle:''}<span class="pp-set-n ${badges[i].c}">${badges[i].t}</span><span class="pp-set-val">${Number(l.weight)||0} ${unitOf(l)}${loadSuffixFor(l,libLoadType)} × ${Number(l.reps)||0} reps${rirSuffixFor(l)}</span>${l.isPr&&!l.firstLog?'<span class="pp-pr pp-pr-gold">PR</span>':''}${l.isSetPr&&!l.setFirstLog?'<span class="pp-pr">VOLUME</span>':''}</div>`).join('')}</div>`; };
   // An approved swap replaces the exercise for the session, and openSession already titles the
   // card with the swapped-in name. This screen said the original, so the two disagreed about what
   // the lift even was. Same resolution here, so they agree.
@@ -2019,7 +2038,7 @@ async function viewPost(id, authorId, opts){
       const nmRaw = pid===ME.id ? 'You' : logNames[pid];
       const label = needLabel ? esc(isUnknownName(nmRaw) ? 'Someone' : String(nmRaw).split(' ')[0]) : '';
       const who = (label || note) ? `<div class="pp-who">${[label, note].filter(Boolean).join(' ')}</div>` : '';
-      return who + setRows(ls, pid===ME.id, (LIBN[e.name] && LIBN[e.name].loadType) || '');
+      return who + setRows(ls, pid===ME.id, (LIBN[e.name] && LIBN[e.name].loadType) || '', e.id);
     }).filter(Boolean).join('');
     const setsHtml = blocks || (hasHiddenPost
       ? `<div class="pp-sets muted" style="font-size:12px;padding-top:2px">Sets not shared</div>`
@@ -2151,6 +2170,7 @@ async function viewPost(id, authorId, opts){
   const html = `<div class="wrap">\n    <div class="pp-head">${backLinkHtml('history.back()')}${dots}</div>\n    <h1 class="sess-date">${sessTitle(s)}</h1>\n    <div class="muted sess-meta">${sessSub(s)}${postVisLabel}${collab}</div>\n    ${photos}\n    <h2>Workout</h2>${exList}${((s.logs&&s.logs[ME.id])||[]).length ? `<div class="muted" style="font-size:12px;margin:${isAuthor?'6px':'-4px'} 2px 10px">Tap one of your sets to edit it.</div>` : ''}\n    ${notesBlock}\n    <h2>Comments</h2><div class="card">${likedRow}<div id="chatbox" class="scrolllist"></div>\n      <div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="Add a comment…"><button class="sm chat-send" onclick="sendPostComment('${id}','${authorId}')">Send</button></div></div>`;
   $('app').innerHTML = html;
   notesAutosize();
+  if(isAuthor) initPostedSetDrag(id, authorId, s);
   if(!silent){ const st={t:'post', id, authorId}; fromHistory ? landOn(st) : navigated(st); }
   if(media.length>1){
     const strip=document.querySelector('.pp-photos');
@@ -2634,6 +2654,45 @@ async function savePostedNewSet(id, authorId, exerciseId){
   const s = await H.post(`/api/sessions/${id}/log`, { exerciseId, weight:w, reps:r });
   if(s && s.error){ alert(s.error); return; }
   if(nothingNavigatedSince(epoch)){ closeSheet(); viewPost(id, authorId, {silent:true}); }
+}
+// Oct 6 2026: wires the shared dragReorder() engine (see renderDraft/dragReorder far below, built
+// for the routine builder's exercise list) up to each of YOUR OWN exercise set-lists on a posted
+// recap -- see the big comment on setRows() above for the full reasoning. One container per
+// exercise (data-ex, set only on the `mine` block by setRows), queried fresh after every render
+// since viewPost always re-renders the whole screen via innerHTML (same pattern editPostedSet/
+// addPostedSet already use), which replaces every node dragReorder bound to.
+function initPostedSetDrag(id, authorId, s){
+  document.querySelectorAll('.pp-sets[data-ex]').forEach(container => {
+    const exId = container.dataset.ex;
+    const mine = (s && s.logs && s.logs[ME.id]) || [];
+    const arr = mine.filter(l=>l.exerciseId===exId).sort((a,b)=>(Number(a.set)||0)-(Number(b.set)||0));
+    if(arr.length < 2) return; // nothing to reorder against
+    dragReorder(container, arr, async () => {
+      // .set is a pure display-order integer, decoupled from the real timestamp every PR/streak/
+      // chronological computation actually uses (server.js's rebuildAllPrs sorts by
+      // _performedAt/.at, never by .set -- and lastSetChipHtml, the one place in the live log sheet
+      // that used to also sort by .set, was fixed alongside this feature to sort by .at instead), so
+      // renumbering it here can't touch PR/record integrity. PUT /api/sessions/:id/log/:logId
+      // already supports a bare {set} update (the same route editPostedSet uses) -- no new server
+      // route needed for this.
+      const epoch = UI_EPOCH;
+      let fresh = null, failed = false;
+      for(let i=0;i<arr.length;i++){
+        try {
+          fresh = await H.put(`/api/sessions/${id}/log/${arr[i].id}`, { set: i+1 });
+          if(fresh && fresh.error){ failed = true; break; }
+        } catch(err){ failed = true; break; }
+      }
+      // Cold-review catch: a mid-loop failure (gym wifi) used to be swallowed silently, leaving
+      // some rows renumbered and others not with no feedback -- same alert(...)-on-failure pattern
+      // every sibling handler on this screen already uses (savePostedSet/deletePostedSet/
+      // addPostedSet). The re-render below (from whatever the LAST successful PUT returned, or a
+      // plain reload if none succeeded) shows the real, current server state either way, so the
+      // user never has to guess whether a half-finished drag actually saved.
+      if(failed) alert("Couldn't save the new order — reloading to show what actually saved.");
+      if(nothingNavigatedSince(epoch)) viewPost(id, authorId, {silent:true});
+    });
+  });
 }
 // v252 (audit finding): acceptInvite/declineInvite/requestJoin/requestChanges below all fired
 // their navigation unconditionally after an await, the same barge-in shape v250/v251 already
@@ -3452,7 +3511,16 @@ function renderExSets(exId, s, justLoggedId){
 // under the set-type chips shows what the last set here actually was. Scoped to THIS session's
 // most recent set for this exercise -- not cross-session "last time you did this" history.
 function lastSetChipHtml(exId, exLogs){
-  const rows = (exLogs||[]).slice().sort((a,b)=>(a.set||0)-(b.set||0));
+  // Oct 6 2026 (cold-review catch, drag-to-reorder-sets-on-a-posted-workout feature, see
+  // setRows()/initPostedSetDrag() in viewPost below): this used to sort by .set, which was safe
+  // only because .set and chronological order were always identical for every set ever logged --
+  // until that feature let .set become a pure freeform DISPLAY-order field. If this same session is
+  // later reactivated (a separate, pre-existing button, unrelated to the new drag feature) and its
+  // live log sheet reopens, sorting THIS chip by .set could suggest "Tap to add" on whatever a drag
+  // happened to leave in the final display slot, not what was actually logged most recently. Sort
+  // by .at (the real log timestamp) instead -- untouched by reordering, and identical to the old
+  // .set-based order for every session that has never had a set dragged.
+  const rows = (exLogs||[]).slice().sort((a,b)=>String(a.at||'').localeCompare(String(b.at||'')));
   if(!rows.length) return '';
   const last = rows[rows.length-1];
   const u = unitOf(last);
