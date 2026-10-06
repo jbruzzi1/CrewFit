@@ -5049,7 +5049,16 @@ async function createFlow(){
   if(!DRAFT.exercises) DRAFT.exercises=[];
   if(!DRAFT.inviteUsernames) DRAFT.inviteUsernames=[];
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
-  const [friends, crews] = await Promise.all([H.get('/api/friends'), H.get('/api/crews')]);
+  // Oct 6 2026 (equipment badges in renderDraft(), see eqBadgeHtml's comment): DRAFT.exercises
+  // items never carry equipment themselves, so renderDraft() looks each one up by name in
+  // window._LIB2 -- the same lookup addEx() already does. _LIB2 is normally filled by visiting
+  // library()/libOpenMuscle(), but a routine can be loaded straight into DRAFT (tplUse/useTpl)
+  // without ever visiting the library screen first, which would leave _LIB2 stale or empty and
+  // every badge silently blank. Fetching it here too, every time this screen loads, makes the
+  // lookup reliable regardless of which path got you here -- same one-extra-call tradeoff
+  // library() itself already makes for the identical reason (see its own comment).
+  const [friends, crews, lib] = await Promise.all([H.get('/api/friends'), H.get('/api/crews'), H.get('/api/exercises')]);
+  window._LIB2 = lib;
   CREW_PICKER = Array.isArray(crews) ? crews : [];
   const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
   const invRows = friendList.length ? friendList.map(f=>{
@@ -6131,7 +6140,20 @@ async function tplQuickSaveConfirm(){
   alert('Routine saved: '+n);
 }
 function toggleInvite(cb){ const u=cb.value; if(cb.checked){ if(!DRAFT.inviteUsernames.includes(u)) DRAFT.inviteUsernames.push(u);} else { DRAFT.inviteUsernames=DRAFT.inviteUsernames.filter(x=>x!==u);} }
-function renderDraft(){ $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>`<div class="lib-item draft-ex" data-idx="${i}"><div class="drag-handle" title="Drag to reorder"></div><div class="draft-main" onclick="editDraftEx(${i})"><span class="draft-name">${esc(e.name)}</span><span class="draft-chip">${e.defaultSets} × ${repLabel(e)}</span></div><button class="draft-rm" onclick="rmEx(${i})">Remove</button></div>`).join('') : '<div class="muted">None added.</div>';  const list=$('draftList'); if(list) dragReorder(list, DRAFT.exercises, ()=>renderDraft()); }
+function renderDraft(){
+  // Oct 6 2026 (Jeff: equipment badge "when creating a workout" too, confirmed via
+  // AskUserQuestion -- always-visible, not tap-only): DRAFT.exercises items carry only
+  // name/defaultSets/defaultReps/defaultRepsMax (see addEx()), so look the real library entry up
+  // by name -- same pattern addEx() itself already uses -- and hand it to the same eqBadgeHtml()
+  // the library rows use, so both surfaces show the identical label. createFlow() now refreshes
+  // window._LIB2 itself (see its own comment) so this lookup works however DRAFT.exercises got
+  // populated, not just via the library picker.
+  $('draftList').innerHTML = DRAFT.exercises.length? DRAFT.exercises.map((e,i)=>{
+    const libEx = (window._LIB2 || []).find(x=>x.name===e.name) || {};
+    return `<div class="lib-item draft-ex" data-idx="${i}"><div class="drag-handle" title="Drag to reorder"></div><div class="draft-main" onclick="editDraftEx(${i})"><div class="draft-name-col"><span class="draft-name">${esc(e.name)}</span>${eqBadgeHtml(libEx)}</div><span class="draft-chip">${e.defaultSets} × ${repLabel(e)}</span></div><button class="draft-rm" onclick="rmEx(${i})">Remove</button></div>`;
+  }).join('') : '<div class="muted">None added.</div>';
+  const list=$('draftList'); if(list) dragReorder(list, DRAFT.exercises, ()=>renderDraft());
+}
 // Pointer-based drag reorder - works on mouse AND touch (iPhone). Reorders arr in place.
 function dragReorder(container, arr, onChange){
   let dragEl=null, ph=null, grabY=0, startY=0, startX=0, started=false, h=0;
@@ -6266,6 +6288,22 @@ function eqFamilies(e){
   return [...fams];
 }
 function eqLabel(key){ const f=EQ_FAMILY.find(x=>x.key===key); return f?f.label:key; }
+// Oct 6 2026 (Jeff: "when adding an exercise sometimes we want to know if its a dumbbell or
+// barbell etc ... either ... a spot next to the name in the exercise library or when creating a
+// workout" -- confirmed via AskUserQuestion: always-visible badge, in both places, not tap-only).
+// eqFamilies() already collapses the raw, sometimes multi-valued/verbose equipment array (e.g.
+// ["dumbbell","bench"] or ["hack squat machine"]) down to the same small set of families the
+// equipment filter pills already use (Dumbbell, Barbell, Machine, ...), in EQ_FAMILY's own fixed
+// priority order. This badge shows just the FIRST match -- one concise tag per row, not every raw
+// equipment string crammed in -- and is blank when nothing matches (so a custom exercise with no/
+// garbled equipment never shows a hollow badge). Shared by exRowHtml (library rows) and
+// renderDraft (the workout-builder list) so both surfaces Jeff asked about use the exact same
+// label/lookup, and reuses the plain .ex-badge pill style already used for the level tag rather
+// than inventing a new visual language for one more tag.
+function eqBadgeHtml(e){
+  const fam = eqFamilies(e)[0];
+  return fam ? `<span class="ex-badge">${esc(eqLabel(fam))}</span>` : '';
+}
 // Sep 7 (audit): list rows carry the level only -- the COMPOUND/ISOLATION tag on every row was
 // noise that squeezed long names onto two lines. The detail sheet still shows it (withType).
 function exBadges(e, withType){
@@ -7479,11 +7517,24 @@ function applyLibSearch(){
 // Sep 7 (audit): the level rides on the meta line ("lats · biceps  • Beginner") instead of its
 // own right-hand column, so the name gets the row's width back and stops wrapping.
 function exRowHtml(e){
+  // Oct 6 2026 (Jeff, after seeing the equipment badge wrap a few rows to 2 lines in the
+  // add-to-workout picker): first instinct was to trim to 1 muscle group when an equipment badge
+  // is present -- wrong fix, caught by test/library-primary-muscle.mjs failing: that test
+  // deliberately locks in "helper muscles are still on the row" (e.g. "Chest · Triceps" for a
+  // bench press), a requirement from earlier in this project, not something to quietly trade away
+  // for equipment visibility. Muscle-group count (exMuscles(e).slice(0,2), unchanged below) stays
+  // exactly as it always was. Instead, the equipment badge gets its OWN line -- a second
+  // ex-mg-styled row under muscles+level -- so nothing competes for the same 12px line and nothing
+  // gets dropped. Every equipped exercise's row is now a consistent, deliberate two-line subtitle
+  // (muscle/level, then equipment) rather than an occasional accidental wrap.
+  const eqBadge = eqBadgeHtml(e);
+  const eqLine = eqBadge ? `<div class="ex-eq-line">${eqBadge}</div>` : '';
   if(SWAP_MODE){
     return `<div class="ex-row" onclick="swapPick('${jsq(e.name)}')">
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
           <div class="ex-mg">${esc(exMuscles(e).slice(0,2).map(muscleLabel).join(' · '))}${e.mine?' · your exercise':''}${exBadges(e)}</div>
+          ${eqLine}
         </div>
         <div class="mg-chev">›</div>
       </div>`;
@@ -7493,6 +7544,7 @@ function exRowHtml(e){
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
           <div class="ex-mg">${esc(exMuscles(e).slice(0,2).map(muscleLabel).join(' · '))}${e.mine?' · your exercise':''}${exBadges(e)}</div>
+          ${eqLine}
         </div>
         <div class="mg-chev">›</div>
       </div>`;
@@ -7504,6 +7556,7 @@ function exRowHtml(e){
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
           <div class="ex-mg">${esc(exMuscles(e).slice(0,2).map(muscleLabel).join(' · '))}${exBadges(e)}</div>
+          ${eqLine}
         </div>
         <div class="mg-chev">›</div>
       </div>`;
@@ -7516,6 +7569,7 @@ function exRowHtml(e){
         <div class="ex-main">
           <div class="ex-name">${esc(e.name)}</div>
           <div class="ex-mg">${esc(exMuscles(e).slice(0,2).map(muscleLabel).join(' · '))}${e.mine?' · your exercise':''}${exBadges(e)}</div>
+          ${eqLine}
         </div>
         ${favBtnHtml(e)}
         <div class="ex-add">${added?'✓':'+'}</div>
@@ -7525,6 +7579,7 @@ function exRowHtml(e){
       <div class="ex-main">
         <div class="ex-name">${esc(e.name)}</div>
         <div class="ex-mg">${esc(exMuscles(e).slice(0,2).map(muscleLabel).join(' · '))}${e.mine?' · your exercise':''}${exBadges(e)}</div>
+        ${eqLine}
       </div>
       ${favBtnHtml(e)}
       <div class="mg-chev">›</div>
