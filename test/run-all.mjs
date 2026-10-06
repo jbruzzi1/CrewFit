@@ -68,6 +68,7 @@ const files = [
   'test/audit-oct2-routine-share.mjs', 'test/audit-oct2-custom-ex-lock.mjs',
   'test/audit-oct2-full-editor-removal-check.mjs', 'test/audit-oct2-blocked-profile.mjs',
   'test/audit-oct2-privacy-toggle-wording.mjs', 'test/audit-oct2-challenge-blocked-contradiction.mjs',
+  'test/posted-workout-set-reorder.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
