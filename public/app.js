@@ -1328,6 +1328,10 @@ async function openSession(id, opts){
   // own comment for the feature). Falls back to the first visible exercise when nothing is
   // remembered yet for this session, or when the remembered one no longer applies here (removed,
   // hidden, or a stale id from some other session entirely).
+  // Oct 7 2026 (Jeff: "click on an active exercise and it closes -- allow all of them to be
+  // closed at once, not always having one opened"): a third possibility, OPEN_EX_NONE (see its own
+  // comment by getOpenExercise/closeExercise below) -- deliberately closed, stays closed, does NOT
+  // fall back to the first exercise the way "nothing remembered yet" does.
   let openExId = null;
   // Oct 7 2026: hoisted out of the block below (used to be a local) so the auto-scroll-to-open-
   // exercise code further down can tell "nothing above this card to scroll past" apart from
@@ -1335,8 +1339,10 @@ async function openSession(id, opts){
   let visibleExIds = [];
   if(canEdit){
     visibleExIds = s.exercises.filter(e=>!myHidden.has(e.id)).map(e=>e.id);
-    openExId = getOpenExercise(s.id);
-    if(!openExId || !visibleExIds.includes(openExId)) openExId = visibleExIds[0] || null;
+    const storedOpenEx = getOpenExercise(s.id);
+    if(storedOpenEx === OPEN_EX_NONE) openExId = null;
+    else if(!storedOpenEx || !visibleExIds.includes(storedOpenEx)) openExId = visibleExIds[0] || null;
+    else openExId = storedOpenEx;
   }
   // my variation view (each exercise = its own card tile; swap suggestion nested inside)
   const myEx = s.exercises.filter(e=>!myHidden.has(e.id)).map(e=>{
@@ -1386,7 +1392,15 @@ async function openSession(id, opts){
     // A pending swap outranks everything else this line could say. It is the state of the lift.
     const statusTag = pendingSwap ? `<span class="swap-pending">Swap suggested by ${esc(swapBy)}</span>`
                      : (!canEdit && offerSwap) ? `<span class="log-hint">Suggest a swap →</span>`
-                     : canSwapHere ? `<span class="log-hint swap-link" onclick="openSwapChoice('${s.id}','${e.id}',true,${isOwnerless})">Swap →</span>` : '';
+                     // Oct 7 2026 (cold-review catch): this only ever renders when canEdit is true
+                     // (canSwapHere requires it), which means it only ever lands inside the OPEN
+                     // card's header (exLogBlockHtml's o.statusTag) -- the one non-canEdit branch
+                     // that also reads statusTag never sets canSwapHere. That header is now its
+                     // own tap target (closeExercise(), see exLogBlockHtml) -- stopPropagation here
+                     // for the same reason the info button and swap-undo note already need it:
+                     // tapping Swap must not also collapse the card out from under the sheet it
+                     // just opened.
+                     : canSwapHere ? `<span class="log-hint swap-link" onclick="event.stopPropagation();openSwapChoice('${s.id}','${e.id}',true,${isOwnerless})">Swap →</span>` : '';
     // Who ELSE has worked this lift. Without it a shared workout shows you nothing your partner
     // did — you invite someone, they train, and the screen looks the same as if you were alone.
     // Gated on inTheWorkout: GET /api/sessions/:id hands the FULL logs of every participant to any
@@ -3349,6 +3363,17 @@ function openExercise(sid, exId){
     if(block){ try{ block.scrollIntoView({ block:'start', behavior:'smooth' }); }catch(err){ block.scrollIntoView(); } }
   });
 }
+// Oct 7 2026 (Jeff: "click on an active exercise and it closes -- allow all of them to be closed
+// at once, not always having one opened"): before this, getOpenExercise(sid) only ever returned a
+// real exercise id or null (nothing remembered yet, localStorage.getItem's own "key absent"
+// value) -- there was no way to say "the user deliberately closed the last open card, leave them
+// all closed," so openSession's own fallback (see its comment) always re-opened the first
+// exercise the instant nothing was open. This sentinel is a third, distinct state: truthy (so the
+// fallback's `!openExId` half never mistakes it for "nothing remembered"), and never a real
+// exercise id (so that fallback's `visibleExIds.includes()` half needs its own explicit carve-out
+// too -- it does, see openSession). The tap target is the open card's own header, in exLogBlockHtml.
+const OPEN_EX_NONE = '__none__';
+function closeExercise(sid){ setOpenExercise(sid, OPEN_EX_NONE); openSession(sid, {quiet:true}); }
 
 // ---- Load type: what the number in the weight box actually means ----
 // The library tags exercises whose entered weight is ambiguous (see exercise-library.json):
@@ -3449,8 +3474,22 @@ function exLogBlockHtml(s, e, o){
   // (that's reserved for YOUR OWN undone personal swap), so recExName still resolves to the
   // exercise as it stands right now. Showing ITS detail sheet while a swap is pending is correct,
   // not stale -- the swap isn't real yet.
-  const infoBtn = o.recName ? `<button type="button" class="ex-info-btn" onclick="exDetail('${jsq(o.recName)}')" aria-label="Exercise details"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="11.5"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button>` : '';
-  return `<div class="ex-head"><div class="ex-main"><div class="ex-name">${o.name}</div>${target}${o.statusTag||''}${o.crewLine||''}</div>${infoBtn}</div>
+  // Oct 7 2026 (Jeff: "click on an active exercise and it closes"): the "i" button sits inside
+  // the same header this card's own onclick (below) now covers -- stopPropagation here, same
+  // pattern the swap-undo note already uses a few lines up in the caller, so opening exercise
+  // detail doesn't also collapse the card out from under it.
+  const infoBtn = o.recName ? `<button type="button" class="ex-info-btn" onclick="event.stopPropagation();exDetail('${jsq(o.recName)}')" aria-label="Exercise details"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="11.5"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button>` : '';
+  // Oct 7 2026 (Jeff: "click on an active exercise and it closes -- allow all of them to be
+  // closed at once, not always having one opened"): the whole header is the tap target, same
+  // "head = one tap zone" shape exCollapsedRowHtml already uses to open a card, just closing this
+  // one instead -- closeExercise() sets the OPEN_EX_NONE sentinel so openSession's own fallback
+  // (see its comment) doesn't just re-open the first exercise. The chevron mirrors the collapsed
+  // row's own (same icon, pointing the other way) so "there's a hidden affordance here" reads the
+  // same in both states -- CLAUDE.md: discoverability over minimalism, a tap target with no visual
+  // cue is undiscoverable. Nested controls that must not also collapse the card (the info button
+  // above, the swap-undo note inside o.name) each stop their own click from bubbling here.
+  const closeChevron = `<svg class="ex-chevron ex-chevron-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 6 9 12 15 18"/></svg>`;
+  return `<div class="ex-head ex-head-open" onclick="closeExercise('${s.id}')"><div class="ex-main"><div class="ex-name">${o.name}</div>${target}${o.statusTag||''}${o.crewLine||''}</div><div class="ex-open-meta">${infoBtn}${closeChevron}</div></div>
     <div class="pp-sets ex-log-sets" data-f="sets">${exSetRowsHtml(s.id, e.id, o.exLogs, loadType)}</div>
     <div data-f="rec"></div>
     <button type="button" class="tt-pill" data-f="typePill" aria-label="Set type: ${SET_TYPES[0].label}. Tap to change." onclick="openTypeSeg('${e.id}')">

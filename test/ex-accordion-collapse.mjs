@@ -152,6 +152,106 @@ console.log('a ?openLog= deep link always opens the exercise it targets, overrid
   ok(focused, 'the deep-linked exercise\'s weight input actually received focus (focusLogBlock), same as before this feature');
 }
 
+console.log('Oct 7 2026 (Jeff: "click on an active exercise and it closes -- allow all of them to be closed at once, not always having one opened"): tapping the OPEN card\'s own header collapses it, leaving every exercise collapsed');
+{
+  // Exercise 1 is the one currently open (the deep link above). Tap its own header, not a
+  // different exercise's -- this is the new behavior, distinct from switching.
+  await page.click(`.ex-log[data-ex="${exId1}"] .ex-head-open .ex-name`);
+  await page.waitForTimeout(300);
+  const anyOpen = await page.$('.ex-log [data-f="w"]');
+  ok(anyOpen === null, 'no exercise has a logger open -- every card is collapsed, not just a different one');
+  const collapsedCount = await page.$$eval('.ex-collapsed', els => els.length);
+  ok(collapsedCount === 3, `all three exercises are collapsed (got ${collapsedCount})`);
+}
+
+console.log('tapping the exercise-detail "i" button on an open card does NOT also collapse it (stopPropagation)');
+{
+  // Reopen exercise 1 first (closed by the block above).
+  await page.click(`.ex-log[data-ex="${exId1}"] .ex-head-collapsed`);
+  await page.waitForSelector(`.ex-log[data-ex="${exId1}"] [data-f="w"]`, { timeout: 5000 });
+  await page.click(`.ex-log[data-ex="${exId1}"] .ex-info-btn`);
+  await page.waitForTimeout(200);
+  const stillOpen = await page.$(`.ex-log[data-ex="${exId1}"] [data-f="w"]`);
+  ok(stillOpen !== null, 'the card is still open after tapping the info button -- its own click did not bubble into closeExercise');
+  // Dismiss whatever the info tap opened so the next block starts clean.
+  await page.evaluate(() => { document.querySelectorAll('.sheet-back').forEach(sb => sb.remove()); });
+}
+
+console.log('the "all collapsed" state persists across a reload -- it does not snap back to the first exercise the way "never opened" does');
+{
+  await page.click(`.ex-log[data-ex="${exId1}"] .ex-head-open .ex-name`);
+  await page.waitForTimeout(300);
+  await page.reload();
+  await page.waitForSelector('.nav', { timeout: 10000 });
+  await page.evaluate((id) => window.openSession(id), s.id);
+  await page.waitForSelector('.ex-log', { timeout: 8000 });
+  const anyOpenAfterReload = await page.$('.ex-log [data-f="w"]');
+  ok(anyOpenAfterReload === null, 'still nothing open after a cold reload -- "deliberately closed" is remembered, not treated as "nothing remembered yet"');
+}
+
+console.log('a collapsed row still opens normally from the "all collapsed" state');
+{
+  await page.click(`.ex-log[data-ex="${exId2}"] .ex-head-collapsed`);
+  await page.waitForSelector(`.ex-log[data-ex="${exId2}"] [data-f="w"]`, { timeout: 5000 });
+  const onlyOneOpen = await page.$$eval('.ex-log [data-f="w"]', els => els.length);
+  ok(onlyOneOpen === 1, `exactly one exercise opened (got ${onlyOneOpen} loggers)`);
+}
+
+console.log('Oct 7 2026 cold-review catch: tapping "Swap ->" on a non-creator participant\'s OPEN card opens the swap sheet WITHOUT also collapsing the card');
+{
+  // canSwapHere (app.js) -- canEdit && !isCreator && !myPost && !pendingSwap && !v -- only ever
+  // renders inside the OPEN card's own header (exLogBlockHtml's o.statusTag), the one tap zone
+  // this whole feature turned into closeExercise(). The info button and the swap-undo note both
+  // already had their own stopPropagation; this link didn't, so tapping it also wrote the
+  // OPEN_EX_NONE sentinel out from under the sheet it just opened. Reproduce the exact branch: a
+  // real second user, invited (not the creator) into a brand-new session, with nothing pending
+  // and no swap of her own yet.
+  const rileyCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+  const riley = await rileyCtx.newPage();
+  await riley.goto(BASE + '/');
+  const rileyReg = await riley.evaluate(async (BASE) => {
+    const r = await fetch(BASE + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'exariley' + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: 'Riley' }) });
+    return r.json();
+  }, BASE);
+
+  // Profiles are public by default, so a single follow lands immediately as an approved
+  // connection (no accept round trip) -- see POST /api/follow/:id in server.js -- which is all
+  // inviteUsernames below needs (connectionsOf: an approved follow either direction).
+  await page.evaluate(async ({ BASE, id, tok }) => {
+    await fetch(BASE + '/api/follow/' + id, { method: 'POST', headers: { Authorization: 'Bearer ' + tok } });
+  }, { BASE, id: rileyReg.user.id, tok: reg.token });
+
+  const swapSession = await page.evaluate(async ({ BASE, tok, username }) => {
+    const r = await fetch(BASE + '/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok },
+      body: JSON.stringify({ name: 'Swap Test', visibility: 'private', scheduledAt: new Date().toISOString(),
+        exercises: [{ name: 'Barbell Back Squat' }], inviteUsernames: [username] }) });
+    return r.json();
+  }, { BASE, tok: reg.token, username: rileyReg.user.username });
+  const swapExId = swapSession.exercises[0].id;
+
+  await riley.evaluate((tok) => localStorage.setItem('crewfit_token', tok), rileyReg.token);
+  await riley.reload();
+  await riley.waitForSelector('.nav', { timeout: 10000 });
+  await riley.evaluate(async ({ BASE, tok, sid }) => {
+    await fetch(BASE + '/api/sessions/' + sid + '/accept', { method: 'POST', headers: { Authorization: 'Bearer ' + tok } });
+  }, { BASE, tok: rileyReg.token, sid: swapSession.id });
+
+  await riley.evaluate((id) => window.openSession(id), swapSession.id);
+  await riley.waitForSelector(`.ex-log[data-ex="${swapExId}"] [data-f="w"]`, { timeout: 8000 });
+  const swapLink = await riley.$(`.ex-log[data-ex="${swapExId}"] .swap-link`);
+  ok(swapLink !== null, 'Riley (invited, non-creator participant) sees the "Swap ->" link on her open card -- canSwapHere is true for her');
+
+  await riley.click(`.ex-log[data-ex="${swapExId}"] .swap-link`);
+  await riley.waitForSelector('.sheet-head h2', { timeout: 3000 });
+  const sheetTitle = await riley.$eval('.sheet-head h2', el => el.textContent.trim());
+  ok(sheetTitle === 'Swap this exercise', `tapping "Swap ->" opened the swap-choice sheet (got title ${JSON.stringify(sheetTitle)})`);
+  const stillOpenAfterSwapTap = await riley.$(`.ex-log[data-ex="${swapExId}"] [data-f="w"]`);
+  ok(stillOpenAfterSwapTap !== null, 'the card is STILL open after tapping Swap -> -- the click did not bubble up into closeExercise (the regression this fixes)');
+
+  await riley.evaluate(() => { document.querySelectorAll('.sheet-back').forEach(sb => sb.remove()); });
+  await rileyCtx.close();
+}
+
 ok(errors.length === 0, `no console pageerrors along the way (got ${JSON.stringify(errors)})`);
 
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
