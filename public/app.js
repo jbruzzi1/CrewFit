@@ -660,6 +660,27 @@ async function home(opts){
   const notifCount = (notif && notif.count) || 0;
   const myFriends = (_fr && _fr.friends) ? _fr.friends : (Array.isArray(_fr) ? _fr : []);
   const friendName = async (id)=> myFriends.find(f=>f.id===id)?.displayName || 'A friend';   // reads as a phrase, not as someone's name
+  // Oct 7 2026 (Jeff: liked seeing who's actively logging on the Next-up card -- "the live
+  // sessions you mentioned" -- but a started session deliberately drops OUT of that card the
+  // moment you tap Start (Sep 9 2026 rule, see nextUp's own comment below), so this same line now
+  // also renders on a LIVE session's plain row in "Your sessions", the one place that activity
+  // used to go completely silent. Shared so both call sites render identically instead of two
+  // copies of the same wording drifting apart over time.
+  const nm = pid => { const f = myFriends.find(x => x.id === pid); return f ? (f.displayName || f.username || 'a friend').split(' ')[0] : 'a friend'; };
+  const ini = pid => { const n = nm(pid); return n === 'a friend' ? '?' : n[0].toUpperCase(); };
+  const list = (ids) => ids.length === 1 ? nm(ids[0]) : ids.length === 2 ? `${nm(ids[0])} and ${nm(ids[1])}` : `${nm(ids[0])} and ${ids.length-1} others`;
+  const activeFriendsLine = (s, others) => {
+    if(!others.length) return '';
+    const lastLogAt = pid => Math.max(0, ...(((s.logs && s.logs[pid]) || []).map(l => new Date(l.at).getTime() || 0)));
+    const logging = others.filter(pid => lastLogAt(pid) > 0);
+    // "just started" only when their last set is under 20 minutes old -- otherwise it's a claim
+    // the data doesn't support (CLAUDE.md: never say something you can't stand behind); older
+    // activity reads as "is logging" / "N sets in".
+    const recent = logging.filter(pid => Date.now() - lastLogAt(pid) < 20*60000);
+    const setsIn = logging.reduce((n, pid) => n + ((s.logs[pid] || []).length), 0);
+    const activity = recent.length ? `${list(recent)} just started` : logging.length ? `${list(logging)} ${logging.length === 1 ? 'is' : 'are'} logging · ${setsIn} set${setsIn === 1 ? '' : 's'} in` : '';
+    return `<div class="next-who"><span class="avs">${others.slice(0,3).map(pid => `<span class="av">${esc(ini(pid))}</span>`).join('')}</span>${esc(list(others))} ${others.length === 1 ? 'is' : 'are'} in${activity ? ` · ${esc(activity)}` : ''}</div>`;
+  };
   const initial = ((ME&&(ME.displayName||ME.username))||'?')[0]||'?';
   const first = ((ME.displayName||ME.username||'there').split(' ')[0]);
   // v221 header (Jeff, Aug 28: whole-app visual pass). Replaces the random hype lines with a
@@ -965,18 +986,7 @@ async function home(opts){
     const dayLabel = dd === 0 ? 'today' : dd === 1 ? 'tomorrow' : dd < 7 ? d.toLocaleDateString(undefined,{weekday:'long'}) : d.toLocaleDateString(undefined,{month:'short',day:'numeric'});
     const when = [time, s.location ? esc(s.location) : ''].filter(Boolean).join(' · ');
     const others = (s.participants||[]).filter(pid => pid !== ME.id);
-    const lastLogAt = pid => Math.max(0, ...(((s.logs && s.logs[pid]) || []).map(l => new Date(l.at).getTime() || 0)));
-    const logging = others.filter(pid => lastLogAt(pid) > 0);
-    // "just started" only when their last set is under 20 minutes old -- otherwise it's a claim the
-    // data doesn't support (CLAUDE.md: never say something you can't stand behind); older activity
-    // reads as "is logging" / "N sets in".
-    const recent = logging.filter(pid => Date.now() - lastLogAt(pid) < 20*60000);
-    const nm = pid => { const f = myFriends.find(x => x.id === pid); return f ? (f.displayName || f.username || 'a friend').split(' ')[0] : 'a friend'; };
-    const ini = pid => { const n = nm(pid); return n === 'a friend' ? '?' : n[0].toUpperCase(); };
-    const list = (ids) => ids.length === 1 ? nm(ids[0]) : ids.length === 2 ? `${nm(ids[0])} and ${nm(ids[1])}` : `${nm(ids[0])} and ${ids.length-1} others`;
-    const setsIn = logging.reduce((n, pid) => n + ((s.logs[pid] || []).length), 0);
-    const activity = recent.length ? `${list(recent)} just started` : logging.length ? `${list(logging)} ${logging.length === 1 ? 'is' : 'are'} logging · ${setsIn} set${setsIn === 1 ? '' : 's'} in` : '';
-    const whoLine = others.length ? `<div class="next-who"><span class="avs">${others.slice(0,3).map(pid => `<span class="av">${esc(ini(pid))}</span>`).join('')}</span>${esc(list(others))} ${others.length === 1 ? 'is' : 'are'} in${activity ? ` · ${esc(activity)}` : ''}</div>` : '';
+    const whoLine = activeFriendsLine(s, others);
     const badge = live ? '<span class="live-badge">● Live now</span>' : dd === 0 ? '<span class="upcoming-badge">Upcoming</span>' : '';
     const exLine = dd === 0 && s.exercises.length ? `<div class="next-ex">${s.exercises.map(e => esc(e.name)).join(' · ')}</div>` : '';
     const isCreator = s.creatorId === ME.id;
@@ -1048,7 +1058,13 @@ async function home(opts){
         const missed = !live && !upcoming && isSessionMissed(s, ME.id);
         const badge = live ? '<div class="live-badge">● Live now</div>' : upcoming ? '<div class="upcoming-badge">Upcoming</div>' : missed ? '<div class="missed-badge">Missed</div>' : '';
         const others = (s.participants||[]).filter(pid => pid !== ME.id);
-        const withWho = others.length ? ` · with ${esc((() => { const f = myFriends.find(x => x.id === others[0]); const n = f ? (f.displayName || f.username || 'a friend').split(' ')[0] : 'a friend'; return others.length > 1 ? `${n} +${others.length-1}` : n; })())}` : '';
+        // Oct 7 2026 (cold-review catch): the new live-only activity line below already opens
+        // with "<name> is in" -- on a live row that line is about to say the exact same thing
+        // this tag was saying, back to back ("with Brian" directly above "Brian is in · Brian
+        // just started"). Suppressed here ONLY when live (and only when the activity line will
+        // actually render, i.e. others.length is the same gate both read), so every other row
+        // (upcoming/missed) keeps the original "with Brian" wording unchanged.
+        const withWho = (others.length && !live) ? ` · with ${esc((() => { const f = myFriends.find(x => x.id === others[0]); const n = f ? (f.displayName || f.username || 'a friend').split(' ')[0] : 'a friend'; return others.length > 1 ? `${n} +${others.length-1}` : n; })())}` : '';
         // Sep 18 2026: swipe-to-delete, reusing the EXACT existing action for your role in this
         // workout -- deleteSession() (creator) or leaveWorkout() (everyone else), same as the
         // in-workout "..." menu / Leave button, not a new/parallel deletion path. See
@@ -1058,8 +1074,14 @@ async function home(opts){
         // Sep 30 2026 (audit finding): sessionView already sends the viewer their OWN logs
         // unconditionally (server.js, "yourself and nobody else"), so this is cheap and correct.
         const hasLoggedSets = !!(s.logs && s.logs[ME.id] && s.logs[ME.id].length);
+        // Oct 7 2026 (Jeff): a LIVE session that's already dropped out of the Next-up card (see
+        // its own startedAt comment above) used to go completely quiet here -- "with Brian" and
+        // nothing else, even while Brian is actively mid-set. Only on the live row, not every
+        // row with a participant: this is about keeping a happening-right-now workout feeling
+        // alive, not repeating "with so-and-so" a second time on every plain upcoming plan.
+        const activeLine = live ? activeFriendsLine(s, others) : '';
         const rowInner = `<div class="lib-item swipe-row-fg${live?' session-live':''}" onclick="openSession('${s.id}')">
-          <div>${badge}<b>${esc(s.name)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}${withWho}</div></div></div>`;
+          <div>${badge}<b>${esc(s.name)}${s.exercises.length?` · ${plur(s.exercises.length,'exercise')}`:''}</b><div class="tag">${fmtWhen(s.scheduledAt)}${withWho}</div>${activeLine}</div></div>`;
         html += swipeRowWrap(s.id, isCreator ? 'delete' : 'leave', hasFinished, rowInner, isCreator ? sessionHasOtherStake(s) : false, hasLoggedSets);
       }
       html += `</div>`;
