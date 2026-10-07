@@ -1329,8 +1329,12 @@ async function openSession(id, opts){
   // remembered yet for this session, or when the remembered one no longer applies here (removed,
   // hidden, or a stale id from some other session entirely).
   let openExId = null;
+  // Oct 7 2026: hoisted out of the block below (used to be a local) so the auto-scroll-to-open-
+  // exercise code further down can tell "nothing above this card to scroll past" apart from
+  // "genuinely a few cards in" -- see that code's own comment for why that distinction matters.
+  let visibleExIds = [];
   if(canEdit){
-    const visibleExIds = s.exercises.filter(e=>!myHidden.has(e.id)).map(e=>e.id);
+    visibleExIds = s.exercises.filter(e=>!myHidden.has(e.id)).map(e=>e.id);
     openExId = getOpenExercise(s.id);
     if(!openExId || !visibleExIds.includes(openExId)) openExId = visibleExIds[0] || null;
   }
@@ -1843,7 +1847,57 @@ async function openSession(id, opts){
   // scrolled from the PREVIOUS screen, so a session opened after scrolling halfway down Home
   // could render already scrolled to the middle.
   if(!quiet){ const st={t:'session', id}; fromHistory ? landOn(st) : navigated(st); }
-  if(isPosted) loadPostComments(s.id, ME.id); else loadChat(s);
+  // Oct 7 2026 (Jeff: reopening the app mid-workout always landed scrolled to the top of the
+  // page, so if the exercise you're actually on (openExId, tracked above) was a few cards down
+  // past ones already finished, you had to scroll past them yourself every time). Land on that
+  // card instead, same intent as openExercise()/focusLogBlock()'s own scrollIntoView when you tap
+  // between exercises or follow a deep link, just without their smooth animation or input focus,
+  // since this fires on every real open/return to the screen, not just once as a reaction to a
+  // tap. There is no reliable, app-safe way to tell "resumed after the phone was closed" apart
+  // from "tapped in from Home" (hard rule #8 -- a fix that leaned on visibilitychange/bfcache/
+  // scroll-restoration would be exactly the kind of browser-specific behavior that does not
+  // reliably carry over into a wrapped native app), so this runs unconditionally on every
+  // non-quiet open instead and just lands in the right place either way.
+  // Skipped entirely when the open exercise is already the FIRST one (visibleExIds[0], computed
+  // above): there is nothing finished above it to scroll past, so moving the page at all would
+  // only push the header off-screen for no benefit -- the exact thing this feature exists to
+  // avoid doing needlessly. (Caught in review, Oct 7: an earlier version of this code scrolled
+  // unconditionally and did exactly that on every brand-new/just-started session.)
+  // Deliberately NOT openBlock.scrollIntoView({block:'start'}) (measured, hard rule #10): on this
+  // specific page it does not reliably land flush with the container's top edge -- repeated,
+  // controlled measurements (same session, same exercise, nothing else changed) showed it landing
+  // anywhere from exactly 0px to ~300px short depending on how much scrollable content existed
+  // below the target, with no consistent relationship to the actual distance that needed covering.
+  // Setting #app's own scrollTop directly, from the two elements' real measured rects, is a plain
+  // arithmetic assignment with no browser alignment heuristics involved, so it is exactly as
+  // reliable as any other getBoundingClientRect-based measurement in this codebase.
+  const chatPromise = isPosted ? loadPostComments(s.id, ME.id) : loadChat(s);
+  if(!quiet && canEdit && openExId && openExId !== visibleExIds[0]){
+    const openBlock = logBlock(openExId);
+    const appEl = $('app');
+    if(openBlock && appEl){
+      // Scrolling this far can be more than the page can currently hold -- Chat/Comments (just
+      // kicked off above, not awaited so it never delays the render) loads in and grows the page
+      // AFTER this point, and the browser silently clamps scrollTop to whatever's scrollable right
+      // now, same as it would for any manual scroll past the current bottom. Measured, hard rule
+      // #10: on a short session this clamp can land noticeably short of the real target. Try once
+      // immediately (covers the common case with no visible delay), then once more after Chat
+      // finishes loading and the page has grown -- but only if nothing else has moved the scroll
+      // position since (the user scrolling the instant the page opened, or a second real
+      // navigation replacing this screen entirely), so this never fights a person who's already
+      // looking somewhere else on their own.
+      const landToOpenBlock = () => {
+        if(!document.body.contains(openBlock)) return null;
+        const delta = openBlock.getBoundingClientRect().top - appEl.getBoundingClientRect().top;
+        if(delta > 0) appEl.scrollTop += delta;   // only scroll DOWN to reveal it -- never scroll
+        return appEl.scrollTop;                    // up and hide an exercise already in view.
+      };
+      const landedAt = landToOpenBlock();
+      if(landedAt !== null){
+        Promise.resolve(chatPromise).then(()=>{ if(appEl.scrollTop === landedAt) landToOpenBlock(); });
+      }
+    }
+  }
   // v262: the two deep-link entry points (tryBoot's ?openLog= branch and the serviceWorker message
   // listener) gate their follow-up (v312: focusLogBlock) on this -- true only from the successful-
   // render path, so a dead/expired link alerts once here and does nothing more.
