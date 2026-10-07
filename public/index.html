@@ -892,6 +892,20 @@
     /* Invite friends list (New Workout) — compact iOS-style rows w/ checkmark */
     .inv-row { display:flex; align-items:center; gap:12px; padding:10px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
     .inv-row:last-child { border-bottom:none; }
+    /* Oct 6 2026 (Jeff, after seeing the 13-row muscle-group checklist run the full length of the
+       Create/Edit exercise sheet: "This check box looks long... Is is collapsable?"): 2 columns
+       instead of 1, same .inv-row cells unchanged -- roughly halves the list's height instead of
+       hiding any of it behind a collapse/expand tap. Auto-placement fills left-to-right,
+       top-to-bottom in LIB_MUSCLES order, so :last-child (Cardio, the 13th/odd one out) still
+       correctly loses its border-bottom regardless of which column it lands in -- no nth-child
+       math needed for the single orphan row. */
+    .mg-check-grid { display:grid; grid-template-columns:1fr 1fr; column-gap:4px; }
+    .mg-check-grid .inv-row { padding:10px 8px; }
+    /* Oct 7 2026 (Jeff, staggered-checkbox catch -- see mgCheckboxRows' own comment for the root
+       cause): pins the checkbox to a fixed right edge regardless of label length, same visual
+       result .inv-meta's flex:1 already gives the friend-invite list, without touching that
+       shared rule (this is its own class, only used by the muscle-group checkbox rows). */
+    .mg-row { justify-content:space-between; }
     .inv-row .inv-meta { flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:12px; }
     .inv-av-wrap { flex:0 0 auto; }
     .inv-av { width:40px; height:40px; border-radius:50%; object-fit:cover; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:16px; }
@@ -1859,6 +1873,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Activity</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=480"></script>
+  <script src="app.js?v=481"></script>
 </body>
 </html>
