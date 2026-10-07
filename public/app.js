@@ -7256,6 +7256,30 @@ function setProgWeeks(w){ PROG_WEEKS=w; progressScreen({silent:true}); }
 
 // ---- Library (two views: muscle groups -> exercises) ----
 const LIB_MUSCLES = ['chest','lats','traps','biceps','triceps','forearms','shoulders','abdominals','quads','hamstrings','glutes','calves','cardio'];
+// Oct 6 2026 (Jeff: "When adding a created exercise we should be able to add multiple body parts
+// -- such as hamstrings & quads -- like all the others"): a BUILT-IN library exercise's
+// muscle_groups was always allowed to carry several entries -- that's exactly how Sled Push files
+// itself under Quads, Glutes AND Cardio (see the comment above eqList for the full primary/
+// secondary split) -- and the server's custom-exercise routes (POST/PUT /api/exercises/custom in
+// server.js) already accept and validate a multi-element muscle_groups array; only the CREATE/EDIT
+// sheet's own form was stuck at a single <select>, one body part at most. This shared
+// checkbox-list renderer (same .inv-row/.check/tick anatomy as the trend-picks/top-lift-picks
+// pickers just above, and the invite-friends list before them -- one multi-select component, not a
+// new one) replaces that lone dropdown in both openCreateEx and openEditEx below, so a custom
+// exercise can file under as many muscle groups as it genuinely works, same as a built-in one.
+function mgCheckboxRows(checkedMuscles, disabled){
+  const checked = new Set(checkedMuscles||[]);
+  // Oct 7 2026 (Jeff: "does it look bleh with all the circle check boxes staggered"): the
+  // friend-invite list this component's CSS was built for keeps its checkbox flush to a fixed
+  // right edge because the name sits inside .inv-meta, which is flex:1 1 auto and soaks up the
+  // row's spare width. This row uses .inv-text instead (no avatar needed), which has no flex:1 --
+  // so the checkbox just trails immediately after each label instead, landing at a different x
+  // per row depending on word length ("Abs" vs "Shoulders"). The extra mg-row class (scoped CSS
+  // just below, not touching the shared .inv-row rule every other screen also uses) gives this
+  // specific row justify-content:space-between, pinning every checkbox to the same right edge
+  // regardless of label length -- same fixed-column look the friend list already has.
+  return LIB_MUSCLES.map(m=>`<label class="inv-row mg-row"><div class="inv-text"><div class="name">${esc(muscleLabel(m))}</div></div><span class="check"><input type="checkbox" class="ceMg-check" value="${m}" ${checked.has(m)?'checked':''} ${disabled?'disabled':''}><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`).join('');
+}
 // Sep 6 (Jeff: "what can we do to the workouts page"): the muscle-group page is a two-across
 // grid of tiles now (see renderLibGroups / .mg-grid), so the sections are regrouped into even
 // fours -- the old 7/4/2 split left one tile orphaned on its own row. "Arms & Abs" is gym-speak
@@ -7607,11 +7631,12 @@ function renderLibExercises(){
     : '<div class="muted" style="padding:20px;text-align:center">No exercises here.</div>';
 }
 function openCreateEx(presetMuscle){
-  // Sep 28 2026 (audit finding, muscle-naming consistency): this dropdown's visible option text
-  // was the raw EX_LIB key ("lats") with no capitalize CSS on <option> at all -- muscleLabel(m)
-  // now matches every other display spot; the <option>'s value stays the raw key untouched, since
-  // that's what actually gets submitted.
-  const msel = LIB_MUSCLES.map(m=>`<option value="${m}" ${presetMuscle===m?'selected':''}>${esc(muscleLabel(m))}</option>`).join('');
+  // Oct 6 2026: multi-select checkbox list (mgCheckboxRows, see its own comment) -- replaces the
+  // old single <select id="ceMg"> this comment used to describe. presetMuscle (passed when
+  // "Create exercise" is opened from inside a specific muscle-group screen, e.g. libOpenMuscle's
+  // own "＋" button) still pre-checks that one muscle, same starting point as before, just not the
+  // only one you can leave checked.
+  const mgRows = mgCheckboxRows(presetMuscle ? [presetMuscle] : []);
   const eqOpts = EQ_FAMILY.map(f=>`<option value="${f.key}">${f.label}</option>`).join('');
   // Sep 30 2026 (audit finding, Jeff, option B -- build the real field, not just relabel): this
   // sheet had no Pattern field at all, so every custom exercise's detail sheet showed its own
@@ -7630,7 +7655,8 @@ function openCreateEx(presetMuscle){
            to the already-tight library header row above. -->
       <div style="text-align:right;margin:-6px 0 10px"><span class="how-link" onclick="closeSheet(); myCustomExercisesSheet();">Manage your exercises ›</span></div>
       <label class="muted">Name</label><input id="ceName" placeholder="e.g. Cable Crossover">
-      <label class="muted">Primary muscle</label><select id="ceMg">${msel}</select>
+      <label class="muted">Muscle groups (pick all that apply)</label>
+      <div class="card mg-check-grid" style="margin-bottom:12px">${mgRows}</div>
       <label class="muted">Pattern</label><select id="cePattern">${patOpts}</select>
       <label class="muted">Equipment</label><select id="ceEq">${eqOpts}</select>
       <label class="muted">Level</label><select id="ceLv"><option>beginner</option><option>intermediate</option><option>advanced</option></select>
@@ -7643,6 +7669,9 @@ function openCreateEx(presetMuscle){
 }
 function submitCreateEx(){
   const name=($('ceName').value||'').trim(); if(!name) return alert('Enter a name');
+  // Oct 6 2026: validated up front, same spot/style as the name check just above, now that
+  // muscle group is a checkbox list rather than a <select> that always carried some value.
+  if(!document.querySelector('.ceMg-check:checked')) return alert('Pick at least one muscle group');
   // Sep 30 2026 (audit finding, Jeff, option A -- a heads-up against your OWN existing names only,
   // never a block: "anyone should be able to use whatever name they like"). window._LIB2 already
   // has every exercise including yours (the `mine` flag GET /api/exercises sends) -- checked here,
@@ -7654,8 +7683,11 @@ function submitCreateEx(){
   } else submitCreateExConfirmed(name);
 }
 async function submitCreateExConfirmed(name){
-  const muscle=$('ceMg').value;
-  const payload={ name, muscle_groups:[muscle], pattern:$('cePattern').value, equipment:[eqLabel($('ceEq').value).toLowerCase()], level:$('ceLv').value, is_compound:$('ceType').value==='1' };
+  // Oct 6 2026: the confirm-sheet detour above stacks a NEW sheet over this one rather than
+  // removing it (see confirmSheet's own comment), so these checkboxes are still live in the DOM
+  // and still read correctly here, same as $('ceMg').value always did in the single-select days.
+  const muscles = Array.from(document.querySelectorAll('.ceMg-check:checked')).map(cb=>cb.value);
+  const payload={ name, muscle_groups:muscles, pattern:$('cePattern').value, equipment:[eqLabel($('ceEq').value).toLowerCase()], level:$('ceLv').value, is_compound:$('ceType').value==='1' };
   const r = await H.post('/api/exercises/custom', payload);
   // Cold-review catch (Sep 30 2026): this used to call libOpenMuscle's same-screen refresh
   // WITHOUT refetching window._LIB2 first -- library() (the "else" branch below) always refetches
@@ -7678,7 +7710,7 @@ async function myCustomExercisesSheet(){
   const mine = lib.filter(e=>e.mine);
   const rows = mine.length ? mine.map(e=>`
     <div class="friend-row">
-      <div class="meta"><div class="name">${esc(e.name)}</div><div class="handle">${esc(muscleLabel(e.muscle_groups[0]||''))}</div></div>
+      <div class="meta"><div class="name">${esc(e.name)}</div><div class="handle">${esc((e.muscle_groups||[]).map(muscleLabel).join(' · ')||'')}</div></div>
       <button class="sm sec" onclick="closeSheet(); openEditEx('${e.id}')">Edit</button>
       <button class="sm sec" style="margin-left:6px;color:var(--red);border-color:var(--red)" onclick="confirmDeleteCustomEx('${e.id}','${jsq(e.name)}')">Delete</button>
     </div>`).join('')
@@ -7692,7 +7724,12 @@ async function myCustomExercisesSheet(){
 // text instead so it's clear at a glance this one field isn't editable here.
 function openEditEx(id){
   const e = (window._LIB2||[]).find(x=>x.id===id && x.mine); if(!e) return;
-  const msel = LIB_MUSCLES.map(m=>`<option value="${m}" ${(e.muscle_groups[0]===m)?'selected':''}>${esc(muscleLabel(m))}</option>`).join('');
+  // Oct 6 2026: multi-select checkbox list (mgCheckboxRows, see its own comment above LIB_MUSCLES)
+  // -- replaces the old single <select id="ceMg">. `disabled` still passes straight through to
+  // every checkbox when historyLocked, same lock semantics as the old disabled <select> (a
+  // disabled checkbox's `:checked` state is still readable at submit time, same as a disabled
+  // <select>'s `.value` always was -- see submitEditEx's own comment).
+  const mgRows = mgCheckboxRows(e.muscle_groups, e.historyLocked);
   const curFam = eqFamilies(e)[0] || '';
   const eqOpts = EQ_FAMILY.map(f=>`<option value="${f.key}" ${curFam===f.key?'selected':''}>${f.label}</option>`).join('');
   const patOpts = [['push','Push'],['pull','Pull'],['legs','Legs'],['core','Core'],['cardio','Cardio'],['other','Other']]
@@ -7700,12 +7737,12 @@ function openEditEx(id){
   // Oct 2 2026 (audit finding, Jeff: "I agree, there should be a disclaimer for this also" --
   // see the comment on PUT /api/exercises/custom/:id for the full mechanism). `historyLocked`
   // comes from GET /api/exercises -- once this exercise has a logged set anywhere, the server
-  // refuses a muscle-group change (409), so the dropdown is disabled here to match rather than
-  // let the user pick a new muscle, hit Save, and get turned away with no warning beforehand.
+  // refuses a muscle-group change (409), so the checkboxes are disabled here to match rather than
+  // let the user pick different muscles, hit Save, and get turned away with no warning beforehand.
   // Disclaimer wording is Jeff's own pick (asked via the three options surfaced alongside this
   // build -- CLAUDE.md hard rule #9, never lock in subjective copy unasked).
   const lockNote = e.historyLocked
-    ? `<div class="muted" style="font-size:12px;margin:4px 0 10px">🔒 Locked — this exercise has logged sets. Changing its muscle group would rewrite your past Progress stats. Create a new exercise instead.</div>`
+    ? `<div class="muted" style="font-size:12px;margin:4px 0 10px">🔒 Locked — this exercise has logged sets. Changing its muscle groups would rewrite your past Progress stats. Create a new exercise instead.</div>`
     : '';
   history.pushState({t:'sheet'}, '', location.href);
   const sheet = document.createElement('div'); sheet.className='sheet-back';
@@ -7713,7 +7750,8 @@ function openEditEx(id){
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>Edit exercise</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
       <label class="muted">Name</label><div style="padding:10px 0;font-weight:600">${esc(e.name)}</div>
-      <label class="muted">Primary muscle</label><select id="ceMg" ${e.historyLocked?'disabled style="opacity:.55"':''}>${msel}</select>
+      <label class="muted">Muscle groups (pick all that apply)</label>
+      <div class="card mg-check-grid" style="${e.historyLocked?'opacity:.55;':''}margin-bottom:12px">${mgRows}</div>
       ${lockNote}
       <label class="muted">Pattern</label><select id="cePattern">${patOpts}</select>
       <label class="muted">Equipment</label><select id="ceEq">${eqOpts}</select>
@@ -7725,9 +7763,12 @@ function openEditEx(id){
   requestAnimationFrame(()=>sheet.classList.add('show'));
 }
 async function submitEditEx(id){
-  // `.value` still reads correctly off a disabled <select> -- the historyLocked dropdown is
-  // disabled only to stop the user from PICKING a new one, not to blank out what's already there.
-  const payload={ muscle_groups:[$('ceMg').value], pattern:$('cePattern').value, equipment:[eqLabel($('ceEq').value).toLowerCase()], level:$('ceLv').value, is_compound:$('ceType').value==='1' };
+  // Oct 6 2026: `:checked` still reads correctly off a disabled checkbox, same as `.value` always
+  // did off a disabled <select> -- the historyLocked checkboxes are disabled only to stop the user
+  // from CHANGING the selection, not to blank out what's already there.
+  const muscles = Array.from(document.querySelectorAll('.ceMg-check:checked')).map(cb=>cb.value);
+  if(!muscles.length) return alert('Pick at least one muscle group');
+  const payload={ muscle_groups:muscles, pattern:$('cePattern').value, equipment:[eqLabel($('ceEq').value).toLowerCase()], level:$('ceLv').value, is_compound:$('ceType').value==='1' };
   const r = await H.put('/api/exercises/custom/'+id, payload);
   // Cold-review catch (Sep 30 2026): this reaches here from the standalone "My exercises" sheet
   // (myCustomExercisesSheet), which never touches LIB_STATE -- so LIB_STATE.view can still read
