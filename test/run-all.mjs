@@ -70,6 +70,7 @@ const files = [
   'test/audit-oct2-privacy-toggle-wording.mjs', 'test/audit-oct2-challenge-blocked-contradiction.mjs',
   'test/posted-workout-set-reorder.mjs',
   'test/home-live-session-activity-line.mjs',
+  'test/whos-in-chip-opens-profile.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
