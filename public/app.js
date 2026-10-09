@@ -1794,14 +1794,33 @@ async function openSession(id, opts){
   // besides "wait forever" or withdraw the ask entirely (see /participants/:pid/remove's own
   // comment). Only ever offered to the creator, and never on their own chip -- Delete/Leave are
   // already the right tools for the creator's own exit.
+  // Oct 9 2026 (Jeff, screenshot of a real "Who's in" chip row: "I want to be able to click on
+  // those users and it brings me to their profile pages -- with the back button on the top as
+  // normal and then click back brings me back to the workout"). Same tap-to-profileView pattern
+  // already used everywhere else a person's row shows up (feed items, crew member rows, friend
+  // rows -- see profileView('...') elsewhere in this file) -- no new navigation plumbing needed:
+  // profileView already pushes its own real history entry, so its own Back (same history.back()
+  // every screen in this app uses) lands you right back here, same as tapping into any other
+  // profile already does from any of those other rows. The remove-from-workout ✕ (creator only)
+  // already stops its own click from bubbling, same pattern as every other nested control in this
+  // codebase (ex-info-btn, the swap-undo note) -- so it keeps working unchanged once the chip
+  // itself becomes a tap target.
   const favChip = (pid, pending, removable) => {
     const known = !isUnknownName(nameCache[pid]);
     const label = known ? String(nameCache[pid]) : 'A friend';
     const person = personCache[pid];
     const av = avatarHtml(person ? { ...person, displayName: label } : { displayName: label, username: '', avatar: '' }, 'fav-av');
-    const removeBtn = removable ? `<button class="linkbtn" style="padding:2px 4px" title="Remove from workout" onclick="event.stopPropagation();confirmRemoveParticipant('${s.id}','${pid}',${JSON.stringify(label)})">✕</button>` : '';
-    if(!pending) return `<div class="fav">${av}<span>${esc(label)}</span>${removeBtn}</div>`;
-    return `<div class="fav pending"><div class="fav-av-wrap">${av}<div class="fav-pending-dot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div></div><span>${esc(label)}</span></div>`;
+    // Oct 9 2026 (caught by the new whos-in-chip-opens-profile.mjs test, which is the first test
+    // to actually click this button in a real browser instead of calling confirmRemoveParticipant
+    // directly): this used to build the 3rd argument with JSON.stringify(label), which wraps the
+    // label in DOUBLE quotes -- but the onclick attribute itself is also double-quoted, so that
+    // closed the attribute early and corrupted the tag (a real, pre-existing bug, not something
+    // this change introduced). Switched to the same jsq()-inside-single-quotes pattern already
+    // used on every other inline onclick in this file (see openProfile right below).
+    const removeBtn = removable ? `<button class="linkbtn" style="padding:2px 4px" title="Remove from workout" onclick="event.stopPropagation();confirmRemoveParticipant('${s.id}','${pid}','${jsq(label)}')">✕</button>` : '';
+    const openProfile = `onclick="profileView('${jsq(pid)}')" style="cursor:pointer"`;
+    if(!pending) return `<div class="fav" ${openProfile}>${av}<span>${esc(label)}</span>${removeBtn}</div>`;
+    return `<div class="fav pending" ${openProfile}><div class="fav-av-wrap">${av}<div class="fav-pending-dot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div></div><span>${esc(label)}</span></div>`;
   };
   const invitedBlock = invitedIds.length
     ? `<div class="crew-invited-label">Invited · waiting to respond</div><div class="chips mini">${invitedIds.map(pid=>favChip(pid,true)).join('')}</div>`
