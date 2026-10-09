@@ -73,7 +73,14 @@ try {
     ok(!!edit, 'the proposal is filed as pending');
     ok(r.exercises[0].name === 'Barbell Row', 'nothing changes until the host decides');
     const nHost = await notifs(host), nSam = await notifs(sam), nBrian = await notifs(brian);
-    ok(bodies(nHost).includes('Your call'), `the host is told and asked to decide (got ${bodies(nHost)})`);
+    // Oct 9 2026 (audit finding, double-listing fix): the host's copy of this notify now passes
+    // {history:false} -- a still-pending swap is already reconstructed live as an actionable
+    // "Suggested changes" entry (nHost.suggestions) every time GET /api/notifications is called, so
+    // it no longer ALSO writes a separate, permanent history row that never cleared even once the
+    // actionable one was resolved. The real assertion is "the host sees it live," not "it's in
+    // history" -- same shape removals/joinRequests are tested with elsewhere in this suite.
+    ok(!bodies(nHost).includes('Your call'), 'the host\'s own history does NOT get a duplicate row -- it\'s already live below');
+    ok((nHost.suggestions || []).some(sg => sg.sessionId === s.id && sg.editType === 'swap' && sg.swapTo === 'Seated Cable Row' && sg.from.id === brian.id), `the host is told live and asked to decide, via the actionable suggestions list (got ${JSON.stringify(nHost.suggestions)})`);
     ok(/decides/.test(bodies(nSam)) && bodies(nSam).includes('Barbell Row → Seated Cable Row'), `every other participant is told who decides (got ${bodies(nSam)})`);
     ok(!bodies(nBrian).includes('wants to swap'), 'the proposer is not notified about their own proposal');
 

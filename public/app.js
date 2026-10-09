@@ -1581,10 +1581,18 @@ async function openSession(id, opts){
   // one line, no emoji standing in for icons
   const facts = [s.location ? esc(s.location) : '', s.lengthMin ? esc(s.lengthMin)+' min' : ''].filter(Boolean).join(' · ');
 
-  // Has anyone else started? ONLY on an invitation you have not answered yet. It exists to help
-  // you decide; once you have accepted you are going to train regardless, and the same sentence
-  // stops being information and starts being a nag. Jeff's call, Aug 18.
-  const startedBy = pendingMe && !sessionHasAnyPost(s) ? whoLogged().filter(pid => pid !== ME.id) : [];
+  // Has anyone else started? ONLY while you're still DECIDING whether to be here at all -- once
+  // you've accepted/joined you're training regardless, and the same sentence stops being
+  // information and starts being a nag. Jeff's call, Aug 18 (originally scoped to pendingMe, a
+  // direct invite you haven't answered). Oct 9 2026 (audit finding): that was the only "still
+  // deciding" state checked -- a public, joinable-but-not-yet-joined session is the EXACT same
+  // kind of undecided moment (same "Jenny's already started" kind of nudge would help here too),
+  // it just got missed. joinableHere mirrors joinable's own definition below (s.visibility ===
+  // 'public', not creator/participant, not ownerless -- see that const's own comment for why each
+  // check is there) computed early since isCreator/isParticipant/isOwnerless/pendingMe are already
+  // in scope here and startedBy needs to run before joinable's own later definition.
+  const joinableHere = !isCreator && !isParticipant && !pendingMe && s.visibility === 'public' && !isOwnerless;
+  const startedBy = (pendingMe || joinableHere) && !sessionHasAnyPost(s) ? whoLogged().filter(pid => pid !== ME.id) : [];
   const startedSets = startedBy.reduce((n,pid) => n + setsTotal(pid), 0);
   const firstName = pid => { const n = nameCache[pid]; return isUnknownName(n) ? 'Someone' : String(n).split(' ')[0]; };
   const startedLine = !startedBy.length ? '' : (() => {
@@ -3339,7 +3347,13 @@ function renderSeedSetup(){
       </div>
       <div class="seed-row-fields">
         <div><label class="muted">Weight (${esc(unit)})</label><input id="seedW${i}" type="number" inputmode="decimal" step="any" placeholder="e.g. 185" value="${esc(r.weight)}"></div>
-        <div><label class="muted">Reps</label><input id="seedR${i}" type="number" inputmode="tel" pattern="[0-9]*" placeholder="1" value="${esc(r.reps)}"></div>
+        <!-- Oct 9 2026 (audit finding): this placeholder was a bare "1" -- on an EMPTY, never-typed-in
+             field, a lone digit renders visually identical to an actually-entered value of 1 rep, so a
+             row someone hasn't touched yet looked like it already had "1 rep" recorded. Weight's own
+             placeholder right next to it ("e.g. 185") never had this problem precisely because "e.g."
+             makes it unmistakably a hint, not a value -- matching that convention here removes the
+             ambiguity instead of just picking a different bare number that would have the same flaw. -->
+        <div><label class="muted">Reps</label><input id="seedR${i}" type="number" inputmode="tel" pattern="[0-9]*" placeholder="e.g. 10" value="${esc(r.reps)}"></div>
       </div>
       ${r._goalOpen || r.goal ? `<div class="seed-goal"><label class="muted">Goal (${esc(unit)})</label><input id="seedG${i}" type="number" inputmode="decimal" step="any" placeholder="optional" value="${esc(r.goal)}"></div>`
         : `<button class="txt-btn" style="padding:6px 0" onclick="seedOpenGoal(${i})">+ Set a goal</button>`}
@@ -3864,10 +3878,36 @@ function logSetType(exId, key){
 // addLogSet below): it's an occasional, deliberate read on effort, not something that should
 // occupy a permanent slot in the row for the 1 in 10 sets it actually applies to. Revealed by
 // this button, replacing it in the same slot so the row's width doesn't jump.
+// Oct 9 2026 (audit finding, Jeff's pick among options): unlike Weight/Reps, "RIR" isn't
+// self-explanatory on sight -- the very first tap, account-wide, shows a one-time explainer
+// before actually revealing the input; every tap after that (this account, any device --
+// ME.seenRirExplainer is a real account field, not localStorage, see profileOf's own comment)
+// opens it directly exactly as before this fix.
 function toggleRirInput(exId){
   const btn=lf(exId,'rirBtn'); const inp=lf(exId,'rir');
   if(!btn||!inp) return;
-  btn.classList.add('hidden'); inp.classList.remove('hidden'); inp.focus();
+  const reveal = () => { btn.classList.add('hidden'); inp.classList.remove('hidden'); inp.focus(); };
+  if(ME && !ME.seenRirExplainer){ showRirExplainer(reveal); return; }
+  reveal();
+}
+// One-time info sheet, reusing the exact same CONFIRM_EL/SHEET_CANCEL_CB machinery confirmSheet
+// itself is built on (see its own comment on SHEET_CANCEL_CB) rather than inventing a parallel
+// mechanism -- `onDone` (reveal the RIR input) fires no matter how this sheet is left: the "Got
+// it" button, a backdrop tap, or the hardware/gesture Back button all route through
+// dismissConfirm(), which SHEET_CANCEL_CB fires from exactly once. There's deliberately no
+// separate Cancel action -- tapping the RIR button at all means "I want to log a RIR," and this
+// sheet is purely an interstitial explanation of it, not a gate the user can refuse.
+function showRirExplainer(onDone){
+  stompPendingSwipeSheet();
+  ME.seenRirExplainer = true;   // optimistic -- matches every other one-way "seen" flag's client-side pattern
+  H.post('/api/me/rir-explainer-seen', {}).catch(()=>{});
+  CONFIRM_CB = null;
+  SHEET_CANCEL_CB = onDone;
+  CONFIRM_EL = openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Reps in reserve</h2></div>
+    <div class="muted" style="padding:0 2px 14px; font-size:13px; line-height:1.5">RIR is how many more reps you think you could have squeezed out before failure. A set at 0 RIR was all-out; a set at 2&ndash;3 RIR still had some left in the tank.<br><br>It's completely optional — log it on a set when you want a record of how hard it actually felt, and skip it the rest of the time.</div>
+    <button class="blue" style="width:100%" onclick="dismissConfirm()">Got it</button>
+  </div>`);
+  CONFIRM_EL.onclick = (e)=>{ if(e.target===CONFIRM_EL) dismissConfirm(); };
 }
 // ---- Quick log (v243) ----
 // One box on the log sheet that understands a whole set said (via the keyboard's mic) or typed
@@ -8298,7 +8338,38 @@ async function friends(opts){
     }
     return out;
   };
-  const groupedFeed = groupPrItems(feed);
+  // Oct 9 2026 (audit finding, Jeff's pick among options): same repetition problem groupPrItems
+  // already solved for PRs, this time for 'started_following' -- someone who follows several
+  // people in one sitting (browsing suggestions, say) used to produce one near-identical compact
+  // row per person ("X started following Alice" / "X started following Bob" / ...), burying
+  // everything else that happened that day under a run of lines that are really one moment, not
+  // several. Same shape as groupPrItems: fold same-actor, same-CALENDAR-DAY events into one row
+  // carrying every target in `_followGroup` (chronological), keep the earliest as the
+  // representative (so the grouped row's own `at` still lands in today-vs-this-week correctly,
+  // same reasoning as groupPrItems' own `at` pick) and the group is applied app-wide for this
+  // render, not just inside "This week" -- so same-day follows still group even when today's own
+  // run of them spills past isToday's cutoff for a later re-render.
+  const groupFollowItems = list => {
+    const groupsByKey = new Map(); // "by|dayStartMs" -> every started_following ff that calendar day
+    const slotOf = new Map();
+    const out = [];
+    for (const ff of list) {
+      if (ff.type !== 'started_following') { out.push(ff); continue; }
+      const key = ff.by + '|' + startOfDay(new Date(ff.at)).getTime();
+      if (!groupsByKey.has(key)) {
+        groupsByKey.set(key, []);
+        slotOf.set(key, out.length);
+        out.push(null); // filled in below once every member of this group has been seen
+      }
+      groupsByKey.get(key).push(ff);
+    }
+    for (const [key, group] of groupsByKey) {
+      const sorted = group.length > 1 ? [...group].sort((a, b) => new Date(a.at) - new Date(b.at)) : group;
+      out[slotOf.get(key)] = {...sorted[0], _followGroup: sorted};
+    }
+    return out;
+  };
+  const groupedFeed = groupFollowItems(groupPrItems(feed));
 
   const heroTypes = new Set(['pr','recap']);
   const heroEligible = groupedFeed.filter(ff => heroTypes.has(ff.type) && isToday(ff.at));
@@ -8396,6 +8467,24 @@ async function friends(opts){
     // and ff.by's own profile is already one tap away via their bolded name... except the name here
     // isn't a link, so targetId's profile is the more useful destination either way.
     if(ff.type==='started_following'){
+      // Oct 9 2026 (audit finding, see groupFollowItems' own comment above): several same-day
+      // follows now arrive as one row carrying every target in _followGroup. There is no longer a
+      // single "the" profile this row is about, so the whole-row tap-through is dropped only in
+      // that grouped case -- each name a viewer actually cares about reaching is still one tap away
+      // from THIS row's own author via the bolded name once profiles gain name-linking, same as
+      // every other row here already notes; an ungrouped (single-follow) row is completely
+      // unchanged, same copy and same tap target as before this fix.
+      const group = ff._followGroup && ff._followGroup.length > 1 ? ff._followGroup : null;
+      if(group){
+        const names = group.map(g => esc(g.targetName || 'someone'));
+        // "Alice" / "Alice and Bob" / "Alice, Bob and Carol" / "Alice, Bob and 3 others" -- never a
+        // bare comma-joined list once there's more than two, so a long browsing session reads as
+        // one sentence instead of a wall of names.
+        const label = names.length <= 2 ? names.join(' and ')
+          : names.length === 3 ? `${names[0]}, ${names[1]} and ${names[2]}`
+          : `${names[0]}, ${names[1]} and ${names.length - 2} others`;
+        return `<div class="feed-item"><span class="feed-lead"><span class="ar-mini-icon">${personPlusSvg()}</span></span><span><b>${who}</b> started following ${label}</span>${when}</div>`;
+      }
       return `<div class="feed-item" onclick="profileView('${jsq(ff.targetId)}')" style="cursor:pointer"><span class="feed-lead"><span class="ar-mini-icon">${personPlusSvg()}</span></span><span><b>${who}</b> ${esc(ff.text)}</span>${when}</div>`;
     }
     if(ff.type==='left_crew'){
@@ -10406,7 +10495,16 @@ async function followList(id, kind, opts){
   // only opts.fromHistory applies -- popstate landing here, don't push a duplicate entry.
   const fromHistory = !!(opts && opts.fromHistory);
   UI_EPOCH++;
+  const epoch = UI_EPOCH;
   const list = await H.get(`/api/profile/${id}/${kind}`);
+  // Oct 9 2026 (cold-review catch, fix #6): without this, opening profile A's followers list on a
+  // slow connection, then quickly navigating to profile B's following list before A's fetch
+  // resolves, let A's response land LAST and overwrite whatever B's own (correct, already-rendered)
+  // screen was showing -- and, now that this screen caches its list in FOLLOW_LIST_CACHE for the
+  // new search box, it wasn't just a one-time wrong paint: the search box stayed silently wired to
+  // profile A's list even while the page visibly read "B's Following," since nothing ever
+  // overwrote FOLLOW_LIST_CACHE back to B's real list afterward.
+  if(!nothingNavigatedSince(epoch)) return;
   const title = kind==='followers' ? 'Followers' : 'Following';
   // v254 fix: this used to call profileView(id) directly, which PUSHES A NEW {t:'profile',id}
   // entry on top of the one already sitting right below this screen's own -- so tapping this
@@ -10426,19 +10524,38 @@ async function followList(id, kind, opts){
     const st={t:'followList', id, kind}; fromHistory ? landOn(st) : navigated(st);
     return;
   }
-  const rows = list.length ? list.map(x=>`
+  // Oct 9 2026 (audit finding, Jeff's pick among options): the server now sends this list
+  // alphabetically (see followListFor's own comment), and this screen adds the other half of that
+  // pick -- a search box, same "filters as you type" feel as the Activity tab's own #fu, but
+  // client-side here since the whole list (already fetched) is what's being searched, not the
+  // wider user base. FOLLOW_LIST_CACHE holds the untouched list so followListFilter can re-render
+  // from it on every keystroke without re-fetching; followRowHtml is the one row template used both
+  // for the initial render and every re-filter, so the two can never drift apart.
+  FOLLOW_LIST_CACHE = list;
+  const emptyMsg = kind==='followers'?'No followers yet.':'Not following anyone yet.';
+  const searchBox = list.length > 1 ? `<div class="add-row" style="margin-bottom:8px"><input id="flSearch" placeholder="Search by name or @username" autocomplete="off" oninput="followListFilter()"></div>` : '';
+  $('app').innerHTML = `<div class="wrap">${backBtn}<h1>${title}</h1>
+    ${searchBox}
+    <div class="card" id="flCard" style="padding:6px 12px">${list.length ? list.map(followRowHtml).join('') : `<div class="muted" style="padding:14px 2px;text-align:center">${emptyMsg}</div>`}</div>
+  </div>`;
+  const st={t:'followList', id, kind}; fromHistory ? landOn(st) : navigated(st);
+}
+let FOLLOW_LIST_CACHE = [];
+const followRowHtml = x => `
     <div class="friend-row" onclick="profileView('${x.id}')" style="cursor:pointer">
       ${avatarHtml(x,'avatar')}
       <div class="meta">
         <div class="name">${esc(x.displayName||x.username)}</div>
         <div class="handle">@${esc(x.username)}</div>
       </div>
-    </div>`).join('')
-    : `<div class="muted" style="padding:14px 2px;text-align:center">${kind==='followers'?'No followers yet.':'Not following anyone yet.'}</div>`;
-  $('app').innerHTML = `<div class="wrap">${backBtn}<h1>${title}</h1>
-    <div class="card" style="padding:6px 12px">${rows}</div>
-  </div>`;
-  const st={t:'followList', id, kind}; fromHistory ? landOn(st) : navigated(st);
+    </div>`;
+function followListFilter(){
+  const box = $('flCard');
+  if(!box) return;
+  const q = (($('flSearch')||{}).value||'').trim().toLowerCase();
+  const matches = !q ? FOLLOW_LIST_CACHE : FOLLOW_LIST_CACHE.filter(x =>
+    (x.displayName||'').toLowerCase().includes(q) || (x.username||'').toLowerCase().includes(q));
+  box.innerHTML = matches.length ? matches.map(followRowHtml).join('') : `<div class="muted" style="padding:14px 2px;text-align:center">No matches.</div>`;
 }
 // Jeff, Sep 2: "when I click to change grid or list view on a different person profile - it
 // brings me to my profile." This always re-rendered ME.id no matter whose profile was on screen

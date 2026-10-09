@@ -71,6 +71,7 @@ const files = [
   'test/posted-workout-set-reorder.mjs',
   'test/home-live-session-activity-line.mjs',
   'test/whos-in-chip-opens-profile.mjs',
+  'test/audit-oct9-batch-fixes.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

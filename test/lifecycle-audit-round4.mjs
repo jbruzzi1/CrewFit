@@ -169,6 +169,14 @@ console.log('\n5. Session swap/removal-proposal notify() loops now respect block
   ok((afterHistory.history || []).length === beforeCount, `a blocked co-participant's swap proposal does not add a notification-history entry for the person who blocked them (before=${beforeCount}, after=${(afterHistory.history||[]).length})`);
 
   // Sanity: an UNBLOCKED proposer's swap still notifies normally.
+  // Oct 9 2026 (audit finding, double-listing fix): the creator's copy of this notify() now passes
+  // {history:false} -- same reason every other still-pending/actionable type does (invites,
+  // followRequests, joinRequests, removals -- see GET /api/notifications' own comments) -- because
+  // a pending swap is ALSO reconstructed live as an actionable "Suggested changes" card every time
+  // that endpoint is called. Before this fix, it showed up BOTH ways: once actionable, once as a
+  // separate read-only history row that never cleared even after the actionable one was resolved.
+  // So the real assertion here is "the creator sees it live in `suggestions`, not a history-count
+  // bump" -- the same shape `removals`/`joinRequests` are tested with elsewhere in this suite.
   const host2 = await reg('swp2_host');
   const other2 = await reg('swp2_other');
   await connect(host2, other2);
@@ -178,7 +186,8 @@ console.log('\n5. Session swap/removal-proposal notify() loops now respect block
   const beforeCount2 = (beforeHistory2.history || []).length;
   await post(`/api/sessions/${s2.id}/suggest`, { type: 'swap', exerciseId: s2.exercises[0].id, swapTo: 'Cable Row' }, other2.token);
   const afterHistory2 = await get('/api/notifications', host2.token);
-  ok((afterHistory2.history || []).length === beforeCount2 + 1, `sanity: an ordinary (unblocked) swap proposal still adds a notification (before=${beforeCount2}, after=${(afterHistory2.history||[]).length})`);
+  ok((afterHistory2.history || []).length === beforeCount2, `sanity: an ordinary (unblocked) swap proposal does NOT also add a durable history entry for the creator -- it's already live in suggestions (before=${beforeCount2}, after=${(afterHistory2.history||[]).length})`);
+  ok((afterHistory2.suggestions || []).some(sg => sg.sessionId === s2.id && sg.editType === 'swap'), `and it DOES show up live as an actionable "Suggested changes" entry (got ${JSON.stringify(afterHistory2.suggestions)})`);
 }
 
 console.log('\n6. Admin-panel auth: constant-time compare + rate limited, same behavior for legit/wrong tokens');
