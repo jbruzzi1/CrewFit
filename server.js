@@ -1007,7 +1007,7 @@ app.put('/api/exercises/custom/:id', auth, async (req, res) => {
   // Oct 2 2026 (audit finding, Jeff: "I agree, there should be a disclaimer for this also" --
   // flagging that editing a custom exercise's muscle group silently rewrites PAST Progress
   // stats). Confirmed mechanism: every Progress computation that credits a logged set to a
-  // muscle group (volumeFor / volumeTrendFor / everTrainedMusclesFor -- see each one's own
+  // muscle group (volumeFor / volumeTrendFor / recentlyTrainedMusclesFor -- see each one's own
   // comment) resolves the exercise LIVE by name through findExLibEntry every single time it
   // runs. There is no snapshot of which muscle(s) a set counted toward at the moment it was
   // logged, so changing muscle_groups here doesn't just affect future sets -- it retroactively
@@ -1343,6 +1343,13 @@ function profileOf(id, viewerId, localToday) {
     // Private/Public toggle is the only reader of this. Public unless explicitly set to
     // 'private', same rule as canSeeProfile.
     profileVisibility: id === viewerId ? (u.profileVisibility === 'private' ? 'private' : 'public') : undefined,
+    // Self only, same "lazy boolean, unset reads as false" shape as the other self-only flags
+    // just above. Oct 9 2026 (audit finding, Jeff's pick among options): lets the client show a
+    // one-time explainer the FIRST time anyone on this account ever taps the RIR toggle while
+    // logging a set, then never again -- see /api/me/rir-explainer-seen below and toggleRirInput
+    // in app.js. Account-level (not per-device localStorage) so the explainer genuinely shows once
+    // per person, not once per browser/device they happen to log from.
+    seenRirExplainer: id === viewerId ? !!u.seenRirExplainer : undefined,
     workoutsCompleted: completed.size,
     // the follow button's state, and whether they follow you back
     youFollow: id === viewerId ? 'self'
@@ -1485,7 +1492,16 @@ function followListFor(id, viewerId, kind) {
   // blocked you) by name, exactly the search-box leak that was already closed, just reached from a
   // different screen. Filtered the same bidirectional way isBlocked() always is -- the entry simply
   // isn't in the list, no error, same as a blocked search result just not turning up.
-  return (u[kind] || []).filter(fid => DB.users[fid] && !isBlocked(fid, viewerId)).map(fid => publicUser(fid));
+  // Oct 9 2026 (audit finding, Jeff's pick among options): this used to come back in whatever
+  // order `u[kind]` happened to store ids (the order follows/being-followed actually occurred in)
+  // -- fine for a handful of connections, but on a real account with dozens of them there was no
+  // way to scan for a specific person except reading the whole list top to bottom. Sorted
+  // alphabetically by the same name the client actually displays (displayName, falling back to
+  // username exactly like the row template does) so it reads the same order a person expects from
+  // any contacts list. localeCompare's sensitivity:'base' makes the sort case- and accent-insensitive
+  // (so "bob" and "Bob" land together) without changing anything about what's actually shown.
+  return (u[kind] || []).filter(fid => DB.users[fid] && !isBlocked(fid, viewerId)).map(fid => publicUser(fid))
+    .sort((a, b) => (a.displayName || a.username).localeCompare(b.displayName || b.username, undefined, { sensitivity: 'base' }));
 }
 app.get('/api/profile/:id/followers', auth, async (req, res) => {
   const list = followListFor(req.params.id, req.userId, 'followers');
@@ -2690,12 +2706,25 @@ app.get('/api/notifications', auth, async (req, res) => {
   // isBlocked against whoever the item is attributed to. A pending invite from (or to) someone you
   // later blocked kept showing "X invited you" here, actionable Accept button included, regardless.
   // Filtered the same way, against fromId -- the identity actually shown in this list item.
+  // Oct 9 2026 (audit finding, Jeff's pick among options): every section in this route used to
+  // come back in whatever order Object.values(DB.sessions)/DB.templates happened to iterate --
+  // i.e. the order those SESSIONS/TEMPLATES were originally CREATED, not when the pending item
+  // itself (an invite, a join request, a suggestion...) actually happened. A brand-new invite on a
+  // months-old workout sat buried below a day-old invite on a workout that merely happened to be
+  // created more recently. Sorted newest-first within each section instead, using each item's own
+  // real timestamp (invitedAt/at/sharedAt -- see each field's own comment where it's stamped).
+  // Missing timestamps (an item that predates this fix) sort last within their section, same
+  // "falls back gracefully, never crashes" shape every other lazily-added field in this file uses.
   const invites = Object.values(DB.sessions)
     .filter(s => Array.isArray(s.invited) && s.invited.includes(req.userId))
-    .map(s => ({ s, fromId: (s.invitedBy && s.invitedBy[req.userId]) || s.creatorId }))
+    .map(s => ({ s, fromId: (s.invitedBy && s.invitedBy[req.userId]) || s.creatorId, at: (s.invitedAt && s.invitedAt[req.userId]) || '' }))
     .filter(({ fromId }) => DB.users[fromId] && !isBlocked(fromId, req.userId))
+    .sort((a, b) => b.at.localeCompare(a.at))
     .map(({ s, fromId }) => ({ type: 'invite', sessionId: s.id, sessionName: s.name || 'Workout', exerciseCount: (s.exercises || []).length, from: publicUser(fromId) }));
-  const followRequests = (me.followReqs || [])
+  // followReqs is append-only (ensureFollowArrays/the one push site -- see its own comment) and
+  // never reordered or re-stamped in place, so reversing it is exactly "newest request first"
+  // without needing a parallel timestamp map the way the other sections below do.
+  const followRequests = [...(me.followReqs || [])].reverse()
     .filter(id => DB.users[id])
     .map(id => ({ type: 'follow', from: publicUser(id) }));
   const joinRequests = [];
@@ -2720,7 +2749,7 @@ app.get('/api/notifications', auth, async (req, res) => {
         // listing still showed their identity and free-text note here regardless -- a visible
         // leak through a surface that's supposed to fail closed.
         if (j.status !== 'pending' || !DB.users[j.userId] || isBlocked(j.userId, req.userId)) continue;
-        joinRequests.push({ type: 'join', sessionId: s.id, reqId: j.id, sessionName: s.name || 'Workout', note: j.note || '', from: publicUser(j.userId) });
+        joinRequests.push({ type: 'join', sessionId: s.id, reqId: j.id, sessionName: s.name || 'Workout', note: j.note || '', from: publicUser(j.userId), _at: j.at || '' });
       }
     }
     for (const pr of (s.pendingRemovals || [])) {
@@ -2730,7 +2759,7 @@ app.get('/api/notifications', auth, async (req, res) => {
       // Sep 24 2026 audit round 4 (low finding): same shape as joinRequests above -- the proposer's
       // identity leaked into this listing even when blocked.
       if (!DB.users[pr.proposedBy] || isBlocked(pr.proposedBy, req.userId)) continue;
-      removals.push({ type: 'removal', sessionId: s.id, reqId: pr.id, sessionName: s.name || 'Workout', exerciseName: pr.exerciseName, from: publicUser(pr.proposedBy) });
+      removals.push({ type: 'removal', sessionId: s.id, reqId: pr.id, sessionName: s.name || 'Workout', exerciseName: pr.exerciseName, from: publicUser(pr.proposedBy), _at: pr.at || '' });
     }
   }
   // Sep 29 2026 (audit finding, Tier 4e): a pending suggested edit (add/swap proposal awaiting the
@@ -2750,7 +2779,7 @@ app.get('/api/notifications', auth, async (req, res) => {
     for (const ed of (s.suggestedEdits || [])) {
       if (ed.status !== 'pending') continue;
       if (!DB.users[ed.proposedBy] || isBlocked(ed.proposedBy, req.userId)) continue;
-      suggestions.push({ type: 'suggestion', sessionId: s.id, editId: ed.id, sessionName: s.name || 'Workout', editType: ed.type, swapTo: ed.swapTo, from: publicUser(ed.proposedBy) });
+      suggestions.push({ type: 'suggestion', sessionId: s.id, editId: ed.id, sessionName: s.name || 'Workout', editType: ed.type, swapTo: ed.swapTo, from: publicUser(ed.proposedBy), _at: ed.at || '' });
     }
   }
   // Sep 27 2026 (Jeff, part 1): a declined-then-changed-their-mind request (POST
@@ -2762,7 +2791,7 @@ app.get('/api/notifications', auth, async (req, res) => {
     if (s.creatorId !== req.userId) continue;
     for (const rr of (s.reinviteRequests || [])) {
       if (!DB.users[rr.userId] || isBlocked(rr.userId, req.userId)) continue;
-      reinviteAsks.push({ type: 'reinviteAsk', sessionId: s.id, reqId: rr.id, sessionName: s.name || 'Workout', message: rr.message || '', from: publicUser(rr.userId) });
+      reinviteAsks.push({ type: 'reinviteAsk', sessionId: s.id, reqId: rr.id, sessionName: s.name || 'Workout', message: rr.message || '', from: publicUser(rr.userId), _at: rr.at || '' });
     }
   }
   // Oct 2 2026 (routine-sharing redesign): a routine explicitly shared with me (POST
@@ -2774,8 +2803,15 @@ app.get('/api/notifications', auth, async (req, res) => {
   for (const t of Object.values(DB.templates || {})) {
     if (!Array.isArray(t.sharedTo) || !t.sharedTo.includes(req.userId)) continue;
     if (!DB.users[t.ownerId] || isBlocked(t.ownerId, req.userId)) continue;
-    routineShares.push({ type: 'routineShare', routineId: t.id, routineName: t.name, exerciseCount: (t.exercises || []).length, from: publicUser(t.ownerId) });
+    routineShares.push({ type: 'routineShare', routineId: t.id, routineName: t.name, exerciseCount: (t.exercises || []).length, from: publicUser(t.ownerId), _at: (t.sharedAt && t.sharedAt[req.userId]) || '' });
   }
+  // Oct 9 2026: newest-first within each of the four sections just built -- see the big comment
+  // above `invites` for why. `_at` was scaffolding for this sort only (joinRequests/removals/
+  // suggestions/reinviteAsks/routineShares each stamped it on push, just above); stripped from
+  // every item before it goes in the response, same "never shown, just how the order was decided"
+  // shape as `s`/`fromId` in the invites pipeline above.
+  const stripAt = arr => { arr.sort((a, b) => b._at.localeCompare(a._at)); for (const x of arr) delete x._at; return arr; };
+  stripAt(joinRequests); stripAt(removals); stripAt(suggestions); stripAt(reinviteAsks); stripAt(routineShares);
   const cutoff = Date.now() - NOTIFICATION_HISTORY_DAYS * 86400000;
   const history = Object.values(DB.notifications)
     .filter(n => n.userId === req.userId && new Date(n.createdAt).getTime() >= cutoff)
@@ -3213,8 +3249,13 @@ app.post('/api/templates/:id/share', auth, async (req, res) => {
   const targets = resolveInvites(req.userId, (req.body || {}).usernames);
   if (!targets.length) return res.status(400).json({ error: 'pick at least one person to share with' });
   t.sharedTo = t.sharedTo || [];
+  // Oct 9 2026 (audit finding, Jeff's pick among options): { recipientId: ISO timestamp }, same
+  // shape and reasoning as a session's own invitedAt (see ensureSessionShape's comment) -- lets GET
+  // /api/notifications sort its "Routine shared" section by when the share actually happened,
+  // rather than by which template happens to have been CREATED more recently.
+  t.sharedAt = t.sharedAt || {};
   const newlyShared = targets.filter(id => !t.sharedTo.includes(id));
-  for (const id of newlyShared) t.sharedTo.push(id);
+  for (const id of newlyShared) { t.sharedTo.push(id); t.sharedAt[id] = new Date().toISOString(); }
   await save(DB);
   // history:false -- already shown live as an actionable "Routine shared" row in GET
   // /api/notifications while it's unanswered, same pattern as a workout invite's own notify()
@@ -3245,6 +3286,7 @@ app.post('/api/templates/:id/accept-share', auth, async (req, res) => {
   if (!DB.templates) DB.templates = {};
   DB.templates[id] = copy;
   t.sharedTo = t.sharedTo.filter(x => x !== req.userId);
+  if (isObj(t.sharedAt)) delete t.sharedAt[req.userId];
   await save(DB);
   res.json({ ok: true, id });
 });
@@ -3256,6 +3298,7 @@ app.post('/api/templates/:id/decline-share', auth, async (req, res) => {
   if (!t) return res.status(404).json({ error: 'not found' });
   if (!Array.isArray(t.sharedTo) || !t.sharedTo.includes(req.userId)) return res.status(403).json({ error: 'not shared with you' });
   t.sharedTo = t.sharedTo.filter(x => x !== req.userId);
+  if (isObj(t.sharedAt)) delete t.sharedAt[req.userId];
   await save(DB);
   res.json({ ok: true });
 });
@@ -3763,6 +3806,8 @@ app.post('/api/sessions', auth, async (req, res) => {
     // ownership later hands off (see /leave, /remove-mine), so it has to be its own fact, not
     // re-derived from s.creatorId on every read.
     invitedBy: Object.fromEntries(invites.map(fid => [fid, req.userId])),
+    // Oct 9 2026 (audit finding): see invitedAt's own comment in ensureSessionShape.
+    invitedAt: Object.fromEntries(invites.map(fid => [fid, new Date().toISOString()])),
     variations: {},
     suggestedEdits: [],
     joinRequests: [],
@@ -3837,16 +3882,48 @@ app.post('/api/sessions', auth, async (req, res) => {
 // onto today's week strip / weekly stats -- it still gets marked started, just without the
 // re-time. (A future-scheduled session always passes this check -- Date.now() - scheduledMs is
 // negative there -- this only ever holds back something already well in the past.)
+//
+// Oct 9 2026 (audit finding): this re-time only ever fired from the Next-Up card's own Start/Join
+// now button (startSession(), app.js) -- but that is not the only door into "actually doing the
+// workout, for real." Accepting a direct invite (acceptInvite()) and joining a discoverable public
+// session (requestJoin/approveJoin) both drop straight into openSession() with no call to this
+// route at all, so someone who accepted an invite for "Tomorrow, 9:15 PM" and then logged real
+// sets immediately could finish and post with that stale scheduled time intact forever -- the
+// recap permanently read "Tomorrow, 9:15 PM" for something that actually happened right then.
+//
+// Tempting fix, REJECTED: hook this into every set log (POST .../log) instead of here. Tried it
+// first, and it breaks a real, deliberate, already-shipped feature -- the Oct 7 2026 "live session
+// activity" line on Home's Next-Up card, whose whole point is showing a friend ALREADY logging
+// real sets on a session the VIEWER has not yet tapped Start on ("Brian is in · Brian just
+// started"), without that pulling the card out of Next-Up and into Your Sessions out from under
+// them (test/home-live-session-activity-line.mjs's "still lands in Next-up" case is exactly this).
+// A single participant logging a set is routine and must NOT globally flip startedAt by itself.
+//
+// What actually distinguishes the real bug from that: by the time someone finishes (/lock) a
+// session nobody ever explicitly started, the workout has unambiguously already happened -- this
+// is the exact "PRs/timestamps were still snapshotted from stale data at log time" shape the Sep
+// 28 2026 fix two routes below (creditFinish's history timestamp over scheduledAt) already solved
+// for PRs specifically; this closes the same gap for the session's own displayed date/time. Pulled
+// the idempotent startedAt/scheduledAt logic out into its own helper so POST .../lock below can
+// apply it too, backdated to the EARLIEST real log across every participant (closer to "when it
+// actually began" than "now, at the moment someone tapped Finish") -- same 24h-guard shape, so a
+// long-overdue session someone finally logs and finishes days later still gets marked started
+// without silently erasing its "Missed" flag or back-dating itself into an implausible past.
+function markSessionStarted(s, when) {
+  if (s.startedAt) return;
+  const now = when || new Date().toISOString();
+  s.startedAt = now;
+  const scheduledMs = new Date(s.scheduledAt).getTime();
+  const nowMs = new Date(now).getTime();
+  if (!isNaN(scheduledMs) && !isNaN(nowMs) && (nowMs - scheduledMs) < 24 * 3600e3) s.scheduledAt = now;
+}
 app.post('/api/sessions/:id/start', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   if (!canFinishOrPost(s, req.userId)) return res.status(403).json({ error: 'not in this workout' });
   if (!s.startedAt) {
-    const now = new Date().toISOString();
-    s.startedAt = now;
-    const scheduledMs = new Date(s.scheduledAt).getTime();
-    if (!isNaN(scheduledMs) && (Date.now() - scheduledMs) < 24 * 3600e3) s.scheduledAt = now;
+    markSessionStarted(s);
     await save(DB);
   }
   res.json(sessionView(s, req.userId));
@@ -3923,6 +4000,13 @@ function ensureSessionShape(s) {
   // why. Older sessions/invites predating this field simply have no entry here; every read site
   // falls back to s.creatorId for those, same as before this existed.
   if (!isObj(s.invitedBy)) s.invitedBy = {};
+  // Oct 9 2026 (audit finding, Jeff's pick among options): { inviteeId: ISO timestamp }, parallel
+  // to invitedBy above and following the exact same "set once, left alone, older invites simply
+  // have no entry" shape -- GET /api/notifications sorts its invites section by this so a just-now
+  // invite from an old session doesn't sit buried under a day-old invite from a session that merely
+  // happens to have been CREATED more recently (Object.values(DB.sessions) iteration order was the
+  // old, accidental sort -- session creation order, not invite recency).
+  if (!isObj(s.invitedAt)) s.invitedAt = {};
   s.exercises = objArray(s.exercises);
   if (!isObj(s.logs)) s.logs = {};
   else for (const uid of Object.keys(s.logs)) s.logs[uid] = objArray(s.logs[uid]);  // each user's set list
@@ -4322,7 +4406,14 @@ function sessionView(s, viewerId) {
   // "Brian's already started - 2 sets in" is the fact that decides an invitation, and it survives
   // this change. It does not need Brian's SETS to say so, only how many there were: no weights,
   // no reps, nothing that belongs on his record. Counts only, and only for someone deciding.
-  if (tier === 'invited') {
+  // Oct 9 2026 (audit finding): 'friend' is this function's internal name for the OTHER "still
+  // deciding" tier -- a public, joinable-but-not-yet-joined session (see sessionTier's own v190
+  // comment on why it's named 'friend' rather than renamed to match) -- and it never got this same
+  // signal, even though the client's own startedLine (app.js) exists for exactly this "help you
+  // decide" reason on EITHER door in. Someone looking at a stranger's public workout, deciding
+  // whether to tap "Join in?", got zero indication it was already underway. Same privacy posture
+  // as 'invited' above -- counts only, current participants only, nothing from anyone's record.
+  if (tier === 'invited' || tier === 'friend') {
     const counts = {};
     for (const [pid, arr] of Object.entries(s.logs || {})) {
       if (!Array.isArray(arr) || !arr.length) continue;
@@ -5070,8 +5161,10 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
       const exOld = s.exercises.find(e => e.id === rid);
       let pr = s.pendingRemovals.find(p => p.exerciseId === rid && p.status === 'pending');
       if (!pr) {
+        // Oct 9 2026 (audit finding, Jeff's pick among options): `at` lets GET /api/notifications
+        // sort its "Removal requests" section newest-first -- see joinRequests' own `at` just above.
         pr = { id: 'rm_' + uid(), exerciseId: rid, exerciseName: exOld ? exOld.name : 'Exercise',
-               proposedBy: req.userId, requiredApprovals, approvals: [], status: 'pending' };
+               proposedBy: req.userId, requiredApprovals, approvals: [], status: 'pending', at: new Date().toISOString() };
         s.pendingRemovals.push(pr);
         // Sep 24 2026 audit round 4: same missing block check as the crew-lifecycle notify loops
         // fixed above -- sessionView's own suggestedEdits/logs are already block-filtered for a
@@ -5159,6 +5252,11 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   const newlyInvited = invites.filter(fid => !(s.invited || []).includes(fid));
   for (const fid of invites) if (!s.invitedBy[fid]) s.invitedBy[fid] = req.userId;
   for (const fid of Object.keys(s.invitedBy)) if (!invites.includes(fid)) delete s.invitedBy[fid];
+  // Oct 9 2026 (audit finding): invitedAt follows the exact same preserve-existing/stamp-new/
+  // clean-up-dropped shape as invitedBy just above, for the exact same reason -- see its own
+  // comment in ensureSessionShape.
+  for (const fid of invites) if (!s.invitedAt[fid]) s.invitedAt[fid] = new Date().toISOString();
+  for (const fid of Object.keys(s.invitedAt)) if (!invites.includes(fid)) delete s.invitedAt[fid];
   s.invited = invites;
   for (const fid of newlyInvited) notify(fid, { title: 'Workout invite', body: `${DB.users[req.userId].displayName} invited you to a workout`, link: { type: 'session', sessionId: s.id } }, { history: false });
   }
@@ -5314,6 +5412,15 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   // the session anymore. Declining ends that invite's whole lifecycle; its attribution should end
   // with it, same as the other per-invite state cleared just below (suggestedEdits, joinRequests).
   if (isObj(s.invitedBy)) delete s.invitedBy[req.userId];
+  // Oct 9 2026 (cold-review catch): invitedAt (added this same batch, see ensureSessionShape's
+  // own comment) is a parallel map to invitedBy and has to be cleared the same way, for the same
+  // reason -- PUT /api/sessions/:id's invite-rewrite only ever SETS invitedAt for an id that
+  // doesn't already have one, same as invitedBy just above. Without this, declining and later
+  // being re-invited to this SAME session kept crediting the re-invite with the ORIGINAL, now-
+  // stale invite timestamp forever, silently sorting it as older than it really is in GET
+  // /api/notifications' invites section (fix #9, same bug shape invitedBy's own Sep 24 2026 fix
+  // was written to prevent, just not carried over to its new sibling field).
+  if (isObj(s.invitedAt)) delete s.invitedAt[req.userId];
   // v251 (audit finding): /suggest allows a still-invited (not yet accepted) person to propose a
   // swap before deciding -- that's the whole point of letting an invite hold a suggestion (see the
   // comment there). Declining used to leave that pending suggestion behind, same root cause as
@@ -5410,6 +5517,7 @@ app.post('/api/sessions/:id/reinvite-request/:reqId/approve', auth, async (req, 
   if (!s.invited.includes(rr.userId) && !s.participants.includes(rr.userId)) {
     s.invited.push(rr.userId);
     s.invitedBy[rr.userId] = req.userId;
+    s.invitedAt[rr.userId] = new Date().toISOString(); // Oct 9 2026 (audit finding) -- see invitedAt's own comment in ensureSessionShape
     notify(rr.userId, { title: 'Workout invite', body: `${DB.users[req.userId].displayName} invited you back to a workout`, link: { type: 'session', sessionId: s.id } }, { history: false });
   }
   await save(DB);
@@ -5475,7 +5583,9 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
   if (type === 'add') {
     const name = currentExerciseName(capStr((req.body || {}).name, 80).trim());   // stale client -- see EXERCISE_RENAMES
     if (!name) return res.status(400).json({ error: 'needs a name' });
-    edit = { id: 'se_' + uid(), type: 'add', exerciseId: null, proposedBy: req.userId, swapTo: name, status: 'pending' };
+    // Oct 9 2026 (audit finding, Jeff's pick among options): `at` lets GET /api/notifications sort
+    // its "Suggested changes" section newest-first -- see joinRequests' own `at` above.
+    edit = { id: 'se_' + uid(), type: 'add', exerciseId: null, proposedBy: req.userId, swapTo: name, status: 'pending', at: new Date().toISOString() };
   } else {
     const exerciseId = capStr((req.body || {}).exerciseId, 64);
     const swapTo = currentExerciseName(capStr((req.body || {}).swapTo, 80).trim());   // stale client -- see EXERCISE_RENAMES
@@ -5500,7 +5610,7 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
     // save recognize "this submitted name is exactly what this exercise used to be called before
     // an approved swap" and keep the live, swapped name instead of silently reverting it -- see
     // the guard in PUT /api/sessions/:id.
-    edit = { id: 'se_' + uid(), type: 'swap', exerciseId, proposedBy: req.userId, swapTo, fromName: fromEx.name, status: 'pending' };
+    edit = { id: 'se_' + uid(), type: 'swap', exerciseId, proposedBy: req.userId, swapTo, fromName: fromEx.name, status: 'pending', at: new Date().toISOString() };
   }
   s.suggestedEdits.push(edit);
   await save(DB);
@@ -5513,8 +5623,15 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
   // Sep 24 2026 audit round 4: neither notify below checked block -- sessionView's own
   // suggestedEdits are already block-filtered for a blocked co-participant, but proposing one
   // had no equivalent check on who gets told about it.
+  // Oct 9 2026 (audit finding): both notifies below were missing { history: false }, the same flag
+  // invites/followRequests/joinRequests/removals/reinviteAsks above it all pass for exactly this
+  // reason (see GET /api/notifications' own comments) -- a still-pending suggestion is already
+  // reconstructed live as an actionable "Suggested changes" card every time that endpoint is
+  // called, so writing it to durable history too meant the SAME pending decision showed up twice:
+  // once actionable, once as a separate read-only history row with different wording that never
+  // goes away even after the actionable one is resolved.
   if (type === 'add') {
-    if (!isBlocked(req.userId, s.creatorId)) notify(s.creatorId, { title: 'Exercise suggested', body: `${who} suggested adding ${edit.swapTo}`, link: { type: 'session', sessionId: s.id } });
+    if (!isBlocked(req.userId, s.creatorId)) notify(s.creatorId, { title: 'Exercise suggested', body: `${who} suggested adding ${edit.swapTo}`, link: { type: 'session', sessionId: s.id } }, { history: false });
   } else {
     const fromEx = s.exercises.find(e => e.id === edit.exerciseId);
     const fromName = fromEx ? fromEx.name : 'an exercise';
@@ -5523,7 +5640,8 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
       if (uid_ === req.userId || !DB.users[uid_] || isBlocked(req.userId, uid_)) continue;
       notify(uid_, uid_ === s.creatorId
         ? { title: 'Swap requested', body: `${who} wants to swap ${fromName} → ${edit.swapTo} for everyone. Your call.`, link: { type: 'session', sessionId: s.id } }
-        : { title: 'Swap requested', body: `${who} wants to swap ${fromName} → ${edit.swapTo} for everyone — ${hostName} decides.`, link: { type: 'session', sessionId: s.id } });
+        : { title: 'Swap requested', body: `${who} wants to swap ${fromName} → ${edit.swapTo} for everyone — ${hostName} decides.`, link: { type: 'session', sessionId: s.id } },
+        uid_ === s.creatorId ? { history: false } : undefined);
     }
   }
   res.json(sessionView(s, req.userId));
@@ -5972,8 +6090,11 @@ app.post('/api/sessions/:id/join', auth, async (req, res) => {
   let jr = s.joinRequests.find(j => j.userId === req.userId);
   if (jr && jr.status === 'pending') return res.status(400).json({ error: 'already requested' });
   const note = capStr((req.body||{}).note, 500);
-  if (jr) { jr.status = 'pending'; jr.note = note; }
-  else { jr = { id: 'jr_' + uid(), userId: req.userId, note, status: 'pending' }; s.joinRequests.push(jr); }
+  // Oct 9 2026 (audit finding, Jeff's pick among options): stamps/refreshes `at` so GET
+  // /api/notifications can sort its "Join requests" section newest-first -- same reasoning as
+  // reinviteRequests' own `at`, which this reuse-the-row shape was already modeled on.
+  if (jr) { jr.status = 'pending'; jr.note = note; jr.at = new Date().toISOString(); }
+  else { jr = { id: 'jr_' + uid(), userId: req.userId, note, status: 'pending', at: new Date().toISOString() }; s.joinRequests.push(jr); }
   await save(DB);
   // history:false -- already shown live as an actionable "Join requests" row in GET
   // /api/notifications while it's pending; the approved/declined outcome (below) notifies too.
@@ -6075,6 +6196,18 @@ app.post('/api/me/units', auth, async (req, res) => {
   DB.users[req.userId].units = u;
   await save(DB);
   res.json({ units: u });
+});
+
+// Oct 9 2026 (audit finding, Jeff's pick among options): one-way, idempotent -- there is no path
+// back to false (same shape as every other "seen it once" flag in this app, e.g.
+// notificationsSeenAt). Called by app.js the moment the RIR explainer sheet is actually shown
+// (not merely eligible to show), so a request that races with another tab/device never races the
+// EXPLAINER itself, only this bookkeeping call -- worst case it shows once more than strictly
+// necessary, never zero times.
+app.post('/api/me/rir-explainer-seen', auth, async (req, res) => {
+  DB.users[req.userId].seenRirExplainer = true;
+  await save(DB);
+  res.json({ seenRirExplainer: true });
 });
 
 // Sep 15 2026 -- see TRAINING_PHASE_RANGES/repRange()'s own comment for the full picture. Nothing
@@ -6393,6 +6526,7 @@ app.post('/api/me/delete-account', auth, async (req, res) => {
   // comment -- so there is no "hand off ownership" equivalent to build here, unlike sessions/crews).
   for (const t of Object.values(DB.templates || {})) {
     if (Array.isArray(t.sharedTo) && t.sharedTo.includes(me)) t.sharedTo = t.sharedTo.filter(x => x !== me);
+    if (isObj(t.sharedAt)) delete t.sharedAt[me];
   }
   for (const tid of Object.keys(DB.templates || {})) {
     if (DB.templates[tid].ownerId === me) delete DB.templates[tid];
@@ -6576,8 +6710,20 @@ function recommendationsFor(userId) {
     // assisted exercise needs to say the assist goes DOWN next time, not up, even before there's
     // an actual `ready` suggestion to show.
     const lessIsMore = loadTypeForName(name) === 'assisted';
+    const bodyweight = !(Number(latest.top.weight) > 0);
+    // Oct 9 2026 (audit finding): this whole section is a WEIGHT-progression suggestion -- its own
+    // "How it works" copy literally says "the weight goes up" -- but a bodyweight TIMED_HOLD
+    // exercise (Plank, Wall Sit, Dead Hang, ...) has no weight to add in the first place. Before
+    // this check, Plank showed "Hit 10 reps at bodyweight ... +5 lb" here while the exact same PR
+    // correctly showed "45 reps" with no weight unit at all on the Records tab -- the identical
+    // underlying data presented two contradictory ways on two tabs of the same screen. Same "say
+    // nothing rather than something false" principle defaultTargetFor above already applies to
+    // these exact exercises (its own TIMED_HOLD regex, reused here) -- only gated on `bodyweight`
+    // too, so a genuinely loaded one (Weighted Plank, a loaded Farmer's Carry) still gets real
+    // weight-progression advice exactly as before; only the true-bodyweight-hold case is skipped.
+    if (bodyweight && TIMED_HOLD.test(name)) continue;
     const base = { exercise: name, group, weight: inUnit(latest.top.weight, latest.top.unit, unit), unit,
-                   bodyweight: !(Number(latest.top.weight) > 0),
+                   bodyweight,
                    reps: Number(latest.top.reps) || 0,
                    targetRepsMax: Number(latest.top.targetRepsMax) || Number(latest.top.targetReps) || null,
                    at: latest.when, lessIsMore };
@@ -6849,17 +6995,43 @@ function firstLogDateFor(userId) {
 // Sep 28 2026 (audit finding, Jeff: "every muscle group now says 'Behind target 2 weeks in a
 // row'... twelve red 'behind target' lines on a new account is the same demoralizing-first-
 // impression problem as before, just louder... at least collapse the streak warning to only
-// muscles the user has actually trained"). All-time (no date window -- this is "have you EVER
-// touched this muscle", not "lately"), same touch-it-it-counts credit as volumeFor. A muscle group
-// with zero sets ever isn't "behind" on anything -- it's simply not part of this person's training
-// yet (forearms/traps especially: plenty of real routines never target them directly), and
-// flagging it the same as a muscle that's genuinely regressed is exactly the "wall of red on
-// things I never claimed to train" Jeff called out.
-function everTrainedMusclesFor(userId) {
+// muscles the user has actually trained"). Originally shipped ALL-TIME (no date window -- "have
+// you EVER touched this muscle", not "lately"), same touch-it-it-counts credit as volumeFor.
+//
+// Oct 9 2026 (audit finding, Jeff's pick among options): all-time meant a muscle group trained
+// once, long since dropped from someone's actual routine, still read as "trained" forever -- so it
+// kept getting flagged "Behind target" indefinitely for a muscle they genuinely stopped including
+// months or years ago. Same "wall of red on things I'm not actually doing" complaint as above,
+// just surviving in a different shape (abandoned rather than never-started). Narrowed from ALL-TIME
+// to RECENT: the identical trailing window volume3mo already shows on this same card
+// (volumeFor(userId, 13, ...) below -- 13 weeks), so "recent" here means exactly what "3 months"
+// already means elsewhere on this screen, not a separately-invented number. A muscle with real
+// volume sometime in that window is still "yours to keep up with" and can flag; one with nothing in
+// it at all -- whether truly never-trained, or simply abandoned more than 3 months ago -- now reads
+// the same, and neither flags.
+function recentlyTrainedMusclesFor(userId, localToday) {
+  const today = isValidLocalDateStr(localToday) ? localToday : new Date().toISOString().slice(0, 10);
+  const [ty, tm, td] = today.split('-').map(Number);
+  const monday = new Date(Date.UTC(ty, tm - 1, td));
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+  const windowStart = new Date(monday); windowStart.setUTCDate(windowStart.getUTCDate() - 7 * (13 - 1));
+  const a = windowStart.toISOString().slice(0, 10);
+  // Cold-review catch (Oct 9 2026): volumeFor (what this is supposed to mirror exactly -- see the
+  // comment above) also caps the window at the END of the current week (`b`, one week past
+  // `monday`) and filters `at >= b` out, not just `at < a`. Without that same upper bound, a
+  // session SCHEDULED in the future that already has a real logged set on it (a reachable flow --
+  // accept an invite and log sets immediately, well before the session's own scheduled time; see
+  // fix #3's own comment on markSessionStarted for exactly this shape) counted as "recently
+  // trained" with no cutoff, even though volume3mo on this same screen correctly excludes that same
+  // future-dated set -- directly contradicting the number right next to this flag.
+  const nextWeek = new Date(monday); nextWeek.setUTCDate(nextWeek.getUTCDate() + 7);
+  const b = nextWeek.toISOString().slice(0, 10);
   const touched = new Set();
   for (const s of Object.values(DB.sessions)) {
     const mine = s.logs && s.logs[userId];
     if (!mine || !mine.length) continue;
+    const at = sessionDateFor(s, userId);
+    if (at < a || at >= b) continue;
     for (const l of mine) {
       if (!isWorkingSet(l)) continue;
       const lib = findExLibEntry(logExerciseName(s, l, userId), userId, s);
@@ -6881,21 +7053,24 @@ function everTrainedMusclesFor(userId) {
 // judging) the current week. Suppressed entirely for a user who hasn't been training long enough
 // for both comparison weeks to be real (see firstLogDateFor) -- a brand-new account should never
 // see "behind" on muscles it hasn't had the chance to train yet.
-// Sep 28 2026: ALSO suppressed per muscle group the user has never once trained (see
-// everTrainedMusclesFor above) -- same principle as the account-age guard just above, applied per
-// muscle instead of per account. A muscle you've genuinely been neglecting lately still flags; one
-// you've simply never included in your training doesn't.
+// Sep 28 2026: ALSO suppressed per muscle group the user has never once trained (originally via
+// everTrainedMusclesFor above, all-time) -- same principle as the account-age guard just above,
+// applied per muscle instead of per account. A muscle you've genuinely been neglecting lately
+// still flags; one you've simply never included in your training doesn't.
+// Oct 9 2026: narrowed further, from "ever trained" to "recently trained" (recentlyTrainedMusclesFor,
+// trailing 3 months) -- see that function's own comment for why an all-time check still let a
+// long-abandoned muscle flag forever.
 function muscleBalanceFor(userId, localToday) {
   const vt = volumeTrendFor(userId, 3, localToday);
   const [twoAgo, oneAgo] = vt.weeks;   // vt.weeks[2] is the current, in-progress week -- excluded
   const firstLog = firstLogDateFor(userId);
   if (!firstLog || firstLog > twoAgo.a) return { groups: [] };
-  const everTrained = everTrainedMusclesFor(userId);
+  const recentlyTrained = recentlyTrainedMusclesFor(userId, localToday);
   const byGroup2 = {}; for (const g of twoAgo.groups) byGroup2[g.group] = g.sets;
   const byGroup1 = {}; for (const g of oneAgo.groups) byGroup1[g.group] = g.sets;
   const flagged = [];
   for (const g of MUSCLE_ORDER) {
-    if (!everTrained.has(g)) continue;
+    if (!recentlyTrained.has(g)) continue;
     const target = MUSCLE_TARGETS[g];
     const s2 = byGroup2[g] || 0, s1 = byGroup1[g] || 0;
     if (s2 < target && s1 < target) flagged.push({ group: g, target, weeks: [s2, s1] });
@@ -8402,6 +8577,21 @@ app.post('/api/sessions/:id/lock', auth, async (req, res) => {
   if (creditFinish(s, req.userId, req.body && req.body.localDate)) {
     checkCrewChallenges(req.userId);
     emitFinishFeedEvents(s, req.userId, ranksBefore, req.body && req.body.localDate);
+    // Oct 9 2026 (audit finding, see markSessionStarted's own comment above): if nobody ever
+    // tapped Start/Join now, this finish is the first unambiguous proof the workout really
+    // happened -- back-date startedAt/scheduledAt to the EARLIEST real log across every
+    // participant (closer to the truth than "now"), so the recap no longer permanently shows
+    // whatever time this was originally scheduled for. Computed BEFORE rebuildAllPrs() just below,
+    // same reasoning as that fix's own PR-snapshot-ordering note.
+    if (!s.startedAt) {
+      let earliest = null;
+      for (const uid_ of Object.keys(s.logs || {})) {
+        for (const l of (s.logs[uid_] || [])) {
+          if (!earliest || new Date(l.at) < new Date(earliest)) earliest = l.at;
+        }
+      }
+      markSessionStarted(s, earliest);
+    }
     // Sep 28 2026 (audit finding, Jeff: "Workout timestamps drift by a minute: Profile lists the
     // finish time, Records and Activity say the start time"): rebuildAllPrs' _performedAt now
     // prefers this user's s.history finish timestamp (stamped by creditFinish just above) over
