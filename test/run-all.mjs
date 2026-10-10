@@ -79,6 +79,14 @@ const files = [
   // Its one stale assertion (a close-button markup regex left over from before that button became
   // an .icon-btn) was fixed alongside adding it, not before -- see that file's own comment.
   'test/favorite-exercises.mjs',
+  // Oct 10 2026 (deep-dive audit, Jeff: "let's correct everything"): two more real, git-tracked,
+  // currently-passing test files found never wired in here -- same exact gap as
+  // favorite-exercises.mjs above, the third and fourth time this has happened. db-diff-writes.mjs
+  // in particular is the regression test for the Sep 8 2026 "diffed writes" rewrite of save() --
+  // it's the thing proving that rewrite doesn't silently corrupt or drop data, and it was running
+  // in nobody's CI. Neither file needed any fix to pass; both were just missing from this list.
+  'test/cancel-suggestion.mjs',
+  'test/db-diff-writes.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

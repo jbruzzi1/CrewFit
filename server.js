@@ -1,3 +1,59 @@
+// Oct 10 2026 (deep-dive audit, Jeff: "let's correct everything" -- production had NO crash
+// visibility at all: no uncaughtException/unhandledRejection handler, no error-tracking service.
+// Node already prints an uncaught exception's stack trace to stderr and exits on its own -- the
+// real gap was that nothing was watching `fly logs`, so the only way anyone found out the app
+// crashed was a user noticing it was down. This has to be the literal first thing this file does
+// (before any other require, before anything that could itself throw during boot) so that an
+// error during boot is captured too, not just one during a request.
+//
+// Cold-reviewed before shipping (caught two real problems in the first draft, both fixed here):
+// (1) registering these process.on() handlers has to come BEFORE requiring/initializing Sentry
+// below, not after -- registration is plain synchronous code that cannot throw, so it's safe
+// first; Sentry's own require/init is exactly the kind of "conditional failure invisible in
+// testing, crashes boot in prod" hard rule #7 already exists for (a broken install, or a malformed
+// SENTRY_DSN secret, could throw) -- if that ran first and threw, there'd be no handler registered
+// yet to catch it. (2) Node's own guidance for an uncaughtException handler is synchronous cleanup
+// only, not resuming the event loop with async work -- an earlier draft did
+// `await Sentry.flush(2000)` before exiting, which means a hung flush() (network stall, SDK bug)
+// would silently wedge the process instead of crashing it, the exact opposite of this change's
+// purpose. captureException below is fire-and-forget; exit is immediate and unconditional.
+function fatalCrash(label, err) {
+  console.error(`\n=== FATAL: ${label} ===`, err && err.stack || err);
+  try { if (SENTRY_ON) Sentry.captureException(err); } catch (e) {}
+  process.exit(1);
+}
+process.on('uncaughtException', err => fatalCrash('uncaughtException', err));
+process.on('unhandledRejection', err => fatalCrash('unhandledRejection', err));
+
+// Sentry itself is OPTIONAL and must never be able to take the app down by failing to load or
+// init -- wrapped in try/catch so a broken install or a malformed SENTRY_DSN just logs and leaves
+// Sentry off, rather than crashing boot (before the handlers above even existed, pre-review).
+// SENTRY_ON (not process.env.SENTRY_DSN) is what fatalCrash checks, so a failed init can never
+// make fatalCrash call into a Sentry that didn't actually initialize.
+// Jeff still needs to create a (free) Sentry account and hand over the DSN as a Fly secret --
+// nothing here sends anything anywhere until he does; until then this only changes the LOG LINE
+// an uncaught error gets (loud and prefixed, instead of Node's bare default).
+let Sentry, SENTRY_ON = false;
+try {
+  Sentry = require('@sentry/node');
+  if (process.env.SENTRY_DSN) {
+    Sentry.init({ dsn: process.env.SENTRY_DSN, environment: process.env.NODE_ENV || 'development' });
+    SENTRY_ON = true;
+    console.log('Sentry error tracking: ON');
+  } else {
+    console.log('Sentry error tracking: OFF (no SENTRY_DSN set)');
+  }
+} catch (e) {
+  console.error('Sentry failed to load/initialize -- continuing WITHOUT it:', e.message);
+}
+// Both uncaughtException and unhandledRejection are genuinely fatal -- the process is in an
+// unknown state after either, and Node's own default (since Node 15) is already to exit on an
+// unhandled rejection. Being explicit here just means: log it loudly and distinctively, report it
+// to Sentry if configured, and exit -- rather than relying on each Node version's silent default.
+// `auto_stop_machines = 'off'` + Fly's own health check means the machine gets restarted after
+// this exit; this is what turns "silently wedged until someone notices" into "a few seconds of
+// downtime that Sentry (once wired up) actually tells someone about."
+
 const express = require('express');
 const webpush = require('web-push');
 const fs = require('fs');
