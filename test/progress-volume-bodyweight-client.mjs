@@ -218,21 +218,28 @@ console.log('volume trend: rows render with correct fill and "met" state (expand
   if (getVolExpanded()) toggleVolExpanded(); // reset for later blocks
 }
 
-console.log('volume trend: collapsed by default to the 5 most-neglected groups, "Show all" expands');
+console.log('volume trend: collapsed by default to the 6 most-neglected groups, "Show all" expands');
 {
   // Give every group SOME distinguishing value so sort order is unambiguous: quads and glutes are
   // well-trained (should be pushed OUT of the default view), everything else is untouched (0 sets
-  // -- equally "most neglected," so the collapsed 5 should be 5 of those, never quads/glutes).
+  // -- equally "most neglected," so the collapsed 6 should be 6 of those, never quads/glutes).
+  // Oct 10 2026 (Jeff: "only show 6 at a time instead of 8 out of 12" -- see VOL_SHOW_N's own
+  // comment in app.js): bumped from 5 to 6 throughout this block and the range-picker block below.
   PROGRESS_FIXTURE = baseProgress({ volume: { weekOf: '2026-08-24', weeks: 1, groups: emptyGroups({ quads: 12, glutes: 10 }) } });
   ok(getVolExpanded() === false, 'starts collapsed (sanity check on the reset above)');
 
   await progressScreen({ silent: true });
   let html = appEl.innerHTML;
   const rowCount = (html.match(/class="mv-row"/g) || []).length;
-  ok(rowCount === 5, `collapsed view shows exactly 5 rows (got ${rowCount})`);
-  ok(!trendSection(html).includes('Quads') && !trendSection(html).includes('Glutes'), 'the two fully-trained groups are pushed out of the neglected-first top 5');
+  ok(rowCount === 6, `collapsed view shows exactly 6 rows (got ${rowCount})`);
+  ok(!trendSection(html).includes('Quads') && !trendSection(html).includes('Glutes'), 'the two fully-trained groups are pushed out of the neglected-first top 6');
   ok(html.includes('Show all 12'), `"Show all N" control is offered (got no match in: ${html.slice(html.indexOf('Volume trend'), html.indexOf('Volume trend') + 200)})`);
   ok(!html.includes('Show fewer'), 'collapsed view does not offer "Show fewer"');
+  // Oct 10 2026 (Jeff, asked directly and picked this over grouping everywhere): the collapsed
+  // view stays a plain neglect-ranked list, no Upper Body/Arms & Abs/Lower Body headers -- those
+  // only belong to "Show all" below, see volTrendChart's own comment.
+  ok(!html.slice(html.indexOf('Volume trend'), html.indexOf('Volume trend') + 1200).includes('lib-cat'),
+    'collapsed view has no category headers -- still a flat worst-first list');
 
   toggleVolExpanded();
   await new Promise(r => setTimeout(r, 0));
@@ -244,6 +251,15 @@ console.log('volume trend: collapsed by default to the 5 most-neglected groups, 
   // Anatomical order restored when expanded (server's MUSCLE_ORDER), not sort order --
   // Chest is first in MUSCLE_TARGETS/MUSCLE_ORDER, so it should be the first row again.
   ok(html.indexOf('Chest') < html.indexOf('Quads'), 'expanded view is back in natural anatomical order, not neglect-sorted');
+  // Oct 10 2026 (Jeff: "break this up into upper, lower, etc like the workout library"): same 3
+  // named LIB_CATS categories, same order, each header before its own muscles and before the next
+  // category's header -- not just present anywhere on the page.
+  const volSection = html.slice(html.indexOf('Volume trend'), html.indexOf('How it works'));
+  const upperIdx = volSection.indexOf('Upper Body'), armsIdx = volSection.indexOf('Arms &amp; Abs') >= 0 ? volSection.indexOf('Arms &amp; Abs') : volSection.indexOf('Arms & Abs'), lowerIdx = volSection.indexOf('Lower Body');
+  ok(upperIdx >= 0 && armsIdx > upperIdx && lowerIdx > armsIdx, `expanded view shows Upper Body, then Arms & Abs, then Lower Body headers in order (got indices ${upperIdx}, ${armsIdx}, ${lowerIdx})`);
+  ok(volSection.indexOf('Chest') > upperIdx && volSection.indexOf('Chest') < armsIdx, 'Chest renders under the Upper Body header, not some other section');
+  ok(volSection.indexOf('Quads') > lowerIdx, 'Quads renders under the Lower Body header');
+  ok(!volSection.includes('Cardio'), 'cardio still never appears as a volume row, grouped view included');
 
   toggleVolExpanded(); // reset for later blocks
   ok(getVolExpanded() === false, 'toggled back to collapsed');
@@ -252,8 +268,8 @@ console.log('volume trend: collapsed by default to the 5 most-neglected groups, 
 console.log('volume trend: This week/Month/3 months range picker -- pinned row selection, range-dependent numbers, per-range suffix and rulenote');
 {
   // Jeff, Aug 31 (round 2, still true for the round-6 3-way picker): tapping the toggle must NOT
-  // reshuffle which 5 muscles show in the collapsed view -- only their numbers. This week:
-  // quads/glutes are well-trained (pushed out of the neglected-first top 5, same setup as the
+  // reshuffle which 6 muscles show in the collapsed view -- only their numbers. This week:
+  // quads/glutes are well-trained (pushed out of the neglected-first top 6, same setup as the
   // collapse/expand block above), everything else 0. Month: chest is now fully "met" (12/12) -- if
   // the collapsed selection re-ranked per range (the bug Jeff caught), chest would drop OUT of the
   // list once its Month number looks good, replaced by some other zero group. Pinning selection to
@@ -271,9 +287,9 @@ console.log('volume trend: This week/Month/3 months range picker -- pinned row s
   ok(html.includes(`class="on" onclick="setVolMode('week')"`), '"This week" pill is active by default');
   ok(!html.includes(`class="on" onclick="setVolMode('month')"`), '"Month" pill is not active by default');
   let rowCount = (html.match(/class="mv-row"/g) || []).length;
-  ok(rowCount === 5, `collapsed to 5 rows in week mode (got ${rowCount})`);
-  ok(html.includes('Chest') && html.includes('Back') && html.includes('Shoulders') && html.includes('Traps') && html.includes('Biceps'),
-    'the 5 zero-ratio-this-week groups are shown (got: ' + html.slice(html.indexOf('Volume trend'), html.indexOf('Volume trend') + 400) + ')');
+  ok(rowCount === 6, `collapsed to 6 rows in week mode (got ${rowCount})`);
+  ok(html.includes('Chest') && html.includes('Back') && html.includes('Shoulders') && html.includes('Traps') && html.includes('Biceps') && html.includes('Triceps'),
+    'the 6 zero-ratio-this-week groups are shown (got: ' + html.slice(html.indexOf('Volume trend'), html.indexOf('Volume trend') + 400) + ')');
   ok(!trendSection(html).includes('Quads') && !trendSection(html).includes('Glutes'), 'well-trained-this-week groups stay excluded');
   const howVol = () => vm.runInContext('HOW_IT_WORKS["Volume trend"] || ""', ctx);   // Sep 6: the explanation sits behind a "How it works ›" link, not inline
   ok(html.includes('How it works ›') && howVol().includes('working sets logged this week'), 'rulenote uses the weekly wording');
@@ -285,9 +301,9 @@ console.log('volume trend: This week/Month/3 months range picker -- pinned row s
   ok(html.includes(`class="on" onclick="setVolMode('month')"`), '"Month" pill is now active');
   ok(!html.includes(`class="on" onclick="setVolMode('week')"`), '"This week" pill is no longer active');
   rowCount = (html.match(/class="mv-row"/g) || []).length;
-  ok(rowCount === 5, `still exactly 5 rows after switching to Month (got ${rowCount})`);
-  ok(html.includes('Chest') && html.includes('Back') && html.includes('Shoulders') && html.includes('Traps') && html.includes('Biceps'),
-    'SAME 5 rows as week mode -- selection is pinned, not re-ranked per range (got: ' + html.slice(html.indexOf('Volume trend'), html.indexOf('Volume trend') + 400) + ')');
+  ok(rowCount === 6, `still exactly 6 rows after switching to Month (got ${rowCount})`);
+  ok(html.includes('Chest') && html.includes('Back') && html.includes('Shoulders') && html.includes('Traps') && html.includes('Biceps') && html.includes('Triceps'),
+    'SAME 6 rows as week mode -- selection is pinned, not re-ranked per range (got: ' + html.slice(html.indexOf('Volume trend'), html.indexOf('Volume trend') + 400) + ')');
   ok(!trendSection(html).includes('Quads') && !trendSection(html).includes('Glutes'),
     'quads/glutes still excluded in Month view even though their Month numbers differ from their week numbers');
   let chestBlock = html.slice(html.indexOf('Chest'), html.indexOf('Chest') + 260);
@@ -301,7 +317,7 @@ console.log('volume trend: This week/Month/3 months range picker -- pinned row s
   ok(getVolMode() === '3mo', 'setVolMode switched to 3 months');
   ok(html.includes(`class="on" onclick="setVolMode('3mo')"`), '"3 months" pill is now active');
   rowCount = (html.match(/class="mv-row"/g) || []).length;
-  ok(rowCount === 5, `still exactly 5 rows after switching to 3 months (got ${rowCount})`);
+  ok(rowCount === 6, `still exactly 6 rows after switching to 3 months (got ${rowCount})`);
   ok(!trendSection(html).includes('Quads') && !trendSection(html).includes('Glutes'), 'quads/glutes still excluded in the 3-month view too -- ranking never re-sorts');
   chestBlock = html.slice(html.indexOf('Chest'), html.indexOf('Chest') + 260);
   ok(chestBlock.includes('3<span class="mv-of"> / 12 sets/wk'), `chest shows the 3-month number with "/wk" suffix (got ${chestBlock.slice(0, 200)})`);

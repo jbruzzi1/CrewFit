@@ -6743,7 +6743,11 @@ function setProgTab(t){
 const PROG_TABS = [ {key:'now', label:'Now'}, {key:'trends', label:'Trends'}, {key:'records', label:'Records'} ];
 // Weekly volume meter: collapsed to the N muscle groups furthest from target by default (same
 // "6 chips, tap in for the rest" idea as Strength trend below), full 12-row list on demand.
-const VOL_SHOW_N = 5;
+// Oct 10 2026 (Jeff: "only show 6 at a time instead of 8 out of 12" -- the collapsed view was
+// regularly running past this, see the comment above collapsedKeys below for why): this is now a
+// true hard cap on the WHOLE collapsed set (ranked rows + any flagged extras), not just the
+// ranked portion, so bumped from 5 to 6 and paired with the .slice(0, VOL_SHOW_N) that enforces it.
+const VOL_SHOW_N = 6;
 let VOL_EXPANDED = false;
 function toggleVolExpanded(){ VOL_EXPANDED = !VOL_EXPANDED; progressScreen({silent:true}); }
 // Sep 13 2026 (Jeff, "I see a lot of holds for now, should we make that report collapsable? Also,
@@ -7078,17 +7082,37 @@ function volTrendChart(d){
   // before), so the two lists don't always overlap -- union them rather than assume they do.
   // balanceGroups is already worst-first (see muscleBalanceFor), so appending its keys after the
   // this-week ranking keeps both halves internally ranked, worst first.
+  // Oct 10 2026 (Jeff, shown the tradeoff directly: this union used to have no ceiling of its own,
+  // so a stretch of several flagged muscles could make the collapsed view almost as long as the
+  // full 12-row list it exists to summarize -- he picked a real hard cap over keeping every flagged
+  // group guaranteed-visible): .slice(0, VOL_SHOW_N) below caps the WHOLE merged set, ranked rows
+  // first, flagged extras filling whatever's left. A flagged muscle beyond the cap is held back for
+  // "Show all" like any other row now, instead of always forcing its way into the collapsed view.
   const collapsedKeys = worstKeysThisWeek.slice(0, VOL_SHOW_N);
   for (const g of balanceGroups) if (!collapsedKeys.includes(g.group)) collapsedKeys.push(g.group);
-  const volHasMore = volGroups.length > collapsedKeys.length;
-  const volShown = VOL_EXPANDED ? volGroups : collapsedKeys.map(k=>volByGroup[k]).filter(Boolean);
+  const collapsedKeysCapped = collapsedKeys.slice(0, VOL_SHOW_N);
+  const volHasMore = volGroups.length > collapsedKeysCapped.length;
+  const volShown = VOL_EXPANDED ? volGroups : collapsedKeysCapped.map(k=>volByGroup[k]).filter(Boolean);
   // Sep 7 (Jeff): used to swap the whole row list for a generic "log some working sets" sentence
   // whenever nothing had been logged in the selected range -- but the rows AT ZERO are the point
   // of this report, not a failure state to hide. MUSCLE_ORDER always gives every group a row (see
   // server.js) even at 0 sets, so volRowHtml already renders a real "0 / N sets" bar for an
   // untrained muscle -- that's the "okay, I need to train legs" signal this section exists for.
   // Every range (This week/Month/3 months) now always shows real rows, never a placeholder.
-  const volHtml = volShown.map(volRowHtml).join('');
+  // Oct 10 2026 (Jeff: "can we break this up into upper, lower, etc like the workout library to be
+  // easier/quicker to read?"): asked where the grouping should apply, since the collapsed view's
+  // whole point is a worst-first ranking (deliberately NOT anatomical order, see round 2 above) --
+  // he picked grouping only the expanded "Show all" list, leaving the collapsed default exactly as
+  // ranked today. Reuses LIB_CATS verbatim (the same Upper Body / Arms & Abs / Lower Body split the
+  // exercise library already groups by -- its 3 named categories' muscles are exactly MUSCLE_ORDER's
+  // 12, cardio excluded on both sides) rather than inventing a second grouping scheme, and the same
+  // .lib-cat header style, so it reads as the same pattern, not a new one -- see .lib-cat.mv-cat in
+  // index.html for why the margins are overridden for use inside this card.
+  const volHtml = VOL_EXPANDED
+    ? LIB_CATS.filter(cat => cat.name && cat.muscles.some(m => volByGroup[m])).map(cat =>
+        `<div class="lib-cat mv-cat">${esc(cat.name)}</div>${cat.muscles.map(m=>volByGroup[m]).filter(Boolean).map(volRowHtml).join('')}`
+      ).join('')
+    : volShown.map(volRowHtml).join('');
   // Round 4: no header-button next to the h2 (same reasoning as round 2's "Pick a muscle" fix above)
   // -- "Show all" lives inside the card body, below the rows, instead.
   const volShowAllLink = volHasMore
