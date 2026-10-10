@@ -1610,7 +1610,17 @@
        green only once the week's target is actually met, matching the app-wide rule that green
        means earned, not just "some progress." */
     .mv-row { padding:9px 2px; border-bottom:1px solid var(--line); }
-    .mv-row:last-child { border-bottom:none; }
+    .mv-row:last-child, .mv-row:has(+ .lib-cat) { border-bottom:none; }
+    /* Oct 10 2026 (Jeff: group the "Show all" Volume trend list the same way the exercise library
+       groups muscles -- Upper Body / Arms & Abs / Lower Body headers, see volTrendChart's comment):
+       reuses .lib-cat's type styling (uppercase, muted, letter-spacing) but its 28px/0/12px margin
+       was sized for a header sitting directly on the page background, between whole sections. Here
+       it's one of several headers packed inside a single tight .card (padding:8px 14px) alongside
+       plain data rows, so the top/bottom margins are tightened to match that denser context, and the
+       very first header (right after the card's own top padding, no row above it to separate from)
+       drops to almost nothing instead of adding a second big gap on top of the card's padding. */
+    .lib-cat.mv-cat { margin:18px 0 8px; }
+    .lib-cat.mv-cat:first-child { margin-top:2px; }
     .mv-top { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:6px; }
     .mv-name { font-size:13.5px; font-weight:600; }
     .mv-n { font-size:12.5px; font-weight:700; color:var(--fg); }
@@ -1895,6 +1905,6 @@
     <button data-tab="friends"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Activity</span></button>
     <button data-tab="me"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span></button>
   </div>
-  <script src="app.js?v=489"></script>
+  <script src="app.js?v=490"></script>
 </body>
 </html>
