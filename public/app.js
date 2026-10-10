@@ -8134,7 +8134,13 @@ function exDetail(name){
   // confirmDeleteCustomEx verbatim -- same functions "My exercises" already calls -- just reached
   // one tap closer for the one person who can use them (e.mine only; never shown on a built-in or
   // someone else's custom exercise).
-  const mineActions = e.mine ? `<button class="icon-btn" onclick="closeSheet(); openEditEx('${jsq(e.id)}')" title="Edit exercise" aria-label="Edit exercise">✎</button><button class="icon-btn" style="color:var(--red)" onclick="closeSheet(); confirmDeleteCustomEx('${jsq(e.id)}','${jsq(e.name)}')" title="Delete exercise" aria-label="Delete exercise">🗑</button>` : '';
+  // Oct 10 2026 (same-day follow-up, Jeff: "the pencil icon is too thick and pudgy"): the raw ✎/🗑
+  // glyphs rendered as bold, font-dependent emoji instead of a clean line icon -- swapped for the
+  // same editPencilSvg()/trashSvg() thin-stroke icons the chat edit/delete buttons already use
+  // (see .cmt-edit-btn's comment: "edit/delete/reaction controls all read as one family"), sized
+  // via .icon-btn svg so they sit comfortably inside the existing 34px circular button instead of
+  // introducing a third icon language just for this sheet.
+  const mineActions = e.mine ? `<button class="icon-btn" onclick="closeSheet(); openEditEx('${jsq(e.id)}')" title="Edit exercise" aria-label="Edit exercise">${editPencilSvg()}</button><button class="icon-btn" style="color:var(--red)" onclick="closeSheet(); confirmDeleteCustomEx('${jsq(e.id)}','${jsq(e.name)}')" title="Delete exercise" aria-label="Delete exercise">${trashSvg()}</button>` : '';
   history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">

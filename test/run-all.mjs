@@ -72,6 +72,13 @@ const files = [
   'test/home-live-session-activity-line.mjs',
   'test/whos-in-chip-opens-profile.mjs',
   'test/audit-oct9-batch-fixes.mjs',
+  'test/audit-oct10-batch2-fixes.mjs',
+  // Oct 10 2026 (found while verifying an unrelated icon-sizing fix): this file already existed,
+  // already covered real behavior (the Sep 1 favorites feature), and was never added here -- the
+  // exact "sat broken and undetected" failure mode this runner's own comment above warns about.
+  // Its one stale assertion (a close-button markup regex left over from before that button became
+  // an .icon-btn) was fixed alongside adding it, not before -- see that file's own comment.
+  'test/favorite-exercises.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
