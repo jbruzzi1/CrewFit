@@ -180,9 +180,12 @@ console.log('detouring into Edit on a routine, then Cancel, still resumes the re
   await page.click('.pp-dots');
   await page.click('.pp-menu button:has-text("Edit")');
   await page.waitForSelector('#tplNameEdit, input', { timeout: 8000 });
-  // Cancel out of the editor -- whatever its real Cancel/Back control is.
+  // Cancel out of the editor -- whatever its real Cancel/Back control is. Editing an EXISTING
+  // routine always has "something to lose" (audit finding #210), so this now opens a confirm
+  // sheet rather than discarding instantly -- accept it the same way a real tap would.
   const cancelBtn = await page.$('button:has-text("Cancel")');
   if (cancelBtn) await cancelBtn.click(); else await page.click('button[aria-label="Back"]');
+  await page.click('.sheet-row:has-text("Discard")');
   await page.waitForSelector('.tpl-page', { timeout: 8000 });
   await page.click('button[aria-label="Back"]'); // list -> should rebuild the quick workout picker
   await page.waitForSelector('.pick-head h1', { timeout: 8000 });
@@ -208,6 +211,7 @@ console.log('cold-review catch: tapping "Use" DIRECTLY after an Edit/Cancel deto
   await page.waitForSelector('#tplNameEdit, input', { timeout: 8000 });
   const cancelBtn = await page.$('button:has-text("Cancel")');
   if (cancelBtn) await cancelBtn.click(); else await page.click('button[aria-label="Back"]');
+  await page.click('.sheet-row:has-text("Discard")');
   await page.waitForSelector('.tpl-page', { timeout: 8000 });
   // Straight to Use on the list row -- no Back tap first.
   const postPromise = page.waitForResponse(r => r.url().includes('/api/sessions') && r.request().method() === 'POST');

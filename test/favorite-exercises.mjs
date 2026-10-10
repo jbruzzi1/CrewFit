@@ -159,9 +159,13 @@ console.log('\n--- client markup (source regex, same style as test/sharing.mjs) 
   ok(!swapBranch.includes('favBtnHtml'), 'the swap-replacement picker rows are untouched — no star there');
   ok(!suggestBranch.includes('favBtnHtml'), 'the suggest-add picker rows are untouched — no star there');
 
-  // exDetail (the library's own exercise detail sheet) also gets the star
-  ok(/<h2>\$\{esc\(e\.name\)\}<\/h2>\$\{favBtnHtml\(e\)\}<button class="sec sm" onclick="closeSheet\(\)">/.test(src),
-     'exDetail\'s sheet header includes the favorite star next to the exercise name');
+  // exDetail (the library's own exercise detail sheet) also gets the star, directly after the
+  // exercise name and before whatever else the header shows (the Oct 10 2026 mineActions
+  // Edit/Delete pair, own-exercise only -- see exDetail's comment -- then the close button, now
+  // an .icon-btn ✕ rather than the older "sec sm" text link this regex used to match; the star's
+  // own position relative to the name is the thing this test actually cares about).
+  ok(/<h2>\$\{esc\(e\.name\)\}<\/h2>\$\{favBtnHtml\(e\)\}/.test(src),
+     'exDetail\'s sheet header includes the favorite star right after the exercise name');
 
   // CSS actually exists — not an invisible/unstyled button
   ok(/\.ex-fav-btn\s*\{/.test(css), '.ex-fav-btn is styled');

@@ -6,6 +6,17 @@ let ME = null;
 // still right where they were when I started" from "they've moved on since," without being fooled
 // by its OWN sheet's unrelated close-and-fade. See the comment above stillOnProfileWithNothingElseOpen.
 let UI_EPOCH = 0;
+// Oct 10 2026 (audit finding): single-line inputs with one obvious primary action had no
+// Enter-to-submit anywhere in the app -- every one of them required reaching the on-screen
+// button by hand, even though the keyboard's own Go/Return key is the normal way this works.
+// Shared helper so every call site is a one-line addition rather than repeating the same guard.
+// isComposing guards IME text entry (committing a composed character with Enter must not also
+// fire submit); preventDefault stops a stray newline/form-submit side effect on some keyboards.
+// Deliberately NOT wired onto Reset workouts' / Delete account's password fields -- those are
+// irreversible, and a button tap takes a deliberate reach while a keyboard Enter can happen out
+// of habit the instant a password is finished typing; every other single-primary-action field in
+// the app gets it.
+function onEnterKey(e, fn){ if(e.key==='Enter' && !e.isComposing){ e.preventDefault(); fn(); } }
 const H = {
   _req(method,p,b){ return fetch(API+p,{method,headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},body:b?JSON.stringify(b):undefined})
     .then(async res=>{
@@ -258,8 +269,8 @@ function authScreen(){
     <h1>CrewFit</h1><div class="muted">Train together. Log your own.</div>
     <div class="card" style="text-align:left;margin-top:24px">
       <h2>Login</h2>
-      <input id="lx" placeholder="username">
-      <input id="lp" placeholder="password" type="password">
+      <input id="lx" placeholder="username" onkeydown="onEnterKey(event, doLogin)">
+      <input id="lp" placeholder="password" type="password" onkeydown="onEnterKey(event, doLogin)">
       <button class="blue" onclick="doLogin()">Login</button>
       <div style="text-align:center;margin-top:10px"><button class="linkbtn" onclick="showReg()">Create account</button></div>
       <div style="text-align:center;margin-top:4px" class="muted sm-text">Forgot your password? Ask Jeff to reset it.</div>
@@ -268,10 +279,10 @@ function authScreen(){
              screen used to say "Create new user," "New account," and "Create account" for the same
              thing across three lines. Unified to "account" everywhere. -->
         <h2>Create account</h2>
-        <input id="rx" placeholder="username" autocomplete="off" oninput="checkUsername()">
+        <input id="rx" placeholder="username" autocomplete="off" oninput="checkUsername()" onkeydown="onEnterKey(event, doReg)">
         <div id="rxHint" class="muted" style="font-size:12px;margin:4px 0 0;min-height:14px"></div>
-        <input id="rp" placeholder="password (8+ characters)" type="password">
-        <input id="rn" placeholder="display name (optional)">
+        <input id="rp" placeholder="password (8+ characters)" type="password" onkeydown="onEnterKey(event, doReg)">
+        <input id="rn" placeholder="display name (optional)" onkeydown="onEnterKey(event, doReg)">
         <button id="regBtn" onclick="doReg()">Create account</button>
       </div>
     </div></div>`;
@@ -1258,7 +1269,15 @@ async function openSession(id, opts){
   // Suggesting is for everyone EXCEPT the creator, who does not need to suggest anything — they
   // have Edit. It rendered only for the creator, which is exactly backwards: the person holding
   // an invitation, the one with a reason to say "not Barbell Row", never saw it at all.
-  const canSuggest = !isCreator && !sessionHasAnyPost(s) && !canEdit
+  // Oct 10 2026 (audit finding): this used to also require !sessionHasAnyPost(s) -- same exact
+  // bug respondHere below was fixed for on Sep 23 2026 (see its own comment for the full story),
+  // just never ported to this sibling check. In a live group workout, the moment ANY other
+  // participant posts their own recap (minutes into a session, easily), sessionHasAnyPost flips
+  // true for EVERYONE viewing it -- including a still-invited person who hasn't even opened the
+  // invite yet, silently taking away the one button that let them propose a different exercise
+  // before they ever join. Whether THIS person still has a reason to suggest a change has nothing
+  // to do with how fast someone else finished their own sets -- dropped, same as respondHere's.
+  const canSuggest = !isCreator && !canEdit
     && Array.isArray(s.invited) && s.invited.includes(ME.id);
   // Sep 27 2026 (ownerless redesign, doc tab 05): no creator left means every suggested add/swap is
   // an independent, never-expiring per-participant vote instead of one owner's single yes/no --
@@ -1785,7 +1804,7 @@ async function openSession(id, opts){
   // just reachable from a second door.
   const sendAction = isPosted ? `sendPostComment('${s.id}','${ME.id}')` : `sendChat('${s.id}')`;
   const chatBlock = `<h2>${isPosted?'Comments':'Chat'}</h2><div class="card"><div id="chatbox" class="scrolllist"></div>
-    ${canChat ? `<div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="${isPosted?'Add a comment…':'Message the crew'}"><button class="sm chat-send" onclick="${sendAction}">Send</button></div>` : ''}</div>`;
+    ${canChat ? `<div class="row chat-row"><input id="chatInput" class="chat-input" placeholder="${isPosted?'Add a comment…':'Message the crew'}" onkeydown="onEnterKey(event, ()=>{${sendAction}})"><button class="sm chat-send" onclick="${sendAction}">Send</button></div>` : ''}</div>`;
 
   // "Friends joined" was wrong for the creator, who did not join anything. It DOES list everyone
   // else in the workout, which is worth keeping — it was the name that was off.
@@ -2260,9 +2279,17 @@ async function viewPost(id, authorId, opts){
   // generic sheet as the profile menu's Report (openReportSheet), targetType 'post' with
   // targetUserId set to the recap's actual author so "also block" (inside that sheet) blocks the
   // right person -- not the session creator, who may be someone else entirely in a shared workout.
-  const reportBtn = (!isCreator && !isAuthor) ? `<button onclick="openReportSheet({targetType:'post', targetUserId:'${authorId}', sessionId:'${id}', authorId:'${authorId}', label:'this workout'})">Report</button>` : '';
+  // Oct 10 2026 (audit finding): this was gated on `!isCreator`, which reads as "the creator
+  // already has Edit/Delete session, they don't need Report too" -- true for the creator's OWN
+  // post (isAuthor, reactivate/remove covers it), but Edit session/Delete session only ever govern
+  // the shared exercise list and the workout as a whole, never the CONTENT of a teammate's own
+  // posted recap (their notes, their photos) -- a creator looking at a teammate's recap had no way
+  // to report or moderate it at all, the one role you'd expect to have MORE moderation reach over
+  // their own workout, not less. Gated on `!isAuthor` alone now (never report yourself, whoever you
+  // are) so it's available in both branches below.
+  const reportBtn = !isAuthor ? `<button onclick="openReportSheet({targetType:'post', targetUserId:'${authorId}', sessionId:'${id}', authorId:'${authorId}', label:'this workout'})">Report</button>` : '';
   const menuItems = isCreator
-    ? `<button onclick="enterWorkoutEdit('${id}')">Edit session</button>${reactivateBtn}<button class="danger" onclick="deleteSession('${id}', ${hasFinishedPost}, null, ${sessionHasOtherStake(s)})">Delete session</button>`
+    ? `<button onclick="enterWorkoutEdit('${id}')">Edit session</button>${reactivateBtn}<button class="danger" onclick="deleteSession('${id}', ${hasFinishedPost}, null, ${sessionHasOtherStake(s)})">Delete session</button>${reportBtn}`
     : (isAuthor ? `${reactivateBtn}<button class="danger" onclick="removeFromMyProfile('${id}')">Remove from my profile</button>` : reportBtn);
   const dots = menuItems ? `<button class="pp-dots" onclick="togglePostMenu('${id}')" aria-label="More">\u22ef</button><div class="pp-menu" id="ppMenu-${id}" style="display:none">${menuItems}</div>` : '';
   // v254 fix (Jeff, Aug 30): this in-page Back button was hardcoded to showTab('home') -- reached
@@ -2931,9 +2958,13 @@ async function loadChat(s){
     // no-menu-step language as the pencil-only version. Delete asks via confirmSheet first (CLAUDE.md:
     // never a bare browser confirm()). Posted-recap comments keep their real ⋯ menu below -- that
     // case has MORE than two choices (Edit/Delete/Remove/Report depending on viewer).
+    // Oct 10 2026 (audit finding #230): a teammate's own message here had NO action at all --
+    // unlike every other place someone else's content shows up in the app (a posted recap's
+    // comments, a workout, a profile), there was no way to report it. One peer action, same
+    // direct-icon-button language as the edit/delete pair above rather than a one-item dropdown.
     const dots = c.userId===ME.id
       ? '<div class="cmt-own-actions"><button class="cmt-edit-btn" onclick="editChatMessagePrompt(\''+s.id+'\',\''+c.id+'\',\''+jsq(c.text)+'\')" aria-label="Edit message">'+editPencilSvg()+'</button><button class="cmt-delete-btn" onclick="deleteChatMessagePrompt(\''+s.id+'\',\''+c.id+'\')" aria-label="Delete message">'+trashSvg()+'</button></div>'
-      : '';
+      : '<div class="cmt-own-actions"><button class="cmt-report-btn" onclick="openReportSheet({targetType:\'comment\', targetUserId:\''+c.userId+'\', sessionId:\''+s.id+'\', commentId:\''+c.id+'\', label:\'this message\'})" aria-label="Report message">'+flagSvg()+'</button></div>';
     return '<div class="cmt">'+avHtml+'<div class="cmt-body"><div class="cmt-head"><b>'+esc(name)+'</b> <span class="muted" style="font-size:11px">'+t+'</span>'+editedTag+'</div><div class="cmt-text">'+esc(c.text)+'</div></div>'+dots+'</div>';
   }).join('');
 }
@@ -3310,8 +3341,25 @@ function seedStashInputs(){
   });
 }
 function seedOpenGoal(i){ seedStashInputs(); SEED_DRAFT[i]._goalOpen = true; renderSeedSetup(); setTimeout(()=>{ const g=$('seedG'+i); if(g) g.focus(); }, 30); }
+// Oct 10 2026 (audit finding): the ✕ on a seed row deleted a real starting weight (and any goal
+// riding on it) immediately and permanently, no confirm, no undo -- the one destructive tap on
+// this whole screen that skipped confirmSheet, the mechanism every other delete in the app
+// already goes through. Only confirms when there's actually something to lose: SEED_DEFAULTS
+// pre-populates this list with a blank row for every common lift whether or not the person has
+// ever filled one in, so an untouched row (weight AND goal both still blank) still removes
+// instantly -- same "don't interrupt when it doesn't matter" rule createFlowHasContent() (the
+// discard-workout fix above) applies to Cancel.
 function seedRemoveRow(i){
   seedStashInputs();
+  const row = SEED_DRAFT[i]; if(!row) return;
+  const hasData = String(row.weight||'').trim() || String(row.goal||'').trim();
+  if(hasData){
+    confirmSheet('Remove this starting weight?', `${esc(row.exercise)} will be removed from your starting weights${row.goal?' and its goal':''}.`, 'Remove', () => seedRemoveRowConfirmed(i));
+    return;
+  }
+  seedRemoveRowConfirmed(i);
+}
+function seedRemoveRowConfirmed(i){
   const removed = SEED_DRAFT[i];
   SEED_DRAFT.splice(i,1);
   // Fire-and-forget: idempotent no-op if this row was never actually saved server-side (a blank
@@ -4471,7 +4519,15 @@ async function showRecap(id){
 
   // Finishing a workout you did not personally log is a real case (logged on paper, or only the
   // other participant logged). "Nice work" over three zeros and an empty card is a lie.
-  if(!rows.length || !sets){ showTab('home'); return; }
+  // Oct 10 2026 (audit finding): the redirect itself was fine -- showing a toast is the new part.
+  // This used to jump straight to Home with absolutely nothing on screen, no toast, no message --
+  // someone who tapped Save after logging nothing (forgot to log, or genuinely trained on paper)
+  // had zero confirmation anything happened at all. Silently landing on Home reads exactly like
+  // the tap did nothing / an error ate the save, not like a workout that was, in fact, just posted
+  // (the /post call a few lines up already succeeded by this point). A plain toast -- same
+  // showToast() every other lightweight confirmation in this file already uses -- says only what's
+  // actually true (it saved) without claiming a "Nice work" it can't back up with real numbers.
+  if(!rows.length || !sets){ showToast('Workout saved'); showTab('home'); return; }
   const fmt = n => Math.round(n).toLocaleString('en-US');
   // v235 celebration: the recap OPENS like a win - a check that draws itself, then each block
   // rises in sequence (pure CSS, one-shot, disabled under prefers-reduced-motion). The streak
@@ -5196,12 +5252,17 @@ async function createFlow(){
   window._LIB2 = lib;
   CREW_PICKER = Array.isArray(crews) ? crews : [];
   const friendList = (friends && friends.friends) ? friends.friends : (Array.isArray(friends)?friends:[]);
-  const invRows = friendList.length ? friendList.map(f=>{
-    const ini = (f.displayName||f.username||'?')[0]||'?';
-    const av = f.avatar ? `<img class="inv-av" src="${esc(f.avatar)}" alt="">` : `<div class="inv-av" style="background:${avatarColor(f.username)};color:#fff">${esc(ini)}</div>`;
-    const on = DRAFT.inviteUsernames.includes(f.username) ? 'checked' : '';
-    return `<label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap">${av}</div><div class="inv-text"><div class="name">${esc(f.displayName||f.username)}</div><div class="handle">@${esc(f.username)}</div></div></div><span class="check"><input type="checkbox" value="${esc(f.username)}" ${on} onchange="toggleInvite(this)"><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`;
-  }).join('') : '<div class="muted">No friends yet — add some in Friends tab.</div>';
+  // Oct 10 2026 (audit finding): no way to find one specific friend in this list except scrolling
+  // top to bottom -- fine with a handful of connections, not with dozens. Server now sends
+  // /api/friends alphabetically (see its own Oct 10 2026 comment), and this adds the other half,
+  // same "filters as you type, client-side over the already-fetched list" pattern followList()
+  // already uses (FOLLOW_LIST_CACHE/followListFilter) -- INVITE_FRIEND_CACHE/inviteListFilter here
+  // is that exact shape, just over the invite checklist instead of a plain profile list.
+  // inviteRowHtml is the one row template used both for the initial render and every re-filter, so
+  // the two can never drift apart (same reasoning as followRowHtml).
+  INVITE_FRIEND_CACHE = friendList;
+  const invRows = friendList.length ? friendList.map(inviteRowHtml).join('') : '<div class="muted">No friends yet — add some in Friends tab.</div>';
+  const invSearchBox = friendList.length > 1 ? `<div class="add-row" style="margin-bottom:8px"><input id="invSearch" placeholder="Search by name or @username" autocomplete="off" oninput="inviteListFilter()"></div>` : '';
   $('app').innerHTML = `<div class="wrap create-flow">
     <div class="create-head">
       <button class="sec sm" onclick="cancelCreate()">← Cancel</button>
@@ -5226,7 +5287,7 @@ async function createFlow(){
     <button class="sec" onclick="templatesPage()">Routines</button>
     <button class="sec" onclick="tplQuickSaveSheet()">Save as routine</button>
     </div>
-    <h2>Invite friends</h2>${crewQuickInviteHtml()}<div id="invList" class="card">${invRows}</div>
+    <h2>Invite friends</h2>${crewQuickInviteHtml()}${invSearchBox}<div id="invList" class="card">${invRows}</div>
     ${EDITING_SESSION ? '<button class="blue" onclick="submitSession()">Save changes</button>' : '<button class="blue" onclick="submitSession()">Create workout</button>'}</div>`;
   pageScrollTop();
   renderDraft();
@@ -5384,7 +5445,30 @@ function planDayFor(ymd){
 // Sep 10 2026: showTab('home'), not bare home() -- same fix as submitSession()'s success path
 // (see its own comment for the full mechanism/root cause). "← Cancel" is the other door out of
 // create-flow, same stale-nav-state risk if the exercise picker was visited first.
-function cancelCreate(){ EDITING_SESSION=null; EDITING_TPL=null; showTab('home'); }
+// Oct 10 2026 (audit finding): Cancel used to wipe the entire draft -- every exercise added, the
+// schedule, location, and invited friends -- with zero confirmation and no undo, the one place in
+// the app a few minutes of setup could vanish from a single mis-tap right next to the primary
+// "Create workout" button. DRAFT lives only in memory (no autosave), so there was no recovery.
+// Every other destructive action in the app (delete workout, delete routine, remove from profile)
+// already confirms first via confirmSheet -- this matches that pattern rather than inventing a new
+// one. Only confirms when there's actually something to lose: #dt is deliberately excluded from
+// the content check below, since whenHtml() always defaults it to "today" even on a brand-new,
+// untouched draft -- checking it would make the confirm fire on every single Cancel, defeating the
+// point (only interrupt when it matters). Editing an existing, already-saved session always
+// confirms -- that data is real regardless of what the form currently shows.
+function createFlowHasContent(){
+  if(EDITING_SESSION) return true;
+  if(DRAFT.exercises && DRAFT.exercises.length) return true;
+  if(DRAFT.inviteUsernames && DRAFT.inviteUsernames.length) return true;
+  return ['wname','loc','len'].some(id => { const el=$(id); return el && String(el.value||'').trim(); });
+}
+function cancelCreate(){
+  if(createFlowHasContent()){
+    confirmSheet('Discard this workout?', "Everything you've added — exercises, schedule, invites — will be lost.", 'Discard', () => { EDITING_SESSION=null; EDITING_TPL=null; showTab('home'); });
+    return;
+  }
+  EDITING_SESSION=null; EDITING_TPL=null; showTab('home');
+}
 // Skips the whole create-flow wizard — no name, no schedule picker, no invite step, and (Jeff,
 // Aug 25: a tap of the button shouldn't immediately create it) no session on the server either,
 // not until you've actually picked something. Tapping "Quick Workout" drops you straight into the
@@ -5691,7 +5775,8 @@ async function templatesPage(opts){
     <h1 class="tpl-h1">Routines</h1>
     ${mine.length?section(mine):homeEmpty(ICON_LIST, 'No routines yet', 'Build one with + New routine, or save a finished workout as a routine.')}
     ${(starter&&starter.length)?`<div class="lib-cat">Starter routines</div>`+starterHtml:''}
-    ${shared.length?`<div class="lib-cat">Shared by friends</div>`+section(shared):''}</div>`;
+    <div class="lib-cat">Shared by friends</div>
+    ${shared.length?section(shared):homeEmpty(ICON_LIST, 'No shared routines yet', "When a friend shares a routine with you, it'll show up here.")}</div>`;
   // v304: templatesPage() becomes a real page in the nav-history stack (navigated()/landOn(),
   // same as followList/profileView/openSettings) now that tplView() sits a level below it and
   // needs somewhere real to Back to -- it used to be a bare direct call with no history entry.
@@ -5800,7 +5885,7 @@ function tplNew(){
   TPL_VIEW_ENTRY_LEN = null;   // entered straight from the list -- no routineView entry was pushed
   openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Name routine</h2></div>
     <label class="muted">Routine name</label>
-    <input id="tplName" placeholder="e.g. Push Day" autocomplete="off">
+    <input id="tplName" placeholder="e.g. Push Day" autocomplete="off" onkeydown="onEnterKey(event, tplConfirmName)">
     <div style="display:flex;gap:10px;margin-top:16px">
       <button class="sec" style="flex:1" onclick="closeSheet()">Cancel</button>
       <button class="blue" style="flex:1" onclick="tplConfirmName()">✓ Create</button>
@@ -5974,6 +6059,27 @@ async function tplUnhide(id){
 // a routine is still fundamentally "pick some of my connections," just moved to its own explicit
 // action on the routine's detail screen instead of being folded into create/edit.
 let SHARE_TPL_ID = null, SHARE_TARGETS = [];
+// Oct 10 2026 (audit finding): same no-way-to-find-one-person problem as createFlow's invite
+// list (see INVITE_FRIEND_CACHE's own comment) -- this picker is built from the exact same
+// /api/friends list, so it had the exact same gap. SHARE_FRIEND_CACHE/shareTargetListFilter is
+// the identical shape, just over the share-target checklist; shareTargetRowHtml reads already
+// (the pending-share set, closed over below) AND SHARE_TARGETS so a re-filter never visually
+// un-checks someone the user already picked before typing in the search box.
+let SHARE_FRIEND_CACHE = [], SHARE_ALREADY = [];
+const shareTargetRowHtml = f => {
+  const ini = (f.displayName||f.username||'?')[0]||'?';
+  const av = f.avatar ? `<img class="inv-av" src="${esc(f.avatar)}" alt="">` : `<div class="inv-av" style="background:${avatarColor(f.username)};color:#fff">${esc(ini)}</div>`;
+  const pend = SHARE_ALREADY.includes(f.id);
+  const on = pend || SHARE_TARGETS.includes(f.username);
+  return `<label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap">${av}</div><div class="inv-text"><div class="name">${esc(f.displayName||f.username)}</div><div class="handle">@${esc(f.username)}${pend?' · already shared, pending':''}</div></div></div><span class="check"><input type="checkbox" value="${esc(f.username)}" ${on?'checked':''} ${pend?'disabled':''} onchange="toggleShareTarget(this)"><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`;
+};
+function shareTargetListFilter(){
+  const box = $('shareTargetList'); if(!box) return;
+  const q = (($('shareTargetSearch')||{}).value||'').trim().toLowerCase();
+  const matches = !q ? SHARE_FRIEND_CACHE : SHARE_FRIEND_CACHE.filter(f =>
+    (f.displayName||'').toLowerCase().includes(q) || (f.username||'').toLowerCase().includes(q));
+  box.innerHTML = matches.length ? matches.map(shareTargetRowHtml).join('') : '<div class="muted" style="padding:14px 2px;text-align:center">No matches.</div>';
+}
 async function tplShareSheet(id){
   const { mine } = await H.get('/api/templates');
   const t = mine.find(x=>x.id===id); if(!t) return;
@@ -5983,16 +6089,14 @@ async function tplShareSheet(id){
   // see GET /api/templates) -- pre-checked and locked so re-sharing with someone already pending
   // can't be unchecked into a confusing double-share, and so Jeff can actually see at a glance who
   // this is already out to.
-  const already = t.sharedTo || [];
+  SHARE_ALREADY = t.sharedTo || [];
   SHARE_TPL_ID = id; SHARE_TARGETS = [];
-  const rows = friendList.length ? friendList.map(f=>{
-    const ini = (f.displayName||f.username||'?')[0]||'?';
-    const av = f.avatar ? `<img class="inv-av" src="${esc(f.avatar)}" alt="">` : `<div class="inv-av" style="background:${avatarColor(f.username)};color:#fff">${esc(ini)}</div>`;
-    const pend = already.includes(f.id);
-    return `<label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap">${av}</div><div class="inv-text"><div class="name">${esc(f.displayName||f.username)}</div><div class="handle">@${esc(f.username)}${pend?' · already shared, pending':''}</div></div></div><span class="check"><input type="checkbox" value="${esc(f.username)}" ${pend?'checked disabled':''} onchange="toggleShareTarget(this)"><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`;
-  }).join('') : '<div class="muted">No friends yet — add some in Friends tab.</div>';
+  SHARE_FRIEND_CACHE = friendList;
+  const rows = friendList.length ? friendList.map(shareTargetRowHtml).join('') : '<div class="muted">No friends yet — add some in Friends tab.</div>';
+  const searchBox = friendList.length > 1 ? `<div class="add-row" style="margin-bottom:10px"><input id="shareTargetSearch" placeholder="Search by name or @username" autocomplete="off" oninput="shareTargetListFilter()"></div>` : '';
   openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Share "${esc(t.name)}"</h2></div>
     <div class="muted" style="margin:0 2px 10px">They'll get a notification and can accept it as their own copy of this routine, or decline.</div>
+    ${searchBox}
     <div id="shareTargetList" class="card">${rows}</div>
     <div style="display:flex;gap:10px;margin-top:16px">
       <button class="sec" style="flex:1" onclick="closeSheet()">Cancel</button>
@@ -6081,7 +6185,7 @@ function showToast(msg){
 async function templateExercises(){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
   const nameField = (TPL_MODE.id || TPL_MODE.copy)
-    ? `<input id="tplNameEdit" class="tpl-name-edit" value="${esc(TPL_MODE.name||'')}" placeholder="Routine name" autocomplete="off">`
+    ? `<input id="tplNameEdit" class="tpl-name-edit" value="${esc(TPL_MODE.name||'')}" placeholder="Routine name" autocomplete="off" onkeydown="onEnterKey(event, finishTemplate)">`
     : `<h1>${esc(TPL_MODE.name||'Routine')}</h1>`;
   // v304, Jeff: "I like having the save buttons at the top instead of the bottom. I feel its more
   // instinctive having that at the top for how users normally work." Save moves up next to Back --
@@ -6159,9 +6263,34 @@ function tplReturnToList(){
 // caught by fresh-eyes review, not yet by the end-to-end test. Restoring both flags right after the
 // reset, whenever this Cancel is happening mid a still-live quick-workout detour, keeps QUICK_ADD_MODE
 // accurate through the WHOLE routine-browsing side trip, not just the Back path out of it.
+// Oct 10 2026 (audit finding, same fix shape as createFlowHasContent()/cancelCreate() above --
+// this is the routine-editor half of that same finding): editing an existing, already-saved
+// routine (TPL_MODE.id) always confirms -- that data is real regardless of what the form
+// currently shows, same rule used for EDITING_SESSION in createFlowHasContent(). Otherwise (a
+// brand-new routine, or forking a friend's shared routine in via TPL_MODE.copy), only confirm
+// when there's actually something to lose: any exercise already added/copied in, or a name
+// already typed/committed. Reads the live #tplNameEdit DOM value when it's rendered (editing an
+// existing routine or a copy -- TPL_MODE.id is already handled above, so in practice this only
+// matters for the copy case) and falls back to TPL_MODE.name otherwise, since a brand-new
+// routine's name is locked in via tplNew()'s own naming sheet before this screen is ever shown.
+function tplEditorHasContent(){
+  if(TPL_MODE.id) return true;
+  if(DRAFT.exercises && DRAFT.exercises.length) return true;
+  const nameEl = $('tplNameEdit');
+  const liveName = nameEl ? nameEl.value : TPL_MODE.name;
+  return !!String(liveName||'').trim();
+}
 function tplBack(){
   closeSheet();
   const wasQuick = TPL_FROM_QUICK && QUICK_ADD_MODE;
+  if(tplEditorHasContent()){
+    confirmSheet('Discard this routine?', "Everything you've added — the name, exercises — will be lost.", 'Discard', () => {
+      resetTransientModes();
+      if(wasQuick){ QUICK_ADD_MODE = true; LIB_ADDMODE = true; }
+      tplReturnToList();
+    });
+    return;
+  }
   resetTransientModes();
   if(wasQuick){ QUICK_ADD_MODE = true; LIB_ADDMODE = true; }
   tplReturnToList();
@@ -6246,9 +6375,21 @@ async function tplUse(id){
 }
 function tplQuickSaveSheet(){
   if(!DRAFT.exercises.length){ alert('Add exercises first, then save as a routine.'); return; }
+  // Oct 10 2026 (audit finding): the workout name already typed on the create-flow screen sitting
+  // right behind this sheet went into `placeholder`, not `value` -- a placeholder is just grey
+  // hint text that vanishes the instant you type anything and was never actually IN the field, so
+  // tapping Save without retyping it from scratch hit "Name your routine first." even with a
+  // perfectly good name sitting right there, visibly, in the box. `#wname` is the live DOM input
+  // (this sheet is stacked on top of createFlow's screen, not a replacement of it -- same reason
+  // tplQuickSaveConfirm() a few lines down already reads `$('loc')`/`$('vis')` straight off that
+  // same underlying screen), so it's read the same way here: pre-filled as a real, editable value,
+  // not just a hint of one. Falls back to a generic example placeholder only when nothing's been
+  // typed yet, matching tplNew()'s own "e.g. Push Day" convention for a genuinely blank name.
+  const typedName = ($('wname') ? $('wname').value : (DRAFT.name||'')).trim();
+  const nameAttr = typedName ? `value="${esc(typedName)}"` : `placeholder="e.g. Push Day"`;
   openSheetHtml(`<div class="sheet"><div class="sheet-head"><h2>Save as routine</h2></div>
     <label class="muted">Routine name</label>
-    <input id="tplName" placeholder="${esc(DRAFT.name||'My workout')}" autocomplete="off">
+    <input id="tplName" ${nameAttr} autocomplete="off" onkeydown="onEnterKey(event, tplQuickSaveConfirm)">
     <div style="display:flex;gap:10px;margin-top:16px">
       <button class="sec" style="flex:1" onclick="closeSheet()">Cancel</button>
       <button class="blue" style="flex:1" onclick="tplQuickSaveConfirm()">✓ Save</button>
@@ -6259,15 +6400,22 @@ async function tplQuickSaveConfirm(){
   const n=$('tplName').value.trim(); if(!n){ alert('Name your routine first.'); return; }
   closeSheet();
   if(!DRAFT.exercises.length){ return alert('Add exercises first.'); }
-  // Sep 29 2026 (audit finding): this used to post {name, exercises} only, dropping the
-  // Location/Visibility/Invite friends already filled in on the create-flow screen sitting right
-  // behind this sheet -- same DRAFT, same #loc/#vis fields, as finishTemplate()'s fuller payload;
-  // closeSheet() only removes the sheet overlay, the underlying screen (and its fields) is still there.
-  const location = $('loc') ? $('loc').value : (DRAFT.location||'');
-  const creatorNote = DRAFT.creatorNote||'';
-  const visibility = $('vis') ? $('vis').value : (DRAFT.visibility||'private');
-  const inviteUsernames = DRAFT.inviteUsernames || [];
-  const payload = { name:n, exercises:DRAFT.exercises, location, creatorNote, visibility, inviteUsernames };
+  // Sep 29 2026 (audit finding, now STALE -- see Oct 10 2026 note right below): this used to post
+  // {name, exercises} only, dropping the Location/Visibility/Invite friends already filled in on
+  // the create-flow screen sitting right behind this sheet -- same DRAFT, same #loc/#vis fields,
+  // as finishTemplate()'s fuller payload.
+  //
+  // Oct 10 2026 (audit finding): that Sep 29 fix itself went stale three days later. The Oct 2 2026
+  // routine-editor redesign (see templateExercises()'s own comment, and finishTemplate() a few
+  // hundred lines up, which already dropped these same fields from ITS payload) made a routine
+  // solely Name + Exercises -- POST/PUT /api/templates only ever reads { name, exercises } off the
+  // body now, so location/creatorNote/visibility/inviteUsernames here were silently ignored
+  // server-side, not actually corrupting anything -- but sending them at all was dead, confusing
+  // leftover code implying routines still carry fields they don't, and reading `$('loc')`/`$('vis')`
+  // off whatever create-flow screen happens to be sitting behind this sheet (visibility/location
+  // for the WORKOUT being created right now, nothing to do with the routine) is exactly the kind
+  // of stale carryover the finding flagged. Matches finishTemplate()'s payload shape exactly.
+  const payload = { name:n, exercises:DRAFT.exercises };
   const r = EDITING_TPL
     ? await H.put('/api/templates/'+EDITING_TPL,payload)
     : await H.post('/api/templates',payload);
@@ -6275,6 +6423,22 @@ async function tplQuickSaveConfirm(){
   alert('Routine saved: '+n);
 }
 function toggleInvite(cb){ const u=cb.value; if(cb.checked){ if(!DRAFT.inviteUsernames.includes(u)) DRAFT.inviteUsernames.push(u);} else { DRAFT.inviteUsernames=DRAFT.inviteUsernames.filter(x=>x!==u);} }
+// Oct 10 2026 (audit finding): see createFlow()'s own comment on INVITE_FRIEND_CACHE above -- the
+// search box's filtered re-render, same shape as followListFilter()/followRowHtml.
+let INVITE_FRIEND_CACHE = [];
+const inviteRowHtml = f => {
+  const ini = (f.displayName||f.username||'?')[0]||'?';
+  const av = f.avatar ? `<img class="inv-av" src="${esc(f.avatar)}" alt="">` : `<div class="inv-av" style="background:${avatarColor(f.username)};color:#fff">${esc(ini)}</div>`;
+  const on = DRAFT.inviteUsernames.includes(f.username) ? 'checked' : '';
+  return `<label class="inv-row"><div class="inv-meta"><div class="inv-av-wrap">${av}</div><div class="inv-text"><div class="name">${esc(f.displayName||f.username)}</div><div class="handle">@${esc(f.username)}</div></div></div><span class="check"><input type="checkbox" value="${esc(f.username)}" ${on} onchange="toggleInvite(this)"><span class="box"><svg class="tick" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8.5l3 3 6-7" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></label>`;
+};
+function inviteListFilter(){
+  const box = $('invList'); if(!box) return;
+  const q = (($('invSearch')||{}).value||'').trim().toLowerCase();
+  const matches = !q ? INVITE_FRIEND_CACHE : INVITE_FRIEND_CACHE.filter(f =>
+    (f.displayName||'').toLowerCase().includes(q) || (f.username||'').toLowerCase().includes(q));
+  box.innerHTML = matches.length ? matches.map(inviteRowHtml).join('') : '<div class="muted" style="padding:14px 2px;text-align:center">No matches.</div>';
+}
 function renderDraft(){
   // Oct 6 2026 (Jeff: equipment badge "when creating a workout" too, confirmed via
   // AskUserQuestion -- always-visible, not tap-only): DRAFT.exercises items carry only
@@ -7052,6 +7216,12 @@ async function progressScreen(opts){
     // Only when the card would otherwise be blank. Printing "Nothing to add yet" above a
     // populated "Almost" list — the single most likely state for a new user — had the card
     // contradicting itself, with a faded example row sitting among real ones.
+    // Oct 10 2026 (audit finding #231): this worked example was hardcoded to lb numbers (135 ->
+    // 140, +5) and just swapped in the kg unit LABEL for a kg viewer, leaving a kg user staring at
+    // a +5 jump the app's own real increment table (incrementFor/INCREMENT_KG, server.js) would
+    // never actually suggest for Bench Press -- a flat upper-body lift gets +2.5kg, not +5kg. Both
+    // the weights and the step shown here now actually match what the real feature would compute.
+    const egW = U==='kg' ? 60 : 135, egStep = U==='kg' ? 2.5 : 5, egNew = U==='kg' ? 62.5 : 140;
     readyHtml = `<div class="empty">
       <div class="empty-t">Nothing to add yet</div>
       <div class="empty-b">Reach the top of your rep range on a lift <b>two sessions in a row at the
@@ -7061,8 +7231,8 @@ async function progressScreen(opts){
         <div class="rp eg-row">
           <div class="rp-ic" aria-hidden="true">↑</div>
           <div class="rp-main"><div class="rp-name">Bench Press</div>
-            <div class="rp-why">Hit 10 reps at 135 ${U} · last 2 sessions</div></div>
-          <div class="rp-to"><div class="rp-new">140 ${U}</div><div class="rp-tag">▲ +5</div></div>
+            <div class="rp-why">Hit 10 reps at ${egW} ${U} · last 2 sessions</div></div>
+          <div class="rp-to"><div class="rp-new">${egNew} ${U}</div><div class="rp-tag">▲ +${egStep}</div></div>
         </div>
       </div></div>`;
   }
@@ -7789,7 +7959,7 @@ function openCreateEx(presetMuscle){
            entry point placed here, next to where one gets created, rather than adding a new icon
            to the already-tight library header row above. -->
       <div style="text-align:right;margin:-6px 0 10px"><span class="how-link" onclick="closeSheet(); myCustomExercisesSheet();">Manage your exercises ›</span></div>
-      <label class="muted">Name</label><input id="ceName" placeholder="e.g. Cable Crossover">
+      <label class="muted">Name</label><input id="ceName" placeholder="e.g. Cable Crossover" onkeydown="onEnterKey(event, submitCreateEx)">
       <label class="muted">Muscle groups (pick all that apply)</label>
       <div class="card mg-check-grid" style="margin-bottom:12px">${mgRows}</div>
       <label class="muted">Pattern</label><select id="cePattern">${patOpts}</select>
@@ -7955,10 +8125,26 @@ function exDetail(name){
   // exactly rather than half-matching it.
   const repsLabel = repLabel(e);
   const eqs = eqList(e).map(x=>esc(x)).join(', ')||'—';
+  // Oct 10 2026 (audit finding, Jeff: "Editing/deleting a custom exercise is hard to find"): the
+  // ONLY door into Edit/Delete used to be a small "Manage your exercises ›" link buried inside the
+  // Create-exercise sheet (openCreateEx) -- nobody opens "Create exercise" to fix a typo in one
+  // they already made. This exact sheet is what tapping ANY exercise row already opens (including
+  // your own custom ones, labelled "· your exercise" right on the row), so it's the one place
+  // someone managing their own exercise is actually already standing. Reuses openEditEx/
+  // confirmDeleteCustomEx verbatim -- same functions "My exercises" already calls -- just reached
+  // one tap closer for the one person who can use them (e.mine only; never shown on a built-in or
+  // someone else's custom exercise).
+  // Oct 10 2026 (same-day follow-up, Jeff: "the pencil icon is too thick and pudgy"): the raw ✎/🗑
+  // glyphs rendered as bold, font-dependent emoji instead of a clean line icon -- swapped for the
+  // same editPencilSvg()/trashSvg() thin-stroke icons the chat edit/delete buttons already use
+  // (see .cmt-edit-btn's comment: "edit/delete/reaction controls all read as one family"), sized
+  // via .icon-btn svg so they sit comfortably inside the existing 34px circular button instead of
+  // introducing a third icon language just for this sheet.
+  const mineActions = e.mine ? `<button class="icon-btn" onclick="closeSheet(); openEditEx('${jsq(e.id)}')" title="Edit exercise" aria-label="Edit exercise">${editPencilSvg()}</button><button class="icon-btn" style="color:var(--red)" onclick="closeSheet(); confirmDeleteCustomEx('${jsq(e.id)}','${jsq(e.name)}')" title="Delete exercise" aria-label="Delete exercise">${trashSvg()}</button>` : '';
   history.pushState({t:'sheet'}, '', location.href); // v254: Back dismisses this sheet -- see openSheetHtml's comment
   const sheet = document.createElement('div'); sheet.className='sheet-back'; sheet.innerHTML=`
     <div class="sheet" onclick="event.stopPropagation()">
-      <div class="sheet-head"><h2>${esc(e.name)}</h2>${favBtnHtml(e)}<button class="icon-btn" onclick="closeSheet()" aria-label="Close">✕</button></div>
+      <div class="sheet-head"><h2>${esc(e.name)}</h2>${favBtnHtml(e)}${mineActions}<button class="icon-btn" onclick="closeSheet()" aria-label="Close">✕</button></div>
       <div class="sheet-thumb"><div class="mg-ico">${exThumb(e)}</div>
         <div class="sheet-thumb-meta"><span class="sheet-thumb-cap">${esc(exMuscles(e).map(muscleLabel).join(' · '))}</span><div class="ex-badges sheet-badges">${exBadges(e, true)}</div></div></div>
       <div class="sheet-row"><span>Equipment</span><b>${eqs}</b></div>
@@ -8132,7 +8318,7 @@ function textEntrySheet({title, label, value, placeholder, multiline, confirmLab
   const cur = value||'';
   const field = multiline
     ? `<textarea id="teVal" placeholder="${esc(placeholder||'')}" style="min-height:110px">${esc(cur)}</textarea>`
-    : `<input id="teVal" placeholder="${esc(placeholder||'')}" value="${esc(cur)}" autocomplete="off">`;
+    : `<input id="teVal" placeholder="${esc(placeholder||'')}" value="${esc(cur)}" autocomplete="off" onkeydown="onEnterKey(event, ()=>window._teConfirm())">`;
   // Sep 30 2026 (audit finding): optional one-line caption under the field, for the rare case
   // where the field means more than it looks like -- every other caller leaves this unset and
   // gets exactly the same sheet as before. (editUsernameSheet, the original motivating case, has
@@ -8710,7 +8896,7 @@ async function newCrewSheet(editCrewId){
     <div class="sheet" onclick="event.stopPropagation()">
       <div class="sheet-head"><h2>${editingCrew?'Edit crew':'New crew'}</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
       <label class="muted">Crew name</label>
-      <input id="crewNameInput" placeholder="e.g. Tuesday Legs" value="${esc(editingCrew?editingCrew.name:'')}" autocomplete="off">
+      <input id="crewNameInput" placeholder="e.g. Tuesday Legs" value="${esc(editingCrew?editingCrew.name:'')}" autocomplete="off" onkeydown="onEnterKey(event, ()=>saveCrewSheet(${editingCrew?`'${jsq(editingCrew.id)}'`:'null'}))">
       <h2 style="margin-top:14px">Members</h2>
       ${membersBlock}
       <button class="blue" style="margin-top:14px" onclick="saveCrewSheet(${editingCrew?`'${jsq(editingCrew.id)}'`:'null'})">${editingCrew?'Save changes':'Create crew'}</button>
@@ -8766,6 +8952,53 @@ function leaveCrewConfirm(crewId){
 // cramped. Sheets opened ON TOP of it (Edit crew, Start a challenge, Leave/Delete confirms) are
 // untouched -- they're still real .sheet-back overlays, and the generic popstate handler above
 // already closes those on Back without touching the screen underneath.
+// Pulled out of crewView() below (Oct 10 2026, audit finding -- see refreshCrewMessages' own
+// comment for why) so editing/deleting a message can rebuild just this one row's worth of markup
+// without rebuilding the whole page. c.members is the CURRENT roster, so a message from someone
+// who has since left (or was dropped in an edit) falls back to UNKNOWN_NAME rather than rendering
+// a bare, alarming-looking blank.
+function crewMsgRowHtml(m, c){
+  if(m.system) return `<div class="crew-msg crew-msg-sys">${esc(m.text)}</div>`;
+  const from = c.members.find(x=>x.id===m.userId);
+  const editedTag = m.editedAt ? ' <span class="muted" style="font-size:11px">(edited)</span>' : '';
+  // Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one", then
+  // "Can we correct how these pop up menus open for buttons like that with a pop up just for
+  // edit? This does not look good to my standards.", then "I should be able to edit or delete
+  // any comment I have made anywhere also") -- own messages only, same two-direct-icon-buttons
+  // pattern as the live workout chat above (see its own comment for the full history/reasoning):
+  // Edit and Delete (server-side DELETE /api/crews/:id/messages/:messageId, own-message-only +
+  // isCrewMember gate, same shape as the PUT right above it) sit side by side, no menu step.
+  const isOwn = m.userId===ME.id;
+  const dots = isOwn
+    ? `<div class="cmt-own-actions" style="flex:0 0 auto"><button class="cmt-edit-btn" onclick="editCrewMsgPrompt('${jsq(c.id)}','${m.id}','${jsq(m.text)}')" aria-label="Edit message">${editPencilSvg()}</button><button class="cmt-delete-btn" onclick="deleteCrewMsgPrompt('${jsq(c.id)}','${m.id}')" aria-label="Delete message">${trashSvg()}</button></div>`
+    : '';
+  return `<div class="crew-msg"${isOwn?' style="display:flex;align-items:flex-start;gap:2px;position:relative"':''}><span style="flex:1"><b>${esc(from?(from.displayName||from.username):UNKNOWN_NAME)}</b> ${esc(m.text)}${editedTag}</span>${dots}</div>`;
+}
+// Oct 10 2026 (audit finding): editing/deleting a crew message used to refresh via a full
+// crewView(crewId, {silent:true}) -- correct data, but it replaces the ENTIRE page's innerHTML
+// (header, member list, challenge card, the whole thing), which throws away scroll position along
+// with it. Scroll all the way down to the newest messages, edit or delete one near the top of the
+// visible list, and the page silently snapped back to its very top -- on a crew with any real
+// message history, that's losing your place in the conversation on every single edit/delete.
+// Re-fetches the same two things crewView does (messages, and the roster for name resolution) but
+// only ever touches #crewMsgs-<id>'s own contents, exactly the same swap sendCrewMsg's own
+// optimistic append already does for the empty-state <-> real-list transition -- everything else
+// on the page, scroll position included, is simply never touched.
+async function refreshCrewMessages(crewId){
+  const [c, messages] = await Promise.all([H.get('/api/crews/'+crewId), H.get('/api/crews/'+crewId+'/messages')]);
+  if(!c || c.error) return;
+  const box = $('crewMsgs-'+crewId); if(!box) return;
+  const hasMessages = Array.isArray(messages) && messages.length > 0;
+  if(hasMessages){
+    box.className = 'card'; box.removeAttribute('style');
+    box.style.padding = '10px 12px'; box.style.maxHeight = '34vh'; box.style.overflowY = 'auto';
+    box.innerHTML = messages.map(m=>crewMsgRowHtml(m, c)).join('');
+  } else {
+    box.className = 'home-empty'; box.removeAttribute('style');
+    box.style.margin = '4px 0 16px'; box.style.padding = '10px 16px 0';
+    box.innerHTML = `${ICON_CHAT}<div class="he-title">No messages yet</div><div class="he-sub">Say hey to get the conversation started.</div>`;
+  }
+}
 async function crewView(crewId, opts){
   const silent = !!(opts && opts.silent);
   const fromHistory = !!(opts && opts.fromHistory);
@@ -8793,24 +9026,20 @@ async function crewView(crewId, opts){
   // c.members is the CURRENT roster, so a message from someone who has since left (or was dropped
   // in an edit) falls back to UNKNOWN_NAME rather than rendering a bare, alarming-looking blank.
   const hasMessages = messages.length > 0;
-  const msgRows = hasMessages ? messages.map(m=>{
-    if(m.system) return `<div class="crew-msg crew-msg-sys">${esc(m.text)}</div>`;
-    const from = c.members.find(x=>x.id===m.userId);
-    const editedTag = m.editedAt ? ' <span class="muted" style="font-size:11px">(edited)</span>' : '';
-    // Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one", then
-    // "Can we correct how these pop up menus open for buttons like that with a pop up just for
-    // edit? This does not look good to my standards.", then "I should be able to edit or delete
-    // any comment I have made anywhere also") -- own messages only, same two-direct-icon-buttons
-    // pattern as the live workout chat above (see its own comment for the full history/reasoning):
-    // Edit and Delete (server-side DELETE /api/crews/:id/messages/:messageId, own-message-only +
-    // isCrewMember gate, same shape as the PUT right above it) sit side by side, no menu step.
-    const isOwn = m.userId===ME.id;
-    const dots = isOwn
-      ? `<div class="cmt-own-actions" style="flex:0 0 auto"><button class="cmt-edit-btn" onclick="editCrewMsgPrompt('${jsq(c.id)}','${m.id}','${jsq(m.text)}')" aria-label="Edit message">${editPencilSvg()}</button><button class="cmt-delete-btn" onclick="deleteCrewMsgPrompt('${jsq(c.id)}','${m.id}')" aria-label="Delete message">${trashSvg()}</button></div>`
-      : '';
-    return `<div class="crew-msg"${isOwn?' style="display:flex;align-items:flex-start;gap:2px;position:relative"':''}><span style="flex:1"><b>${esc(from?(from.displayName||from.username):UNKNOWN_NAME)}</b> ${esc(m.text)}${editedTag}</span>${dots}</div>`;
-  }).join('') : '';
+  const msgRows = hasMessages ? messages.map(m=>crewMsgRowHtml(m, c)).join('') : '';
   const head = `<div class="pp-head"><h1 style="margin:0;flex:1">${esc(c.name)}</h1>${c.isOwner?`<button class="sec sm" onclick="newCrewSheet('${jsq(c.id)}')">Edit</button>`:''}${backLinkHtml('history.back()')}</div>`;
+  // Oct 10 2026 (audit finding, Jeff: "Ownerless crew is permanently frozen with no explanation"):
+  // once a crew's owner account is deleted, c.ownerId clears to null permanently (see POST
+  // /api/me/delete-account's own comment on this exact crews loop) and every owner-gated action --
+  // rename, add/remove a member, start a challenge, delete the crew -- simply has nobody left who
+  // can do it, by design (crews deliberately did NOT get sessions' own ownerless voting system --
+  // see that same server comment, "a real product decision with no signal from Jeff either way,
+  // flagged rather than silently built out" -- still an open question, not something this fix
+  // decides). Members got exactly one push about it, the moment it happened; anyone who missed
+  // that, or just comes back days later, saw a totally normal-looking crew page with no clue why
+  // Edit/Start a challenge/etc. had all just quietly stopped being there. This is the honest,
+  // always-visible half of that gap -- a plain explanation, right on the page, every time.
+  const ownerlessNoteHtml = (c.ownerId===null) ? `<div class="muted" style="font-size:12px;margin:0 2px 10px;line-height:1.5">This crew's owner account was deleted — everyone here can still chat and see what's already set up, but nobody can rename it, add or remove members, start a challenge, or delete it.</div>` : '';
   // Sep 6 (Jeff: the "No messages yet" box "seems poorly done... a box showing where potential
   // chat would be"). A plain muted line boxed inside a bordered/shadowed card contradicts the
   // app's own "no windows" rule -- a card only ever renders when it has content, an empty section
@@ -8829,10 +9058,11 @@ async function crewView(crewId, opts){
   // sendCrewMsg's plain $('crewMsgs') land the reply on whichever crew page is open now.
   $('app').innerHTML = `<div class="wrap">
     ${head}
+    ${ownerlessNoteHtml}
     <div class="card" style="padding:6px 12px;margin:14px 0 12px">${memberRows}</div>
     ${crewChallengeHtml(c)}
     ${msgBox}
-    <div class="row chat-row" style="margin-top:10px"><input id="crewChatInput-${esc(c.id)}" class="chat-input" placeholder="Message the crew"><button class="sm chat-send" onclick="sendCrewMsg('${jsq(c.id)}')">Send</button></div>
+    <div class="row chat-row" style="margin-top:10px"><input id="crewChatInput-${esc(c.id)}" class="chat-input" placeholder="Message the crew" onkeydown="onEnterKey(event, ()=>sendCrewMsg('${jsq(c.id)}'))"><button class="sm chat-send" onclick="sendCrewMsg('${jsq(c.id)}')">Send</button></div>
     ${!c.isOwner ? `<button class="sec" style="margin-top:14px" onclick="leaveCrewConfirm('${jsq(c.id)}')">Leave crew</button>` : ''}
   </div>`;
   if(!silent){ const st = {t:'crew', id: crewId}; fromHistory ? landOn(st) : navigated(st); }
@@ -8855,7 +9085,10 @@ async function editCrewMsgPrompt(crewId, messageId, currentText){
       const text = (v||'').trim(); if(!text) return;
       const r = await H.put(`/api/crews/${crewId}/messages/${messageId}`, {text});
       if(r && r.error){ alert(r.error); return; }
-      crewView(crewId, {silent:true});
+      // Oct 10 2026 (audit finding): refreshCrewMessages() patches just the message list in place
+      // -- see its own comment for why a full crewView() reload here was silently resetting scroll
+      // to the top of the page on every edit.
+      refreshCrewMessages(crewId);
     }
   });
 }
@@ -8863,7 +9096,7 @@ function deleteCrewMsgPrompt(crewId, messageId){
   confirmSheet('Delete this message?', "This can't be undone.", 'Delete', async () => {
     const r = await H.delete(`/api/crews/${crewId}/messages/${messageId}`);
     if(r && r.error){ alert(r.error); return; }
-    crewView(crewId, {silent:true});
+    refreshCrewMessages(crewId);
   }, true);
 }
 async function sendCrewMsg(crewId){
@@ -9091,8 +9324,36 @@ async function challengeView(crewId, challengeId, opts){
         ${right}
       </div>`;
     }).join('') + `</div>` : '';
-  $('app').innerHTML = `<div class="wrap">${head}${banner}${goalCard}${meter}${leaderboard}${postsHtml}${pastHtml}</div>`;
+  // Oct 10 2026 (audit finding, see confirmCancelChallenge/DELETE .../challenge/:challengeId):
+  // the owner's one way out of a challenge they started by mistake. Same placement/style as
+  // "Delete crew" at the bottom of the crew-edit sheet -- a plain .sec button below everything
+  // else, not styled destructive-red, since cancelling isn't erasing anything that happened (the
+  // whole point is nothing has really happened yet) -- only shown while it's actually still
+  // running and only to the owner, same gate the server enforces.
+  const cancelBtn = (isRunning && c.isOwner) ? `<button class="sec" style="margin-top:4px" onclick="confirmCancelChallenge('${jsq(crewId)}','${jsq(ch.id)}')">Cancel challenge</button>` : '';
+  $('app').innerHTML = `<div class="wrap">${head}${banner}${goalCard}${meter}${leaderboard}${postsHtml}${pastHtml}${cancelBtn}</div>`;
   if(!silent){ const st = {t:'challenge', crewId, challengeId: ch.id}; fromHistory ? landOn(st) : navigated(st); }
+}
+// Oct 10 2026 (audit finding): the actual undo for a challenge started by mistake -- wrong type,
+// wrong target, fat-fingered the button. Removes it server-side as if it never happened (see the
+// DELETE route's own comment for why that's the right shape, not a "cancelled" flag) and that's
+// also what immediately re-opens the "Start a challenge" door for a corrected attempt, since the
+// server only ever blocks a new one while runningChallenge() finds something here. Lands back on
+// the crew page the same way deleteCrewConfirmed/leaveCrewConfirmed do, re-fetching fresh so the
+// now-gone challenge doesn't linger on screen.
+function confirmCancelChallenge(crewId, challengeId){
+  confirmSheet('Cancel this challenge?', "It'll be removed for the whole crew — no record, no winner. You can start a new one right away.", 'Cancel challenge', () => cancelChallengeConfirmed(crewId, challengeId));
+}
+async function cancelChallengeConfirmed(crewId, challengeId){
+  const r = await H.delete(`/api/crews/${crewId}/challenge/${challengeId}`);
+  closeAllSheets();
+  if(r && r.error){ alert(r.error); return; }
+  // Same shape as startChallenge()'s own history.back() a few lines up: popping back to the
+  // crew's existing {t:'crew'} entry re-enters it via renderNavState -> crewView(id,
+  // {fromHistory:true}), which always re-fetches fresh -- so the now-cancelled challenge is
+  // actually gone from the card, not stale, and this doesn't leave a dead {t:'challenge'} entry
+  // for a challenge that no longer exists sitting in the Back stack either.
+  history.back();
 }
 // Sep 6 (Jeff: "seems to only be who can do the most workouts or sets... I want to be able to
 // customize this... how can we make this work with the richer menu - but also more customization.
@@ -9191,13 +9452,32 @@ async function newChallengeView(crewId, opts){
     </div>
     <div class="card" style="padding:14px" id="chalCustomBlock" hidden>
       <label class="muted" style="display:block;text-align:center">What's the challenge?</label>
-      <input id="chalCustomTitle" placeholder="e.g. No skipping leg day" maxlength="80" style="margin-top:10px;text-align:center">
+      <input id="chalCustomTitle" placeholder="e.g. No skipping leg day" maxlength="80" style="margin-top:10px;text-align:center" onkeydown="onEnterKey(event, ()=>confirmStartChallenge('${jsq(crewId)}'))">
       <div class="muted" style="font-size:12px;margin:14px 0 0;text-align:center">Runs for 7 days starting now. There's no auto-tracking for this one — the crew calls it based on what everyone actually posts that week.</div>
     </div>
-    <button class="blue" style="margin-top:16px" onclick="startChallenge('${jsq(crewId)}')">Start challenge</button>
+    <button class="blue" style="margin-top:16px" onclick="confirmStartChallenge('${jsq(crewId)}')">Start challenge</button>
   </div>`;
   updateChalHint();
   if(!silent){ const st = {t:'newChallenge', crewId}; fromHistory ? landOn(st) : navigated(st); }
+}
+// Oct 10 2026 (audit finding): tapping "Start challenge" committed the whole crew to a 7-day
+// challenge immediately, with no "are you sure" -- the easiest way in is a stray tap before
+// double-checking the type/target, same risk every other committing action in this app already
+// confirms. A running challenge is now cancelable from its own page (see confirmCancelChallenge /
+// DELETE .../challenge/:challengeId below), so this isn't the only way out anymore, but a plain
+// confirm still catches the accidental-tap case right where it happens. Validates FIRST, the exact
+// same checks startChallenge() below does, so an empty custom title or unset target still alerts
+// immediately like before this fix -- there's nothing worth confirming yet if it's not valid.
+// startChallenge() re-validates on its own when the confirm's Start is tapped (cheap, and the
+// real safety net if CHAL_MODE/the DOM somehow changed between the two taps).
+function confirmStartChallenge(crewId){
+  if(CHAL_MODE==='custom'){
+    if(!(($('chalCustomTitle').value||'').trim())){ alert("Describe the challenge first."); return; }
+  } else {
+    const target = parseInt(($('chalTargetVal')&&$('chalTargetVal').textContent)||'0', 10);
+    if(!target){ alert("Pick a target first."); return; }
+  }
+  confirmSheet('Start this challenge for the crew?', '', 'Start', () => startChallenge(crewId), false);
 }
 async function startChallenge(crewId){
   let body;
@@ -9235,9 +9515,17 @@ function inviteCrewToDraft(crewId, btn){
   if(btn) btn.classList.add('on');
 }
 function crewQuickInviteHtml(){
-  if(!CREW_PICKER.length) return '';
+  // Oct 10 2026 (audit finding #232): a solo crew (just you, nobody else has joined yet) rendered
+  // a chip here same as any other -- tapping it ran inviteCrewToDraft's own exclude-yourself
+  // filter down to an empty usernames list, then still flipped the chip to its "on" look (same
+  // visual as a real success) despite having invited literally nobody. Quietest, most honest fix:
+  // a chip for a crew with no one else in it has nothing to actually do, so it doesn't render --
+  // same "only show it when it does something" reasoning as every other action control in the app,
+  // not a case of an empty STATE worth surfacing (there's nothing to invite, not nothing shown yet).
+  const invitable = CREW_PICKER.filter(c => (c.members||[]).some(m=>m.username && m.username!==ME.username));
+  if(!invitable.length) return '';
   return `<div class="muted" style="font-size:12px;margin:2px 0 6px">Tap a crew to invite everyone in it</div>
-    <div class="crew-quickinv">${CREW_PICKER.map(c=>`<button type="button" class="chip" onclick="inviteCrewToDraft('${jsq(c.id)}',this)">👥 ${esc(c.name)}</button>`).join('')}</div>`;
+    <div class="crew-quickinv">${invitable.map(c=>`<button type="button" class="chip" onclick="inviteCrewToDraft('${jsq(c.id)}',this)">👥 ${esc(c.name)}</button>`).join('')}</div>`;
 }
 async function friendSearch(){
   const q = ($('fu').value||'').trim();
@@ -9292,6 +9580,20 @@ async function rejectFollow(id){
   const epoch=UI_EPOCH;
   const r = await H.post('/api/follow-requests/'+id+'/reject',{});
   if(r && r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) friends({silent:true});
+}
+// Oct 10 2026 (audit finding): same routes as acceptFollow/rejectFollow above, for the new
+// Accept/Decline banner on the requester's own profile (see profileView's reqBannerHtml) -- just
+// refreshing THIS profile in place afterward instead of jumping to the Friends tab, since that's
+// the screen the person tapping Accept/Decline is actually looking at.
+async function acceptFollowFromProfile(id){
+  const epoch=UI_EPOCH;
+  const r = await H.post('/api/follow-requests/'+id+'/accept',{});
+  if(r && r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) profileView(id,{silent:true});
+}
+async function declineFollowFromProfile(id){
+  const epoch=UI_EPOCH;
+  const r = await H.post('/api/follow-requests/'+id+'/reject',{});
+  if(r && r.error) alert(r.error); else if(nothingNavigatedSince(epoch)) profileView(id,{silent:true});
 }
 // Design cleanup, Aug 27: this used to hash the seed into one of 8 colors, so friends, requests,
 // search results and chat all showed a scatter of random reds/purples/oranges -- and since it's a
@@ -9669,11 +9971,17 @@ async function renderNotifications(opts){
   // follow-request row (Sep 7, Jeff) -- Join requests just below keeps Approve/Reject, a
   // deliberately different action (joining a session, not a person), so this is not a blanket
   // rename across the page.
+  // Oct 10 2026 (audit finding): this row named a real person but tapping it did nothing -- every
+  // other "someone" row on this exact page (the invite card right above, via openSession) already
+  // opens into something; this one was a dead end unless you happened to recognize the name and
+  // remembered you could find them a different way (Friends tab search, etc). Same tappable-row
+  // shape as invitesHtml's .inv-card just above: the row itself opens their profile, Accept/Decline
+  // stay exactly where they are with event.stopPropagation() so a button tap doesn't also navigate.
   const followHtml = followRequests.length ? `<h2>Follow requests</h2><div class="card" style="padding:6px 12px">` + followRequests.map(fr => `
-      <div class="req">
+      <div class="req" style="cursor:pointer" onclick="profileView('${jsq(fr.from.id)}')">
         ${avatarHtml(fr.from,'av')}
         <div class="rc"><b>${esc(fr.from.displayName||fr.from.username)}</b> wants to follow you</div>
-        <div class="ra">
+        <div class="ra" onclick="event.stopPropagation()">
           <button class="sm ok" onclick="notifAcceptFollow('${fr.from.id}')">Accept</button>
           <button class="sm no" onclick="notifRejectFollow('${fr.from.id}')">Decline</button>
         </div>
@@ -10146,11 +10454,11 @@ function changePasswordSheet(){
   if(PWCONFIRM_EL){ PWCONFIRM_EL.remove(); PWCONFIRM_EL = null; }
   const inner = `<div class="sheet"><div class="sheet-head"><h2>Change password</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
     <label class="muted">Current password</label>
-    <input id="cpCur" type="password" autocomplete="current-password">
+    <input id="cpCur" type="password" autocomplete="current-password" onkeydown="onEnterKey(event, doChangePassword)">
     <label class="muted" style="margin-top:10px;display:block">New password (8-64 characters)</label>
-    <input id="cpNew" type="password" autocomplete="new-password">
+    <input id="cpNew" type="password" autocomplete="new-password" onkeydown="onEnterKey(event, doChangePassword)">
     <label class="muted" style="margin-top:10px;display:block">Confirm new password</label>
-    <input id="cpNew2" type="password" autocomplete="new-password">
+    <input id="cpNew2" type="password" autocomplete="new-password" onkeydown="onEnterKey(event, doChangePassword)">
     <button class="blue" style="width:100%;margin-top:16px" onclick="doChangePassword()">Change password</button>
   </div>`;
   PWCONFIRM_EL = openSheetHtml(inner);
@@ -10387,6 +10695,20 @@ async function profileView(id, opts){
     : `<button class="sm ${fcls}" id="followBtn" onclick="toggleFollow('${p.id}','${p.youFollow || 'none'}')">${flabel}</button>`
       + (p.followsYou ? `<span class="muted" style="margin-left:8px;font-size:12px">Follows you</span>` : '');
   const actHtml = action?`<div style="margin:10px 0">${action}</div>`:'';
+  // Oct 10 2026 (audit finding): a pending incoming follow request used to be visible ONLY in
+  // Notifications/the Friends-tab list -- landing directly on the requester's own profile (search,
+  // a mutual crew, a shared workout...) showed nothing about it at all, so Accept/Decline was
+  // never reachable from the one place it's most natural to decide it: looking right at who's
+  // asking. Same Accept/Decline pair every other follow-request row in the app already uses, just
+  // routed to acceptFollowFromProfile/declineFollowFromProfile so this screen re-renders itself
+  // afterward instead of jumping to the Friends tab the way the original acceptFollow/rejectFollow do.
+  const reqBannerHtml = (!isMe && p.requestedToFollowYou) ? `<div class="card" style="padding:12px;margin:10px 0;display:flex;align-items:center;justify-content:space-between;gap:10px">
+    <div style="font-size:13px"><b>${esc(p.displayName||p.username)}</b> wants to follow you</div>
+    <div class="row" style="gap:8px;flex:0 0 auto">
+      <button class="sm ok" onclick="acceptFollowFromProfile('${p.id}')">Accept</button>
+      <button class="sm no" onclick="declineFollowFromProfile('${p.id}')">Decline</button>
+    </div>
+  </div>` : '';
   // v147: surface recentActivity (PRs / weekly completions / streaks) — server already computes
   // this (buildActivityFor in server.js) but the profile page never rendered it. Same markup as
   // Home's "Friends' Activity" strip; since v225 all cards float borderless, and (same rule as
@@ -10475,6 +10797,7 @@ async function profileView(id, opts){
     </div>
     ${stats}
     ${actHtml}
+    ${reqBannerHtml}
     ${bioBlock}
     ${activityBlock}
     <div class="sec-head" id="myWorkoutsSection"><h2>${isMe?'My Workouts':esc((p.displayName||p.username))+"’s Workouts"}</h2><div class="view-toggle"><button class="${wview==='list'?'on':''}" id="vtList" onclick="setWorkoutView('list','${id}')">☰ List</button><button class="${wview==='grid'?'on':''}" id="vtGrid" onclick="setWorkoutView('grid','${id}')">▦ Grid</button></div></div>
@@ -10619,8 +10942,15 @@ async function unblockUser(id){
 // restrict the other person going forward the way Block does (see the comment on
 // /api/remove-follower server-side). Copy approved by Jeff before building, same as every other
 // confirm-sheet wording in this app.
+// Oct 10 2026 (audit finding, Jeff's call after discussion): the body text used to promise "won't
+// see your private posts or activity" -- true only for a PRIVATE profile (canSeeProfile gates on
+// an approved follower there); for a PUBLIC profile, the default, removing a follower changes
+// NOTHING about what they can see, so the app was making a promise it couldn't keep (exactly the
+// "never state something you can't stand behind" rule). First fix considered was a conditional,
+// state-aware sentence (different text for public vs. private); Jeff's actual call was simpler --
+// drop the explanation entirely. No body text, just a plain confirm.
 function confirmRemoveFollower(id, name){
-  confirmSheet(`Remove ${name} as a follower?`, `They'll stop following you and won't see your private posts or activity. They can follow you again later.`, 'Remove', () => doRemoveFollower(id), false);
+  confirmSheet(`Remove ${name} as a follower?`, '', 'Remove', () => doRemoveFollower(id), false);
 }
 async function doRemoveFollower(id){
   const epoch = UI_EPOCH;
@@ -10704,7 +11034,7 @@ async function submitReport(){
   closeSheet();
   const r = await H.post('/api/report', body);
   if(r && r.error){ alert(r.error); return; }
-  alert('Report submitted. Thanks for letting us know.');
+  showToast('Report submitted');
   // Same "which screen re-renders itself" pattern as doBlockUser above -- only relevant when
   // alsoBlock was checked, since that's the only case anything about the current screen changed.
   // Guarded by the epoch captured when the sheet opened (see openReportSheet) -- a real navigation
@@ -10808,10 +11138,10 @@ function editUsernameSheet(){
   if(PWCONFIRM_EL){ PWCONFIRM_EL.remove(); PWCONFIRM_EL = null; }
   const inner = `<div class="sheet"><div class="sheet-head"><h2>Username</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
     <label class="muted">Your @handle</label>
-    <input id="euVal" value="${esc(ME.username||'')}" placeholder="username" autocomplete="off">
+    <input id="euVal" value="${esc(ME.username||'')}" placeholder="username" autocomplete="off" onkeydown="onEnterKey(event, doEditUsername)">
     <div class="fineprint" style="margin-top:4px">This is also what you use to log in.</div>
     <label class="muted" style="margin-top:10px;display:block">Current password</label>
-    <input id="euPass" type="password" autocomplete="current-password">
+    <input id="euPass" type="password" autocomplete="current-password" onkeydown="onEnterKey(event, doEditUsername)">
     <button class="blue" style="width:100%;margin-top:16px" onclick="doEditUsername()">Save</button>
   </div>`;
   PWCONFIRM_EL = openSheetHtml(inner);

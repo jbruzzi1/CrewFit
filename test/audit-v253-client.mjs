@@ -176,6 +176,12 @@ const tryBoot = vm.runInContext('tryBoot', ctx);
 const addLogSet = vm.runInContext('addLogSet', ctx);
 const openCropper = vm.runInContext('openCropper', ctx);
 const submitSession = vm.runInContext('submitSession', ctx);
+// v232 (audit finding #210): tplBack() now confirms before discarding an in-progress routine edit,
+// same "only confirm when there's something to lose" shape as cancelCreate() -- editing an
+// EXISTING routine (TPL_MODE.id set) always confirms, same as createFlowHasContent() always
+// confirming once EDITING_SESSION is set. runConfirmCb() is the real confirmSheet() plumbing;
+// pulling it out here lets this test simulate the user tapping the sheet's own action button.
+const runConfirmCb = vm.runInContext('runConfirmCb', ctx);
 
 function setTplMode(active, id) {
   vm.runInContext(`TPL_MODE.active=${active}; TPL_MODE.id=${id === null ? 'null' : JSON.stringify(id)}; TPL_MODE.name=${JSON.stringify(id || '')}; TPL_MODE.copy=false;`, ctx);
@@ -197,10 +203,16 @@ console.log('=== TPL_MODE leak (routine editor Back / new workout / Use a routin
   ok(getTplMode().active === true && getTplMode().id === 'tpl1',
     `tplEdit enters TPL_MODE for the routine being edited (got ${JSON.stringify(getTplMode())})`);
 
+  // v232 (audit finding #210): editing an existing routine always has "something to lose", so
+  // tplBack() now opens a confirm sheet instead of discarding instantly -- TPL_MODE is still
+  // pointed at Push Day right after the tap, only clearing once the confirm is actually accepted.
   tplBack();
+  ok(getTplMode().active === true && getTplMode().id === 'tpl1',
+    `tplBack() confirms before discarding an existing routine's edits, leaving TPL_MODE untouched until then (got ${JSON.stringify(getTplMode())})`);
+  runConfirmCb();
   await new Promise(r => setTimeout(r, 0)); // tplBack's templatesPage() is async
   ok(getTplMode().active === false && getTplMode().id === null,
-    `tplBack() clears TPL_MODE instead of leaving it pointed at Push Day (got ${JSON.stringify(getTplMode())})`);
+    `tplBack() clears TPL_MODE once the discard is confirmed (got ${JSON.stringify(getTplMode())})`);
 
   // newWorkout()'s and workoutNow()'s OWN defensive clears, isolated from tplBack by forcing the
   // leak directly first -- proves each one independently guards the entry into a new workout.
