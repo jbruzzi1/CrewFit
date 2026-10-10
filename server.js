@@ -1356,6 +1356,15 @@ function profileOf(id, viewerId, localToday) {
       : ((u.followers || []).includes(viewerId) ? 'following'
       : ((u.followReqs || []).includes(viewerId) ? 'requested' : 'none')),
     followsYou: !!(viewerId && id !== viewerId && (DB.users[viewerId].followers || []).includes(id)),
+    // Oct 10 2026 (audit finding): the ONLY place a pending incoming follow request was visible
+    // used to be Notifications/the Friends-tab list -- landing on the requester's own profile
+    // directly (search, a mutual crew, a shared workout...) showed nothing at all about it, so the
+    // one person who most needs to see "they want to follow you, Accept/Decline right here" (the
+    // viewer, about to decide whether to look closer at this exact profile) had no idea unless
+    // they'd separately already seen it elsewhere. Same shape as followsYou just above, just
+    // checking the VIEWER's own followReqs (pending incoming requests FOR them) instead of their
+    // followers -- true only when `id` (the profile being viewed) is the one who sent it.
+    requestedToFollowYou: !!(viewerId && id !== viewerId && (DB.users[viewerId].followReqs || []).includes(id)),
     // Sep 2026: whether the VIEWER has blocked this profile -- drives the Block/Unblock menu item
     // client-side. Deliberately not "did this profile block the viewer" (that's not the viewer's
     // business to know, same as every other block implementation -- see isBlocked's comment).
@@ -2013,8 +2022,17 @@ app.get('/api/users/search', auth, async (req, res) => {
 // separate relationship; `followRequests` is unchanged, still the pending-approval queue.
 app.get('/api/friends', auth, async (req, res) => {
   const me = DB.users[req.userId]; ensureFollowArrays(me);
+  // Oct 10 2026 (audit finding, same fix shape as followListFor's own Oct 9 2026 sort): this came
+  // back in whatever order connectionsOf's Set happened to iterate (follow order), not a real
+  // order a person could scan -- every picker built from this list (the invite-friends checklist
+  // in createFlow, the share-routine target list in tplShareSheet) inherited that same
+  // can't-find-anyone-past-a-handful problem a search box alone wouldn't fix on its own. Sorted
+  // alphabetically by displayName (falling back to username), same localeCompare/sensitivity:'base'
+  // convention as followListFor, so every friends-list surface in the app now agrees on one order.
+  const friends = connectionsOf(req.userId).map(id => ({ ...publicUser(id), streak: currentStreak(id) }))
+    .sort((a, b) => (a.displayName || a.username).localeCompare(b.displayName || b.username, undefined, { sensitivity: 'base' }));
   res.json({
-    friends: connectionsOf(req.userId).map(id => ({ ...publicUser(id), streak: currentStreak(id) })),
+    friends,
     followRequests: (me.followReqs || []).map(id => DB.users[id] ? publicUser(id) : null).filter(Boolean)
   });
 });
@@ -2507,8 +2525,19 @@ function publicChallenge(c, ch, viewerId) {
   // rank here even though the roster's own streak correctly reads null for them. Sort by the
   // real count first (rank order itself isn't the sensitive part), then null the number out for
   // a blocked pair on the way out.
+  // Oct 10 2026 (audit finding #229): ties broke on whatever order memberIds happened to be in
+  // (join order), which reads to the crew as an arbitrary, unexplained ranking -- two members tied
+  // at the same count could land in either order, with nothing on screen saying why. A tied count
+  // now falls back to alphabetical by name, same deterministic tiebreaker GET /api/friends and
+  // followListFor() already use for their own listings.
   const leaderboard = c.memberIds.filter(id => DB.users[id])
-    .sort((a, b) => (perMember[b] || 0) - (perMember[a] || 0))
+    .sort((a, b) => {
+      const diff = (perMember[b] || 0) - (perMember[a] || 0);
+      if (diff !== 0) return diff;
+      const an = DB.users[a].displayName || DB.users[a].username;
+      const bn = DB.users[b].displayName || DB.users[b].username;
+      return an.localeCompare(bn, undefined, { sensitivity: 'base' });
+    })
     .map(id => ({ ...publicUser(id), count: isBlocked(id, viewerId) ? null : (perMember[id] || 0) }));
   const completed = !!ch.completedAt;
   // Ran its full 7 days without hitting the target. lastChallenge() keeps showing this one (so the
@@ -2665,15 +2694,42 @@ app.post('/api/crews/:id/challenge', auth, async (req, res) => {
   // no heart in the UI (see friends() in app.js) since nothing has been earned yet. Reuses
   // notifyBody's own wording, just without the "{displayName} " prefix -- app.js prepends the
   // actor's name itself, same as every other feed row.
-  emitFeedEvent('challenge_started', req.userId, { crewId: c.id, crewName: c.name, challengeType: ch.type,
+  // Oct 10 2026 (audit finding, see the DELETE route right below): stashed on the challenge
+  // itself so a cancel can clean up this exact feed entry rather than leaving a stray "started a
+  // challenge" line sitting in the feed for something that got undone a minute later.
+  const fev = emitFeedEvent('challenge_started', req.userId, { crewId: c.id, crewName: c.name, challengeType: ch.type,
     target: ch.target ?? null, title: ch.title || null,
     text: notifyBody.slice(DB.users[req.userId].displayName.length + 1) });
+  ch.feedEventId = fev.id;
   await save(DB);
   // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
   // reason as the other crew-lifecycle notify loops (crew notifications deliberately untouched by
   // a block; see the Sep 14 2026 comment on publicCrew()). GET /api/feed's own challenge_started
   // event stays filtered, unchanged -- only this push/inbox notification is reverted.
   for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: notifyBody, link: { type: 'crew', crewId: c.id } });
+  res.json(publicCrew(c, req.userId));
+});
+// Oct 10 2026 (audit finding): starting a challenge was a one-way door -- a wrong target, wrong
+// type, or a fat-finger tap committed the whole crew for the full 7 days with nothing the owner
+// could do but let it run. This is a true cancel, not an edit: it removes the just-started
+// challenge entirely, as if it had never been created (not a "cancelledAt" flag left sitting in
+// history -- there's nothing about a cancelled challenge worth a crew looking back on, and a flag
+// would have meant teaching lastChallenge/publicChallenge/checkChallengeCompletion a brand new
+// state for no real benefit). That's also exactly what unblocks starting a corrected one right
+// away: runningChallenge(c) returning null the moment this runs is what POST .../challenge above
+// already gates on, so no separate "allow restart" logic is needed. Scoped to the SPECIFIC
+// challenge id the client has on screen, not just "whatever's running" -- a stale page open from
+// before this challenge completed/expired and a new one started can't cancel the wrong one.
+app.delete('/api/crews/:id/challenge/:challengeId', auth, async (req, res) => {
+  const c = DB.crews[req.params.id];
+  if (!c) return res.status(404).json({ error: 'not found' });
+  ensureCrewShape(c);
+  if (c.ownerId !== req.userId) return res.status(403).json({ error: 'only the owner can cancel a challenge' });
+  const ch = runningChallenge(c);
+  if (!ch || ch.id !== req.params.challengeId) return res.status(400).json({ error: 'no running challenge to cancel' });
+  c.challenges = c.challenges.filter(x => x.id !== ch.id);
+  if (ch.feedEventId && DB.feedEvents[ch.feedEventId]) delete DB.feedEvents[ch.feedEventId];
+  await save(DB);
   res.json(publicCrew(c, req.userId));
 });
 
@@ -3630,7 +3686,21 @@ function crewChallengeRank(c, userId) {
   if (!ch || ch.type === 'custom') return null;
   if (!c.memberIds.includes(userId)) return null;
   const { perMember } = challengeProgress(c, ch);
-  const sorted = c.memberIds.filter(id => DB.users[id]).sort((a, b) => (perMember[b] || 0) - (perMember[a] || 0));
+  // Oct 10 2026 (audit finding #229 follow-up, cold-review catch): this computes the same "current
+  // rank in this challenge" publicChallenge()'s own leaderboard sort does, for the Activity feed's
+  // "moved to #N" event and the rank-improvement snapshot -- but it kept the OLD untie-broken sort
+  // after publicChallenge's own sort got a deterministic alphabetical tiebreaker. Two members tied
+  // at the same count could land in a different relative order here than on the leaderboard screen
+  // itself -- a feed event saying "moved to #1" for someone the leaderboard shows in a tied #2 slot
+  // under a different, alphabetically-earlier name. Same tiebreaker, kept in lockstep with
+  // publicChallenge's sort rather than duplicating the old logic.
+  const sorted = c.memberIds.filter(id => DB.users[id]).sort((a, b) => {
+    const diff = (perMember[b] || 0) - (perMember[a] || 0);
+    if (diff !== 0) return diff;
+    const an = DB.users[a].displayName || DB.users[a].username;
+    const bn = DB.users[b].displayName || DB.users[b].username;
+    return an.localeCompare(bn, undefined, { sensitivity: 'base' });
+  });
   const idx = sorted.indexOf(userId);
   return idx === -1 ? null : idx + 1;
 }
@@ -6735,14 +6805,31 @@ function recommendationsFor(userId) {
     // sessions and told someone whose squat is 225 to try 140. Compared in lb so a user who
     // switched units mid-cycle is not told their own weight changed.
     if (toppedOut(latest) && toppedOut(prev) && sameLoad(latest.top, prev.top)) {
-      const step = incrementFor(name, unit);
-      // Sep 11 2026: for an assisted exercise, topping out twice at the same assist weight means
-      // ready to REDUCE assist (harder), not add more — same inversion as everywhere else this
-      // touches. Clamped at 0 (can't assist less than "none") rather than going negative; at 0
-      // there is nothing left to suggest, so this exercise simply stops appearing in `ready` —
-      // toppedOut()/sameLoad() themselves stay untouched, only which direction counts as progress.
-      const suggested = lessIsMore ? Math.max(0, base.weight - step) : base.weight + step;
-      if (!lessIsMore || suggested < base.weight) ready.push(Object.assign({}, base, { suggested, step }));
+      // Oct 10 2026 (audit finding, same "say nothing rather than something false" principle as
+      // the TIMED_HOLD skip above -- Oct 9 2026 comment on `bodyweight` a few lines up): a true
+      // bodyweight exercise with no added-weight variant tracked in the library has nothing real
+      // to add here. Push-Up, Sit-Up, Burpee, Mountain Climber, and the rest of the plain
+      // equipment:['bodyweight'] roster carry no `loadType` at all; Pull-Up/Chin-Up/Dip DO carry
+      // loadType:'added' specifically because a weighted vest/belt is a genuine, trackable next
+      // step for those -- "+5 lb" was telling someone to add weight to a push-up, with no way in
+      // this app to actually log that as progress on the exercise's own terms. Scoped to just this
+      // push, not a top-level `continue` like TIMED_HOLD's: an exercise still working UP to its
+      // rep ceiling correctly lands in `holds` below either way ("Hit X reps -- Y moves you up"),
+      // which says nothing about weight and stays true regardless of whether weight can ever be
+      // added; only the topped-out-twice "add weight" suggestion was ever false for these. A
+      // maxed-out bodyweight exercise like this one simply stops appearing here, same as a maxed-
+      // out assisted exercise already does below (lessIsMore clamped at 0) -- there's nothing left
+      // this card can suggest, so it says nothing rather than something wrong.
+      if (!bodyweight || loadTypeForName(name) === 'added') {
+        const step = incrementFor(name, unit);
+        // Sep 11 2026: for an assisted exercise, topping out twice at the same assist weight means
+        // ready to REDUCE assist (harder), not add more — same inversion as everywhere else this
+        // touches. Clamped at 0 (can't assist less than "none") rather than going negative; at 0
+        // there is nothing left to suggest, so this exercise simply stops appearing in `ready` —
+        // toppedOut()/sameLoad() themselves stay untouched, only which direction counts as progress.
+        const suggested = lessIsMore ? Math.max(0, base.weight - step) : base.weight + step;
+        if (!lessIsMore || suggested < base.weight) ready.push(Object.assign({}, base, { suggested, step }));
+      }
     } else if (!toppedOut(latest)) {
       holds.push(base);
     } else {
@@ -7579,7 +7666,35 @@ function plateausFor(userId, localToday) {
 // beaten by a logged "Flat Barbell Bench Press" (they group by name — see rebuildAllPrs).
 function seedsOf(userId) { return (DB.users[userId] && DB.users[userId].seeded) || {}; }
 
-app.get('/api/me/seeds', auth, (req, res) => res.json({ seeds: seedsOf(req.userId) }));
+// Oct 10 2026 (audit finding): a seed is stored in whatever unit it was TYPED in (PUT below always
+// stamps the CURRENT u.units at save time), same convention as a logged set -- but unlike every
+// other place that reads a stored weight back (recordsFor's goal normalization just above,
+// GET /api/progress/exercise/:name's own `seed` field a few hundred lines down, both already use
+// inUnit() for exactly this), this route used to hand back the raw, unconverted number. The
+// Starting-weights screen labels its inputs with the viewer's CURRENT unit (myUnit() client-side)
+// but was filling them with the OLD unit's raw number -- switch lb->kg, open Starting weights, see
+// your 185 lb squat seed still reading "185" under a "(kg)" label (should read ~84). Tap Save
+// without touching anything and PUT re-stamps unit:'kg' against that same unconverted 185,
+// permanently mislabeling it as 185 kg (~408 lb) -- silent, real data corruption from the
+// completely ordinary act of switching units. Converting here, at read time, is non-destructive:
+// storage keeps each seed's own original unit untouched (same as a logged set), only the
+// response is expressed in the viewer's current unit, so re-saving an untouched value round-trips
+// losslessly.
+app.get('/api/me/seeds', auth, (req, res) => {
+  const unit = (DB.users[req.userId] && DB.users[req.userId].units) || 'lb';
+  const raw = seedsOf(req.userId);
+  const seeds = {};
+  for (const name of Object.keys(raw)) {
+    const s = raw[name];
+    seeds[name] = {
+      ...s,
+      weight: inUnit(s.weight, s.unit || 'lb', unit),
+      goal: (s.goal != null) ? inUnit(s.goal, s.unit || 'lb', unit) : s.goal,
+      unit,
+    };
+  }
+  res.json({ seeds });
+});
 
 app.put('/api/me/seeds', auth, async (req, res) => {
   // `weight`/`reps` are the user's CURRENT working set, not an all-time best. Jeff's call:

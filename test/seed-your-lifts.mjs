@@ -238,10 +238,17 @@ console.log('\n--- client markup (source regex, same style as test/favorite-exer
   ok(/history\.back\(\);\s*\n\}/.test(saveFn), 'seedSaveAll always returns via history.back() now -- no more wasFirstRun branch');
   ok(!/wasFirstRun/.test(saveFn), 'and the wasFirstRun/showTab(\'home\') branch is gone entirely');
 
-  // seedRemoveRow fires the DELETE unconditionally (idempotent no-op if never actually saved --
-  // verified server-side above) rather than trying to track which rows were "really" seeded.
+  // Oct 10 2026 (audit finding): seedRemoveRow used to fire the DELETE unconditionally and
+  // immediately, no confirm at all -- the one destructive tap on this screen that skipped
+  // confirmSheet. It now only confirms when the row actually has something in it (weight or
+  // goal typed), going through seedRemoveRowConfirmed either way (idempotent no-op server-side
+  // if the row was never really saved -- verified above -- a real delete if it was).
   const removeFn = (src.match(/function seedRemoveRow\(i\)\{[\s\S]*?\n\}/) || [''])[0];
-  ok(/H\.delete\('\/api\/me\/seeds\/'\+encodeURIComponent\(removed\.exercise\)\)/.test(removeFn), 'seedRemoveRow deletes the row server-side too');
+  ok(/confirmSheet\(/.test(removeFn), 'seedRemoveRow confirms before removing a row with real data');
+  ok(/const hasData\s*=/.test(removeFn) && /if\(hasData\)/.test(removeFn),
+     'but only when there\'s actually something to lose -- an untouched blank row removes instantly, same as createFlowHasContent()\'s rule for Cancel');
+  const removeConfirmedFn = (src.match(/function seedRemoveRowConfirmed\(i\)\{[\s\S]*?\n\}/) || [''])[0];
+  ok(/H\.delete\('\/api\/me\/seeds\/'\+encodeURIComponent\(removed\.exercise\)\)/.test(removeConfirmedFn), 'seedRemoveRowConfirmed deletes the row server-side too');
 
   // CSS actually exists for the new screen -- not an invisible/unstyled form.
   ok(/\.seed-row-fields\s*\{/.test(css), '.seed-row-fields is styled');
