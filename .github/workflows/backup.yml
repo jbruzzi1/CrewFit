@@ -1,0 +1,124 @@
+# Oct 11 2026 (deep-dive audit, Jeff: "for #1 lets do what is best for long term overall").
+#
+# Nightly off-platform backup. Everything this app had before today lived on Fly's own
+# infrastructure (the boot-time JSON snapshot on the app volume, Fly's own default daily volume
+# snapshots on spotmeapp-db) -- real, and tested (see test/data-safety.mjs), but all of it goes
+# away together if Fly itself ever has an account-level problem. This job dumps the production
+# database, encrypts it, and uploads it to Cloudflare R2 -- a different company entirely.
+#
+# How it reaches the database: GitHub's runners are not on Fly's private network, so this uses
+# the same `flyctl proxy` tunnel trick DEPLOY.md already documents for a human doing this by
+# hand from a terminal -- just run unattended, on a schedule. This is a known, real pattern (not
+# invented for this repo) for backing up a Fly Postgres app from CI.
+#
+# One-time setup Jeff still needs to do (nothing below runs until all of these exist as GitHub
+# repo secrets -- Settings -> Secrets and variables -> Actions):
+#   - FLY_BACKUP_TOKEN      a Fly deploy token scoped to spotmeapp-db ONLY (a separate token from
+#                           the FLY_API_TOKEN deploy already uses, on purpose -- this workflow
+#                           has no reason to be able to touch the app itself, only the database):
+#                             fly tokens create deploy -x 8760h --app spotmeapp-db
+#   - BACKUP_DB_URL         the real DATABASE_URL, but with the host rewritten to localhost:15432
+#                           (the local port this workflow's own `flyctl proxy` tunnel listens
+#                           on) -- see "Pull a copy of the live data" in DEPLOY.md for how to get
+#                           the real user/password once, via the same proxy trick by hand.
+#   - BACKUP_ENCRYPTION_KEY a long random passphrase (e.g. `openssl rand -base64 32`), used ONLY
+#                           to encrypt/decrypt these backups. Losing it means the backups become
+#                           unreadable -- store it somewhere durable outside GitHub too (a
+#                           password manager), not just as this one secret.
+#   - R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
+#                           from a Cloudflare R2 bucket Jeff creates + an API token scoped to
+#                           that bucket only. Set a lifecycle rule on the bucket (R2 dashboard ->
+#                           bucket -> Settings -> Object lifecycle rules) to auto-delete objects
+#                           after, say, 30 days, so this never needs its own rotation logic here.
+#
+# Until BACKUP_DB_URL exists this job fails loudly on every run (not silently skips) -- a backup
+# job that's quietly never running is exactly the failure mode this whole effort exists to close,
+# so "red until configured" is deliberate, not a bug. GitHub emails repo watchers on a failed
+# scheduled run by default, which is this job's only alerting for now.
+#
+# Known, disclosed, not fixed here: `superfly/flyctl-actions/setup-flyctl@master` below is
+# pinned to a branch, not a release tag or commit SHA -- same convention deploy.yml already
+# uses, so at least it's consistent, but this job now hands that same unpinned-action supply
+# chain surface a decrypt-capable passphrase and R2 write credentials in one run, which raises
+# what a compromised action could do. Worth pinning to a specific release SHA later; left as-is
+# for now rather than hand-typing a SHA this sandbox couldn't verify against the real repo.
+
+name: nightly db backup
+
+on:
+  schedule:
+    # 9:21 UTC daily -- off the hour on purpose, so this isn't competing with every other
+    # project's midnight/9am cron jobs for the scheduler's attention.
+    - cron: '21 9 * * *'
+  workflow_dispatch: {}   # lets Jeff (or anyone) trigger a backup on demand from the Actions tab
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check required secrets are set
+        run: |
+          missing=()
+          for v in FLY_BACKUP_TOKEN BACKUP_DB_URL BACKUP_ENCRYPTION_KEY R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
+            if [ -z "${!v:-}" ]; then missing+=("$v"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing required secret(s): ${missing[*]} -- see the setup comment at the top of this workflow file."
+            exit 1
+          fi
+        env:
+          FLY_BACKUP_TOKEN: ${{ secrets.FLY_BACKUP_TOKEN }}
+          BACKUP_DB_URL: ${{ secrets.BACKUP_DB_URL }}
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Confirm pg_dump/pg_restore/gpg are present (ubuntu-latest ships them, but don't assume forever)
+        run: |
+          command -v pg_dump >/dev/null || sudo apt-get update && sudo apt-get install -y postgresql-client
+          command -v gpg >/dev/null || sudo apt-get install -y gnupg
+          pg_dump --version
+
+      - name: Open a tunnel to spotmeapp-db and dump + encrypt it
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_BACKUP_TOKEN }}
+          BACKUP_DB_URL: ${{ secrets.BACKUP_DB_URL }}
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+        run: |
+          flyctl proxy 15432:5432 -a spotmeapp-db &
+          PROXY_PID=$!
+          # Give the WireGuard tunnel a moment to actually come up before pg_dump tries it --
+          # the same `sleep` the DEPLOY.md-documented by-hand version of this needs.
+          # Cold-review fix: this used to fall through silently if the tunnel never came up,
+          # letting pg_dump fail later with a generic connection error instead of a clear one.
+          ready=false
+          for i in $(seq 1 10); do
+            if pg_isready -d "$BACKUP_DB_URL" >/dev/null 2>&1; then ready=true; break; fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            echo "::error::flyctl proxy tunnel to spotmeapp-db never became ready after 20s -- aborting before pg_dump runs against a connection that isn't there."
+            kill "$PROXY_PID" 2>/dev/null || true
+            exit 1
+          fi
+          bash scripts/backup-db.sh dump "$BACKUP_DB_URL" "$BACKUP_ENCRYPTION_KEY" backup.dump.gpg
+          kill "$PROXY_PID" 2>/dev/null || true
+
+      - name: Upload to Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          stamp="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+          aws s3 cp backup.dump.gpg "s3://${{ secrets.R2_BUCKET }}/crewfit-${stamp}.dump.gpg" \
+            --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+          rm -f backup.dump.gpg
+          echo "uploaded crewfit-${stamp}.dump.gpg"

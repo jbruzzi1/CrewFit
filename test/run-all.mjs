@@ -87,6 +87,12 @@ const files = [
   // in nobody's CI. Neither file needed any fix to pass; both were just missing from this list.
   'test/cancel-suggestion.mjs',
   'test/db-diff-writes.mjs',
+  // Oct 11 2026 (deep-dive audit, Jeff: "for #1 lets do what is best for long term overall"):
+  // proves scripts/backup-db.sh (the off-platform nightly backup's dump+encrypt+restore logic)
+  // actually round-trips real data, including the disaster-recovery shape of restoring OVER an
+  // already-populated, wrong database. See .github/workflows/backup.yml for the scheduled job
+  // that runs the real thing in production.
+  'test/backup-roundtrip.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

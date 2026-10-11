@@ -80,6 +80,63 @@ pg_dump "postgres://<user>:<password>@localhost:15432/<dbname>" > live-backup.sq
 That file holds every user's PIN-derived hash and salt and this repo is public. Keep it out of
 git the same way `data.json`/`*backup*.json` always were — do not commit it.
 
+## Off-platform backup (nightly, automatic)
+
+(Oct 11 2026, deep-dive audit: "no real backup story" — the boot-time JSON snapshot and Fly's
+own default volume snapshots are real and tested, but both live entirely on Fly's own
+infrastructure. `.github/workflows/backup.yml` closes that gap: every night it dumps the real
+database, encrypts it, and uploads it to Cloudflare R2 — a different company entirely, so a
+Fly-level problem can't take out every copy at once.)
+
+**One-time setup** (nothing in the workflow runs until every one of these exists as a GitHub
+repo secret — **Settings → Secrets and variables → Actions**):
+
+1. A Fly deploy token scoped to the *database* app only, not the main app (on purpose — this
+   workflow has no reason to be able to touch `spotmeapp` itself):
+   ```
+   export PATH="$HOME/.fly/bin:$PATH"
+   fly tokens create deploy -x 8760h --app spotmeapp-db
+   ```
+   Save the whole output (with the `FlyV1 ` prefix) as secret `FLY_BACKUP_TOKEN`.
+2. The real database URL, with the host swapped for the local tunnel port the workflow opens —
+   same connection string shape as step 4 of "Pull a copy of the live data" above:
+   ```
+   postgres://<user>:<password>@localhost:15432/<dbname>
+   ```
+   Save it as secret `BACKUP_DB_URL`.
+3. A long random passphrase for encrypting the backups:
+   ```
+   openssl rand -base64 32
+   ```
+   Save it as secret `BACKUP_ENCRYPTION_KEY` — **and also write it down somewhere outside
+   GitHub** (a password manager). Losing this makes every backup unreadable; it is not
+   recoverable from anywhere else.
+4. A Cloudflare R2 bucket (any name) and an API token scoped to only that bucket (Cloudflare
+   dashboard → R2 → create bucket, then Manage API tokens → create one scoped to it). Save four
+   secrets: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`.
+5. On the bucket, set a lifecycle rule to auto-delete objects after ~30 days (R2 dashboard →
+   that bucket → Settings → Object lifecycle rules) — this is the backup's retention policy;
+   nothing in the workflow deletes old backups itself.
+
+Until all seven secrets exist, every run of this workflow fails loudly (not a silent skip) — check
+**Actions** after adding them to confirm a real run goes green. It can also be run on demand any
+time from the **Actions** tab (`workflow_dispatch`), without waiting for its 9:21am UTC schedule.
+
+**To restore from one of these** (the matching half — a backup nobody has restored from is a
+theory, not a backup; the same `scripts/backup-db.sh` the nightly job uses does this too):
+```
+export PATH="$HOME/.fly/bin:$PATH"
+fly proxy 15432:5432 -a spotmeapp-db   # separate terminal tab, leave running
+```
+```
+aws s3 cp s3://<bucket>/crewfit-<timestamp>.dump.gpg ./backup.dump.gpg \
+  --endpoint-url https://<account-id>.r2.cloudflarestorage.com
+bash scripts/backup-db.sh restore ./backup.dump.gpg "<BACKUP_ENCRYPTION_KEY value>" \
+  "postgres://<user>:<password>@localhost:15432/<dbname>"
+```
+This replaces whatever is currently in the database with the backup's contents — confirm you
+actually want that before running it.
+
 ## Deploying by hand (should not be needed)
 ```
 export PATH="$HOME/.fly/bin:$PATH"; fly deploy --app spotmeapp
