@@ -35,8 +35,17 @@ primary_region = 'iad'
   method = "GET"
   path = "/healthz"
 
+# Oct 12 2026 (deep-dive audit, Jeff: "let's correct everything" -> infra redundancy item):
+# bumped from Fly's smallest tier (256MB) to 512MB. server.js keeps the ENTIRE database in an
+# in-memory `DB` object (see HANDOFF.md section 2.5) -- every user, session, and set ever logged
+# lives in process RAM at once, not paged from Postgres per-request, so memory headroom scales
+# with the app's own data, not just request volume. 256MB leaves very little slack above that
+# baseline plus Node's own runtime overhead; 512MB buys real headroom without a meaningful cost
+# jump ($2.19/mo -> $3.69/mo on Fly's shared-cpu-1x pricing, confirmed against fly.io's current
+# pricing page -- about $1.50/month more). Cheap insurance against an out-of-memory crash as the
+# user base grows post-launch, not a fix for a problem already observed in production.
 [[vm]]
-  memory = '256mb'
+  memory = '512mb'
   cpu_kind = 'shared'
   cpus = 1
-  memory_mb = 256
+  memory_mb = 512

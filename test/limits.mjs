@@ -1,6 +1,7 @@
 // Input caps: a single write must not be able to stuff an unbounded blob into data.json (the whole
-// file is re-serialised on every save, on a 256 MB box — so an uncapped field is how a handful of
-// requests wedge every write for everyone), and a logged number must stay finite and sane (Infinity
+// file is re-serialised on every save, on a 512 MB box (Oct 12 2026: bumped from 256MB, see
+// fly.toml) — so an uncapped field is still how a handful of requests wedge every write for
+// everyone, just at a higher ceiling), and a logged number must stay finite and sane (Infinity
 // serialises to null and became a permanent all-time PR). Everything is asserted against what
 // actually LANDS IN data.json, since that file is the resource being protected.
 import { spawn } from 'node:child_process';
