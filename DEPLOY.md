@@ -80,6 +80,12 @@ pg_dump "postgres://<user>:<password>@localhost:15432/<dbname>" > live-backup.sq
 That file holds every user's PIN-derived hash and salt and this repo is public. Keep it out of
 git the same way `data.json`/`*backup*.json` always were — do not commit it.
 
+(Oct 12 2026: `pg_dump` refuses to run at all if it's OLDER than the server it's dumping from —
+"aborting because of server version mismatch," no file written, not just a warning. spotmeapp-db
+runs Postgres 18. If this command errors with that message, the Mac's own `pg_dump` needs
+upgrading — `brew upgrade postgresql@18` or similar, then make sure that version is the one on
+`$PATH`.)
+
 ## Off-platform backup (nightly, automatic)
 
 (Oct 11 2026, deep-dive audit: "no real backup story" — the boot-time JSON snapshot and Fly's
