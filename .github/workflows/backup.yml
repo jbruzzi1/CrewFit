@@ -80,10 +80,37 @@ jobs:
 
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
-      - name: Confirm pg_dump/pg_restore/gpg are present (ubuntu-latest ships them, but don't assume forever)
+      - name: Install a pg_dump/pg_restore matching spotmeapp-db's Postgres version
         run: |
-          command -v pg_dump >/dev/null || sudo apt-get update && sudo apt-get install -y postgresql-client
-          command -v gpg >/dev/null || sudo apt-get install -y gnupg
+          # Oct 12 2026 (this workflow's first real run failed immediately on this exact gap):
+          # ubuntu-latest ships postgresql-client 16 by default, but spotmeapp-db runs Postgres
+          # 18 (Fly's managed Postgres image). pg_dump refuses outright to dump from a server
+          # NEWER than itself -- "pg_dump: error: aborting because of server version mismatch" --
+          # this isn't a compatibility warning, the dump step hard-fails with no file written.
+          # Old version of this step only installed postgresql-client if pg_dump was MISSING
+          # entirely, so it silently kept the too-old preinstalled one instead of ever catching
+          # this. Fix: always install the real PGDG apt repo (the Postgres project's own, not
+          # Ubuntu's) and ask for postgresql-client-18 specifically, to match.
+          # Known, disclosed, not fixed here: 18 is hardcoded to match spotmeapp-db's CURRENT
+          # version. If Fly ever upgrades spotmeapp-db to a newer Postgres major version, this
+          # same error will come back until this number is bumped to match -- there is no way to
+          # know the right version ahead of actually connecting, so hardcode-and-document is the
+          # pragmatic choice here, not an oversight.
+          # Cold-review fix: `||` and `&&` are equal precedence/left-associative in bash, so the
+          # old one-liner here (`cmd || update && install`) ran the install even when gpg was
+          # already present -- harmless (apt no-ops on an already-installed package) but not what
+          # it claimed to do. Braced so "only if missing" is what actually happens.
+          command -v gpg >/dev/null || { sudo apt-get update && sudo apt-get install -y gnupg; }
+          sudo apt-get install -y curl ca-certificates
+          sudo install -d /usr/share/postgresql-common/pgdg
+          # sudo on this curl too -- it writes INTO the root-owned dir `install -d` just made,
+          # which a plain unprivileged curl can't do (caught in cold review before this shipped).
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-18
           pg_dump --version
 
       - name: Open a tunnel to spotmeapp-db and dump + encrypt it
