@@ -107,6 +107,15 @@ const files = [
   // Added to this list the same run it was written -- same discipline as admin-user-management.mjs
   // just above, after this project's own repeated "written but never wired in" gap.
   'test/pr-rebuild-scoping.mjs',
+  // Oct 12 2026 (scaling fix round 2): sessionsForUser/weeksFor/volumeFor/volumeTrendFor/
+  // liftHistoryFor/plateausFor used to scan EVERY session in the app to find one user's own
+  // history; this adds DB.sessionsByUser, an incrementally-maintained index, scoped the same
+  // read-side way the PR rebuild was scoped on the write side above. Added to this list the same
+  // run it was written, same discipline as the two entries just above.
+  'test/sessions-by-user-index.mjs',
+  // Oct 12 2026 (scaling fix #1, visibility): GET /api/admin/scaling -- memory/counts/latency,
+  // admin-token-gated. Added to this list the same run it was written, same discipline as above.
+  'test/admin-scaling-visibility.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

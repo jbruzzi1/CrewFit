@@ -341,13 +341,29 @@ function uid() { return crypto.randomBytes(12).toString('base64url').toLowerCase
 // be kept verbatim, so anyone holding data.json — or one of its backups, or a copy pulled to a
 // laptop — held every password in the app. scrypt is deliberately slow, so a stolen file is not
 // a password list. Node's own crypto; no dependency.
-function hashPin(pin) {
+//
+// Oct 12 2026 (scaling fix): these used to be crypto.scryptSync -- correct, but SYNCHRONOUS and
+// CPU-heavy by design (that's what makes it a good password hash), which means it fully blocks
+// Node's single thread for the ~65ms it runs, freezing every other concurrent user's request for
+// the whole app, not just the one logging in or signing up. Measured live: a single scryptSync
+// call took ~66ms on this hardware. A few logins landing close together (a morning rush, or
+// everyone reconnecting right after a deploy) serializes into real, user-visible delay for
+// everyone else at that exact moment. Switched to the async crypto.scrypt (promisified) instead,
+// which runs on libuv's threadpool rather than the main thread -- the main thread stays free to
+// keep serving every other request while a hash computes. Same algorithm, same default cost
+// parameters (N/r/p), same output shape -- every password hashed under the old scryptSync still
+// verifies correctly under this; no data migration needed.
+const scryptAsync = (pw, salt, keylen) => new Promise((resolve, reject) => {
+  crypto.scrypt(String(pw), salt, keylen, (err, derivedKey) => err ? reject(err) : resolve(derivedKey));
+});
+async function hashPin(pin) {
   const salt = crypto.randomBytes(16).toString('hex');
-  return { pinSalt: salt, pinHash: crypto.scryptSync(String(pin), salt, 64).toString('hex') };
+  const key = await scryptAsync(pin, salt, 64);
+  return { pinSalt: salt, pinHash: key.toString('hex') };
 }
-function verifyPin(u, pin) {
+async function verifyPin(u, pin) {
   if (!u || !u.pinHash || !u.pinSalt) return false;
-  const got = crypto.scryptSync(String(pin), u.pinSalt, 64);
+  const got = await scryptAsync(pin, u.pinSalt, 64);
   const want = Buffer.from(u.pinHash, 'hex');
   return got.length === want.length && crypto.timingSafeEqual(got, want);   // constant time
 }
@@ -473,6 +489,47 @@ const jsonLarge = express.json({ limit: '30mb' });
 const BIG_BODY = [/^\/api\/sessions\/[^/]+\/post$/, /^\/api\/me\/avatar$/];
 app.use((req, res, next) =>
   (req.method === 'POST' && BIG_BODY.some(re => re.test(req.path)) ? jsonLarge : jsonSmall)(req, res, next));
+
+// ---- Oct 12 2026 (scaling visibility, round 2) ----
+//
+// The whole point of this: the read-side scan bottleneck fixed earlier today (sessionsForUser/
+// weeksFor/volumeFor/... -- see rebuildSessionsByUserIndex's own comment) was invisible until
+// someone actually measured it with a throwaway benchmark script. At today's size (a few dozen
+// users) nothing here matters; the entire reason to add it now is so the NEXT time something
+// like that creeps back in, it shows up as a real number trending up in production, not as a
+// user complaining the app "feels slow" with nothing to go measure against. See GET
+// /api/admin/scaling below for where this surfaces.
+//
+// Deliberately NOT a generic "time every route" middleware -- that would mean one unbounded
+// map entry per distinct path forever (a real memory leak surface of its own on a box this
+// size). Just the handful of routes already identified as the actual scaling risk, each capped
+// at a small fixed-size rolling window -- bounded memory, no per-request overhead anywhere else.
+const WATCHED_ROUTES = [
+  { key: 'progress', re: /^\/api\/progress$/ },
+  { key: 'notifications', re: /^\/api\/notifications$/ },
+  { key: 'sessions_list', re: /^\/api\/sessions$/ },
+  { key: 'login', re: /^\/api\/login$/ },
+];
+const LATENCY_WINDOW = 50;   // last 50 samples per watched route -- enough for a median/max, bounded forever
+const ROUTE_LATENCY = {};
+for (const w of WATCHED_ROUTES) ROUTE_LATENCY[w.key] = [];
+app.use((req, res, next) => {
+  const watched = WATCHED_ROUTES.find(w => w.re.test(req.path));
+  if (!watched) return next();
+  const t0 = Date.now();
+  res.on('finish', () => {
+    const arr = ROUTE_LATENCY[watched.key];
+    arr.push(Date.now() - t0);
+    if (arr.length > LATENCY_WINDOW) arr.shift();   // fixed-size window, not a growing history
+  });
+  next();
+});
+function latencyStats(key) {
+  const arr = ROUTE_LATENCY[key];
+  if (!arr.length) return null;
+  const sorted = [...arr].sort((a, b) => a - b);
+  return { samples: arr.length, medianMs: sorted[Math.floor(sorted.length / 2)], maxMs: sorted[sorted.length - 1] };
+}
 // The app offered 4 photos; the server took 12, at any size, with no check at all.
 const MEDIA_MAX_ITEMS = 4;
 const MEDIA_MAX_PHOTO = 8 * 1024 * 1024;    // a normal iPhone photo is 2-5 MB
@@ -774,6 +831,21 @@ app.post('/api/register', async (req, res) => {
   if (!username || !pin) return res.status(400).json({ error: 'username + pin required' });
   const uProblem = usernameProblem(username); if (uProblem) return res.status(400).json({ error: uProblem });
   const pProblem = pinProblem(pin);           if (pProblem) return res.status(400).json({ error: pProblem });
+  // Oct 12 2026 (cold-review catch, same day as the async-hashPin scaling fix): hashPin used to be
+  // scryptSync, so there was no await anywhere between the uniqueness check just below and the
+  // actual DB.users[id]=... write -- the whole handler ran as one atomic turn, so two concurrent
+  // registrations for the SAME username could never both pass the check. Making hashPin async
+  // (see its own comment) put a real await INSIDE that gap when it was called inline in the
+  // Object.assign below: findUserByName(username) could pass for several concurrent requests
+  // before any of them had written DB.users, then all land their writes. Reproduced live: Postgres's
+  // own unique constraint on username_lower rejected all but one write, but the LOSING requests
+  // could still end up with a live, usable DB.users[id] entry and a valid signed token in THIS
+  // process's memory (handed back to a client told "Something went wrong") that was never actually
+  // saved -- a login-capable phantom account that silently vanishes on the next restart/deploy.
+  // Fix: do the slow hashing FIRST, then re-run the uniqueness check immediately adjacent to the
+  // write with no await between them -- restores the original "check and write are one atomic
+  // step" guarantee while keeping the hash itself off the blocking main thread.
+  const hashed = await hashPin(pin);
   if (findUserByName(username)) return res.status(409).json({ error: 'username taken' });
   const id = uid();
   DB.users[id] = Object.assign({ id, username: String(username).trim(),
@@ -783,7 +855,7 @@ app.post('/api/register', async (req, res) => {
     // Settings. followers/following/followReqs are created lazily by ensureFollowArrays on first
     // use, same as ever; there is no separate "friends" concept to seed any more (see canSeeProfile).
     profileVisibility: 'public',
-    createdAt: new Date().toISOString() }, hashPin(pin));
+    createdAt: new Date().toISOString() }, hashed);
   await save(DB);
   res.json({ token: signToken(id), user: { ...publicUser(id), defaultGym: '', profileVisibility: 'public' } });
 });
@@ -837,7 +909,7 @@ app.post('/api/login', async (req, res) => {
   // check is defense in depth, not the only thing stopping it: explicit and immediate rather than
   // relying on hash entropy, and it keeps the failure on the exact same generic "bad credentials"
   // path (no separate wording that would confirm to a caller that an account once existed here).
-  if (!u || u.deleted || !verifyPin(u, pin)) {
+  if (!u || u.deleted || !(await verifyPin(u, pin))) {
     noteLoginFail(ipKey);
     bumpFail('acct:' + uname, 60 * 60 * 1000);
     // `code` added Sep 30 2026 (cold-review catch on the friendlier-login-error fix): the client's
@@ -1686,7 +1758,7 @@ app.post('/api/me/username', auth, async (req, res) => {
   // 400, not 401 -- same reasoning as POST /api/me/password: this request already carries a VALID
   // auth token, so a wrong confirmation password must not trip app.js's global "any 401 means your
   // session died" handler and force a surprise logout.
-  if (!password || !verifyPin(u, password)) {
+  if (!password || !(await verifyPin(u, password))) {
     bumpFail('pw-confirm:' + req.userId, 60 * 60 * 1000);
     return res.status(400).json({ error: 'Password is incorrect' });
   }
@@ -1728,14 +1800,14 @@ app.post('/api/me/password', auth, async (req, res) => {
   // force-logs-out back to the auth screen (see its own comment) -- a wrong-password typo here
   // would otherwise silently sign the user out instead of showing them the actual error. Caught by
   // rendering this for real, not just by reading the code (see CLAUDE.md's own verification rule).
-  if (!currentPassword || !verifyPin(u, currentPassword)) {
+  if (!currentPassword || !(await verifyPin(u, currentPassword))) {
     bumpFail('pw-confirm:' + req.userId, 60 * 60 * 1000);
     return res.status(400).json({ error: 'Current password is incorrect' });
   }
   clearFail('pw-confirm:' + req.userId);
   const pProblem = pinProblem(newPassword);
   if (pProblem) return res.status(400).json({ error: pProblem });
-  Object.assign(u, hashPin(newPassword));
+  Object.assign(u, await hashPin(newPassword));
   // Sep 29 2026 (audit finding, Tier 1 #3): userIdFromToken's own comment above already says this
   // field "lets a single account be signed out everywhere, e.g. after a password change" -- it was
   // checked there but never actually assigned anywhere, so that sentence was aspirational, not
@@ -4815,6 +4887,7 @@ app.delete('/api/sessions/:id', auth, async (req, res) => {
       : `${names.join(' and ')} ${verb} still in this workout. Deleting it would remove it for them too.`;
     return res.status(409).json({ error, othersLogged: creditOthers.length, canLeave: true });
   }
+  removeSessionFromAllIndexes(s);   // Oct 12 2026 (scaling fix round 2) -- see its own comment
   delete DB.sessions[req.params.id];
   rebuildAllPrs();     // the records were built from sets that no longer exist
   await save(DB);
@@ -4939,6 +5012,7 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // points they fed — no credit means no credit.
   if (discard) {
     if (s.logs) delete s.logs[me];
+    indexRemoveUserSession(me, s.id);   // Oct 12 2026 (scaling fix round 2) -- see rebuildSessionsByUserIndex's comment
     if (s.draftNotes) delete s.draftNotes[me];
     for (const exId of Object.keys(s.variations || {})) {
       if (s.variations[exId]) delete s.variations[exId][me];
@@ -5164,6 +5238,7 @@ app.post('/api/sessions/:id/remove-mine', auth, async (req, res) => {
   if (!hasConnection) return res.status(403).json({ error: 'not yours' });
   if (s.posts) delete s.posts[me];
   if (s.logs) delete s.logs[me];
+  indexRemoveUserSession(me, s.id);   // Oct 12 2026 (scaling fix round 2) -- see rebuildSessionsByUserIndex's comment
   if (s.draftNotes) delete s.draftNotes[me];
   s.participants = (s.participants || []).filter(x => x !== me);
   s.invited = (s.invited || []).filter(x => x !== me);
@@ -6393,6 +6468,7 @@ app.post('/api/me/notify-prefs', auth, async (req, res) => {
 // history too: reset means "nothing I logged happened," not "keep my credit around."
 function stripUserFromSession(s, userId) {
   if (s.logs) delete s.logs[userId];
+  indexRemoveUserSession(userId, s.id);   // Oct 12 2026 (scaling fix round 2) -- see rebuildSessionsByUserIndex's comment
   s.participants = (s.participants || []).filter(x => x !== userId);
   s.invited      = (s.invited || []).filter(x => x !== userId);
   s.history      = (s.history || []).filter(h => h.userId !== userId);
@@ -6489,6 +6565,7 @@ function wipeUserFromAllSessions(me) {
       // now refuse to do.
       const othersStillHere = (s.participants || []).filter(id => id !== me);
       if (!others.length && !othersStillHere.length) {
+        removeSessionFromAllIndexes(s);   // Oct 12 2026 (scaling fix round 2) -- see its own comment
         delete DB.sessions[s.id];
         sessionsDeleted++;
         continue;
@@ -6561,7 +6638,7 @@ app.post('/api/me/reset-workouts', auth, async (req, res) => {
   if (failCount('pw-confirm:' + me) >= 10)
     return res.status(429).json({ error: 'Too many attempts. Try again later.' });
   const { password } = req.body || {};
-  if (!password || !verifyPin(u, password)) {
+  if (!password || !(await verifyPin(u, password))) {
     bumpFail('pw-confirm:' + me, 60 * 60 * 1000);
     return res.status(400).json({ error: 'Password is incorrect' });
   }
@@ -6730,7 +6807,7 @@ async function anonymizeAndDeleteAccount(targetId) {
   u.avatar = '';
   u.defaultGym = '';
   u.profileVisibility = 'private';
-  Object.assign(u, hashPin(crypto.randomBytes(32).toString('hex')));   // unusable, unguessable -- see /login's own check, this is belt-and-suspenders
+  Object.assign(u, await hashPin(crypto.randomBytes(32).toString('hex')));   // unusable, unguessable -- see /login's own check, this is belt-and-suspenders
   u.following = []; u.followers = []; u.followReqs = [];
   ensureBlockArray(u); u.blocked = [];
   u.deleted = true;
@@ -6772,7 +6849,7 @@ app.post('/api/me/delete-account', auth, async (req, res) => {
   // 400, not 401 -- same reasoning as POST /api/me/password just above: this request already has
   // a valid session token, a wrong confirmation password here must not trip app.js's global
   // "any 401 means your session died" handler and force a surprise logout.
-  if (!password || !verifyPin(u, password)) {
+  if (!password || !(await verifyPin(u, password))) {
     bumpFail('pw-confirm:' + me, 60 * 60 * 1000);
     return res.status(400).json({ error: 'Password is incorrect' });
   }
@@ -6793,6 +6870,35 @@ app.post('/api/me/delete-account', auth, async (req, res) => {
 // (every step is written to tolerate empty arrays/already-cleared fields), but there is no reason
 // for the admin page to ever send this twice for the same account, and a clear error here is a
 // better signal than a quiet 200 if its own UI state is ever stale (e.g. two admin tabs open).
+// Oct 12 2026 (scaling visibility, round 2 -- see WATCHED_ROUTES/ROUTE_LATENCY's own comment
+// above for why this exists). Admin-only (same ADMIN_TOKEN gate as every other /api/admin
+// route) rather than public on /healthz -- memory figures and per-route latency are operational
+// detail, not something to expose to an unauthenticated health-check caller on the open internet.
+// The point of this endpoint is to turn "is this app starting to feel the read-scan/RAM ceiling
+// discussed Oct 12 2026" from a guess into a number someone can actually look at over time,
+// before it becomes a user complaint.
+app.get('/api/admin/scaling', adminAuth, async (req, res) => {
+  const mem = process.memoryUsage();
+  const mb = n => Math.round(n / 1048576);
+  res.json({
+    ok: true,
+    users: Object.values(DB.users).filter(u => !u.deleted).length,
+    sessions: Object.keys(DB.sessions).length,
+    memoryMB: { rss: mb(mem.rss), heapUsed: mb(mem.heapUsed), heapTotal: mb(mem.heapTotal) },
+    // Rolling last-50-samples latency for the specific routes already identified as the real
+    // scaling risk (see rebuildSessionsByUserIndex's own comment) -- null until that route has
+    // actually been hit at least once since boot.
+    latency: Object.fromEntries(WATCHED_ROUTES.map(w => [w.key, latencyStats(w.key)])),
+    // Oct 12 2026 (cold-review catch): total entries across every DB.sessionsByUser[userId] Set.
+    // The 3 indexRemoveUserSession call sites (leave-discard/remove-mine/stripUserFromSession)
+    // are tolerated-stale by design -- a missed removal never produces a WRONG answer, only a
+    // slow regression back toward scanning every session again, which no output-equality test
+    // can distinguish from "working correctly." This number is the one place that regression
+    // would actually show up: it should track roughly with real logged-session volume over time,
+    // not grow unboundedly faster than `sessions` does.
+    sessionsByUserIndexEntries: Object.values(DB.sessionsByUser || {}).reduce((a, set) => a + set.size, 0),
+  });
+});
 app.get('/api/admin/users', adminAuth, async (req, res) => {
   res.json(Object.values(DB.users).map(u => ({
     id: u.id, username: u.username, displayName: u.displayName,
@@ -6849,7 +6955,8 @@ function incrementFor(name, unit) {
 // Only consumer: recommendationsFor() below -- safe to shape this purely for that purpose.
 function sessionsForUser(userId) {
   const out = [];
-  for (const s of Object.values(DB.sessions)) {
+  // Oct 12 2026 (scaling fix round 2): was Object.values(DB.sessions) -- see indexedSessionsForUser's own comment
+  for (const s of indexedSessionsForUser(userId)) {
     if (!s.logs || !s.logs[userId] || !s.logs[userId].length) continue;
     const byName = {};
     for (const l of s.logs[userId]) {
@@ -7006,7 +7113,8 @@ function recommendationsFor(userId) {
 // boundary itself.
 function weeksFor(userId, count, localToday) {
   const days = new Set();
-  for (const s of Object.values(DB.sessions)) {
+  // Oct 12 2026 (scaling fix round 2): was Object.values(DB.sessions) -- see indexedSessionsForUser's own comment
+  for (const s of indexedSessionsForUser(userId)) {
     const mine = s.logs && s.logs[userId];
     const worked = !!(mine && mine.some(isWorkingSet));
     // v241 (Jeff's list): finish credit counts as a trained day too. /leave deletes your own
@@ -7139,7 +7247,8 @@ function volumeFor(userId, weeks = 1, localToday) {
   const b = nextWeek.toISOString().slice(0, 10);
   const sets = {};
   for (const g of MUSCLE_ORDER) sets[g] = 0;
-  for (const s of Object.values(DB.sessions)) {
+  // Oct 12 2026 (scaling fix round 2): was Object.values(DB.sessions) -- see indexedSessionsForUser's own comment
+  for (const s of indexedSessionsForUser(userId)) {
     const mine = s.logs && s.logs[userId];
     if (!mine || !mine.length) continue;
     const at = sessionDateFor(s, userId);
@@ -7183,7 +7292,8 @@ function volumeTrendFor(userId, weeks, localToday) {
     buckets.push({ weekOf: start.toISOString().slice(0, 10), a: start.toISOString().slice(0, 10), b: end.toISOString().slice(0, 10), sets });
   }
   const a0 = buckets[0].a, bN = buckets[buckets.length - 1].b;
-  for (const s of Object.values(DB.sessions)) {
+  // Oct 12 2026 (scaling fix round 2): was Object.values(DB.sessions) -- see indexedSessionsForUser's own comment
+  for (const s of indexedSessionsForUser(userId)) {
     const mine = s.logs && s.logs[userId];
     if (!mine || !mine.length) continue;
     const at = sessionDateFor(s, userId);
@@ -7212,7 +7322,8 @@ function volumeTrendFor(userId, weeks, localToday) {
 // Consistency card's own "average starts at your first active week, not the window's start" fix).
 function firstLogDateFor(userId) {
   let min = null;
-  for (const s of Object.values(DB.sessions)) {
+  // Oct 12 2026 (scaling fix round 2): was Object.values(DB.sessions) -- see indexedSessionsForUser's own comment
+  for (const s of indexedSessionsForUser(userId)) {
     const mine = s.logs && s.logs[userId];
     if (!mine || !mine.some(isWorkingSet)) continue;
     const at = sessionDateFor(s, userId);
@@ -7256,7 +7367,8 @@ function recentlyTrainedMusclesFor(userId, localToday) {
   const nextWeek = new Date(monday); nextWeek.setUTCDate(nextWeek.getUTCDate() + 7);
   const b = nextWeek.toISOString().slice(0, 10);
   const touched = new Set();
-  for (const s of Object.values(DB.sessions)) {
+  // Oct 12 2026 (scaling fix round 2): was Object.values(DB.sessions) -- see indexedSessionsForUser's own comment
+  for (const s of indexedSessionsForUser(userId)) {
     const mine = s.logs && s.logs[userId];
     if (!mine || !mine.length) continue;
     const at = sessionDateFor(s, userId);
@@ -7336,7 +7448,8 @@ function estMax(l) {
 // after.
 function liftHistoryFor(userId) {
   const byName = {};
-  for (const s of Object.values(DB.sessions)) {
+  // Oct 12 2026 (scaling fix round 2): was Object.values(DB.sessions) -- see indexedSessionsForUser's own comment
+  for (const s of indexedSessionsForUser(userId)) {
     const mine = s.logs && s.logs[userId];
     if (!mine) continue;
     const perEx = {};
@@ -7710,7 +7823,8 @@ const PLATEAU_THRESHOLD = 0.02; // must beat the prior best by >2% to count as r
 function plateausFor(userId, localToday) {
   const unit = (DB.users[userId] && DB.users[userId].units) || 'lb';
   const byName = {};
-  for (const s of Object.values(DB.sessions)) {
+  // Oct 12 2026 (scaling fix round 2): was Object.values(DB.sessions) -- see indexedSessionsForUser's own comment
+  for (const s of indexedSessionsForUser(userId)) {
     const mine = s.logs && s.logs[userId];
     if (!mine) continue;
     const perEx = {};
@@ -8146,6 +8260,7 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
   // know what the record was a moment ago, for the Activity feed's "+10 lb over last max" delta.
   const prevPr = DB.prs[req.userId] && DB.prs[req.userId][entry.exerciseName];
   s.logs[req.userId].push(entry);
+  indexAddUserSession(req.userId, s.id);   // Oct 12 2026 (scaling fix round 2) -- see its own comment above rebuildSessionsByUserIndex
   // Sep 23 2026 (cold-review catch): requiredApprovals is captured once, when a removal request
   // first opens (PUT /api/sessions/:id) -- someone who logs a set on the SAME exercise afterward,
   // while the request is still pending, was never asked for their own sign-off, so the exercise
@@ -8487,11 +8602,11 @@ function migrateCustomExerciseIds() {
 // then restart the app. A plaintext pin is always taken as an instruction to set that password,
 // even over an existing hash, and is erased in the same pass — so the clear text never survives
 // a boot.
-function migratePasswords() {
+async function migratePasswords() {
   let done = 0;
   for (const u of Object.values(DB.users)) {
     if (!u.pin) continue;
-    Object.assign(u, hashPin(u.pin));
+    Object.assign(u, await hashPin(u.pin));
     delete u.pin;
     done++;
   }
@@ -8828,6 +8943,78 @@ function rebuildAllPrs() {
     for (const userId of Object.keys(s.logs)) allUserIds.add(userId);
   }
   rebuildPrsFor(allUserIds);
+}
+
+// ---- Oct 12 2026 (scaling fix, round 2): sessionsByUser index ----
+//
+// sessionsForUser/weeksFor/volumeFor/volumeTrendFor/liftHistoryFor/plateausFor/recommendationsFor
+// (see each one's own comment) all used to do `for (const s of Object.values(DB.sessions))` to
+// find ONE user's own session history -- so loading anyone's Progress page scanned literally
+// every session in the whole app, and got measurably slower as the app grew, for everyone, not
+// just the person whose data actually changed. Measured live: 3ms at 6 total sessions, 36ms at
+// 5000, growing roughly linearly with total app size, independent of that one user's own data.
+//
+// DB.sessionsByUser[userId] -> Set of session ids that currently have a logs[userId] entry (the
+// same test these functions already apply) is a pure, DERIVED, in-memory-only index -- never
+// persisted to Postgres, never read by db.js at all. It is rebuilt from scratch at boot (see
+// rebuildSessionsByUserIndex, called once below, right after every migration above has settled
+// DB.sessions into its final shape -- same placement as rebuildAllPrs, for the same reason) and
+// kept correct incrementally at the exact few places a session's logs[userId] key is created or
+// removed. If an incremental update site is ever missed, the worst case is a STALE index entry
+// pointing at a session whose logs[userId] is now empty or gone -- harmless, because every
+// consumer below still re-checks `s.logs[userId] && s.logs[userId].length` before trusting it,
+// exactly as it always did; the index only narrows WHICH sessions get that check, it never
+// replaces the check. A MISSING index entry would be the dangerous direction (a real session
+// silently dropped from someone's stats) -- there is no code path that removes an id from this
+// index without also actually deleting that user's logs for that session (see
+// indexAddUserSession/indexRemoveUserSession's own call sites), and the full boot-time rebuild
+// self-heals anything that direction could somehow still miss, every single restart.
+function rebuildSessionsByUserIndex() {
+  DB.sessionsByUser = {};
+  for (const s of Object.values(DB.sessions)) {
+    if (!s.logs) continue;
+    for (const userId of Object.keys(s.logs)) {
+      if (!s.logs[userId] || !s.logs[userId].length) continue;
+      (DB.sessionsByUser[userId] || (DB.sessionsByUser[userId] = new Set())).add(s.id);
+    }
+  }
+}
+// Idempotent (adding an id already in the Set is a no-op) -- call this unconditionally right
+// after any s.logs[userId].push(...), never only "on the first entry." Far simpler and just as
+// correct as trying to detect whether this was the first push.
+function indexAddUserSession(userId, sessionId) {
+  (DB.sessionsByUser[userId] || (DB.sessionsByUser[userId] = new Set())).add(sessionId);
+}
+// Call this at every site that does `delete s.logs[userId]` (there are exactly three -- see each
+// one's own Oct 12 2026 comment) so a user who leaves/resets/deletes their history for a session
+// stops being credited for it immediately, not just after the next restart.
+function indexRemoveUserSession(userId, sessionId) {
+  if (DB.sessionsByUser[userId]) DB.sessionsByUser[userId].delete(sessionId);
+}
+// Oct 12 2026 (scaling fix round 2, cold-review follow-up -- caught by this fix's own new test,
+// not the subagent): a session that gets HARD-DELETED (`delete DB.sessions[s.id]`, as opposed to
+// stripUserFromSession's `delete s.logs[userId]`) never goes through indexRemoveUserSession at
+// all, so every user who had a logs[userId] entry on it keeps a dangling id in
+// DB.sessionsByUser[userId] forever -- indexedSessionsForUser's own `if (s) out.push(s)` guard
+// means this is harmless for correctness (a dangling id just gets silently skipped), but it's a
+// slow, one-directional leak in the exact Set the whole point of this fix was to keep small:
+// nothing ever removes it again short of a full restart's rebuildSessionsByUserIndex(). Call this
+// right before every `delete DB.sessions[s.id]` (currently 2 runtime sites -- DELETE
+// /api/sessions/:id and wipeUserFromAllSessions' solo-creator branch; the 3rd, migrateSessionShapes'
+// boot-time drop of an unreadable row, runs before DB.sessionsByUser even exists and is already
+// covered by the full rebuild that follows it, so it must NOT also call this).
+function removeSessionFromAllIndexes(s) {
+  if (!s || !s.logs) return;
+  for (const userId of Object.keys(s.logs)) indexRemoveUserSession(userId, s.id);
+}
+// The new, O(this user's own sessions) replacement for `Object.values(DB.sessions)` wherever the
+// very next line was going to filter down to just this one user's logs anyway.
+function indexedSessionsForUser(userId) {
+  const ids = DB.sessionsByUser[userId];
+  if (!ids || !ids.size) return [];
+  const out = [];
+  for (const id of ids) { const s = DB.sessions[id]; if (s) out.push(s); }
+  return out;
 }
 
 app.put('/api/sessions/:id/log/:logId', auth, async (req, res) => {
@@ -9232,7 +9419,7 @@ app.use((err, req, res, next) => {
   migrateSessionShapes();     // heal malformed session rows BEFORE any migration below walks them
   await migrateMedia();
   await migratePosts();       // must run AFTER migrateMedia — see its own comment
-  migratePasswords();
+  await migratePasswords();
   migrateMergeDuplicateBrian();   // before the collision report, which it resolves
   reportUsernameCollisions();
   migrateCreatedAt();
@@ -9243,6 +9430,7 @@ app.use((err, req, res, next) => {
   migrateExerciseRenames();   // after the stamp above (it walks exerciseName), before the PR regroup
   migrateCustomExerciseIds(); // backfill ids for edit/delete -- order doesn't matter, nothing else depends on them yet
   rebuildAllPrs();
+  rebuildSessionsByUserIndex();   // Oct 12 2026 (scaling fix round 2) -- after every migration above has settled DB.sessions, same placement reasoning as rebuildAllPrs just above
   migrateLoadTypes();
   pruneOldNotifications();    // storage hygiene, not a schema migration -- see its own comment
   pruneOldFeedEvents();       // same, for the Activity page's ephemeral feed events
