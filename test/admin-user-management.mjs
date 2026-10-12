@@ -124,20 +124,37 @@ console.log('\ncold-review catch: a prototype-pollution id must 404, not corrupt
 
 console.log("\nthe core scenario Jeff asked about before approving this: Jeff and Brian share a workout, Brian's fake test-account version gets admin-deleted -- Jeff's own data must stay completely intact");
 {
+  // Oct 12 2026 (cold-review self-catch, found while writing an unrelated test the same day):
+  // inviteUsernames silently no-ops unless the two accounts are already CONNECTED (an approved
+  // follow either direction -- see connectionsOf() in server.js) -- an uninvited username is just
+  // dropped from s.invited, no error anywhere. Without this follow call BEFORE creating the
+  // session, fake was never actually invited, /accept returned {error:'not invited'}, and fake's
+  // /log call 403'd -- every assertion below still happened to pass anyway, because they're all
+  // about JEFF's own data surviving, which holds true even in the degenerate case where fake never
+  // really joined. Caught by reproducing the exact flow in isolation and printing every response
+  // rather than trusting that "all assertions passed" meant the scenario was real.
+  //
+  // Public profiles (the default) land a follow immediately, no accept step needed (see
+  // app.post('/api/follow/:id') in server.js) -- one call from jeff is enough to put fake into
+  // jeff.following, which is all connectionsOf(jeff) needs for the invite below to actually
+  // resolve. This same follow is also what the follow-graph severance assertions further down
+  // exercise, so nothing extra was added for that part.
+  const followRes = await post('/api/follow/' + fake.user.id, {}, jeff.token);
+  ok(followRes.status === 'following', `jeff follows fake so they're actually connected (got ${JSON.stringify(followRes)})`);
+
   const shared = await post('/api/sessions', {
     name: 'Push Day', scheduledAt: new Date().toISOString(), exercises: [{ name: 'Bench Press' }],
     inviteUsernames: ['adminu_faketest'], visibility: 'private',
   }, jeff.token);
-  await post('/api/sessions/' + shared.id + '/accept', {}, fake.token);
+  ok((shared.invited || []).includes(fake.user.id), `fake was actually invited -- shared.invited=${JSON.stringify(shared.invited)}`);
+  const acceptRes = await post('/api/sessions/' + shared.id + '/accept', {}, fake.token);
+  ok(!acceptRes.error, `fake's accept succeeds (got ${JSON.stringify(acceptRes.error)})`);
   const exId = shared.exercises[0].id;
-  await post('/api/sessions/' + shared.id + '/log', { exerciseId: exId, weight: 185, reps: 6 }, jeff.token);
-  await post('/api/sessions/' + shared.id + '/log', { exerciseId: exId, weight: 95, reps: 10 }, fake.token);
+  const jeffLog = await post('/api/sessions/' + shared.id + '/log', { exerciseId: exId, weight: 185, reps: 6 }, jeff.token);
+  const fakeLog = await post('/api/sessions/' + shared.id + '/log', { exerciseId: exId, weight: 95, reps: 10 }, fake.token);
+  ok(!jeffLog.error && !fakeLog.error, `both logs actually succeeded -- fake genuinely trained in this workout (got ${JSON.stringify([jeffLog.error, fakeLog.error])})`);
   await post('/api/sessions/' + shared.id + '/lock', {}, jeff.token);
   await post('/api/sessions/' + shared.id + '/lock', {}, fake.token);
-  // Public profiles (the default) land a follow immediately, no accept step needed -- this is
-  // specifically here to exercise the follow-graph severance loop inside
-  // anonymizeAndDeleteAccount, not to test the follow flow itself.
-  await post('/api/follow/' + fake.user.id, {}, jeff.token);
 
   const del = await adminPost('/api/admin/users/' + fake.user.id + '/delete', adminToken);
   ok(del.status === 200, `admin delete succeeds (got ${del.status})`);
