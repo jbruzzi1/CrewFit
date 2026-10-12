@@ -91,11 +91,25 @@ jobs:
           # entirely, so it silently kept the too-old preinstalled one instead of ever catching
           # this. Fix: always install the real PGDG apt repo (the Postgres project's own, not
           # Ubuntu's) and ask for postgresql-client-18 specifically, to match.
+          #
+          # Oct 12 2026, round 2 (first attempt at this fix still produced the SAME error on the
+          # next real run): installing postgresql-client-18 is not enough by itself. Its own
+          # install log shows `update-alternatives` only repoints the psql MAN PAGE, not the
+          # /usr/bin/pg_dump binary itself -- the older Ubuntu-packaged pg_dump 16 at /usr/bin
+          # keeps winning on PATH, while the real 18 binary sits unused at
+          # /usr/lib/postgresql/18/bin/pg_dump. (The assumption that Debian's client-version
+          # switching works like update-alternatives for every binary was wrong -- this is what
+          # the actual run's log proved, not a guess.) Fix: explicitly put that version's bin
+          # directory at the FRONT of PATH via GITHUB_PATH, which applies to every step AFTER
+          # this one (not this one -- GITHUB_PATH changes take effect starting next step, so the
+          # version check below calls the full path directly rather than trusting PATH yet).
+          #
           # Known, disclosed, not fixed here: 18 is hardcoded to match spotmeapp-db's CURRENT
-          # version. If Fly ever upgrades spotmeapp-db to a newer Postgres major version, this
-          # same error will come back until this number is bumped to match -- there is no way to
-          # know the right version ahead of actually connecting, so hardcode-and-document is the
-          # pragmatic choice here, not an oversight.
+          # version (both in the package name AND in this bin path). If Fly ever upgrades
+          # spotmeapp-db to a newer Postgres major version, this same error will come back until
+          # this number is bumped to match in both places -- there is no way to know the right
+          # version ahead of actually connecting, so hardcode-and-document is the pragmatic
+          # choice here, not an oversight.
           # Cold-review fix: `||` and `&&` are equal precedence/left-associative in bash, so the
           # old one-liner here (`cmd || update && install`) ran the install even when gpg was
           # already present -- harmless (apt no-ops on an already-installed package) but not what
@@ -111,7 +125,8 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
           sudo apt-get install -y postgresql-client-18
-          pg_dump --version
+          echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/18/bin/pg_dump --version
 
       - name: Open a tunnel to spotmeapp-db and dump + encrypt it
         env:
