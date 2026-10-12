@@ -8157,7 +8157,11 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
   if (openPr && openPr.proposedBy !== req.userId && !openPr.requiredApprovals.includes(req.userId)) {
     openPr.requiredApprovals.push(req.userId);
   }
-  rebuildAllPrs();
+  // Oct 12 2026 (scaling fix): this route only ever pushes ONE new entry into
+  // s.logs[req.userId] -- it never reads or writes any OTHER user's logs, so no other user's
+  // DB.prs entry can possibly change here. Scoped to just this caller instead of replaying the
+  // whole app's history on every single set anyone logs (see rebuildPrsFor's own comment).
+  rebuildPrsFor([req.userId]);
   // Sep 11 2026 (Activity page): a real, earned PR (entry.isPr, mutated in place by
   // rebuildAllPrs -- see its own comment on why bestLog IS this same entry object) gets an
   // ephemeral feed event, same "!firstLog" exclusion groupPrsForFeed already applies elsewhere --
@@ -8585,11 +8589,33 @@ function migrateMergeDuplicateBrian() {
   return 1;
 }
 
-function rebuildAllPrs() {
-  const groups = {}; // groups[userId][exerciseName] = [logEntry, ...]
+// Oct 12 2026 (scaling audit, Jeff: "it seems we should fix this now" -- measured live: logging a
+// single set was replaying EVERY log across EVERY session for EVERY user in the whole app, every
+// single time, because rebuildAllPrs() below rebuilt the ENTIRE DB.prs table from scratch no
+// matter how small the actual change was. Confirmed with a direct benchmark (db.js's save() was
+// NOT the bottleneck -- that was already fixed Sep 8 and is ~6ms flat even at 2000 sessions; this
+// was) -- as the app grows, every set logged by anyone would keep getting slower for everyone.
+//
+// rebuildPrsFor(userIds) is the same exact replay/grouping/best-set logic rebuildAllPrs has always
+// run, just scoped to a specific set of userIds: only sessions/log entries belonging to one of
+// `userIds` are visited, and ONLY those users' DB.prs[userId] entries are touched -- every OTHER
+// user's already-correct PR table is left completely alone, not wastefully recomputed. Correct to
+// use ONLY where the caller can prove the action could not possibly change any OTHER user's PR
+// data -- see the comment above each of the 6 call sites that pass something narrower than "every
+// user in the app" for the specific reasoning at each one. Every other call site (exercise
+// renames that could ripple to other participants, session delete, leave/removal pivots, and the
+// full self-healing boot-time replay) is UNCHANGED, still going through rebuildAllPrs() below,
+// still the always-correct, no-assumptions full replay it always was -- this is additive, not a
+// rewrite of the underlying logic, so a bug here can only make the OPTIMIZED paths wrong, never
+// the already-proven-correct general path.
+function rebuildPrsFor(userIds) {
+  const targets = userIds instanceof Set ? userIds : new Set(userIds);
+  if (!targets.size) return;
+  const groups = {}; // groups[userId][exerciseName] = [logEntry, ...] -- userId always in targets
   for (const s of Object.values(DB.sessions)) {
     if (!s.logs) continue;
     for (const userId of Object.keys(s.logs)) {
+      if (!targets.has(userId)) continue;
       for (const l of s.logs[userId]) {
         // legacy entries with no `at`: fall back to the session date. NOT the session id —
         // new Date('s_ab12cd34') is Invalid Date, which made the comparator return NaN and
@@ -8624,7 +8650,12 @@ function rebuildAllPrs() {
       }
     }
   }
-  DB.prs = {};
+  // Clear every TARGETED user's old entry up front, same as the old unconditional `DB.prs = {}`
+  // did for everyone -- this is what correctly handles a user whose logs just went to zero (e.g.
+  // their last set in the app was just deleted): they won't appear in `groups` below at all, so
+  // without this their stale DB.prs[userId] from before would never get cleared. Every user NOT
+  // in `targets` keeps their existing DB.prs entry completely untouched -- the entire point.
+  for (const userId of targets) delete DB.prs[userId];
   for (const userId of Object.keys(groups)) {
     for (const name of Object.keys(groups[userId])) {
       // Order by when the set was PERFORMED. `at` is stamped at log time — enter Monday's
@@ -8777,6 +8808,28 @@ function rebuildAllPrs() {
   }
 }
 
+// The original, unscoped entry point -- every call site except the 6 proven-single-user (or, for
+// /lock, proven-single-session) ones below still calls this exactly as before. Replays literally
+// every log in the app, for every user who has one, same as it always did -- this is deliberately
+// NOT optimized, so it stays the one obviously-correct, self-healing reference behavior (and is
+// what the boot-time replay at the bottom of this file still uses, by design, to self-heal PRs
+// whenever the rule behind them changes).
+//
+// Oct 12 2026 (cold-review self-catch, caught by test/sharing.mjs failing for real): the target
+// set must include every userId who ALREADY has a DB.prs entry, not just userIds with a log in a
+// CURRENT session -- otherwise a user whose only session gets deleted (DB.sessions no longer has
+// anything with their id in its logs) is never included, rebuildPrsFor never clears their now-
+// stale PR, and it lives on in DB.prs forever. The old code's unconditional `DB.prs = {}` covered
+// this for free; this re-derives the same universal set explicitly.
+function rebuildAllPrs() {
+  const allUserIds = new Set(Object.keys(DB.prs));
+  for (const s of Object.values(DB.sessions)) {
+    if (!s.logs) continue;
+    for (const userId of Object.keys(s.logs)) allUserIds.add(userId);
+  }
+  rebuildPrsFor(allUserIds);
+}
+
 app.put('/api/sessions/:id/log/:logId', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error:'not found' });
@@ -8792,7 +8845,9 @@ app.put('/api/sessions/:id/log/:logId', auth, async (req, res) => {
   // Same optional-field handling as POST /log above - clearing the box removes rir entirely
   // rather than writing a 0 ("went to failure"), which is a different, real answer.
   if (rir!==undefined) { if (rir===null || String(rir).trim()==='') delete log.rir; else log.rir = numIn(rir, 20); }
-  rebuildAllPrs();
+  // Oct 12 2026 (scaling fix): only ever edits a log inside s.logs[req.userId] -- same
+  // single-user reasoning as POST /log above.
+  rebuildPrsFor([req.userId]);
   await save(DB);
   res.json(sessionView(s, req.userId));
 });
@@ -8805,7 +8860,9 @@ app.delete('/api/sessions/:id/log/:logId', auth, async (req, res) => {
   const idx = arr.findIndex(l => l.id === req.params.logId);
   if (idx<0) return res.status(404).json({ error:'log not found' });
   arr.splice(idx,1);
-  rebuildAllPrs();
+  // Oct 12 2026 (scaling fix): only ever removes a log from s.logs[req.userId] -- same
+  // single-user reasoning as POST /log above.
+  rebuildPrsFor([req.userId]);
   await save(DB);
   res.json(sessionView(s, req.userId));
 });
@@ -8856,7 +8913,17 @@ app.post('/api/sessions/:id/lock', auth, async (req, res) => {
     // time, before this history row existed, so it kept the old scheduledAt-based value forever
     // unless something logged again afterward. /lock is exactly the moment that history row is
     // created, so it's also exactly the moment the snapshot needs to be retaken.
-    rebuildAllPrs();
+    //
+    // Oct 12 2026 (scaling fix): NOT scoped to just [req.userId] like the other routes below --
+    // markSessionStarted() just above can rewrite s.scheduledAt (a field shared by the WHOLE
+    // session), and _performedAt's fallback chain (see rebuildPrsFor's grouping loop) reads
+    // s.scheduledAt for any OTHER participant in this same session who doesn't yet have their own
+    // s.posts/s.history entry -- so finishing can shift another participant's PR snapshot even
+    // though their own logs never changed. Scoped to every user who has ANY log in THIS session
+    // (never more than a handful of people) rather than the whole app, which is what actually
+    // matters at scale -- a popular session shared by 5 friends costs the same either way; this
+    // just stops it from scanning every OTHER session of every OTHER user in the app too.
+    rebuildPrsFor(Object.keys(s.logs || {}));
     await save(DB);
   }
   res.json(sessionView(s, req.userId));
@@ -8884,7 +8951,11 @@ app.post('/api/sessions/:id/unlock', auth, async (req, res) => {
   ensureSessionShape(s);
   const before = s.history.length;
   s.history = s.history.filter(h => h.userId !== req.userId);
-  if (s.history.length !== before) { rebuildAllPrs(); await save(DB); }
+  // Oct 12 2026 (scaling fix): only ever removes req.userId's OWN s.history row (per this route's
+  // own comment above -- "it can never touch another participant's credit"), and doesn't touch
+  // s.scheduledAt/s.startedAt the way /lock's markSessionStarted can, so unlike /lock this is safe
+  // scoped to just the caller.
+  if (s.history.length !== before) { rebuildPrsFor([req.userId]); await save(DB); }
   res.json(sessionView(s, req.userId));
 });
 
@@ -9005,7 +9076,11 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   // just set above) over the finish/scheduledAt fallbacks -- posting is exactly the moment that
   // field starts existing (or, on an edit, stays the same by design -- existingAt above), so the
   // snapshot needs retaking here too, the same as /lock.
-  rebuildAllPrs();
+  //
+  // Oct 12 2026 (scaling fix): unlike /lock, this route never touches s.scheduledAt/s.startedAt
+  // (only s.posts[req.userId] and s.draftNotes[req.userId]), so it's safe scoped to just the
+  // caller -- no other participant's PR snapshot can depend on anything this route changes.
+  rebuildPrsFor([req.userId]);
   await save(DB);
   res.json(sessionView(s, req.userId));
 });

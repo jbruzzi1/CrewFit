@@ -101,6 +101,12 @@ const files = [
   // four separate times (favorite-exercises.mjs, cancel-suggestion.mjs, db-diff-writes.mjs,
   // backup-roundtrip.mjs, all just above) -- see this file's own header comment.
   'test/admin-user-management.mjs',
+  // Oct 12 2026 (scaling fix, Jeff: "it seems we should fix this now"): rebuildAllPrs() used to
+  // replay the WHOLE app's history on nearly every workout action; this scopes the 6 highest-
+  // frequency routes to a new rebuildPrsFor(userIds) that only touches the affected user(s).
+  // Added to this list the same run it was written -- same discipline as admin-user-management.mjs
+  // just above, after this project's own repeated "written but never wired in" gap.
+  'test/pr-rebuild-scoping.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
