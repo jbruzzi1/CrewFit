@@ -93,6 +93,14 @@ const files = [
   // already-populated, wrong database. See .github/workflows/backup.yml for the scheduled job
   // that runs the real thing in production.
   'test/backup-roundtrip.mjs',
+  // Oct 12 2026 (Jeff: "I want the ability to delete any account I see fit" -- cleaning up fake/
+  // test accounts before launch): the new admin-initiated account deletion (built on the existing
+  // self-delete teardown, reused rather than duplicated) and the /healthz user-count fix that was
+  // the actual point of the ask. Added to this list the same run it was written, specifically
+  // because this exact "written but never wired into npm test" gap has now bitten this project
+  // four separate times (favorite-exercises.mjs, cancel-suggestion.mjs, db-diff-writes.mjs,
+  // backup-roundtrip.mjs, all just above) -- see this file's own header comment.
+  'test/admin-user-management.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

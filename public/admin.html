@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex, nofollow">
-<title>CrewFit — Report Review</title>
+<title>CrewFit — Admin</title>
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -23,11 +23,33 @@
   #gate button:active, .btn:active { opacity:.85; }
   #gateErr { color:#c0392b; font-size:13px; margin-top:-4px; margin-bottom:10px; display:none; }
 
+  /* ---- top-level section switcher (Reports / Users) ---- */
+  .sectionTabs { display:flex; gap:8px; margin-bottom:16px; border-bottom:1px solid #e4e7ec; padding-bottom:0; }
+  .sectionTabs button { background:none; border:none; padding:10px 4px; margin-right:18px; font-size:14.5px; font-weight:700; color:#9ca3af; cursor:pointer; border-bottom:2px solid transparent; }
+  .sectionTabs button.on { color:#14181f; border-bottom-color:#2563eb; }
+
   /* ---- filters ---- */
   .filters { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
   .filters button { background:#fff; border:1px solid #d7dbe2; border-radius:999px; padding:7px 14px; font-size:13px; font-weight:600; color:#4b5563; cursor:pointer; }
   .filters button.on { background:#2563eb; border-color:#2563eb; color:#fff; }
   .count { font-size:13px; color:#6b7280; margin-bottom:10px; }
+
+  /* ---- users ---- */
+  .searchRow { margin-bottom:14px; }
+  .searchRow input { width:100%; padding:11px 12px; border:1px solid #d7dbe2; border-radius:10px; font-size:14px; background:#fff; }
+  .uCard { background:#fff; border-radius:14px; padding:12px 16px; margin-bottom:8px; box-shadow:0 1px 2px rgba(20,24,31,.04), 0 8px 20px -10px rgba(20,24,31,.14); display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .uCard.deletedRow { opacity:.55; }
+  .uInfo { min-width:0; }
+  .uName { font-weight:700; font-size:14.5px; color:#14181f; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .uSub { font-size:12.5px; color:#9ca3af; margin-top:2px; }
+  .uBadge { display:inline-block; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; padding:2px 7px; border-radius:6px; background:#fef2f2; color:#b91c1c; margin-left:7px; vertical-align:1px; }
+  .uActions { flex-shrink:0; display:flex; align-items:center; gap:8px; }
+  .delBtn { background:#fff; border:1px solid #f4b8b8; border-radius:8px; padding:7px 13px; font-size:13px; font-weight:600; color:#c0392b; cursor:pointer; }
+  .delBtn:active { opacity:.8; }
+  .confirmRow { display:flex; align-items:center; gap:8px; }
+  .confirmRow span { font-size:12.5px; color:#b91c1c; font-weight:600; }
+  .confirmYes { background:#c0392b; color:#fff; border:none; border-radius:8px; padding:7px 12px; font-size:13px; font-weight:700; cursor:pointer; }
+  .confirmNo { background:#fff; border:1px solid #d7dbe2; border-radius:8px; padding:7px 12px; font-size:13px; font-weight:600; color:#374151; cursor:pointer; }
 
   /* ---- report cards ---- */
   .card { background:#fff; border-radius:14px; padding:14px 16px; margin-bottom:10px; box-shadow:0 1px 2px rgba(20,24,31,.04), 0 8px 20px -10px rgba(20,24,31,.14); }
@@ -67,20 +89,35 @@
 <div id="appUI" style="display:none">
   <header>
     <div>
-      <h1>Report Review</h1>
+      <h1 id="pageTitle">Report Review</h1>
       <div class="sub" id="subline">&nbsp;</div>
     </div>
     <button id="logout" onclick="logout()">Change token</button>
   </header>
   <main>
-    <div id="errBox"></div>
-    <div class="filters">
-      <button id="fOpen" class="on" onclick="setFilter('open')">Open</button>
-      <button id="fResolved" onclick="setFilter('resolved')">Resolved</button>
-      <button id="fAll" onclick="setFilter('all')">All</button>
+    <div class="sectionTabs">
+      <button id="secReports" class="on" onclick="setSection('reports')">Reports</button>
+      <button id="secUsers" onclick="setSection('users')">Users</button>
     </div>
-    <div class="count" id="countLine"></div>
-    <div id="list"></div>
+    <div id="errBox"></div>
+
+    <div id="reportsView">
+      <div class="filters">
+        <button id="fOpen" class="on" onclick="setFilter('open')">Open</button>
+        <button id="fResolved" onclick="setFilter('resolved')">Resolved</button>
+        <button id="fAll" onclick="setFilter('all')">All</button>
+      </div>
+      <div class="count" id="countLine"></div>
+      <div id="list"></div>
+    </div>
+
+    <div id="usersView" style="display:none">
+      <div class="searchRow">
+        <input id="userSearch" type="text" placeholder="Search by username or name&hellip;" autocomplete="off" oninput="renderUsers()">
+      </div>
+      <div class="count" id="userCountLine"></div>
+      <div id="userList"></div>
+    </div>
   </main>
 </div>
 
@@ -88,6 +125,9 @@
 const TOKEN_KEY = 'crewfit_admin_token';
 let REPORTS = [];
 let FILTER = 'open';
+let USERS = [];
+let SECTION = 'reports';
+let CONFIRMING_ID = null;   // id of the user row currently showing "really delete?" -- only one at a time
 
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function fmtWhen(iso){
@@ -190,6 +230,84 @@ async function loadReports(){
     render();
   } catch (e) {
     if (e.message !== 'unauthorized') document.getElementById('errBox').innerHTML = '<div class="err">Could not load reports: ' + esc(e.message) + '</div>';
+  }
+}
+
+function setSection(s){
+  SECTION = s;
+  CONFIRMING_ID = null;
+  document.getElementById('secReports').classList.toggle('on', s === 'reports');
+  document.getElementById('secUsers').classList.toggle('on', s === 'users');
+  document.getElementById('reportsView').style.display = s === 'reports' ? 'block' : 'none';
+  document.getElementById('usersView').style.display = s === 'users' ? 'block' : 'none';
+  document.getElementById('pageTitle').textContent = s === 'reports' ? 'Report Review' : 'Users';
+  document.getElementById('errBox').innerHTML = '';
+  if (s === 'reports') {
+    render();   // recomputes the "N open · N total" subline, stale otherwise after a tab switch
+  } else {
+    document.getElementById('subline').innerHTML = '&nbsp;';
+    if (!USERS.length) loadUsers();
+  }
+}
+
+function fmtDate(iso){
+  if (!iso) return 'unknown date';
+  try { return new Date(iso).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' }); }
+  catch(e){ return iso; }
+}
+
+function renderUsers(){
+  const q = (document.getElementById('userSearch').value || '').trim().toLowerCase();
+  const visible = USERS.filter(u => !q || u.username.toLowerCase().includes(q) || (u.displayName || '').toLowerCase().includes(q));
+  document.getElementById('userCountLine').textContent = visible.length + (visible.length === 1 ? ' account' : ' accounts')
+    + (q ? ' matching "' + q + '"' : (' · ' + USERS.filter(u => !u.deleted).length + ' active'));
+  const list = document.getElementById('userList');
+  if (!visible.length) { list.innerHTML = '<div class="empty">No accounts match.</div>'; return; }
+  list.innerHTML = visible.map(u => {
+    const sub = '@' + esc(u.username) + ' · joined ' + fmtDate(u.createdAt) + (u.deleted ? ' · removed ' + fmtDate(u.deletedAt) : '');
+    const badge = u.deleted ? '<span class="uBadge">Deleted</span>' : '';
+    let actions;
+    if (u.deleted) {
+      actions = '';
+    } else if (CONFIRMING_ID === u.id) {
+      actions = '<div class="confirmRow"><span>Really delete ' + esc(u.displayName) + '?</span>'
+        + '<button class="confirmYes" onclick="confirmDeleteUser(\'' + u.id + '\')">Yes, delete</button>'
+        + '<button class="confirmNo" onclick="cancelDeleteUser()">Cancel</button></div>';
+    } else {
+      actions = '<button class="delBtn" onclick="askDeleteUser(\'' + u.id + '\')">Delete</button>';
+    }
+    return '<div class="uCard' + (u.deleted ? ' deletedRow' : '') + '">'
+      + '<div class="uInfo"><div class="uName">' + esc(u.displayName) + badge + '</div><div class="uSub">' + sub + '</div></div>'
+      + '<div class="uActions">' + actions + '</div>'
+    + '</div>';
+  }).join('');
+}
+
+function askDeleteUser(id){ CONFIRMING_ID = id; renderUsers(); }
+function cancelDeleteUser(){ CONFIRMING_ID = null; renderUsers(); }
+
+async function confirmDeleteUser(id){
+  try {
+    await api('/api/admin/users/' + encodeURIComponent(id) + '/delete', { method: 'POST' });
+    const u = USERS.find(x => x.id === id);
+    if (u) { u.deleted = true; u.deletedAt = new Date().toISOString(); }
+    CONFIRMING_ID = null;
+    renderUsers();
+  } catch (e) {
+    document.getElementById('errBox').innerHTML = '<div class="err">Could not delete that account: ' + esc(e.message) + '</div>';
+    CONFIRMING_ID = null;
+    renderUsers();
+  }
+}
+
+async function loadUsers(){
+  try {
+    USERS = await api('/api/admin/users');
+    // Newest first -- the accounts most worth a look are the ones that just signed up.
+    USERS.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    renderUsers();
+  } catch (e) {
+    if (e.message !== 'unauthorized') document.getElementById('errBox').innerHTML = '<div class="err">Could not load accounts: ' + esc(e.message) + '</div>';
   }
 }
 

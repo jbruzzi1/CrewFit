@@ -752,7 +752,13 @@ function adminAuth(req, res, next) {
 app.get('/healthz', async (req, res) => {
   if (!DB || typeof DB.users !== 'object' || typeof DB.sessions !== 'object')
     return res.status(503).json({ ok: false, error: 'database not loaded' });
-  res.json({ ok: true, users: Object.keys(DB.users).length, sessions: Object.keys(DB.sessions).length });
+  // Oct 12 2026 (Jeff: "delete fake/test accounts so we can accurately track new users"): this
+  // used to count every row in DB.users, including ones already anonymized via delete-account --
+  // deleting an account (self-service or admin) never removes its row (see
+  // anonymizeAndDeleteAccount's own comment on why), so without this filter, a "deleted" account
+  // kept counting toward this number forever, directly defeating the point of deleting it.
+  const liveUsers = Object.values(DB.users).filter(u => !u.deleted).length;
+  res.json({ ok: true, users: liveUsers, sessions: Object.keys(DB.sessions).length });
 });
 app.get('/api/vapid', (req, res) => res.json({ publicKey: vapid.publicKey }));
 // Powers Settings -> Help -> "Contact us" (see SUPPORT_EMAIL's own comment above). No auth
@@ -6587,28 +6593,39 @@ app.post('/api/me/reset-workouts', auth, async (req, res) => {
 // register (findUserByName can no longer match it once u.username below is overwritten) -- nothing
 // reserves it against reuse/impersonation. That's a real product call, not an engineering one; easy
 // to add a reserved-usernames list later if it turns out to matter.
-app.post('/api/me/delete-account', auth, async (req, res) => {
-  const me = req.userId;
+// Oct 12 2026 (Jeff: "I want the ability to delete any account I see fit" -- admin cleanup of
+// test/fake accounts before launch, plus ongoing moderation afterward): this whole body used to
+// live inline inside POST /api/me/delete-account below, written assuming `me` was always the
+// caller's own id (proven by their own password). Extracted verbatim, parameterized by `targetId`
+// instead, so the NEW admin route below can run the exact same teardown against ANY account --
+// sharing one real implementation rather than drifting two copies of this much logic, same
+// reasoning wipeUserFromAllSessions' own comment already gives for why it was split out of
+// reset-workouts in the first place. Nothing about the teardown steps themselves changed --
+// still anonymize-in-place (see this function's original comment, preserved below), never a hard
+// delete, so every "other real user's shared history stays intact, only the deleted person's own
+// name/photo disappear" guarantee Jeff was told about before approving this holds for admin-
+// initiated deletes too, not just self-service ones.
+//
+// This anonymizes the account IN PLACE rather than actually removing the DB.users[id] row.
+// Considered a real hard delete first: `nameOf` (crew/challenge display helper, above) is the only
+// place in this whole file that already tolerates a vanished user id (falls back to "(deleted
+// account)") -- everywhere else that reads DB.users[someId] (profileOf, canSeeProfile, avatarHtml,
+// publicUser, ...) assumes the row exists and was never audited against one disappearing out from
+// under a still-live session/comment/report/notification that references it. That's exactly the
+// class of "conditional failure invisible until the one missing case actually happens in
+// production" this file's own boot-migration rule (CLAUDE.md #7) exists to avoid, and account
+// deletion is not a place to find out the hard way. Anonymizing gets the same practical outcome
+// Apple's guideline is actually after -- the account is gone, cannot be logged into again, and no
+// longer identifies this person -- without that referential-integrity risk. u.deleted + the /login
+// check above are what actually enforce "gone"; the scrambled credentials are defense in depth.
+//
+// Flagged, not silently decided: deleting frees this account's OLD username for anyone else to
+// register (findUserByName can no longer match it once u.username below is overwritten) -- nothing
+// reserves it against reuse/impersonation. That's a real product call, not an engineering one; easy
+// to add a reserved-usernames list later if it turns out to matter.
+async function anonymizeAndDeleteAccount(targetId) {
+  const me = targetId;
   const u = DB.users[me];
-  if (!u) return res.status(404).json({ error: 'not found' });
-  // Sep 29 2026 (audit finding, Tier 1 #1): same reasoning as POST /api/me/password's own comment
-  // -- a valid-but-stolen token could otherwise guess this account's real password against this
-  // route forever, nothing here ever capped it. Same failCount/bumpFail/clearFail pattern (only
-  // wrong guesses count, cleared on a correct one), and the SAME shared 'pw-confirm:' counter as
-  // /api/me/password and /api/me/reset-workouts -- one 10/hour budget across all three, not 10
-  // per route (see /api/me/password's own comment on why).
-  if (failCount('pw-confirm:' + me) >= 10)
-    return res.status(429).json({ error: 'Too many attempts. Try again later.' });
-  const { password } = req.body || {};
-  // 400, not 401 -- same reasoning as POST /api/me/password just above: this request already has
-  // a valid session token, a wrong confirmation password here must not trip app.js's global
-  // "any 401 means your session died" handler and force a surprise logout.
-  if (!password || !verifyPin(u, password)) {
-    bumpFail('pw-confirm:' + me, 60 * 60 * 1000);
-    return res.status(400).json({ error: 'Password is incorrect' });
-  }
-  clearFail('pw-confirm:' + me);
-
   const { pivots, autoApprovals } = wipeUserFromAllSessions(me);
   // Persist + notify about the session wipe FIRST, same order reset-workouts uses (save, then
   // notify only what's actually saved -- see notifyWipePivots' own comment on why) and, just as
@@ -6730,6 +6747,75 @@ app.post('/api/me/delete-account', auth, async (req, res) => {
   u.tokensValidFrom = u.deletedAt;
 
   await save(DB);   // second save: the follow-severance + anonymization phase above, its own step
+}
+
+// Sep 29 2026 (Jeff: "add... account deletion"; app-store readiness -- Apple guideline 5.1.1(v)
+// requires letting a user delete their own account from within an app that lets them create one).
+// Requires the CURRENT password re-entered, same proof-of-identity bar as /api/me/password above
+// -- an irreversible action needs at least that, not just "you're already logged in right now."
+// Oct 12 2026: the actual teardown this route runs is now the shared anonymizeAndDeleteAccount()
+// above (see its own comment for why) -- this route's whole job is proving the caller really is
+// the account holder, then handing off.
+app.post('/api/me/delete-account', auth, async (req, res) => {
+  const me = req.userId;
+  const u = DB.users[me];
+  if (!u) return res.status(404).json({ error: 'not found' });
+  // Sep 29 2026 (audit finding, Tier 1 #1): same reasoning as POST /api/me/password's own comment
+  // -- a valid-but-stolen token could otherwise guess this account's real password against this
+  // route forever, nothing here ever capped it. Same failCount/bumpFail/clearFail pattern (only
+  // wrong guesses count, cleared on a correct one), and the SAME shared 'pw-confirm:' counter as
+  // /api/me/password and /api/me/reset-workouts -- one 10/hour budget across all three, not 10
+  // per route (see /api/me/password's own comment on why).
+  if (failCount('pw-confirm:' + me) >= 10)
+    return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+  const { password } = req.body || {};
+  // 400, not 401 -- same reasoning as POST /api/me/password just above: this request already has
+  // a valid session token, a wrong confirmation password here must not trip app.js's global
+  // "any 401 means your session died" handler and force a surprise logout.
+  if (!password || !verifyPin(u, password)) {
+    bumpFail('pw-confirm:' + me, 60 * 60 * 1000);
+    return res.status(400).json({ error: 'Password is incorrect' });
+  }
+  clearFail('pw-confirm:' + me);
+  await anonymizeAndDeleteAccount(me);
+  res.json({ ok: true });
+});
+
+// Oct 12 2026 (Jeff: "I want the ability to delete any account I see fit" -- cleaning up fake/test
+// accounts before launch, and ongoing moderation afterward). Same adminAuth token gate as
+// /api/admin/reports above (see adminAuth's own comment for why this is a standalone token rather
+// than an isAdmin flag on a user account) -- no password re-entry, since proving you hold the
+// admin token already IS the proof-of-authority this needs; unlike self-delete, there is no
+// "account holder's own password" to ask for when deleting someone ELSE's account.
+//
+// Explicitly refuses an already-deleted target (400, not a silent no-op) -- re-running the
+// anonymize/teardown logic against an account that's already anonymized is harmless on its own
+// (every step is written to tolerate empty arrays/already-cleared fields), but there is no reason
+// for the admin page to ever send this twice for the same account, and a clear error here is a
+// better signal than a quiet 200 if its own UI state is ever stale (e.g. two admin tabs open).
+app.get('/api/admin/users', adminAuth, async (req, res) => {
+  res.json(Object.values(DB.users).map(u => ({
+    id: u.id, username: u.username, displayName: u.displayName,
+    createdAt: u.createdAt || null, deleted: !!u.deleted, deletedAt: u.deletedAt || null,
+  })));
+});
+app.post('/api/admin/users/:id/delete', adminAuth, async (req, res) => {
+  // Oct 12 2026 (cold-review catch, confirmed with a real exploit before this shipped): a plain
+  // `DB.users[req.params.id]` lookup is not safe against a path param of literally "__proto__" --
+  // in JS, {}['__proto__'] returns Object.prototype itself, not undefined, so the `!u` 404 check
+  // right below was SKIPPED for that one specific id, and anonymizeAndDeleteAccount went on to
+  // write real fields (deleted:true, scrambled credentials, displayName) onto Object.prototype --
+  // meaning every plain object in the whole running process, including every OTHER real user, now
+  // inherited deleted:true. Verified: this broke login for brand-new unrelated accounts and made
+  // /healthz undercount instantly, for the whole server, until restart. A uid() is always exactly
+  // 8 lowercase alphanumeric characters (see uid()'s own comment) -- requiring that shape here
+  // closes this off entirely: "__proto__", "constructor", "toString" etc. all fail the test and
+  // 404 immediately, before ever touching DB.users.
+  if (!/^[a-z0-9]{8}$/.test(req.params.id)) return res.status(404).json({ error: 'not found' });
+  const u = DB.users[req.params.id];
+  if (!u) return res.status(404).json({ error: 'not found' });
+  if (u.deleted) return res.status(400).json({ error: 'already deleted' });
+  await anonymizeAndDeleteAccount(req.params.id);
   res.json({ ok: true });
 });
 
