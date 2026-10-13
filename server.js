@@ -2862,7 +2862,12 @@ app.delete('/api/crews/:id/challenge/:challengeId', auth, async (req, res) => {
   const ch = runningChallenge(c);
   if (!ch || ch.id !== req.params.challengeId) return res.status(400).json({ error: 'no running challenge to cancel' });
   c.challenges = c.challenges.filter(x => x.id !== ch.id);
-  if (ch.feedEventId && DB.feedEvents[ch.feedEventId]) delete DB.feedEvents[ch.feedEventId];
+  if (ch.feedEventId && DB.feedEvents[ch.feedEventId]) {
+    delete DB.feedEvents[ch.feedEventId];
+    // Oct 13 2026 (dual-write phase -- see emitFeedEvent's comment above for the general
+    // reasoning).
+    db.pgDeleteFeedEvent(ch.feedEventId).catch(e => console.error('[migration dual-write] pgDeleteFeedEvent failed:', e && e.message));
+  }
   await save(DB);
   res.json(publicCrew(c, req.userId));
 });
@@ -3010,6 +3015,10 @@ app.get('/api/notifications', auth, async (req, res) => {
     .map(n => ({ type: 'history', id: n.id, title: n.title, body: n.body, at: n.createdAt, link: n.link || null }));
   const seenAt = me.notificationsSeenAt ? new Date(me.notificationsSeenAt).getTime() : 0;
   const unseenHistory = history.filter(n => new Date(n.at).getTime() > seenAt).length;
+  // Oct 13 2026 (migration shadow-compare, see its own comment on shadowCompareNotificationHistory
+  // near pruneOldNotifications): fire-and-forget, never awaited -- must not add latency to this
+  // response, which this endpoint's own comment already notes is hit on basically every page load.
+  shadowCompareNotificationHistory(req.userId, cutoff, history);
   res.json({ invites, followRequests, joinRequests, removals, suggestions, reinviteAsks, routineShares, history, count: invites.length + followRequests.length + joinRequests.length + removals.length + suggestions.length + reinviteAsks.length + routineShares.length + unseenHistory });
 });
 // Stamps "I have now looked at the notifications page" -- called by renderNotifications() in
@@ -3034,6 +3043,11 @@ app.delete('/api/notifications/:id', auth, async (req, res) => {
   if (!n || n.userId !== req.userId) return res.status(404).json({ error: 'not found' });
   delete DB.notifications[req.params.id];
   await save(DB);
+  // Oct 13 2026 (dual-write phase -- see emitFeedEvent's comment above for the general
+  // reasoning). The ownership check is baked into pgDeleteNotification's own WHERE clause too, so
+  // this can't be tricked into deleting someone else's row on the new table even though the
+  // ownership decision was already made above.
+  db.pgDeleteNotification(req.params.id, req.userId).catch(e => console.error('[migration dual-write] pgDeleteNotification failed:', e && e.message));
   res.json({ ok: true });
 });
 
@@ -3267,6 +3281,9 @@ app.get('/api/feed', auth, async (req, res) => {
   }
 
   items.sort((a, b) => new Date(b.at) - new Date(a.at));
+  // Oct 13 2026 (migration shadow-compare, see shadowCompareFeedEvents' own comment near
+  // pruneOldNotifications): fire-and-forget, never awaited.
+  shadowCompareFeedEvents(weekAgo);
   // This now powers the Activity page's own Today/This week sections, not just a Home quick-
   // glance strip -- a materially higher cap than the old 8. Nothing is lost either way: every
   // friend's complete recent activity is still on their own profile page (tap their name to get
@@ -3799,6 +3816,15 @@ const CREW_SCOPED_FEED_TYPES = new Set(['rank', 'challenge_started', 'joined_cre
 function emitFeedEvent(type, by, fields) {
   const id = 'fev_' + uid();
   DB.feedEvents[id] = { id, type, by, at: new Date().toISOString(), reactions: [], ...fields };
+  // Oct 13 2026 (rearchitecture, notifications+feed-events slice -- dual-write phase, see
+  // CLAUDE.md "Rearchitecture status" / "Rearchitecture safeguards"): also write this same row
+  // into the new direct-Postgres feed_events table, alongside (not instead of) the in-memory
+  // DB.feedEvents write above. Nothing reads from the new table yet -- GET /api/feed below still
+  // reads DB.feedEvents exclusively -- this just keeps the new table caught up so it can be
+  // compared against and eventually cut over to. Fire-and-forget and failure-isolated on purpose:
+  // the in-memory write just above is still the only one anything depends on, so a slow or
+  // failing Postgres write here must never delay or break the real response.
+  db.pgInsertFeedEvent(DB.feedEvents[id]).catch(e => console.error('[migration dual-write] pgInsertFeedEvent failed:', e && e.message));
   return DB.feedEvents[id];
 }
 // Mirrors pruneOldNotifications below exactly -- GET /api/feed already filters to a recent window
@@ -3810,6 +3836,10 @@ function pruneOldFeedEvents() {
   for (const id of Object.keys(DB.feedEvents)) {
     if (new Date(DB.feedEvents[id].at).getTime() < cutoff) { delete DB.feedEvents[id]; removed++; }
   }
+  // Oct 13 2026 (dual-write phase, see emitFeedEvent's own comment above): mirror the exact same
+  // cutoff onto the new table. This is pure storage hygiene either way, so there's no real
+  // correctness risk here even if the two tables are briefly out of sync with each other.
+  db.pgPruneOldFeedEvents(new Date(cutoff).toISOString()).catch(e => console.error('[migration dual-write] pgPruneOldFeedEvents failed:', e && e.message));
   return removed;
 }
 // Current 1-based leaderboard rank of `userId` in crew `c`'s running challenge, or null when
@@ -3864,6 +3894,12 @@ function groupedHistoryWrite(userId, payload, group) {
       if (!existing || new Date(n.createdAt) > new Date(existing.createdAt)) existing = n;
     }
   }
+  // Oct 13 2026 (dual-write phase): the id used for a brand-new row is decided here, once, so the
+  // same id is used on BOTH the in-memory write below and the new-table write further down --
+  // keeping the two tables' rows addressable by the same id makes any later differential check
+  // (task #245) a direct row-for-row comparison instead of having to guess which new-table row
+  // corresponds to which old-table row.
+  const newId = existing ? existing.id : ('ntf_' + uid());
   if (existing) {
     existing.count = (existing.count || 1) + 1;
     existing.title = capStr(payload.title, 120);
@@ -3871,10 +3907,27 @@ function groupedHistoryWrite(userId, payload, group) {
     existing.link = isObj(payload.link) ? payload.link : existing.link;
     existing.createdAt = new Date().toISOString();   // bump to now -- re-sorts to the top, re-enters "Today" if the group started yesterday
   } else {
-    const id = 'ntf_' + uid();
-    DB.notifications[id] = { id, userId, title: capStr(payload.title, 120), body: capStr(group.singularBody, 300),
+    DB.notifications[newId] = { id: newId, userId, title: capStr(payload.title, 120), body: capStr(group.singularBody, 300),
       link: isObj(payload.link) ? payload.link : null, groupKey: group.key, count: 1, createdAt: new Date().toISOString() };
   }
+  // Oct 13 2026 (rearchitecture, notifications+feed-events slice -- dual-write phase, see
+  // CLAUDE.md "Rearchitecture status" / "Rearchitecture safeguards"): mirrors this exact
+  // merge-or-insert onto the new direct-Postgres table via pgMergedNotificationWrite, which
+  // itself is routed through db.js's own enqueue() queue -- required because this app has exactly
+  // one live Postgres connection, so an un-serialized transaction here could interleave with some
+  // totally unrelated concurrent write on that same shared connection (see db.js's own comment on
+  // this function for the full reasoning, and the race-condition verification this was built
+  // against). capStr-wrapped the same way the in-memory branches above are, so the two tables'
+  // text actually matches rather than just their structure. Fire-and-forget and failure-isolated,
+  // same reasoning as emitFeedEvent's own dual-write above -- GET /api/notifications below still
+  // reads DB.notifications exclusively; nothing depends on this new-table write yet.
+  db.pgMergedNotificationWrite(userId, group.key, newId, {
+    title: capStr(payload.title, 120),
+    singularBody: capStr(group.singularBody, 300),
+    pluralBody: (n) => capStr(group.pluralBody(n), 300),
+    link: isObj(payload.link) ? payload.link : null,
+    seenAtIso: new Date(seenAt).toISOString(),
+  }).catch(e => console.error('[migration dual-write] pgMergedNotificationWrite failed:', e && e.message));
 }
 // `payload.link` (optional) -- Sep 8 2026 (Jeff, lock-screen screenshot: "when I click on a push
 // notification it should open to where the notification happened... currently it just opens to
@@ -3893,6 +3946,11 @@ function notify(userId, payload, opts) {
     } else {
       const id = 'ntf_' + uid();
       DB.notifications[id] = { id, userId, title: capStr(payload.title, 120), body: capStr(payload.body, 300), link: isObj(payload.link) ? payload.link : null, createdAt: new Date().toISOString() };
+      // Oct 13 2026 (dual-write phase -- see groupedHistoryWrite's own comment just above for the
+      // full reasoning). Reuses the exact same object just written to DB.notifications[id] above,
+      // so the new table's row is byte-identical to the in-memory one, not a re-derived copy that
+      // could quietly drift from it.
+      db.pgInsertNotification(DB.notifications[id]).catch(e => console.error('[migration dual-write] pgInsertNotification failed:', e && e.message));
     }
     // Deliberately its own save(), not left to whatever save(DB) the calling route happens to run
     // -- several callers already `await save(DB)` BEFORE calling notify() (the mutation they're
@@ -3936,7 +3994,63 @@ function pruneOldNotifications() {
   for (const id of Object.keys(DB.notifications)) {
     if (new Date(DB.notifications[id].createdAt).getTime() < cutoff) { delete DB.notifications[id]; removed++; }
   }
+  // Oct 13 2026 (dual-write phase -- see emitFeedEvent's comment above for the general reasoning):
+  // mirror the same cutoff onto the new table. Pure storage hygiene either way.
+  db.pgPruneOldNotifications(new Date(cutoff).toISOString()).catch(e => console.error('[migration dual-write] pgPruneOldNotifications failed:', e && e.message));
   return removed;
+}
+
+// ---- Oct 13 2026: shadow-compare for the notifications+feed-events migration slice ----
+//
+// Called from the two read sites that still serve everything from DB.notifications/DB.feedEvents
+// (GET /api/notifications' `history`, GET /api/feed) to compare what the OLD in-memory read just
+// produced against what the NEW direct-Postgres read would have produced, without changing the
+// response either way -- always fire-and-forget, always failure-isolated (a Postgres hiccup here
+// must never be visible to a user loading their notifications or feed). A mismatch is logged to
+// the server console, not surfaced anywhere else; this is the "is the new table actually trustworthy
+// yet" signal called for in CLAUDE.md's "Rearchitecture safeguards" section, ahead of task #245's
+// more rigorous ground-truth differential test and ahead of cutting reads over (task #247).
+//
+// Both of these endpoints are hit on close to every Home/Activity page load (see each endpoint's
+// own comment), so comparing on literally every single request would mean doubling real query
+// load on this app's one shared Postgres connection just to verify a background migration step --
+// exactly the kind of avoidable load the single-connection discussion with Jeff flagged as worth
+// watching. Throttled to roughly once a minute per collection instead: frequent enough to catch a
+// real divergence quickly, far too infrequent to meaningfully add to that connection's traffic.
+let lastNotificationHistoryShadowCompareAt = 0;
+function shadowCompareNotificationHistory(userId, cutoffMs, oldHistory) {
+  const now = Date.now();
+  if (now - lastNotificationHistoryShadowCompareAt < 60000) return;
+  lastNotificationHistoryShadowCompareAt = now;
+  db.pgNotificationHistoryForUser(userId, new Date(cutoffMs).toISOString()).then(pgRows => {
+    const newHistory = pgRows
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 50)
+      .map(n => n.id);
+    const oldIds = oldHistory.map(h => h.id);
+    if (JSON.stringify(oldIds) !== JSON.stringify(newHistory)) {
+      console.error('[migration shadow-compare] /api/notifications history mismatch for', userId, 'old:', oldIds, 'new:', newHistory);
+    }
+  }).catch(e => console.error('[migration shadow-compare] pgNotificationHistoryForUser failed:', e && e.message));
+}
+let lastFeedEventsShadowCompareAt = 0;
+function shadowCompareFeedEvents(weekAgoMs) {
+  const now = Date.now();
+  if (now - lastFeedEventsShadowCompareAt < 60000) return;
+  lastFeedEventsShadowCompareAt = now;
+  // Compares the RAW, pre-visibility-filtering id sets -- i.e. "does the new table hold the same
+  // underlying rows the old one does," not "does this one viewer's filtered feed match," since
+  // the crew-membership/block/connection visibility logic deliberately stays JS-only (see GET
+  // /api/feed's own comment) and isn't being duplicated into SQL here. That's the thing actually
+  // worth verifying before task #247 switches GET /api/feed's SOURCE data over -- the visibility
+  // logic itself doesn't change at all when that happens.
+  const oldIds = Object.keys(DB.feedEvents).filter(id => new Date(DB.feedEvents[id].at).getTime() >= weekAgoMs).sort();
+  db.pgFeedEventsSince(new Date(weekAgoMs).toISOString()).then(pgRows => {
+    const newIds = pgRows.map(r => r.id).sort();
+    if (JSON.stringify(oldIds) !== JSON.stringify(newIds)) {
+      console.error('[migration shadow-compare] feed_events id-set mismatch:', 'onlyInOld:', oldIds.filter(id => !newIds.includes(id)), 'onlyInNew:', newIds.filter(id => !oldIds.includes(id)));
+    }
+  }).catch(e => console.error('[migration shadow-compare] pgFeedEventsSince failed:', e && e.message));
 }
 
 // ---- Sessions ----
@@ -9338,6 +9452,26 @@ app.post('/api/feed-events/:id/react', auth, async (req, res) => {
   const reacted = i === -1;
   if (reacted) ev.reactions.push(req.userId); else ev.reactions.splice(i, 1);
   await save(DB);
+  // Oct 13 2026 (rearchitecture, notifications+feed-events slice -- dual-write + shadow-compare
+  // phase, see CLAUDE.md "Rearchitecture status" / "Rearchitecture safeguards"): mirrors this
+  // exact toggle onto the new direct-Postgres row (a single atomic UPDATE -- see db.js's own
+  // comment on pgToggleFeedEventReaction for why this needs no transaction, and the 20-way
+  // concurrency verification it was built against), then compares the two final reaction sets.
+  // Compared as SETS (sorted, not array-order) on purpose: the SQL path can re-add a
+  // toggled-back-on reaction at a different array position than the in-memory splice/push above
+  // does, which is a harmless cosmetic difference, not a real mismatch worth flagging. A genuine
+  // mismatch (a missing or extra userId) is only ever logged -- never surfaces to the user or
+  // changes the response, which is still built from ev.reactions below exactly as before.
+  // Snapshotted synchronously, right now -- ev.reactions is a live reference into DB.feedEvents,
+  // and another request reacting to this same event could mutate it again before the Postgres
+  // round-trip below resolves. Comparing against a snapshot taken at this exact moment (instead
+  // of re-reading ev.reactions inside the .then()) avoids a false "mismatch" that's really just
+  // two requests racing, not the two tables actually disagreeing.
+  const oldReactionsSnapshot = JSON.stringify([...ev.reactions].sort());
+  db.pgToggleFeedEventReaction(req.params.id, req.userId).then(pgRow => {
+    const newSet = JSON.stringify((pgRow ? [...pgRow.reactions] : []).sort());
+    if (oldReactionsSnapshot !== newSet) console.error('[migration shadow-compare] feed_events reaction mismatch for', req.params.id, 'old:', oldReactionsSnapshot, 'new:', newSet);
+  }).catch(e => console.error('[migration dual-write] pgToggleFeedEventReaction failed:', e && e.message));
   if (reacted && ev.by && ev.by !== req.userId)
     notify(ev.by, { title: 'New reaction', body: `${DB.users[req.userId].displayName} reacted to your activity`, link: { type: 'profile', userId: ev.by } });
   res.json({ reacted, count: ev.reactions.length });

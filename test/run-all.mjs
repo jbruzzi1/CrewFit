@@ -116,6 +116,14 @@ const files = [
   // Oct 12 2026 (scaling fix #1, visibility): GET /api/admin/scaling -- memory/counts/latency,
   // admin-token-gated. Added to this list the same run it was written, same discipline as above.
   'test/admin-scaling-visibility.mjs',
+  // Oct 13 2026 (rearchitecture, notifications+feed-events slice, task #245's ground-truth
+  // differential test -- see CLAUDE.md "Rearchitecture status"/"Rearchitecture safeguards"):
+  // drives the real HTTP routes and checks the new direct-Postgres path agrees with the old
+  // in-memory one, including the two real concurrency races the slice's pre-mortem flagged. This
+  // is also the test that caught a real bug (the generic save(DB) diff-sync and the new
+  // functions fighting over the same rows -- see db.js's own comment on that fix) the same run it
+  // was written, same discipline as every entry above.
+  'test/notifications-feed-migration-differential.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

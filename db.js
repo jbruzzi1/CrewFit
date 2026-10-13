@@ -310,15 +310,57 @@ async function doSave(d) {
     pending.crews = bootstrapping
       ? await syncTableFull(c, 'crews', 'id', d.crews, jsonToParams, CREWS_UPSERT_SQL)
       : await syncTableDiff(c, 'crews', 'id', d.crews, jsonToParams, CREWS_UPSERT_SQL, base.crews);
+    // Oct 13 2026 (rearchitecture, notifications+feed-events slice -- REAL finding from task
+    // #245's differential test, not a hypothetical): `notifications` and `feed_events` used to be
+    // synced here too, the same generic way as every other table. That is now deliberately
+    // REMOVED, and this is a correctness fix, not a style choice.
+    //
+    // What the differential test caught: this generic sync does a coarse "overwrite the whole row
+    // to match whatever's in memory right now" write, on the exact same physical rows the new
+    // pgMergedNotificationWrite/pgToggleFeedEventReaction functions (below, in the "direct
+    // Postgres access" section) do a surgical read-modify-write MERGE/TOGGLE on. Both go through
+    // this same enqueue() queue, so neither ever corrupts the OTHER's transaction -- the single-
+    // connection safety invariant this queue exists for was never at risk. But the two mechanisms
+    // still fight over the FINAL VALUE of the same row: a generic overwrite landing between two of
+    // the new functions' own read-then-write steps makes each of those see a different "current"
+    // state than the in-memory JS side computed, which does not throw or roll back anything -- it
+    // just produces a silently WRONG number. Caught live: 4 real concurrent crew-chat messages
+    // produced a grouped notification with count=7, not 4; 10 real concurrent reactions on the
+    // same feed event ended at 0, not 10 (the generic overwrite landing between toggles flipped
+    // some back off). Both reproduced through real HTTP requests against the real routes, not a
+    // synthetic script -- see test/notifications-feed-migration-differential.mjs.
+    //
+    // The fix: these two tables are now owned EXCLUSIVELY by the new direct-Postgres functions
+    // for ONGOING writes, for both inserts/updates/deletes and the prune jobs -- every call site
+    // that mutates DB.notifications/DB.feedEvents already also calls the matching new function
+    // (see server.js's own comments at each site). The in-memory DB.notifications/DB.feedEvents
+    // maps are UNCHANGED and still load at boot (doLoad() below) and still serve every read
+    // (GET /api/notifications, GET /api/feed) exactly as before -- only the ongoing WRITE path to
+    // Postgres for these two tables has moved. This is an early, forced version of task #247's
+    // planned cutover for THESE TWO TABLES' WRITES specifically; reads still cut over at #247.
+    //
+    // Oct 13 2026, corrected same day (second review pass caught this): the bootstrapping branch
+    // below is NOT removed, only the ongoing (syncTableDiff) branch is. `bootstrapping` is true
+    // exactly once per process, and ONLY for scripts/migrate-to-postgres.mjs (the one caller that
+    // reaches save() before any load() -- see the comment on lastPersisted above; every normal
+    // server.js boot calls load() first, which always establishes a real baseline, so
+    // bootstrapping is always false there). Dropping this branch too would have silently made
+    // that one-shot import/disaster-recovery script stop writing notifications/feed_events into
+    // Postgres AT ALL -- a real, currently-untested regression the differential test (which only
+    // exercises normal server traffic, never the import script) would never have caught. Since
+    // this branch only ever runs for that single one-shot, non-concurrent script -- never
+    // alongside real user traffic -- it cannot re-create the ongoing-write race this whole fix
+    // exists to remove; it is the same one-time bulk import syncTableFull always was, just scoped
+    // to only fire on that one path now.
     pending.notifications = bootstrapping
       ? await syncTableFull(c, 'notifications', 'id', d.notifications, jsonToParams, NOTIFICATIONS_UPSERT_SQL)
-      : await syncTableDiff(c, 'notifications', 'id', d.notifications, jsonToParams, NOTIFICATIONS_UPSERT_SQL, base.notifications);
+      : (base.notifications || {});
+    pending.feed_events = bootstrapping
+      ? await syncTableFull(c, 'feed_events', 'id', d.feedEvents, jsonToParams, FEED_EVENTS_UPSERT_SQL)
+      : (base.feed_events || {});
     pending.reports = bootstrapping
       ? await syncTableFull(c, 'reports', 'id', d.reports, jsonToParams, REPORTS_UPSERT_SQL)
       : await syncTableDiff(c, 'reports', 'id', d.reports, jsonToParams, REPORTS_UPSERT_SQL, base.reports);
-    pending.feed_events = bootstrapping
-      ? await syncTableFull(c, 'feed_events', 'id', d.feedEvents, jsonToParams, FEED_EVENTS_UPSERT_SQL)
-      : await syncTableDiff(c, 'feed_events', 'id', d.feedEvents, jsonToParams, FEED_EVENTS_UPSERT_SQL, base.feed_events);
 
     // Singletons: never deleted for being merely absent from `d` (unlike collections above) —
     // `d[key] === undefined` has always meant "this save() call has nothing to say about this
@@ -441,4 +483,176 @@ async function syncTableDiff(c, table, keyCol, obj, toParams, upsertSql, lastMap
 // always-correct full-table path) instead of diffing, exactly as if this were a fresh process.
 function close() { if (conn) { conn.close(); conn = null; } lastPersisted = null; }
 
-module.exports = { load, save, close, ensureSchema, EMPTY_DB, getConn };
+// ---- Oct 13 2026: direct Postgres access for notifications + feed_events ----
+//
+// First slice of the data-ownership rearchitecture (see CrewFit's CLAUDE.md, "Rearchitecture
+// status"). These two collections are moving off "loaded wholesale into DB.notifications/
+// DB.feedEvents at boot, mutated in memory, persisted via the generic save(DB) diff above" onto
+// real per-request Postgres access. Every other collection (sessions, users, crews, etc.) is
+// completely unchanged by this and still goes through DB.<x> + save(DB) as always — only these
+// two tables get their own functions here, used by server.js in place of DB.notifications[...]/
+// DB.feedEvents[...].
+//
+// Oct 13 2026, corrected same day (two independent review passes, both caught this
+// independently, one reproduced it live): EVERY function below — not just
+// pgMergedNotificationWrite's own transaction — is routed through enqueue(), the same queue
+// doSave()/doLoad() already use. The first version of this comment argued "a single bare
+// statement needs no extra coordination, because pgmini's connection already serializes
+// individual .query() calls on the wire" — that reasoning is WRONG, and the bug it missed is
+// worse than the one pgMergedNotificationWrite's own transaction already guards against: this
+// app has exactly ONE live Postgres connection (pgmini.js's own top comment — no pooling), and a
+// BEGIN...COMMIT on that connection is a property of the whole connection, not of the caller that
+// opened it. A "single bare statement" issued through getConn().query() directly (not enqueued)
+// can land ON THE WIRE in between someone ELSE's BEGIN and COMMIT/ROLLBACK — doSave()'s own
+// 9-collection transaction, or another pgMergedNotificationWrite call — and become part of THAT
+// transaction instead of its own. If that other transaction then rolls back (any thrown error),
+// this statement's write is silently undone even though its own promise already resolved with no
+// error at all — the caller believes it succeeded, and it didn't. Reproduced live against a real
+// Postgres database: an un-enqueued pgInsertFeedEvent-style insert, issued while an unrelated
+// transaction was open, vanished the instant that other transaction rolled back. Routing every
+// one of these through enqueue() closes this the same way doSave()/doLoad() already do — see the
+// comment on opQueue, above, for the general reasoning this now actually follows consistently
+// instead of only partially.
+//
+// Two different safety shapes below, now BOTH always inside enqueue() — the distinction that
+// still matters is only about what happens ONCE a function has its exclusive turn on the
+// connection, not about whether to use the queue at all:
+//   - The reaction toggle (pgToggleFeedEventReaction) is ONE atomic UPDATE, with the toggle
+//     logic itself computed inside the SQL (jsonb_set + the jsonb containment/concat/subtract
+//     operators), not read-then-decide-in-JS-then-write — no BEGIN/COMMIT of its own needed,
+//     Postgres's own row-level locking already serializes two concurrent toggles of the SAME row
+//     correctly. Verified directly: 20 truly concurrent reactions from 20 different users on one
+//     row all landed, zero lost updates.
+//   - The grouped-notification merge (pgMergedNotificationWrite) genuinely cannot be one
+//     statement: it has to look up any existing unseen row for this (user, groupKey) and THEN
+//     decide insert vs. update, with nothing allowed to happen in between — a real transaction
+//     (BEGIN...COMMIT). Verified directly: 8 truly concurrent merges for the same (user, groupKey)
+//     produced 8 separate duplicate rows when NOT routed through a shared queue (reproducing the
+//     exact bug this exists to prevent), and exactly 1 correctly-merged row (count=8) when they
+//     were.
+async function pgNotificationHistoryForUser(userId, sinceIso) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(
+      `SELECT data FROM notifications WHERE data->>'userId' = $1 AND data->>'createdAt' >= $2 ORDER BY data->>'createdAt' DESC LIMIT 50`,
+      [userId, sinceIso]
+    );
+    return r.rows.map(row => JSON.parse(row.data));
+  });
+}
+async function pgInsertNotification(row) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.query(NOTIFICATIONS_UPSERT_SQL, [row.id, JSON.stringify(row)]);
+    return row;
+  });
+}
+// Ownership check baked into the WHERE clause, not a separate read-then-check-then-delete — a
+// single atomic statement, and it also means two concurrent deletes of the same row can't race
+// each other into any inconsistent state (the second just affects 0 rows). Returns whether a row
+// was actually removed, so the caller can tell "didn't exist" / "wasn't yours" (same outcome,
+// same 404, no info leak either way) from "deleted."
+async function pgDeleteNotification(id, userId) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(`DELETE FROM notifications WHERE id = $1 AND data->>'userId' = $2`, [id, userId]);
+    const m = /^DELETE (\d+)$/.exec(r.commandTag || '');
+    return !!m && Number(m[1]) > 0;
+  });
+}
+async function pgMergedNotificationWrite(userId, groupKey, newId, payload) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.begin();
+    try {
+      const r = await c.query(
+        `SELECT id, data FROM notifications WHERE data->>'userId' = $1 AND data->>'groupKey' = $2 AND data->>'createdAt' > $3 ORDER BY data->>'createdAt' DESC LIMIT 1`,
+        [userId, groupKey, payload.seenAtIso]
+      );
+      let row;
+      if (r.rows.length) {
+        row = JSON.parse(r.rows[0].data);
+        row.count = (row.count || 1) + 1;
+        row.title = payload.title;
+        row.body = payload.pluralBody(row.count);
+        row.link = payload.link != null ? payload.link : row.link;
+        row.createdAt = new Date().toISOString();
+      } else {
+        row = { id: newId, userId, title: payload.title, body: payload.singularBody, link: payload.link || null, groupKey, count: 1, createdAt: new Date().toISOString() };
+      }
+      await c.query(NOTIFICATIONS_UPSERT_SQL, [row.id, JSON.stringify(row)]);
+      await c.commit();
+      return row;
+    } catch (e) {
+      await c.rollback();
+      throw e;
+    }
+  });
+}
+async function pgPruneOldNotifications(cutoffIso) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(`DELETE FROM notifications WHERE data->>'createdAt' < $1`, [cutoffIso]);
+    const m = /^DELETE (\d+)$/.exec(r.commandTag || '');
+    return m ? Number(m[1]) : 0;
+  });
+}
+async function pgInsertFeedEvent(row) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.query(FEED_EVENTS_UPSERT_SQL, [row.id, JSON.stringify(row)]);
+    return row;
+  });
+}
+async function pgDeleteFeedEvent(id) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.query('DELETE FROM feed_events WHERE id = $1', [id]);
+  });
+}
+// Bounded to the retention window at the SQL level (same cutoff GET /api/feed itself already
+// applies) — this is already what pruneOldFeedEvents keeps the in-memory table down to in
+// practice, so this isn't a NEW scan limit, just the same one enforced at the source instead of
+// after loading everything into RAM. Visibility filtering (crew membership, blocks, connections)
+// stays exactly where it already is, in server.js's GET /api/feed — deliberately NOT duplicated
+// into SQL here, so that business logic has exactly one home, not two copies to keep in sync.
+async function pgFeedEventsSince(sinceIso) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(`SELECT data FROM feed_events WHERE data->>'at' >= $1`, [sinceIso]);
+    return r.rows.map(row => JSON.parse(row.data));
+  });
+}
+// Single atomic UPDATE — see the long comment above this section for why this needs no
+// transaction. Returns the updated row, or null if the event doesn't exist (caller 404s).
+const FEED_REACTION_TOGGLE_SQL = `UPDATE feed_events
+  SET data = jsonb_set(
+    data, '{reactions}',
+    CASE WHEN COALESCE(data->'reactions', '[]'::jsonb) @> to_jsonb($2::text)
+      THEN (COALESCE(data->'reactions', '[]'::jsonb) - $2)
+      ELSE (COALESCE(data->'reactions', '[]'::jsonb) || to_jsonb($2::text))
+    END
+  )
+  WHERE id = $1
+  RETURNING data`;
+async function pgToggleFeedEventReaction(id, userId) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(FEED_REACTION_TOGGLE_SQL, [id, userId]);
+    return r.rows.length ? JSON.parse(r.rows[0].data) : null;
+  });
+}
+async function pgPruneOldFeedEvents(cutoffIso) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(`DELETE FROM feed_events WHERE data->>'at' < $1`, [cutoffIso]);
+    const m = /^DELETE (\d+)$/.exec(r.commandTag || '');
+    return m ? Number(m[1]) : 0;
+  });
+}
+
+module.exports = {
+  load, save, close, ensureSchema, EMPTY_DB, getConn,
+  pgNotificationHistoryForUser, pgInsertNotification, pgDeleteNotification, pgMergedNotificationWrite, pgPruneOldNotifications,
+  pgInsertFeedEvent, pgDeleteFeedEvent, pgFeedEventsSince, pgToggleFeedEventReaction, pgPruneOldFeedEvents,
+};
