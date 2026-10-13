@@ -26,7 +26,7 @@ This file is the short version — the rules that must never be missed.
 
 Tracks the slice-by-slice move off "the whole DB lives as one JS object in one process's RAM" (see HANDOFF/this file's own history for the full reasoning — decided Oct 12 2026, Jeff: goal is App Store / real growth, so doing this now while stakes are low beats waiting for a tripwire). Planned order (least business-logic risk first, `sessions`/`logs` last on purpose): notifications/feed events → push subs/custom exercises/reports → crews → users → PRs (likely no real migration needed, just re-confirmation) → **sessions & logs (the big one — hold session/workout feature work during this slice specifically)**.
 
-- **Current slice: none yet.** Scoping/planning only so far — no migration code written, no domain actively in flight. Nothing is currently restricted.
+- **Current slice: notifications + feed events (in progress, started Oct 13 2026).** Jeff approved the pre-mortem and said go. Touches: `DB.notifications` (the bell-icon inbox history) and `DB.feedEvents` (Activity-page ephemeral cards — PRs, streaks, crew wins, etc.), including the two read-modify-write spots being moved into real transactions (grouped-notification merging, feed-event reaction toggling). New work on these two specific areas should hold until this slice is marked done below. Everything else (sessions, crews, users, templates, etc.) is untouched and unrestricted.
 - **Completed slices:** none yet.
 
 Update this block (which slice is active, what it touches, when it's done) every time a slice starts or finishes — hard rule #12 depends on this being accurate.
