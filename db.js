@@ -112,7 +112,13 @@ async function ensureSchema() {
   }
 }
 
-const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, customExercises: {}, prs: {}, crews: {}, notifications: {}, reports: {}, feedEvents: {} });
+// Oct 13 2026 (read cutover, task #252): notifications/feedEvents dropped from this shape --
+// nothing in server.js reads or writes DB.notifications/DB.feedEvents any more (see emitFeedEvent/
+// pgNotificationHistoryForUser/pgFeedEventsSince and every other direct-Postgres function in the
+// "direct Postgres access" section below); both are served and mutated exclusively through those
+// functions now. `reports` is untouched -- still a real in-memory collection with its own
+// generic save()/load() sync, not yet migrated.
+const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, customExercises: {}, prs: {}, crews: {}, reports: {} });
 
 // ---- diffed writes ----
 //
@@ -199,11 +205,12 @@ async function doLoad() {
   const crews = await c.query('SELECT id, data FROM crews');
   for (const row of crews.rows) { d.crews[row.id] = JSON.parse(row.data); snap.crews[row.id] = JSON.stringify(d.crews[row.id]); }
 
-  // Sep 5 2026: passive, read-only notification history (see the comment above notify() and
-  // GET /api/notifications in server.js) -- one row per notification, unlike everything above it
-  // is not itself app "state" a user edits, just an append-and-eventually-pruned log.
-  const notifications = await c.query('SELECT id, data FROM notifications');
-  for (const row of notifications.rows) { d.notifications[row.id] = JSON.parse(row.data); snap.notifications[row.id] = JSON.stringify(d.notifications[row.id]); }
+  // Oct 13 2026 (read cutover, task #252): notifications used to be loaded wholesale here too,
+  // the same way as every other collection -- that's gone now. GET /api/notifications and every
+  // other notifications call site in server.js already read/write exclusively through
+  // pgNotificationHistoryForUser/pgInsertNotification/pgMergedNotificationWrite/
+  // pgDeleteNotification/pgPruneOldNotifications (below), not through an in-memory DB.notifications
+  // map, so there is nothing left for doLoad() to populate or for lastPersisted to baseline here.
 
   // Sep 2026: user/content reports (app-store readiness -- see the comment above /api/report in
   // server.js). Same one-row-per-entity JSONB shape as notifications just above; also a passive,
@@ -211,12 +218,11 @@ async function doLoad() {
   const reports = await c.query('SELECT id, data FROM reports');
   for (const row of reports.rows) { d.reports[row.id] = JSON.parse(row.data); snap.reports[row.id] = JSON.stringify(d.reports[row.id]); }
 
-  // Sep 11 2026: the Activity page's persisted feed events (PRs, streaks, crew-rank changes,
-  // challenge starts/completions, joined-crew, finished-without-a-recap) -- ephemeral, pruned the
-  // same way notifications are (see pruneOldFeedEvents in server.js), never surfaced anywhere
-  // permanent. Same one-row-per-entity JSONB shape as notifications/reports above.
-  const feedEvents = await c.query('SELECT id, data FROM feed_events');
-  for (const row of feedEvents.rows) { d.feedEvents[row.id] = JSON.parse(row.data); snap.feed_events[row.id] = JSON.stringify(d.feedEvents[row.id]); }
+  // Oct 13 2026 (read cutover, task #252): feed_events used to be loaded wholesale here too, same
+  // removal and same reasoning as notifications just above -- GET /api/feed and every other feed-
+  // event call site in server.js already read/write exclusively through pgFeedEventsSince/
+  // pgInsertFeedEvent/pgGetFeedEvent/pgToggleFeedEventReaction/pgDeleteFeedEvent/
+  // pgPruneOldFeedEvents (below), not through an in-memory DB.feedEvents map.
 
   // Small singleton bookkeeping fields server.js reads/writes directly on DB (not per-entity
   // data) — followApprovalV1 is a boot migration's "did this already run" marker (see
@@ -332,12 +338,17 @@ async function doSave(d) {
     //
     // The fix: these two tables are now owned EXCLUSIVELY by the new direct-Postgres functions
     // for ONGOING writes, for both inserts/updates/deletes and the prune jobs -- every call site
-    // that mutates DB.notifications/DB.feedEvents already also calls the matching new function
-    // (see server.js's own comments at each site). The in-memory DB.notifications/DB.feedEvents
-    // maps are UNCHANGED and still load at boot (doLoad() below) and still serve every read
-    // (GET /api/notifications, GET /api/feed) exactly as before -- only the ongoing WRITE path to
-    // Postgres for these two tables has moved. This is an early, forced version of task #247's
-    // planned cutover for THESE TWO TABLES' WRITES specifically; reads still cut over at #247.
+    // that used to mutate DB.notifications/DB.feedEvents now calls the matching new function
+    // instead (see server.js's own comments at each site). This was the dual-write phase's fix,
+    // landed before the in-memory maps themselves were removed.
+    //
+    // Oct 13 2026, same day (read cutover, task #247/#251/#252): DB.notifications/DB.feedEvents
+    // are gone now, not just unwritten -- removed from EMPTY_DB and doLoad() above, since every
+    // read site (GET /api/notifications, GET /api/feed, the reaction route, the challenge-cancel
+    // cleanup) was rewritten to read through the same direct-Postgres functions ongoing writes
+    // already used. Nothing in server.js passes `d.notifications`/`d.feedEvents` to save() any
+    // more either -- the two branches just below are reachable ONLY from
+    // scripts/migrate-to-postgres.mjs's one-shot bootstrap save, never from live server traffic.
     //
     // Oct 13 2026, corrected same day (second review pass caught this): the bootstrapping branch
     // below is NOT removed, only the ongoing (syncTableDiff) branch is. `bootstrapping` is true
@@ -610,6 +621,17 @@ async function pgDeleteFeedEvent(id) {
     await c.query('DELETE FROM feed_events WHERE id = $1', [id]);
   });
 }
+// Oct 13 2026 (read-cutover): single-row lookup, added for POST /api/feed-events/:id/react --
+// now that there is no in-memory DB.feedEvents to read ev.by/ev.crewId/ev.type off of before
+// deciding whether this viewer is allowed to react, that route needs a real fetch-by-id. Returns
+// null (not throw) when the row doesn't exist, so the caller's existing 404 path is unchanged.
+async function pgGetFeedEvent(id) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query('SELECT data FROM feed_events WHERE id = $1', [id]);
+    return r.rows.length ? JSON.parse(r.rows[0].data) : null;
+  });
+}
 // Bounded to the retention window at the SQL level (same cutoff GET /api/feed itself already
 // applies) — this is already what pruneOldFeedEvents keeps the in-memory table down to in
 // practice, so this isn't a NEW scan limit, just the same one enforced at the source instead of
@@ -654,5 +676,5 @@ async function pgPruneOldFeedEvents(cutoffIso) {
 module.exports = {
   load, save, close, ensureSchema, EMPTY_DB, getConn,
   pgNotificationHistoryForUser, pgInsertNotification, pgDeleteNotification, pgMergedNotificationWrite, pgPruneOldNotifications,
-  pgInsertFeedEvent, pgDeleteFeedEvent, pgFeedEventsSince, pgToggleFeedEventReaction, pgPruneOldFeedEvents,
+  pgInsertFeedEvent, pgDeleteFeedEvent, pgGetFeedEvent, pgFeedEventsSince, pgToggleFeedEventReaction, pgPruneOldFeedEvents,
 };

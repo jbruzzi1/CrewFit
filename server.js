@@ -1848,7 +1848,7 @@ app.post('/api/follow/:id', auth, async (req, res) => {
     // to the person being followed; this is the separate, public Activity-feed record of it, shown
     // to whoever is connected to the FOLLOWER (by design -- see CREW_SCOPED_FEED_TYPES' comment
     // above, this type is intentionally not crew-scoped).
-    emitFeedEvent('started_following', req.userId, { targetId: target.id, targetName: target.displayName, text: `started following ${target.displayName}` });
+    await emitFeedEvent('started_following', req.userId, { targetId: target.id, targetName: target.displayName, text: `started following ${target.displayName}` });
     return res.json({ status: 'following' });
   }
   if (!target.followReqs.includes(req.userId)) {
@@ -1904,7 +1904,7 @@ app.post('/api/follow-requests/:id/accept', auth, async (req, res) => {
   // -- the follow only actually takes effect here (line ~1107), not when the request was sent, so
   // this is where the Activity-feed record belongs. `by` is the follower (fromId), same as the
   // immediate-follow path.
-  if (from) emitFeedEvent('started_following', fromId, { targetId: req.userId, targetName: me.displayName, text: `started following ${me.displayName}` });
+  if (from) await emitFeedEvent('started_following', fromId, { targetId: req.userId, targetName: me.displayName, text: `started following ${me.displayName}` });
   res.json({ ok: true });
 });
 app.post('/api/follow-requests/:id/reject', auth, async (req, res) => {
@@ -2289,7 +2289,7 @@ app.post('/api/crews', auth, async (req, res) => {
   // ADDED later, but founding members picked right here at creation got nothing -- the exact same
   // real action (being put in a crew) produced a different, inconsistent result depending on which
   // endpoint happened to add you. Same event, same shape, just for memberIds instead of `before`.
-  for (const mid of memberIds) emitFeedEvent('joined_crew', mid, { crewId: c.id, crewName: c.name, text: `joined ${c.name}` });
+  for (const mid of memberIds) await emitFeedEvent('joined_crew', mid, { crewId: c.id, crewName: c.name, text: `joined ${c.name}` });
   await save(DB);
   // Every other "you were just put into something" flow in this app notifies (workout invite,
   // follow accepted, new follower) -- being silently dropped into a standing group chat with no
@@ -2327,7 +2327,7 @@ app.put('/api/crews/:id', auth, async (req, res) => {
     // newly-added-members notify loop just below), so an unguarded emit here would fire a spurious
     // "renamed the crew" event on every single membership edit, not just real renames.
     if (name !== c.name) {
-      emitFeedEvent('crew_renamed', req.userId, { crewId: c.id, crewName: name, oldName: c.name, text: `renamed the crew to "${name}"` });
+      await emitFeedEvent('crew_renamed', req.userId, { crewId: c.id, crewName: name, oldName: c.name, text: `renamed the crew to "${name}"` });
       // Sep 13 2026 (Jeff, crew-notification gaps -- "what else may be a problem"): a real push/
       // inbox notification too, not just the passive Activity-feed row above. Matches every other
       // crew event (added to crew, challenge started/completed, chat message) already getting one --
@@ -2361,7 +2361,7 @@ app.put('/api/crews/:id', auth, async (req, res) => {
     // Sep 11 2026 (Activity page): one event per newly-added member, no heart in the UI (see
     // friends() in app.js) -- the "New follower"-style notification above already covers the
     // 1:1 heads-up, this is purely the Activity feed's record of it.
-    for (const mid of c.memberIds) if (!before.has(mid)) emitFeedEvent('joined_crew', mid, { crewId: c.id, crewName: c.name, text: `joined ${c.name}` });
+    for (const mid of c.memberIds) if (!before.has(mid)) await emitFeedEvent('joined_crew', mid, { crewId: c.id, crewName: c.name, text: `joined ${c.name}` });
     // Sep 13 2026 (Jeff, crew-notification gaps): the mirror case -- someone dropped from the
     // roster (not a voluntary Leave) previously got no signal at all, the crew just silently
     // disappeared from their list next time they opened it. No feed event -- this is a private
@@ -2372,7 +2372,7 @@ app.put('/api/crews/:id', auth, async (req, res) => {
     // A newly-added member can already have logging that falls inside a running challenge's
     // window (see checkChallengeCompletion's comment) -- check right here, not just on the next
     // workout finish, so the crew isn't left staring at a stalled 100%+ bar with no celebration.
-    checkChallengeCompletion(c);
+    await checkChallengeCompletion(c);
   }
   await save(DB);
   res.json(publicCrew(c, req.userId));
@@ -2391,7 +2391,7 @@ app.post('/api/crews/:id/leave', auth, async (req, res) => {
   // crew-scoped (see CREW_SCOPED_FEED_TYPES), so only the remaining members see it. The person who
   // left won't see their own row (isCrewMember(crew, viewer) is now false for them), which is fine
   // -- this is a record for the people still in the crew, not a receipt for the person who left.
-  emitFeedEvent('left_crew', req.userId, { crewId: c.id, crewName: c.name, text: `left ${c.name}` });
+  await emitFeedEvent('left_crew', req.userId, { crewId: c.id, crewName: c.name, text: `left ${c.name}` });
   // Sep 13 2026 (Jeff, crew-notification gaps): a real push/inbox notification too, not just the
   // passive Activity-feed row above -- same reasoning as crew_renamed's notify loop just above in
   // PUT /api/crews/:id. c.memberIds has already had req.userId filtered out by this point, so this
@@ -2695,7 +2695,7 @@ function publicChallenge(c, ch, viewerId) {
 // would sit frozen at >=target with completedAt still null until someone happened to log something
 // else later (cold-review catch). Returns whether it just completed, so callers than don't already
 // unconditionally save() can decide to.
-function checkChallengeCompletion(c) {
+async function checkChallengeCompletion(c) {
   const ch = runningChallenge(c);
   if (!ch) return false;
   // A custom goal's target is undefined, so `total < ch.target` (total is always 0 for one -- see
@@ -2714,7 +2714,7 @@ function checkChallengeCompletion(c) {
   // Sep 11 2026 (Activity page): one shared feed event, `by` left null (see notify's own system-
   // message pattern just above) since this is the crew's win, not any one member's -- app.js
   // shows it once per viewer who's a member, same as the crew challenge banner already does.
-  emitFeedEvent('challenge_completed', null, { crewId: c.id, crewName: c.name, challengeType: ch.type,
+  await emitFeedEvent('challenge_completed', null, { crewId: c.id, crewName: c.name, challengeType: ch.type,
     target: ch.target, total, memberIds: [...c.memberIds], text: `crushed the ${ch.type} challenge — ${total}${unit} as a crew` });
   return true;
 }
@@ -2722,11 +2722,11 @@ function checkChallengeCompletion(c) {
 // two call sites) so a challenge notices the moment it's actually won, not on the next unrelated
 // read. Cheap in practice: most users belong to zero or one crew, and this is a no-op unless that
 // crew has a challenge running that isn't already marked complete.
-function checkCrewChallenges(userId) {
+async function checkCrewChallenges(userId) {
   for (const c of Object.values(DB.crews || {})) {
     if (!isCrewMember(c, userId)) continue;
     ensureCrewShape(c);
-    checkChallengeCompletion(c);
+    await checkChallengeCompletion(c);
   }
 }
 // Sep 11 2026 (Activity page): snapshot of `userId`'s 1-based rank in every crew challenge they're
@@ -2748,7 +2748,7 @@ function crewRanksSnapshot(userId) {
 // feed events that credit produced. Deliberately separate from checkCrewChallenges (which only
 // cares about challenge COMPLETION) since this covers three different things: the plain "finished
 // a workout" event, a streak milestone, and a crew-challenge rank improvement.
-function emitFinishFeedEvents(s, userId, ranksBefore, localDate) {
+async function emitFinishFeedEvents(s, userId, ranksBefore, localDate) {
   // `localDate` is the CLIENT's own today (see /lock and /leave, which already thread this same
   // value into creditFinish) -- cold-review catch: this used to default to server UTC, which is
   // wrong for most of a day across half the globe (a real two-consecutive-local-day streak could
@@ -2767,7 +2767,7 @@ function emitFinishFeedEvents(s, userId, ranksBefore, localDate) {
   // used to always stamp "now", so a backdated workout's plain completion row could misleadingly
   // read as having JUST happened -- exactly the v239/v247 bug class the PR emission was already
   // built to avoid, just missed here.
-  emitFeedEvent('completed_no_recap', userId, { sessionId: s.id, text: `completed ${s.name || 'a workout'}`,
+  await emitFeedEvent('completed_no_recap', userId, { sessionId: s.id, text: `completed ${s.name || 'a workout'}`,
     at: perfDate(s.scheduledAt, new Date().toISOString()) });
 
   // Streak feed event REMOVED Sep 30 2026 (Jeff, audit Tier 4c, cold-review catch): this used to
@@ -2794,7 +2794,7 @@ function emitFinishFeedEvents(s, userId, ranksBefore, localDate) {
     const after = crewChallengeRank(c, userId);
     if (before == null || after == null || after >= before) continue;   // no challenge, or rank didn't improve
     if (!runningChallenge(c)) continue;   // completed in this same update -- that event covers it
-    emitFeedEvent('rank', userId, { crewId: c.id, crewName: c.name, rank: after, text: `moved to #${after}` });
+    await emitFeedEvent('rank', userId, { crewId: c.id, crewName: c.name, rank: after, text: `moved to #${after}` });
   }
 }
 app.post('/api/crews/:id/challenge', auth, async (req, res) => {
@@ -2831,7 +2831,7 @@ app.post('/api/crews/:id/challenge', auth, async (req, res) => {
   // Oct 10 2026 (audit finding, see the DELETE route right below): stashed on the challenge
   // itself so a cancel can clean up this exact feed entry rather than leaving a stray "started a
   // challenge" line sitting in the feed for something that got undone a minute later.
-  const fev = emitFeedEvent('challenge_started', req.userId, { crewId: c.id, crewName: c.name, challengeType: ch.type,
+  const fev = await emitFeedEvent('challenge_started', req.userId, { crewId: c.id, crewName: c.name, challengeType: ch.type,
     target: ch.target ?? null, title: ch.title || null,
     text: notifyBody.slice(DB.users[req.userId].displayName.length + 1) });
   ch.feedEventId = fev.id;
@@ -2862,12 +2862,11 @@ app.delete('/api/crews/:id/challenge/:challengeId', auth, async (req, res) => {
   const ch = runningChallenge(c);
   if (!ch || ch.id !== req.params.challengeId) return res.status(400).json({ error: 'no running challenge to cancel' });
   c.challenges = c.challenges.filter(x => x.id !== ch.id);
-  if (ch.feedEventId && DB.feedEvents[ch.feedEventId]) {
-    delete DB.feedEvents[ch.feedEventId];
-    // Oct 13 2026 (dual-write phase -- see emitFeedEvent's comment above for the general
-    // reasoning).
-    db.pgDeleteFeedEvent(ch.feedEventId).catch(e => console.error('[migration dual-write] pgDeleteFeedEvent failed:', e && e.message));
-  }
+  // Oct 13 2026 (read cutover): used to check DB.feedEvents[ch.feedEventId] exists before
+  // deleting it in memory (gone now -- see EMPTY_DB/load() in db.js); pgDeleteFeedEvent is a
+  // plain `DELETE ... WHERE id = $1`, already a no-op if the row doesn't exist, so the existence
+  // check was only ever needed for the in-memory delete, not for this.
+  if (ch.feedEventId) await db.pgDeleteFeedEvent(ch.feedEventId);
   await save(DB);
   res.json(publicCrew(c, req.userId));
 });
@@ -3008,17 +3007,13 @@ app.get('/api/notifications', auth, async (req, res) => {
   const stripAt = arr => { arr.sort((a, b) => b._at.localeCompare(a._at)); for (const x of arr) delete x._at; return arr; };
   stripAt(joinRequests); stripAt(removals); stripAt(suggestions); stripAt(reinviteAsks); stripAt(routineShares);
   const cutoff = Date.now() - NOTIFICATION_HISTORY_DAYS * 86400000;
-  const history = Object.values(DB.notifications)
-    .filter(n => n.userId === req.userId && new Date(n.createdAt).getTime() >= cutoff)
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .slice(0, 50)
-    .map(n => ({ type: 'history', id: n.id, title: n.title, body: n.body, at: n.createdAt, link: n.link || null }));
+  // Oct 13 2026 (read cutover): used to build this from Object.values(DB.notifications) (gone now
+  // -- see EMPTY_DB/load() in db.js); pgNotificationHistoryForUser already does the same userId +
+  // cutoff filter and the same newest-first ordering (with its own LIMIT 50) directly in SQL.
+  const pgHistory = await db.pgNotificationHistoryForUser(req.userId, new Date(cutoff).toISOString());
+  const history = pgHistory.map(n => ({ type: 'history', id: n.id, title: n.title, body: n.body, at: n.createdAt, link: n.link || null }));
   const seenAt = me.notificationsSeenAt ? new Date(me.notificationsSeenAt).getTime() : 0;
   const unseenHistory = history.filter(n => new Date(n.at).getTime() > seenAt).length;
-  // Oct 13 2026 (migration shadow-compare, see its own comment on shadowCompareNotificationHistory
-  // near pruneOldNotifications): fire-and-forget, never awaited -- must not add latency to this
-  // response, which this endpoint's own comment already notes is hit on basically every page load.
-  shadowCompareNotificationHistory(req.userId, cutoff, history);
   res.json({ invites, followRequests, joinRequests, removals, suggestions, reinviteAsks, routineShares, history, count: invites.length + followRequests.length + joinRequests.length + removals.length + suggestions.length + reinviteAsks.length + routineShares.length + unseenHistory });
 });
 // Stamps "I have now looked at the notifications page" -- called by renderNotifications() in
@@ -3032,22 +3027,19 @@ app.post('/api/notifications/seen', auth, async (req, res) => {
 });
 // Sep 9 (Jeff): "slide notifications away... to remove them from the list if I don't want to
 // wait the full 7 days." A single history row's own dismiss, distinct from pruneOldNotifications'
-// time-based sweep below -- same mechanism though: DB.notifications is a plain object map, so
-// deleting a key and calling save(DB) is enough for syncTableDiff (db.js) to issue the real
-// Postgres DELETE on the next save cycle, same as the prune job already relies on. Ownership is
-// checked (404, not 403, so a guessed id doesn't confirm whether it exists for someone else) and
-// no confirmation step -- Jeff explicitly said this one doesn't need it, unlike the app's other
-// destructive actions (confirmSheet).
+// time-based sweep below -- a real Postgres DELETE via pgDeleteNotification (see its own comment
+// just below), not the old in-memory-delete-then-save(DB) mechanism this comment used to describe
+// before the read cutover (Oct 13 2026). Ownership is checked (404, not 403, so a guessed id
+// doesn't confirm whether it exists for someone else) and no confirmation step -- Jeff explicitly
+// said this one doesn't need it, unlike the app's other destructive actions (confirmSheet).
 app.delete('/api/notifications/:id', auth, async (req, res) => {
-  const n = DB.notifications[req.params.id];
-  if (!n || n.userId !== req.userId) return res.status(404).json({ error: 'not found' });
-  delete DB.notifications[req.params.id];
-  await save(DB);
-  // Oct 13 2026 (dual-write phase -- see emitFeedEvent's comment above for the general
-  // reasoning). The ownership check is baked into pgDeleteNotification's own WHERE clause too, so
-  // this can't be tricked into deleting someone else's row on the new table even though the
-  // ownership decision was already made above.
-  db.pgDeleteNotification(req.params.id, req.userId).catch(e => console.error('[migration dual-write] pgDeleteNotification failed:', e && e.message));
+  // Oct 13 2026 (read cutover): used to look the row up in DB.notifications for the ownership
+  // check, delete it there, and save(DB) (gone now -- see EMPTY_DB/load() in db.js);
+  // pgDeleteNotification's own WHERE clause (id AND userId) bakes the same ownership check into
+  // the real DELETE, so a single call does both jobs -- it returns false (not an error) when no
+  // matching row existed, same 404 the old missing/wrong-owner check produced.
+  const deleted = await db.pgDeleteNotification(req.params.id, req.userId);
+  if (!deleted) return res.status(404).json({ error: 'not found' });
   res.json({ ok: true });
 });
 
@@ -3227,11 +3219,17 @@ app.get('/api/feed', auth, async (req, res) => {
   // workout" row for the very same workout. A pr event is exactly as strong a signal that this
   // workout is already covered as a posted recap is, so it supersedes completed_no_recap the same
   // way -- keyed by (by, sessionId) since a PR always carries the session it was set in.
+  // Oct 13 2026 (read cutover): both passes below used to scan Object.values(DB.feedEvents)
+  // directly (gone now -- see EMPTY_DB/load() in db.js); pgFeedEventsSince already applies the
+  // same weekAgo cutoff in SQL, so one fetch replaces both scans. All the visibility logic below
+  // (crew membership, isBlocked, connectionsOf, CREW_SCOPED_FEED_TYPES, completed_no_recap
+  // supersession) is untouched -- it's pure JS over the fetched array either way.
+  const feedEvents = await db.pgFeedEventsSince(new Date(weekAgo).toISOString());
   const prSessions = new Set();
-  for (const ev of Object.values(DB.feedEvents)) {
+  for (const ev of feedEvents) {
     if (ev.type === 'pr' && ev.sessionId) prSessions.add(ev.by + '|' + ev.sessionId);
   }
-  for (const ev of Object.values(DB.feedEvents)) {
+  for (const ev of feedEvents) {
     if (new Date(ev.at).getTime() < weekAgo) continue;
     let visible;
     if (ev.by === null) {
@@ -3281,14 +3279,11 @@ app.get('/api/feed', auth, async (req, res) => {
   }
 
   items.sort((a, b) => new Date(b.at) - new Date(a.at));
-  // Oct 13 2026 (migration shadow-compare, see shadowCompareFeedEvents' own comment near
-  // pruneOldNotifications): fire-and-forget, never awaited.
-  shadowCompareFeedEvents(weekAgo);
   // This now powers the Activity page's own Today/This week sections, not just a Home quick-
   // glance strip -- a materially higher cap than the old 8. Nothing is lost either way: every
   // friend's complete recent activity is still on their own profile page (tap their name to get
-  // there), and ephemeral events age out of DB.feedEvents entirely after FEED_EVENT_RETENTION_DAYS
-  // regardless of this cap.
+  // there), and ephemeral events age out of the feed_events table entirely after
+  // FEED_EVENT_RETENTION_DAYS regardless of this cap.
   res.json(items.slice(0, 40));
 });
 
@@ -3813,34 +3808,54 @@ const CREW_SCOPED_FEED_TYPES = new Set(['rank', 'challenge_started', 'joined_cre
 // contradict each other, and which one is right is a real product call, not something to guess.
 // Asked Jeff rather than picking a threshold unilaterally. See CLAUDE_HANDOFF.md / this thread for
 // his answer before changing this again.
-function emitFeedEvent(type, by, fields) {
+// Oct 13 2026 (rearchitecture, notifications+feed-events slice -- READ CUTOVER, see CLAUDE.md
+// "Rearchitecture status" / "Rearchitecture safeguards"): this used to also maintain an
+// in-memory DB.feedEvents map (the dual-write phase before this one). That's gone now --
+// DB.feedEvents no longer exists at all (see EMPTY_DB/load() in db.js) -- this function's only
+// job is the real Postgres insert, and every call site below now `await`s it, for ordering (so a
+// caller than needs the row back, like POST /api/crews/:id/challenge's `fev.id`, or GET /api/feed
+// right after, can rely on it already being committed).
+//
+// Oct 13 2026, same day (adversarial review finding, SEVERE, reproduced live): a first version of
+// this cutover let a Postgres failure here THROW, on the theory that a real insert failure should
+// surface as a real error instead of being silently swallowed. That was wrong in practice: nearly
+// every call site does real in-memory mutation (DB.crews[...], c.challenges.push, c.messages.push,
+// etc.) either just before or interleaved with this call, with its own `await save(DB)` further
+// down the handler -- if this call threw, the request correctly 500'd (no crash -- the global
+// async-route wrapper catches it), but whatever mutation had already been applied in memory
+// stayed applied on this shared, process-wide DB object, UNSAVED, until some later UNRELATED
+// save() happened to flush it -- and was silently lost entirely on a restart before that. The
+// review reproduced this: a crew-creation request whose 2nd of 3 feed-event inserts was forced to
+// fail left the crew visible to every other request on that same process, gone after a restart,
+// with an orphaned feed_events row (from the 1st member, which DID succeed) pointing at a crew
+// that no longer exists anywhere. Feed events are already explicitly treated as ephemeral/best-
+// effort everywhere else in this file (see pruneOldFeedEvents' own "pure storage hygiene, not
+// correctness" framing, and notify()'s plain-insert/groupedHistoryWrite's own fire-and-forget
+// writes just below) -- this one insert should be no different. Fixed: a failure here is logged,
+// never thrown, and the row is still returned either way -- its id is generated locally (uid()),
+// not assigned by Postgres, so a caller like `ch.feedEventId = fev.id` still gets a valid id to
+// stash even on a failed insert. A feedEventId that doesn't resolve to a real row is already a
+// tolerated shape elsewhere (pgDeleteFeedEvent/pgGetFeedEvent are both safe no-ops against a
+// missing id) -- it just means that one card never shows up in anyone's Activity feed, the same
+// user-visible outcome a dropped notify() push already has.
+async function emitFeedEvent(type, by, fields) {
   const id = 'fev_' + uid();
-  DB.feedEvents[id] = { id, type, by, at: new Date().toISOString(), reactions: [], ...fields };
-  // Oct 13 2026 (rearchitecture, notifications+feed-events slice -- dual-write phase, see
-  // CLAUDE.md "Rearchitecture status" / "Rearchitecture safeguards"): also write this same row
-  // into the new direct-Postgres feed_events table, alongside (not instead of) the in-memory
-  // DB.feedEvents write above. Nothing reads from the new table yet -- GET /api/feed below still
-  // reads DB.feedEvents exclusively -- this just keeps the new table caught up so it can be
-  // compared against and eventually cut over to. Fire-and-forget and failure-isolated on purpose:
-  // the in-memory write just above is still the only one anything depends on, so a slow or
-  // failing Postgres write here must never delay or break the real response.
-  db.pgInsertFeedEvent(DB.feedEvents[id]).catch(e => console.error('[migration dual-write] pgInsertFeedEvent failed:', e && e.message));
-  return DB.feedEvents[id];
+  const row = { id, type, by, at: new Date().toISOString(), reactions: [], ...fields };
+  try {
+    await db.pgInsertFeedEvent(row);
+  } catch (e) {
+    console.error('emitFeedEvent: pgInsertFeedEvent failed (continuing -- not fatal to the caller):', e && e.message);
+  }
+  return row;
 }
 // Mirrors pruneOldNotifications below exactly -- GET /api/feed already filters to a recent window
 // on read, so this is pure storage hygiene, not correctness; called once at boot and every few
 // hours by a timer, same as notifications (see the boot section at the bottom of this file).
-function pruneOldFeedEvents() {
+// Oct 13 2026 (read cutover): now a thin wrapper around the real Postgres prune -- no more
+// in-memory map to scan.
+async function pruneOldFeedEvents() {
   const cutoff = Date.now() - FEED_EVENT_RETENTION_DAYS * 86400000;
-  let removed = 0;
-  for (const id of Object.keys(DB.feedEvents)) {
-    if (new Date(DB.feedEvents[id].at).getTime() < cutoff) { delete DB.feedEvents[id]; removed++; }
-  }
-  // Oct 13 2026 (dual-write phase, see emitFeedEvent's own comment above): mirror the exact same
-  // cutoff onto the new table. This is pure storage hygiene either way, so there's no real
-  // correctness risk here even if the two tables are briefly out of sync with each other.
-  db.pgPruneOldFeedEvents(new Date(cutoff).toISOString()).catch(e => console.error('[migration dual-write] pgPruneOldFeedEvents failed:', e && e.message));
-  return removed;
+  return db.pgPruneOldFeedEvents(new Date(cutoff).toISOString());
 }
 // Current 1-based leaderboard rank of `userId` in crew `c`'s running challenge, or null when
 // there's no running (non-custom) challenge to rank against -- a 'custom' challenge has no
@@ -3886,48 +3901,24 @@ function crewChallengeRank(c, userId) {
 // a group they already read. `payload.body` (the per-message push text, e.g. "Brian: on my way")
 // is untouched by any of this -- only the durable history row's own text is aggregated; the live
 // push notification still fires, and still reads, exactly as it always did per message.
+// Oct 13 2026 (read cutover): used to scan DB.notifications itself to find the existing unseen
+// row for this (userId, group.key) pair, mutate it in memory, and SEPARATELY mirror that same
+// merge-or-insert onto Postgres via pgMergedNotificationWrite (dual-write phase). DB.notifications
+// is gone now (see EMPTY_DB/load() in db.js) -- pgMergedNotificationWrite already does the exact
+// same existing-row lookup + merge-or-insert, transactionally, against the real table, so this is
+// now a thin wrapper around it rather than a second, now-pointless implementation of the same
+// logic. Fire-and-forget, same as notify()'s own insert branch below and consistent with this
+// whole function having no return value any caller reads.
 function groupedHistoryWrite(userId, payload, group) {
   const seenAt = DB.users[userId] && DB.users[userId].notificationsSeenAt ? new Date(DB.users[userId].notificationsSeenAt).getTime() : 0;
-  let existing = null;
-  for (const n of Object.values(DB.notifications)) {
-    if (n.userId === userId && n.groupKey === group.key && new Date(n.createdAt).getTime() > seenAt) {
-      if (!existing || new Date(n.createdAt) > new Date(existing.createdAt)) existing = n;
-    }
-  }
-  // Oct 13 2026 (dual-write phase): the id used for a brand-new row is decided here, once, so the
-  // same id is used on BOTH the in-memory write below and the new-table write further down --
-  // keeping the two tables' rows addressable by the same id makes any later differential check
-  // (task #245) a direct row-for-row comparison instead of having to guess which new-table row
-  // corresponds to which old-table row.
-  const newId = existing ? existing.id : ('ntf_' + uid());
-  if (existing) {
-    existing.count = (existing.count || 1) + 1;
-    existing.title = capStr(payload.title, 120);
-    existing.body = capStr(group.pluralBody(existing.count), 300);
-    existing.link = isObj(payload.link) ? payload.link : existing.link;
-    existing.createdAt = new Date().toISOString();   // bump to now -- re-sorts to the top, re-enters "Today" if the group started yesterday
-  } else {
-    DB.notifications[newId] = { id: newId, userId, title: capStr(payload.title, 120), body: capStr(group.singularBody, 300),
-      link: isObj(payload.link) ? payload.link : null, groupKey: group.key, count: 1, createdAt: new Date().toISOString() };
-  }
-  // Oct 13 2026 (rearchitecture, notifications+feed-events slice -- dual-write phase, see
-  // CLAUDE.md "Rearchitecture status" / "Rearchitecture safeguards"): mirrors this exact
-  // merge-or-insert onto the new direct-Postgres table via pgMergedNotificationWrite, which
-  // itself is routed through db.js's own enqueue() queue -- required because this app has exactly
-  // one live Postgres connection, so an un-serialized transaction here could interleave with some
-  // totally unrelated concurrent write on that same shared connection (see db.js's own comment on
-  // this function for the full reasoning, and the race-condition verification this was built
-  // against). capStr-wrapped the same way the in-memory branches above are, so the two tables'
-  // text actually matches rather than just their structure. Fire-and-forget and failure-isolated,
-  // same reasoning as emitFeedEvent's own dual-write above -- GET /api/notifications below still
-  // reads DB.notifications exclusively; nothing depends on this new-table write yet.
+  const newId = 'ntf_' + uid();   // only used if pgMergedNotificationWrite doesn't find an existing row to merge into
   db.pgMergedNotificationWrite(userId, group.key, newId, {
     title: capStr(payload.title, 120),
     singularBody: capStr(group.singularBody, 300),
     pluralBody: (n) => capStr(group.pluralBody(n), 300),
     link: isObj(payload.link) ? payload.link : null,
     seenAtIso: new Date(seenAt).toISOString(),
-  }).catch(e => console.error('[migration dual-write] pgMergedNotificationWrite failed:', e && e.message));
+  }).catch(e => console.error('groupedHistoryWrite: pgMergedNotificationWrite failed:', e && e.message));
 }
 // `payload.link` (optional) -- Sep 8 2026 (Jeff, lock-screen screenshot: "when I click on a push
 // notification it should open to where the notification happened... currently it just opens to
@@ -3945,20 +3936,18 @@ function notify(userId, payload, opts) {
       groupedHistoryWrite(userId, payload, opts.group);
     } else {
       const id = 'ntf_' + uid();
-      DB.notifications[id] = { id, userId, title: capStr(payload.title, 120), body: capStr(payload.body, 300), link: isObj(payload.link) ? payload.link : null, createdAt: new Date().toISOString() };
-      // Oct 13 2026 (dual-write phase -- see groupedHistoryWrite's own comment just above for the
-      // full reasoning). Reuses the exact same object just written to DB.notifications[id] above,
-      // so the new table's row is byte-identical to the in-memory one, not a re-derived copy that
-      // could quietly drift from it.
-      db.pgInsertNotification(DB.notifications[id]).catch(e => console.error('[migration dual-write] pgInsertNotification failed:', e && e.message));
+      const row = { id, userId, title: capStr(payload.title, 120), body: capStr(payload.body, 300), link: isObj(payload.link) ? payload.link : null, createdAt: new Date().toISOString() };
+      // Oct 13 2026 (read cutover): used to also write this same row into DB.notifications[id]
+      // (gone now -- see EMPTY_DB/load() in db.js) and rely on the save(DB) below to persist it;
+      // pgInsertNotification is the only write now, and it persists itself directly. Fire-and-
+      // forget, same as groupedHistoryWrite above -- a push failure here must never block the
+      // actual push send just below.
+      db.pgInsertNotification(row).catch(e => console.error('notify: pgInsertNotification failed:', e && e.message));
     }
-    // Deliberately its own save(), not left to whatever save(DB) the calling route happens to run
-    // -- several callers already `await save(DB)` BEFORE calling notify() (the mutation they're
-    // persisting is unrelated to the notification), which would otherwise silently drop this
-    // record until the next unrelated write. Fire-and-forget, same pattern as the dead-
-    // subscription cleanup below; save() is internally queued, so this is safe to call from a
-    // tight loop (e.g. notifying every crew member) without racing itself.
-    save(DB).catch(e => console.error('notify: failed to persist notification history:', e && e.message));
+    // Oct 13 2026 (read cutover): the save(DB) that used to live here existed only to persist the
+    // DB.notifications write above (see this comment's prior text, still visible in git history) --
+    // now that pgInsertNotification/pgMergedNotificationWrite persist themselves directly and
+    // nothing else in this branch touches DB, that save() is gone. Removed, not left as a no-op.
   }
   // opts.push === false -- Sep 8 2026: for the one case where the recipient IS the actor (a
   // creator approving their own join request -- see /join/:reqId/approve below), a push would just
@@ -3984,73 +3973,15 @@ function notify(userId, payload, opts) {
     }
   });
 }
-// Keeps DB.notifications from growing forever -- GET /api/notifications above already filters to
-// the last NOTIFICATION_HISTORY_DAYS on read, so this is pure storage hygiene, not correctness;
-// called once at boot and every few hours by a timer alongside the streak/workout reminder ones
-// (see the boot section at the bottom of this file).
-function pruneOldNotifications() {
+// Keeps the notifications table from growing forever -- GET /api/notifications above already
+// filters to the last NOTIFICATION_HISTORY_DAYS on read, so this is pure storage hygiene, not
+// correctness; called once at boot and every few hours by a timer alongside the streak/workout
+// reminder ones (see the boot section at the bottom of this file).
+// Oct 13 2026 (read cutover): now a thin wrapper around the real Postgres prune, mirroring
+// pruneOldFeedEvents above exactly -- no more in-memory map to scan.
+async function pruneOldNotifications() {
   const cutoff = Date.now() - NOTIFICATION_HISTORY_DAYS * 86400000;
-  let removed = 0;
-  for (const id of Object.keys(DB.notifications)) {
-    if (new Date(DB.notifications[id].createdAt).getTime() < cutoff) { delete DB.notifications[id]; removed++; }
-  }
-  // Oct 13 2026 (dual-write phase -- see emitFeedEvent's comment above for the general reasoning):
-  // mirror the same cutoff onto the new table. Pure storage hygiene either way.
-  db.pgPruneOldNotifications(new Date(cutoff).toISOString()).catch(e => console.error('[migration dual-write] pgPruneOldNotifications failed:', e && e.message));
-  return removed;
-}
-
-// ---- Oct 13 2026: shadow-compare for the notifications+feed-events migration slice ----
-//
-// Called from the two read sites that still serve everything from DB.notifications/DB.feedEvents
-// (GET /api/notifications' `history`, GET /api/feed) to compare what the OLD in-memory read just
-// produced against what the NEW direct-Postgres read would have produced, without changing the
-// response either way -- always fire-and-forget, always failure-isolated (a Postgres hiccup here
-// must never be visible to a user loading their notifications or feed). A mismatch is logged to
-// the server console, not surfaced anywhere else; this is the "is the new table actually trustworthy
-// yet" signal called for in CLAUDE.md's "Rearchitecture safeguards" section, ahead of task #245's
-// more rigorous ground-truth differential test and ahead of cutting reads over (task #247).
-//
-// Both of these endpoints are hit on close to every Home/Activity page load (see each endpoint's
-// own comment), so comparing on literally every single request would mean doubling real query
-// load on this app's one shared Postgres connection just to verify a background migration step --
-// exactly the kind of avoidable load the single-connection discussion with Jeff flagged as worth
-// watching. Throttled to roughly once a minute per collection instead: frequent enough to catch a
-// real divergence quickly, far too infrequent to meaningfully add to that connection's traffic.
-let lastNotificationHistoryShadowCompareAt = 0;
-function shadowCompareNotificationHistory(userId, cutoffMs, oldHistory) {
-  const now = Date.now();
-  if (now - lastNotificationHistoryShadowCompareAt < 60000) return;
-  lastNotificationHistoryShadowCompareAt = now;
-  db.pgNotificationHistoryForUser(userId, new Date(cutoffMs).toISOString()).then(pgRows => {
-    const newHistory = pgRows
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-      .slice(0, 50)
-      .map(n => n.id);
-    const oldIds = oldHistory.map(h => h.id);
-    if (JSON.stringify(oldIds) !== JSON.stringify(newHistory)) {
-      console.error('[migration shadow-compare] /api/notifications history mismatch for', userId, 'old:', oldIds, 'new:', newHistory);
-    }
-  }).catch(e => console.error('[migration shadow-compare] pgNotificationHistoryForUser failed:', e && e.message));
-}
-let lastFeedEventsShadowCompareAt = 0;
-function shadowCompareFeedEvents(weekAgoMs) {
-  const now = Date.now();
-  if (now - lastFeedEventsShadowCompareAt < 60000) return;
-  lastFeedEventsShadowCompareAt = now;
-  // Compares the RAW, pre-visibility-filtering id sets -- i.e. "does the new table hold the same
-  // underlying rows the old one does," not "does this one viewer's filtered feed match," since
-  // the crew-membership/block/connection visibility logic deliberately stays JS-only (see GET
-  // /api/feed's own comment) and isn't being duplicated into SQL here. That's the thing actually
-  // worth verifying before task #247 switches GET /api/feed's SOURCE data over -- the visibility
-  // logic itself doesn't change at all when that happens.
-  const oldIds = Object.keys(DB.feedEvents).filter(id => new Date(DB.feedEvents[id].at).getTime() >= weekAgoMs).sort();
-  db.pgFeedEventsSince(new Date(weekAgoMs).toISOString()).then(pgRows => {
-    const newIds = pgRows.map(r => r.id).sort();
-    if (JSON.stringify(oldIds) !== JSON.stringify(newIds)) {
-      console.error('[migration shadow-compare] feed_events id-set mismatch:', 'onlyInOld:', oldIds.filter(id => !newIds.includes(id)), 'onlyInNew:', newIds.filter(id => !oldIds.includes(id)));
-    }
-  }).catch(e => console.error('[migration shadow-compare] pgFeedEventsSince failed:', e && e.message));
+  return db.pgPruneOldNotifications(new Date(cutoff).toISOString());
 }
 
 // ---- Sessions ----
@@ -5111,8 +5042,8 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   if (!discard) {
     const ranksBefore = crewRanksSnapshot(me);
     const credited = creditFinish(s, me, req.body && req.body.localDate);
-    checkCrewChallenges(me);
-    if (credited) emitFinishFeedEvents(s, me, ranksBefore, req.body && req.body.localDate);
+    await checkCrewChallenges(me);
+    if (credited) await emitFinishFeedEvents(s, me, ranksBefore, req.body && req.body.localDate);
   }
 
   // v242 (Jeff's list): your logged sets now SURVIVE a keep-leave. They used to be deleted
@@ -8418,7 +8349,7 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
       // session's scheduledAt), not literal "now" -- logging a backdated workout must not make a
       // week-old PR read as breaking news today, same reasoning as groupPrsForFeed's own weekAgo
       // filter and the v239/v247 "stamped now" fixes elsewhere in this file.
-      emitFeedEvent('pr', req.userId, { sessionId: s.id, exerciseId, exerciseName: entry.exerciseName,
+      await emitFeedEvent('pr', req.userId, { sessionId: s.id, exerciseId, exerciseName: entry.exerciseName,
         weight: rec.weight, reps: rec.reps, unit: rec.unit, assisted, deltaLb,
         text: `hit a new PR on ${entry.exerciseName} (${weightPart})`, headline, sub,
         at: entry._performedAt || entry.at });
@@ -9190,8 +9121,8 @@ app.post('/api/sessions/:id/lock', auth, async (req, res) => {
   // captured before creditFinish runs -- see emitFinishFeedEvents' own comment on why it must be.
   const ranksBefore = crewRanksSnapshot(req.userId);
   if (creditFinish(s, req.userId, req.body && req.body.localDate)) {
-    checkCrewChallenges(req.userId);
-    emitFinishFeedEvents(s, req.userId, ranksBefore, req.body && req.body.localDate);
+    await checkCrewChallenges(req.userId);
+    await emitFinishFeedEvents(s, req.userId, ranksBefore, req.body && req.body.localDate);
     // Oct 9 2026 (audit finding, see markSessionStarted's own comment above): if nobody ever
     // tapped Start/Join now, this finish is the first unambiguous proof the workout really
     // happened -- back-date startedAt/scheduledAt to the EARLIEST real log across every
@@ -9438,7 +9369,10 @@ app.post('/api/sessions/:id/posts/:authorId/react', auth, async (req, res) => {
 // crew; every other type is reactable by the actor themselves or anyone connected to them, the
 // same "can you even see this in your feed" gate GET /api/feed itself applies.
 app.post('/api/feed-events/:id/react', auth, async (req, res) => {
-  const ev = DB.feedEvents[req.params.id];
+  // Oct 13 2026 (read cutover): used to read DB.feedEvents[id] directly (gone now -- see
+  // EMPTY_DB/load() in db.js); pgGetFeedEvent is the real fetch-by-id this permission check now
+  // runs against.
+  const ev = await db.pgGetFeedEvent(req.params.id);
   if (!ev) return res.status(404).json({ error: 'not found' });
   // Oct 2 2026 (deep audit finding): same current-membership fix as GET /api/feed's own
   // ev.by===null branch -- a departed member could otherwise keep reacting to their old crew's
@@ -9447,34 +9381,25 @@ app.post('/api/feed-events/:id/react', auth, async (req, res) => {
     ? (() => { const crew = ev.crewId && DB.crews[ev.crewId]; return !!crew && isCrewMember(crew, req.userId); })()
     : ev.by === req.userId || connectionsOf(req.userId).includes(ev.by);
   if (!allowed) return res.status(403).json({ error: 'forbidden' });
-  ev.reactions = Array.isArray(ev.reactions) ? ev.reactions.filter(x => typeof x === 'string') : [];
-  const i = ev.reactions.indexOf(req.userId);
-  const reacted = i === -1;
-  if (reacted) ev.reactions.push(req.userId); else ev.reactions.splice(i, 1);
-  await save(DB);
-  // Oct 13 2026 (rearchitecture, notifications+feed-events slice -- dual-write + shadow-compare
-  // phase, see CLAUDE.md "Rearchitecture status" / "Rearchitecture safeguards"): mirrors this
-  // exact toggle onto the new direct-Postgres row (a single atomic UPDATE -- see db.js's own
-  // comment on pgToggleFeedEventReaction for why this needs no transaction, and the 20-way
-  // concurrency verification it was built against), then compares the two final reaction sets.
-  // Compared as SETS (sorted, not array-order) on purpose: the SQL path can re-add a
-  // toggled-back-on reaction at a different array position than the in-memory splice/push above
-  // does, which is a harmless cosmetic difference, not a real mismatch worth flagging. A genuine
-  // mismatch (a missing or extra userId) is only ever logged -- never surfaces to the user or
-  // changes the response, which is still built from ev.reactions below exactly as before.
-  // Snapshotted synchronously, right now -- ev.reactions is a live reference into DB.feedEvents,
-  // and another request reacting to this same event could mutate it again before the Postgres
-  // round-trip below resolves. Comparing against a snapshot taken at this exact moment (instead
-  // of re-reading ev.reactions inside the .then()) avoids a false "mismatch" that's really just
-  // two requests racing, not the two tables actually disagreeing.
-  const oldReactionsSnapshot = JSON.stringify([...ev.reactions].sort());
-  db.pgToggleFeedEventReaction(req.params.id, req.userId).then(pgRow => {
-    const newSet = JSON.stringify((pgRow ? [...pgRow.reactions] : []).sort());
-    if (oldReactionsSnapshot !== newSet) console.error('[migration shadow-compare] feed_events reaction mismatch for', req.params.id, 'old:', oldReactionsSnapshot, 'new:', newSet);
-  }).catch(e => console.error('[migration dual-write] pgToggleFeedEventReaction failed:', e && e.message));
+  // Oct 13 2026 (read cutover): used to toggle ev.reactions in memory (indexOf/push/splice),
+  // save(DB), and separately mirror the same toggle onto Postgres via pgToggleFeedEventReaction
+  // (dual-write + shadow-compare phase). pgToggleFeedEventReaction's own atomic UPDATE is now the
+  // only toggle, so `reacted`/`count` below are derived from ITS result -- the SQL decides add vs.
+  // remove based on current Postgres state, not a separately-computed JS boolean.
+  //
+  // Oct 13 2026, same day (correctness review finding): the permission check above and this
+  // toggle are two separate round trips, not one transaction -- `ev` could be deleted (challenge
+  // cancel, or the retention prune) in the narrow window between them. `pgToggleFeedEventReaction`
+  // returns null when its UPDATE...RETURNING matches zero rows, which is exactly that case -- it
+  // must be treated as a real 404, not fall through to an empty reactions array and a misleading
+  // 200 for an event that no longer exists.
+  const updated = await db.pgToggleFeedEventReaction(req.params.id, req.userId);
+  if (!updated) return res.status(404).json({ error: 'not found' });
+  const reactions = Array.isArray(updated.reactions) ? updated.reactions : [];
+  const reacted = reactions.includes(req.userId);
   if (reacted && ev.by && ev.by !== req.userId)
     notify(ev.by, { title: 'New reaction', body: `${DB.users[req.userId].displayName} reacted to your activity`, link: { type: 'profile', userId: ev.by } });
-  res.json({ reacted, count: ev.reactions.length });
+  res.json({ reacted, count: reactions.length });
 });
 // ---- Reactions on an individual COMMENT under a posted recap ----
 // Jeff, Sep 1: wants the same Instagram feel inside the comments thread itself, not just under the
@@ -9566,8 +9491,8 @@ app.use((err, req, res, next) => {
   rebuildAllPrs();
   rebuildSessionsByUserIndex();   // Oct 12 2026 (scaling fix round 2) -- after every migration above has settled DB.sessions, same placement reasoning as rebuildAllPrs just above
   migrateLoadTypes();
-  pruneOldNotifications();    // storage hygiene, not a schema migration -- see its own comment
-  pruneOldFeedEvents();       // same, for the Activity page's ephemeral feed events
+  await pruneOldNotifications();    // storage hygiene, not a schema migration -- see its own comment
+  await pruneOldFeedEvents();       // same, for the Activity page's ephemeral feed events
   await save(DB);
   server = app.listen(PORT, () => console.log('CrewFit on', PORT));
   module.exports.server = server;
@@ -9628,15 +9553,20 @@ app.use((err, req, res, next) => {
   // time call to it above) -- every few hours is plenty for a 7-day retention window; this is
   // cleanup, not a user-facing feature, so it doesn't need the same tight cadence as the
   // reminder timers above.
+  // Oct 13 2026 (read cutover): pruneOldNotifications now persists itself directly against
+  // Postgres (no more generic save(DB) step -- see its own comment and doSave()'s notifications/
+  // feed_events branch in db.js) and returns a real count, not a truthy-always Promise, so the
+  // old `if (pruneOldNotifications()) await save(DB)` pattern is gone; just await and log.
   setInterval(async () => {
-    try { if (pruneOldNotifications()) await save(DB); }
+    try { await pruneOldNotifications(); }
     catch (e) { console.error('notification history prune failed:', e && e.message); }
   }, 6 * 60 * 60 * 1000);
 
   // Sep 11 2026: same storage-hygiene sweep as notifications above, for the Activity page's
   // ephemeral feed events (see pruneOldFeedEvents and the "Feed events" comment above it).
+  // Oct 13 2026 (read cutover): same fix as the notifications timer just above.
   setInterval(async () => {
-    try { if (pruneOldFeedEvents()) await save(DB); }
+    try { await pruneOldFeedEvents(); }
     catch (e) { console.error('feed event prune failed:', e && e.message); }
   }, 6 * 60 * 60 * 1000);
 })().catch(e => {
