@@ -1,25 +1,37 @@
-// Oct 13 2026 (rearchitecture, notifications+feed-events slice -- task #245, see CLAUDE.md
-// "Rearchitecture status" / "Rearchitecture safeguards"). This is the ground-truth differential
-// check for the dual-write phase: drive the REAL, running server through its REAL HTTP routes
-// (exactly what a real client does), then check that the new direct-Postgres read functions
-// (db.js's pgNotificationHistoryForUser / pgFeedEventsSince) agree with what the OLD in-memory
-// read routes (GET /api/notifications, GET /api/feed) actually returned.
+// Oct 13 2026 (rearchitecture, notifications+feed-events slice, see CLAUDE.md "Rearchitecture
+// status" / "Rearchitecture safeguards"). Originally written during the dual-write + shadow-
+// compare phase (task #245), when GET /api/notifications/GET /api/feed still served from the old
+// in-memory DB.notifications/DB.feedEvents maps and this test's job was proving the new, parallel
+// Postgres write path (db.js's pgInsertNotification/pgMergedNotificationWrite/etc) agreed with
+// them. The READ CUTOVER (task #247/#251/#252) has since removed those in-memory maps entirely --
+// GET /api/notifications and GET /api/feed now read directly from Postgres via the exact same
+// pgNotificationHistoryForUser/pgFeedEventsSince functions this test calls independently. So the
+// "old path" (hitting the real HTTP route) and "new path" (calling the db.js function directly,
+// from this test's own separate process/connection) are no longer "in-memory vs Postgres" --
+// they're now two independent reads of the SAME Postgres tables, one through the live server's
+// connection, one through a second connection this test opens itself. That's still a real,
+// meaningful ground-truth check: it proves (a) the live HTTP routes under real concurrent traffic
+// produce correct merged/toggled/deleted results, not just that the underlying SQL functions do
+// in isolation, and (b) a second, independent connection sees the exact same committed rows the
+// server's own connection does -- cross-connection consistency, not a driver- or process-local
+// illusion of correctness. The "old path"/"new path" labels below are kept (renaming every single
+// assertion string felt like needless churn for a label that still accurately describes WHICH
+// read each assertion is checking), but they no longer mean two different storage mechanisms --
+// both are Postgres now.
 //
-// One thing worth being explicit about, because it shapes how this test is written: the "old"
-// and "new" paths are NOT two independent stores drifting apart -- they write into the exact same
-// Postgres `notifications`/`feed_events` tables, using the exact same upsert SQL (see db.js's own
-// comment on the dual-write functions). The old path gets there via save(DB)'s batched diff sync;
-// the new path writes immediately, inline, from the route handler. So "do they agree" is really
-// "did the inline write actually happen, with the right id and the right content" -- not "do two
-// separate systems compute the same answer." A real mismatch here means either the dual-write
-// call was missed/wrong at some call site, or the two paths' id/content transforms (capStr,
-// jsonb shape, etc) have drifted from each other.
-//
-// Because every dual-write is deliberately fire-and-forget (see each call site's own comment --
-// it must never add latency to the real response), there IS a real, accepted source of transient
-// disagreement: reading the new table a few milliseconds before its write actually lands.
-// `pgAgrees()` below polls with a short timeout rather than asserting on the very next tick, so
-// this test is checking real eventual correctness, not racing its own dual-writes.
+// The transient-disagreement note this comment used to have (about dual-write being fire-and-
+// forget, so the new table could lag a few ms behind) mostly no longer applies, but not entirely
+// -- worth being precise here after a correctness-review finding caught an earlier draft of this
+// comment overstating it. emitFeedEvent/notify/groupedHistoryWrite's calls are all still
+// `await`ed by their callers for ORDERING on the happy path (so by the time a response comes
+// back, a successful write has already committed) -- but all three now treat a Postgres failure
+// as best-effort/non-fatal (notify/groupedHistoryWrite always have; emitFeedEvent was changed
+// back to this same policy the same day, see its own comment in server.js, after an adversarial
+// review reproduced a worse problem with letting it throw). So on the FAILURE path there is no
+// write to observe at all, ever -- not a timing race, a permanent absence, logged to the server
+// console and nowhere else. pollUntil() below is kept purely as insurance against ordinary cross-
+// connection timing jitter on the happy path, not because a real race is expected -- it will
+// still correctly time out and report a mismatch if a write genuinely never lands.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -47,15 +59,16 @@ await new Promise(res => {
 });
 ok(!!srv, 'server boots');
 
-// Direct access to the new direct-Postgres path, from the test process itself -- same
-// DATABASE_URL the spawned server is using, a second, independent connection to it (Postgres
-// supports that fine; this is a different OS process from the server's own single connection).
+// A second, independent connection to the SAME Postgres database the spawned server is using --
+// same DATABASE_URL, a different OS process than the server's own single connection (see this
+// file's header comment for why this is no longer "old vs new storage," just two readers of one
+// table now).
 process.env.DATABASE_URL = testDb.url;
 const db = await import('../db.js');
 
-// Polls the new path until it agrees with `expected` (an array of ids, order-sensitive or not per
-// `ordered`) or gives up after ~2s -- see this file's header comment on why a single immediate
-// read would produce false-positive mismatches against a deliberately fire-and-forget write.
+// Polls this second connection's own read until it agrees with what the HTTP route already
+// returned, or gives up after ~2s -- see this file's header comment: no real race is expected
+// post-cutover, this is just insurance against ordinary cross-connection timing jitter.
 async function pollUntil(fn, checkFn, timeoutMs = 2000) {
   const start = Date.now();
   let last;

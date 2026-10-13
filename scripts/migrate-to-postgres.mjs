@@ -79,6 +79,17 @@ const normUser = v => String(v == null ? '' : v).trim().toLowerCase();
 // Reshape into exactly the DB object shape db.js's save() expects — see EMPTY_DB in db.js.
 // Falling back to {} for a missing collection means an old file that never had, say, `templates`
 // at all still migrates cleanly rather than throwing.
+// Oct 13 2026 (found while verifying the notifications+feed-events read cutover, task #252 --
+// this is NOT a regression from that work, a pre-existing gap this script had from before this
+// slice's rearchitecture started at all; see the chat disclosure for the real repro): these two
+// were missing from this list entirely, meaning every migrate-to-postgres.mjs run -- including
+// the documented disaster-recovery path, not just the original one-time cutover -- silently
+// wiped out any notifications/feed_events rows already sitting in the target Postgres database.
+// Harmless on a fresh/empty target (the original cutover's actual use case), but a real,
+// reproducible data-loss bug on a disaster-recovery re-run against a database that already has
+// live notification/feed-event history. db.js's save()/doSave() already knows how to write these
+// two collections (see its bootstrap-only syncTableFull branch, which this script's call is the
+// ONLY thing that ever reaches) -- this script just needed to actually hand them over.
 const d = {
   users: raw.users || {},
   sessions: raw.sessions || {},
@@ -87,6 +98,8 @@ const d = {
   customExercises: raw.customExercises || {},
   prs: raw.prs || {},
   crews: raw.crews || {},
+  notifications: raw.notifications || {},
+  feedEvents: raw.feedEvents || {},
 };
 // Singleton bookkeeping field — only carried over if actually present in the source file, so a
 // migration never invents a value db.js's save() would otherwise have left untouched.
@@ -100,9 +113,11 @@ const counts = {
   customExercises: Object.keys(d.customExercises).length,
   prs: Object.keys(d.prs).length,
   crews: Object.keys(d.crews).length,
+  notifications: Object.keys(d.notifications).length,
+  feedEvents: Object.keys(d.feedEvents).length,
 };
 console.log(`Migrating ${file} -> ${process.env.DATABASE_URL.replace(/:[^:@]*@/, ':***@')}`);
-console.log(`  users=${counts.users} sessions=${counts.sessions} templates=${counts.templates} pushSubs=${counts.pushSubs} customExercises=${counts.customExercises} prs=${counts.prs} crews=${counts.crews}`);
+console.log(`  users=${counts.users} sessions=${counts.sessions} templates=${counts.templates} pushSubs=${counts.pushSubs} customExercises=${counts.customExercises} prs=${counts.prs} crews=${counts.crews} notifications=${counts.notifications} feedEvents=${counts.feedEvents}`);
 
 const db = (await import('../db.js')).default;
 await db.ensureSchema();
@@ -134,12 +149,22 @@ function deepEqual(a, b) {
 // whole database is dozens of rows, so a full deep-compare of every collection is cheap —
 // there's no scale reason to settle for the weaker check.
 const after = await db.load();
+// Oct 13 2026 (read cutover, task #252): notifications/feedEvents are no longer part of what
+// db.load() returns at all -- they're served through the direct-Postgres functions now (see
+// db.js's EMPTY_DB/doLoad() comments), not the generic in-memory DB object this script otherwise
+// verifies against. Read them back with a plain SELECT off the same connection instead, so the
+// addition above actually gets verified rather than silently skipped.
+const notifRows = (await db.getConn().query('SELECT id, data FROM notifications')).rows;
+const afterNotifications = {}; for (const r of notifRows) afterNotifications[r.id] = JSON.parse(r.data);
+const feedRows = (await db.getConn().query('SELECT id, data FROM feed_events')).rows;
+const afterFeedEvents = {}; for (const r of feedRows) afterFeedEvents[r.id] = JSON.parse(r.data);
+const afterByCollection = { ...after, notifications: afterNotifications, feedEvents: afterFeedEvents };
 const problems = [];
 for (const [collection, n] of Object.entries(counts)) {
-  const afterKeys = Object.keys(after[collection] || {});
+  const afterKeys = Object.keys(afterByCollection[collection] || {});
   if (afterKeys.length !== n) { problems.push(`${collection}: expected ${n} row(s), found ${afterKeys.length}`); continue; }
   for (const id of Object.keys(d[collection])) {
-    if (!deepEqual(after[collection][id], d[collection][id])) {
+    if (!deepEqual(afterByCollection[collection][id], d[collection][id])) {
       problems.push(`${collection}/${id}: content does not match the source file after read-back`);
     }
   }
