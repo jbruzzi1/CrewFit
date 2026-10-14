@@ -65,6 +65,29 @@ CREATE TABLE IF NOT EXISTS custom_exercises (
   owner_id text PRIMARY KEY,
   data jsonb NOT NULL
 );
+-- Oct 14 2026 (push subs/custom exercises/reports slice, task #258+): custom_exercises above is
+-- the OLD array-per-owner shape ("every exercise owner X has ever made, all in one jsonb array,
+-- rewritten whole on every create/edit/delete") -- kept, but no longer written to once this
+-- slice's cutover lands (see the migration function below and CLAUDE.md's "Rearchitecture
+-- status"). This is the NEW shape: one row per exercise, matching every other per-entity table in
+-- this file (sessions, crews, notifications, ...) instead of being the one remaining "array
+-- blob" collection. Jeff's call (Oct 14 2026, choosing between keeping the array shape with a
+-- transaction vs. this redesign): "do it right the first time and take longer" -- this removes
+-- the lost-write race a naive read-array/mutate/write-array translation would have reopened,
+-- by construction, rather than managing it with locking.
+CREATE TABLE IF NOT EXISTS custom_exercise_rows (
+  id text PRIMARY KEY,
+  owner_id text NOT NULL,
+  data jsonb NOT NULL
+);
+CREATE INDEX IF NOT EXISTS custom_exercise_rows_owner_idx ON custom_exercise_rows (owner_id);
+-- Backs findExLibEntry's global by-name fallback scan (server.js) -- today that's an in-memory
+-- Object.values().find() over every owner's array -- the Postgres equivalent is a WHERE on this
+-- expression index instead of a table scan. Table is tiny today (a few hundred rows at most) so
+-- this isn't solving a real performance problem yet -- it's here because it's nearly free to add
+-- now and this is exactly the kind of lookup that gets slow silently if left until it's actually
+-- slow.
+CREATE INDEX IF NOT EXISTS custom_exercise_rows_name_idx ON custom_exercise_rows ((data->>'name'));
 CREATE TABLE IF NOT EXISTS prs (
   user_id text PRIMARY KEY,
   data jsonb NOT NULL
@@ -116,9 +139,19 @@ async function ensureSchema() {
 // nothing in server.js reads or writes DB.notifications/DB.feedEvents any more (see emitFeedEvent/
 // pgNotificationHistoryForUser/pgFeedEventsSince and every other direct-Postgres function in the
 // "direct Postgres access" section below); both are served and mutated exclusively through those
-// functions now. `reports` is untouched -- still a real in-memory collection with its own
-// generic save()/load() sync, not yet migrated.
-const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, customExercises: {}, prs: {}, crews: {}, reports: {} });
+// functions now.
+// Oct 14 2026 (push subs/custom exercises/reports slice, task #258+): pushSubs dropped the same
+// way -- POST /api/push/subscribe, notify()'s send path, and the account-deletion cleanup all go
+// through pgGetPushSub/pgSetPushSub/pgDeletePushSubIfEndpointMatches/pgDeletePushSub now (see
+// those functions' own comments in the "direct Postgres access" section below for why this one
+// needed no dual-write window the way notifications/feed-events and customExercises did/do --
+// same table, same shape, just a different caller). `reports` dropped the same way right after
+// -- GET /api/admin/reports, POST /api/report, and POST /api/admin/reports/:id/resolve all go
+// through pgListReports/pgInsertReport/pgResolveReport now. `customExercises` is still untouched
+// here -- it's mid-migration to a genuinely different shape (see custom_exercise_rows in
+// SCHEMA_SQL and CLAUDE.md's "Rearchitecture status"), the one piece of this slice that still
+// needs an actual dual-write window before its cutover, unlike push subs/reports.
+const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, customExercises: {}, prs: {}, crews: {} });
 
 // ---- diffed writes ----
 //
@@ -149,7 +182,7 @@ const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, pushSubs: {}, 
 let lastPersisted = null; // null, or { users:{}, sessions:{}, ..., singletons:{} } — each inner value id/key -> last-written JSON string
 
 function freshSnapshot() {
-  return { users: {}, sessions: {}, templates: {}, push_subs: {}, custom_exercises: {}, prs: {}, crews: {}, notifications: {}, reports: {}, feed_events: {}, singletons: {} };
+  return { users: {}, sessions: {}, templates: {}, custom_exercises: {}, prs: {}, crews: {}, notifications: {}, reports: {}, feed_events: {}, singletons: {} };
 }
 
 // Reassembles the exact in-memory shape server.js has always used, from Postgres rows. Also the
@@ -193,8 +226,13 @@ async function doLoad() {
   const templates = await c.query('SELECT id, data FROM templates');
   for (const row of templates.rows) { d.templates[row.id] = JSON.parse(row.data); snap.templates[row.id] = JSON.stringify(d.templates[row.id]); }
 
-  const pushSubs = await c.query('SELECT user_id, data FROM push_subs');
-  for (const row of pushSubs.rows) { d.pushSubs[row.user_id] = JSON.parse(row.data); snap.push_subs[row.user_id] = JSON.stringify(d.pushSubs[row.user_id]); }
+  // Oct 14 2026 (push subs/custom exercises/reports slice, task #258+): push_subs used to be
+  // loaded wholesale here too, same shape as every other collection -- that's gone now. POST
+  // /api/push/subscribe, notify()'s send path, and the account-deletion cleanup in server.js
+  // already read/write exclusively through pgGetPushSub/pgSetPushSub/
+  // pgDeletePushSubIfEndpointMatches/pgDeletePushSub (below), not through an in-memory
+  // DB.pushSubs map, so there is nothing left for doLoad() to populate or for lastPersisted to
+  // baseline here.
 
   const customExercises = await c.query('SELECT owner_id, data FROM custom_exercises');
   for (const row of customExercises.rows) { d.customExercises[row.owner_id] = JSON.parse(row.data); snap.custom_exercises[row.owner_id] = JSON.stringify(d.customExercises[row.owner_id]); }
@@ -212,11 +250,12 @@ async function doLoad() {
   // pgDeleteNotification/pgPruneOldNotifications (below), not through an in-memory DB.notifications
   // map, so there is nothing left for doLoad() to populate or for lastPersisted to baseline here.
 
-  // Sep 2026: user/content reports (app-store readiness -- see the comment above /api/report in
-  // server.js). Same one-row-per-entity JSONB shape as notifications just above; also a passive,
-  // append-and-eventually-resolved log rather than something a user edits directly.
-  const reports = await c.query('SELECT id, data FROM reports');
-  for (const row of reports.rows) { d.reports[row.id] = JSON.parse(row.data); snap.reports[row.id] = JSON.stringify(d.reports[row.id]); }
+  // Oct 14 2026 (push subs/custom exercises/reports slice, task #258+): reports used to be
+  // loaded wholesale here too (Sep 2026: user/content reports, app-store readiness -- see the
+  // comment above /api/report in server.js) -- that's gone now, same removal and same reasoning
+  // as notifications/feed_events/push_subs above. GET /api/admin/reports, POST /api/report, and
+  // POST /api/admin/reports/:id/resolve already read/write exclusively through
+  // pgListReports/pgInsertReport/pgResolveReport (below), not through an in-memory DB.reports map.
 
   // Oct 13 2026 (read cutover, task #252): feed_events used to be loaded wholesale here too, same
   // removal and same reasoning as notifications just above -- GET /api/feed and every other feed-
@@ -304,9 +343,6 @@ async function doSave(d) {
     pending.templates = bootstrapping
       ? await syncTableFull(c, 'templates', 'id', d.templates, jsonToParams, TEMPLATES_UPSERT_SQL)
       : await syncTableDiff(c, 'templates', 'id', d.templates, jsonToParams, TEMPLATES_UPSERT_SQL, base.templates);
-    pending.push_subs = bootstrapping
-      ? await syncTableFull(c, 'push_subs', 'user_id', d.pushSubs, jsonToParams, PUSH_SUBS_UPSERT_SQL)
-      : await syncTableDiff(c, 'push_subs', 'user_id', d.pushSubs, jsonToParams, PUSH_SUBS_UPSERT_SQL, base.push_subs);
     pending.custom_exercises = bootstrapping
       ? await syncTableFull(c, 'custom_exercises', 'owner_id', d.customExercises, jsonToParams, CUSTOM_EXERCISES_UPSERT_SQL)
       : await syncTableDiff(c, 'custom_exercises', 'owner_id', d.customExercises, jsonToParams, CUSTOM_EXERCISES_UPSERT_SQL, base.custom_exercises);
@@ -363,15 +399,37 @@ async function doSave(d) {
     // alongside real user traffic -- it cannot re-create the ongoing-write race this whole fix
     // exists to remove; it is the same one-time bulk import syncTableFull always was, just scoped
     // to only fire on that one path now.
+    // Oct 14 2026 (push subs/custom exercises/reports slice, task #258+): push_subs gets the same
+    // bootstrap-only treatment as notifications/feed_events just below, for the same reason --
+    // POST /api/push/subscribe, notify()'s send path, and the account-deletion cleanup now own
+    // this table exclusively via pgSetPushSub/pgGetPushSub/pgDeletePushSubIfEndpointMatches/
+    // pgDeletePushSub (see those functions' comments), so a generic overwrite-the-whole-row sync
+    // running alongside them on live traffic would reopen the exact same "two writers fight over
+    // the final value" class of bug the notifications/feed-events slice found and fixed (see that
+    // slice's own long comment, a few lines below) -- just with no aggregation logic to visibly
+    // corrupt here (push_subs has always been a single whole-object overwrite per user, not a
+    // merge), so this one wouldn't even show up as a wrong number, only as "whichever write lost
+    // the race is silently gone." Scoped to bootstrapping (migrate-to-postgres.mjs's one-shot
+    // disaster-recovery path) only, same reasoning as notifications/feed_events: that script is
+    // never running alongside real user traffic, so it cannot reopen the race this exists to avoid.
+    pending.push_subs = bootstrapping
+      ? await syncTableFull(c, 'push_subs', 'user_id', d.pushSubs, jsonToParams, PUSH_SUBS_UPSERT_SQL)
+      : (base.push_subs || {});
     pending.notifications = bootstrapping
       ? await syncTableFull(c, 'notifications', 'id', d.notifications, jsonToParams, NOTIFICATIONS_UPSERT_SQL)
       : (base.notifications || {});
     pending.feed_events = bootstrapping
       ? await syncTableFull(c, 'feed_events', 'id', d.feedEvents, jsonToParams, FEED_EVENTS_UPSERT_SQL)
       : (base.feed_events || {});
+    // Oct 14 2026: reports gets the same bootstrap-only treatment as push_subs/notifications/
+    // feed_events just above, for the same reason -- POST /api/report, GET /api/admin/reports,
+    // and the resolve route now own this table exclusively via pgInsertReport/pgListReports/
+    // pgResolveReport, so a generic sync running alongside them on live traffic would reopen the
+    // same "two writers fight over the final value" class of bug. Scoped to bootstrapping
+    // (migrate-to-postgres.mjs's one-shot disaster-recovery path) only.
     pending.reports = bootstrapping
       ? await syncTableFull(c, 'reports', 'id', d.reports, jsonToParams, REPORTS_UPSERT_SQL)
-      : await syncTableDiff(c, 'reports', 'id', d.reports, jsonToParams, REPORTS_UPSERT_SQL, base.reports);
+      : (base.reports || {});
 
     // Singletons: never deleted for being merely absent from `d` (unlike collections above) —
     // `d[key] === undefined` has always meant "this save() call has nothing to say about this
@@ -673,8 +731,175 @@ async function pgPruneOldFeedEvents(cutoffIso) {
   });
 }
 
+// ---- Oct 14 2026: direct Postgres access for push subs + custom exercises + reports ----
+//
+// Second slice of the data-ownership rearchitecture (see CLAUDE.md's "Rearchitecture status").
+// Every function below is routed through enqueue() for the same reason the notifications/
+// feed-events functions above are — see that section's long comment on why a bare,
+// un-enqueued statement can land inside someone else's open transaction on this app's one
+// shared connection and be silently undone by that transaction's rollback. That reasoning is
+// general, not specific to notifications, so it applies here unchanged.
+//
+// Push subs and reports are NOT changing shape — push_subs was already one row per user and
+// reports was already one row per id, both already the "right" long-term shape (see CLAUDE.md
+// and db.js's own top comment). These functions exist only to give them the same direct-
+// Postgres read/write path notifications/feed_events have, so they can leave the generic
+// DB.pushSubs/DB.reports object the same way.
+//
+// Custom exercises DOES change shape — see the custom_exercise_rows table comment in SCHEMA_SQL
+// above for the full reasoning (Jeff's choice, Oct 14 2026: redesign to one row per exercise
+// rather than keep the array-per-owner shape with a transaction). Functions below operate on
+// the NEW custom_exercise_rows table; the old custom_exercises table/column stays untouched by
+// this file from here on except for the one-time migration read in server.js's boot sequence.
+async function pgGetPushSub(userId) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query('SELECT data FROM push_subs WHERE user_id = $1', [userId]);
+    return r.rows.length ? JSON.parse(r.rows[0].data) : null;
+  });
+}
+async function pgSetPushSub(userId, sub) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.query(PUSH_SUBS_UPSERT_SQL, [userId, JSON.stringify(sub)]);
+    return sub;
+  });
+}
+// Value-based, not reference-identity-based — the in-memory version's `DB.pushSubs[userId] ===
+// sub` check (see notify() in server.js) only works because the SAME in-process object is still
+// sitting in DB.pushSubs when the async sendNotification() call rejects. Once this table is read
+// fresh per-request instead, there is no shared in-memory object to compare identity against —
+// the only way to tell "is this still the subscription that just failed" is to compare the one
+// field that actually identifies a subscription, its endpoint URL. Ownership + endpoint match
+// both baked into the WHERE clause — a single atomic statement, so a resubscribe racing against
+// this delete can't be undone by it (if the row's endpoint no longer matches, 0 rows affected).
+async function pgDeletePushSubIfEndpointMatches(userId, endpoint) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(
+      `DELETE FROM push_subs WHERE user_id = $1 AND data->>'endpoint' = $2`,
+      [userId, endpoint]
+    );
+    const m = /^DELETE (\d+)$/.exec(r.commandTag || '');
+    return !!m && Number(m[1]) > 0;
+  });
+}
+// Unconditional — for account deletion, where any subscription under this id should go, not
+// just one matching a specific endpoint.
+async function pgDeletePushSub(userId) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.query('DELETE FROM push_subs WHERE user_id = $1', [userId]);
+  });
+}
+
+async function pgInsertReport(row) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.query(REPORTS_UPSERT_SQL, [row.id, JSON.stringify(row)]);
+    return row;
+  });
+}
+// Sorted the same way GET /api/admin/reports already sorts the in-memory version (newest
+// first) — done here, at the query, rather than leaving the caller to re-sort what it gets back.
+async function pgListReports() {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(`SELECT data FROM reports ORDER BY data->>'at' DESC`);
+    return r.rows.map(row => JSON.parse(row.data));
+  });
+}
+// resolvedAtIso is passed in rather than computed with SQL's now() so this report's resolvedAt
+// uses the exact same JS Date().toISOString() formatting every other timestamp in this app
+// already uses — a mixed-format timestamp field would be a real (if minor) inconsistency for
+// nothing. Returns the updated row, or null if it doesn't exist (caller 404s) — same shape as
+// pgToggleFeedEventReaction above.
+const REPORT_RESOLVE_SQL = `UPDATE reports
+  SET data = jsonb_set(jsonb_set(data, '{status}', to_jsonb('resolved'::text)), '{resolvedAt}', to_jsonb($2::text))
+  WHERE id = $1
+  RETURNING data`;
+async function pgResolveReport(id, resolvedAtIso) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(REPORT_RESOLVE_SQL, [id, resolvedAtIso]);
+    return r.rows.length ? JSON.parse(r.rows[0].data) : null;
+  });
+}
+
+const CUSTOM_EXERCISE_ROWS_UPSERT_SQL = 'INSERT INTO custom_exercise_rows (id, owner_id, data) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO UPDATE SET owner_id = EXCLUDED.owner_id, data = EXCLUDED.data';
+// One function for both create and edit, same as pgInsertNotification/pgUpsertCustomExerciseRow
+// elsewhere in this file being reused for both — the caller (server.js) always hands over the
+// FULL exercise object (POST builds a brand-new one; PUT mutates a copy of the existing one with
+// the same fields PUT has always accepted), so there is no partial-patch case to special-case
+// here. `row.ownerId` (camelCase, matching the JS object's own field name everywhere else in this
+// app) is what's written into the owner_id column.
+async function pgUpsertCustomExerciseRow(row) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.query(CUSTOM_EXERCISE_ROWS_UPSERT_SQL, [row.id, row.ownerId, JSON.stringify(row)]);
+    return row;
+  });
+}
+async function pgGetCustomExerciseRow(id) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query('SELECT data FROM custom_exercise_rows WHERE id = $1', [id]);
+    return r.rows.length ? JSON.parse(r.rows[0].data) : null;
+  });
+}
+async function pgListCustomExerciseRowsByOwner(ownerId) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query('SELECT data FROM custom_exercise_rows WHERE owner_id = $1', [ownerId]);
+    return r.rows.map(row => JSON.parse(row.data));
+  });
+}
+// Backs GET /api/exercises' Object.values(DB.customExercises||{}).flat() — every custom
+// exercise, from every owner, is shown to every user by design (see that route's own comment in
+// server.js), so this has no WHERE clause at all, same reach as the in-memory version.
+async function pgListAllCustomExerciseRows() {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query('SELECT data FROM custom_exercise_rows');
+    return r.rows.map(row => JSON.parse(row.data));
+  });
+}
+// Ownership baked into the WHERE clause, same reasoning as pgDeleteNotification above — a
+// single atomic statement, so it can't be raced into an inconsistent state, and the caller
+// can't accidentally delete a row it doesn't own just by getting the id right.
+async function pgDeleteCustomExerciseRow(id, ownerId) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query('DELETE FROM custom_exercise_rows WHERE id = $1 AND owner_id = $2', [id, ownerId]);
+    const m = /^DELETE (\d+)$/.exec(r.commandTag || '');
+    return !!m && Number(m[1]) > 0;
+  });
+}
+// Mirrors findExLibEntry's exact priority order in server.js (the acting user's own list, then —
+// if a session creator is given and differs — the creator's own list, then a fully global first
+// match) — three sequential queries, each only run if the previous found nothing, same
+// short-circuiting shape as the in-memory version's three lookups. Used by the shadow-compare
+// during the dual-write phase; not yet the real path server.js's own findExLibEntry takes (that
+// cutover is a later step, same two-phase shape as the notifications+feed-events slice).
+async function pgFindCustomExerciseRowByName(name, userId, creatorId) {
+  return enqueue(async () => {
+    const c = getConn();
+    let r = await c.query(`SELECT data FROM custom_exercise_rows WHERE owner_id = $1 AND data->>'name' = $2 LIMIT 1`, [userId, name]);
+    if (r.rows.length) return JSON.parse(r.rows[0].data);
+    if (creatorId && creatorId !== userId) {
+      r = await c.query(`SELECT data FROM custom_exercise_rows WHERE owner_id = $1 AND data->>'name' = $2 LIMIT 1`, [creatorId, name]);
+      if (r.rows.length) return JSON.parse(r.rows[0].data);
+    }
+    r = await c.query(`SELECT data FROM custom_exercise_rows WHERE data->>'name' = $1 LIMIT 1`, [name]);
+    return r.rows.length ? JSON.parse(r.rows[0].data) : null;
+  });
+}
+
 module.exports = {
   load, save, close, ensureSchema, EMPTY_DB, getConn,
   pgNotificationHistoryForUser, pgInsertNotification, pgDeleteNotification, pgMergedNotificationWrite, pgPruneOldNotifications,
   pgInsertFeedEvent, pgDeleteFeedEvent, pgGetFeedEvent, pgFeedEventsSince, pgToggleFeedEventReaction, pgPruneOldFeedEvents,
+  pgGetPushSub, pgSetPushSub, pgDeletePushSubIfEndpointMatches, pgDeletePushSub,
+  pgInsertReport, pgListReports, pgResolveReport,
+  pgUpsertCustomExerciseRow, pgGetCustomExerciseRow, pgListCustomExerciseRowsByOwner, pgListAllCustomExerciseRows, pgDeleteCustomExerciseRow, pgFindCustomExerciseRowByName,
 };

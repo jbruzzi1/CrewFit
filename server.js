@@ -1016,8 +1016,36 @@ app.get('/api/exercises', async (req, res) => {
     .filter(c => !EX_LIB.some(e => e.name === c.name));
   // computed per request, never at boot — 203 entries is nothing, and startup work in this file
   // has crashed the server three times
+  shadowCompareCustomExerciseRows();
   res.json(EX_LIB.concat(custom).map(withTarget));
 });
+// ---- Oct 14 2026: shadow-compare for the custom-exercises redesign (dual-write phase) ----
+// Same technique and same reasoning as shadowCompareNotificationHistory/shadowCompareFeedEvents
+// from the notifications+feed-events slice (see git history, task #245) -- compares what the OLD
+// array-per-owner read (DB.customExercises, still what actually serves this route) would produce
+// against the NEW one-row-per-exercise table, without changing the response either way. Compared
+// as an ID SET, not full content: this route's own sanitizeExercise()/withTarget() already
+// transform the raw stored shape before it ever reaches a client, so comparing post-transform
+// output would just be re-testing those functions against themselves, not testing whether the
+// new table holds the same underlying rows the old one does -- which is the actual thing this
+// phase needs to verify before task (the read cutover) switches the SOURCE over. Throttled to
+// once a minute, same reasoning as the notifications slice: this route is hit on every exercise-
+// library open, and comparing on literally every request would double real query load on this
+// app's one shared Postgres connection for a background verification step.
+let lastCustomExerciseRowsShadowCompareAt = 0;
+function shadowCompareCustomExerciseRows() {
+  const now = Date.now();
+  if (now - lastCustomExerciseRowsShadowCompareAt < 60000) return;
+  lastCustomExerciseRowsShadowCompareAt = now;
+  const oldIds = Object.values(DB.customExercises || {}).flat()
+    .filter(e => e && typeof e === 'object' && e.id).map(e => e.id).sort();
+  db.pgListAllCustomExerciseRows().then(rows => {
+    const newIds = rows.map(r => r.id).sort();
+    if (JSON.stringify(oldIds) !== JSON.stringify(newIds)) {
+      console.error('[migration shadow-compare] custom_exercise_rows id-set mismatch:', 'onlyInOld:', oldIds.filter(id => !newIds.includes(id)), 'onlyInNew:', newIds.filter(id => !oldIds.includes(id)));
+    }
+  }).catch(e => console.error('[migration shadow-compare] pgListAllCustomExerciseRows failed:', e && e.message));
+}
 // Custom exercises written before the POST route validated anything are still in the database, and
 // nothing migrates them — so the write-side checks protect new rows only. This is the read side:
 // every row is normalised on the way OUT, which is the one place that covers rows already stored.
@@ -1115,6 +1143,15 @@ app.post('/api/exercises/custom', auth, async (req, res) => {
     return res.status(400).json({ error: 'You have reached the limit of custom exercises.' });
   DB.customExercises[req.userId].push(ex);
   await save(DB);
+  // Oct 14 2026 (push subs/custom exercises/reports slice -- dual-write phase, see CLAUDE.md
+  // "Rearchitecture status"/"Rearchitecture safeguards"): mirrors this create onto the NEW
+  // one-row-per-exercise custom_exercise_rows table. DB.customExercises above is still the real
+  // driver of every read in this app during this phase (GET /api/exercises, findExLibEntry,
+  // findMyCustomExercise, the 500-cap check just above) -- this is fire-and-forget and must never
+  // block or fail the actual create, same reasoning notify()'s own push send and the
+  // notifications/feed-events slice's dual-write writes already use for a side write that isn't
+  // this request's primary purpose.
+  db.pgUpsertCustomExerciseRow(ex).catch(e => console.error('[migration dual-write] pgUpsertCustomExerciseRow (create) failed:', e && e.message));
   res.json(ex);
 });
 // Sep 30 2026 (audit finding, Jeff: "build now" -- there was no way to edit or delete a custom
@@ -1177,6 +1214,13 @@ app.put('/api/exercises/custom/:id', auth, async (req, res) => {
   ex.level = capStr(level, 20) || 'beginner';
   ex.pattern = KNOWN_PATTERNS.has(pattern) ? pattern : 'other';
   await save(DB);
+  // Oct 14 2026 (dual-write phase -- see the comment on POST /api/exercises/custom above for the
+  // full reasoning): `ex` here is the SAME object just mutated in place above, already carrying
+  // its stable id/ownerId/name/custom/defaultSets/defaultReps untouched -- pgUpsertCustomExerciseRow
+  // overwrites the whole row, so handing it the fully-updated object is correct whether this id
+  // already has a row (the common case) or not yet (a pre-existing exercise this boot's flatten
+  // migration hasn't caught up to yet, vanishingly unlikely but handled the same way either way).
+  db.pgUpsertCustomExerciseRow(ex).catch(e => console.error('[migration dual-write] pgUpsertCustomExerciseRow (edit) failed:', e && e.message));
   res.json(ex);
 });
 // Sep 30 2026 (audit finding). A custom exercise's name is the only link a logged set/session
@@ -1207,6 +1251,11 @@ app.delete('/api/exercises/custom/:id', auth, async (req, res) => {
     return res.status(409).json({ error: 'This exercise has sets logged against it, so it can’t be deleted. You can still stop using it going forward.' });
   DB.customExercises[req.userId] = list.filter(x => x.id !== req.params.id);
   await save(DB);
+  // Oct 14 2026 (dual-write phase -- see the comment on POST /api/exercises/custom above).
+  // Ownership is baked into pgDeleteCustomExerciseRow's own WHERE clause as a second,
+  // independent check (see that function's comment in db.js) -- belt-and-suspenders with the
+  // `list.find` ownership check above, not a replacement for it.
+  db.pgDeleteCustomExerciseRow(req.params.id, req.userId).catch(e => console.error('[migration dual-write] pgDeleteCustomExerciseRow failed:', e && e.message));
   res.json({ ok: true });
 });
 
@@ -1998,12 +2047,24 @@ app.post('/api/report', auth, async (req, res) => {
   // stored as opaque labels only -- never dereferenced or trusted as anything but text an admin
   // reads on the review screen, so a stale or fabricated id here can't do anything but show up
   // oddly on that screen.
-  DB.reports[id] = {
+  const row = {
     id, reporterId: req.userId, targetType: b.targetType, targetUserId,
     sessionId: capStr(b.sessionId, 60), authorId: capStr(b.authorId, 60), commentId: capStr(b.commentId, 60),
     reason: b.reason, details: capStr(b.details, 1000),
     at: new Date().toISOString(), status: 'open',
   };
+  // Oct 14 2026 (push subs/custom exercises/reports slice, task #258+): reports was already one
+  // row per id in Postgres, written via the generic save(DB) sync -- same reasoning as the push
+  // subs cutover just above for why this needs no dual-write window (identical shape, not a
+  // different one to reconcile against). Unlike notifications/feed-events (explicitly best-
+  // effort/ephemeral side channels -- see emitFeedEvent's own comment on why those catch-and-log
+  // instead of throwing), a content report IS the primary thing this request is for, so this is
+  // genuinely awaited, not fire-and-forget, and a real failure here should 500 rather than tell
+  // the reporter "ok" when it isn't. Deliberately ordered BEFORE blockUser() below: nothing has
+  // mutated DB yet at this point, so if this throws there is no earlier in-memory change left
+  // stranded unsaved -- the exact hazard the emitFeedEvent finding from the last slice flagged
+  // (see that slice's report to Jeff), applied here proactively instead of rediscovering it.
+  await db.pgInsertReport(row);
   if (b.alsoBlock && targetUserId) blockUser(req.userId, targetUserId);
   await save(DB);
   res.json({ ok: true });
@@ -2015,17 +2076,20 @@ app.post('/api/report', auth, async (req, res) => {
 // server-side so /admin.html never has to make a second round trip per row.
 app.get('/api/admin/reports', adminAuth, async (req, res) => {
   const nameOf = id => { const u = DB.users[id]; return u ? (u.displayName || u.username) : (id ? '(deleted account)' : ''); };
-  const list = Object.values(DB.reports || {})
-    .map(r => ({ ...r, reporterName: nameOf(r.reporterId), targetName: nameOf(r.targetUserId) }))
-    .sort((a, b) => new Date(b.at) - new Date(a.at));
+  // Oct 14 2026 (push subs/custom exercises/reports slice, task #258+): read straight from
+  // Postgres now (pgListReports already returns newest-first, same sort this route always did
+  // itself) instead of Object.values(DB.reports||{}) -- DB.reports is gone from EMPTY_DB/doLoad()
+  // below this comment's sibling edits in db.js.
+  const reports = await db.pgListReports();
+  const list = reports.map(r => ({ ...r, reporterName: nameOf(r.reporterId), targetName: nameOf(r.targetUserId) }));
   res.json(list);
 });
 app.post('/api/admin/reports/:id/resolve', adminAuth, async (req, res) => {
-  const r = DB.reports[req.params.id];
+  // Oct 14 2026: single atomic UPDATE...RETURNING via pgResolveReport, replacing the read-
+  // mutate-save(DB) sequence -- see that function's own comment in db.js for why resolvedAt is
+  // computed here in JS (toISOString()) rather than left to SQL's now().
+  const r = await db.pgResolveReport(req.params.id, new Date().toISOString());
   if (!r) return res.status(404).json({ error: 'not found' });
-  r.status = 'resolved';
-  r.resolvedAt = new Date().toISOString();
-  await save(DB);
   res.json({ ok: true });
 });
 
@@ -3723,12 +3787,23 @@ app.post('/api/push/subscribe', auth, async (req, res) => {
   if (!isObj(sub) || typeof sub.endpoint !== 'string' || !sub.endpoint || sub.endpoint.length > 1024)
     return res.status(400).json({ error: 'invalid subscription' });
   const keys = isObj(sub.keys) ? sub.keys : {};
-  DB.pushSubs[req.userId] = {
+  // Oct 14 2026 (push subs/custom exercises/reports slice, task #258+): push_subs was already one
+  // row per user in Postgres — the SAME shape this always wrote, via the generic save(DB) sync
+  // (see db.js's EMPTY_DB/doSave comments). Writing it directly here, through db.pgSetPushSub,
+  // and no longer putting it on DB.pushSubs at all, means save(DB) below is gone too — there's
+  // nothing left on DB for it to persist for this route. Not a "dual-write" window the way the
+  // notifications/feed-events slice needed one: that slice was moving to a GENUINELY different
+  // storage shape (array-per-user groups, merge logic) that needed verifying old-vs-new behavior
+  // actually matched before trusting it alone. Here the shape is identical — same table, same
+  // columns, same JSON — so there's no second implementation to reconcile against, only a
+  // straight swap of "who writes this row." (Disclosed to Jeff as a deliberate, scoped deviation
+  // from the full dual-write protocol — see the slice report.)
+  const subObj = {
     endpoint: sub.endpoint,
     expirationTime: (typeof sub.expirationTime === 'number') ? sub.expirationTime : null,
     keys: { p256dh: capStr(keys.p256dh, 256), auth: capStr(keys.auth, 256) },
   };
-  await save(DB);
+  await db.pgSetPushSub(req.userId, subObj);
   res.json({ ok: true });
 });
 // Sep 5 2026 (Jeff: "I got a push saying someone followed me but the bell / notifications page
@@ -3930,7 +4005,7 @@ function groupedHistoryWrite(userId, payload, group) {
 // object itself (not nested under `data`) so it rides the exact same JSON.stringify(payload) the
 // push already sends -- no wire-format change -- and is copied into the durable history row below
 // so a tap on a PAST notification (not just a fresh push) can also deep-link.
-function notify(userId, payload, opts) {
+async function notify(userId, payload, opts) {
   if (!opts || opts.history !== false) {
     if (opts && opts.group) {
       groupedHistoryWrite(userId, payload, opts.group);
@@ -3956,20 +4031,51 @@ function notify(userId, payload, opts) {
   // them over -- same reasoning already applied to POST /api/sessions dropping ITS OWN self-push
   // ("you already know you just made it") a comment up in that route.
   if (opts && opts.push === false) return;
-  const sub = DB.pushSubs[userId];
+  // Oct 14 2026 (push subs/custom exercises/reports slice): fetched fresh from Postgres now
+  // instead of read off DB.pushSubs[userId] — see the comment on POST /api/push/subscribe above
+  // for why this table needs no dual-write window. `notify` becoming async changes nothing for
+  // any of its ~30 call sites: none of them ever awaited it or used its return value (verified by
+  // grep before this change), so every caller keeps firing it the exact same fire-and-forget way.
+  //
+  // SEVERE finding, correctness-review pass, reproduced live (Oct 14 2026): the plain in-memory
+  // read this replaced (DB.pushSubs[userId]) could never fail. This real Postgres round trip
+  // can -- a dropped connection, any transient DB error -- and since none of notify()'s ~30
+  // callers await or .catch() it, an unhandled rejection here has nowhere to land. This app
+  // treats every unhandled rejection as fatal (see the top-of-file `unhandledRejection` ->
+  // fatalCrash() -> process.exit(1) handler), so one ordinary transient hiccup on one routine
+  // push lookup would have taken the ENTIRE SERVER down for every user, not just failed to notify
+  // this one. Reproduced live: a rigged one-time rejection from pgGetPushSub during a real
+  // POST /api/follow/:id crashed the process with exactly that unhandled-rejection path. Every
+  // OTHER fire-and-forget Postgres call added in this same slice already has its own try/catch or
+  // .catch() (pgUpsertCustomExerciseRow, pgDeleteCustomExerciseRow, the shadow-compares, the
+  // push-cleanup call just below) -- this was the one line that pattern was missed on. Fixed by
+  // wrapping it the same way: a failed lookup just means "skip this push," exactly as a missing
+  // subscription already does, never a reason to crash.
+  let sub;
+  try {
+    sub = await db.pgGetPushSub(userId);
+  } catch (e) {
+    console.error('notify: pgGetPushSub failed (skipping this push, not fatal):', e && e.message);
+    return;
+  }
   if (!sub) return;
   webpush.sendNotification(sub, JSON.stringify(payload)).catch(err => {
     // 404/410 = the push service says this subscription is dead (expired, unsubscribed on the
     // device, or - the #61 case - signed with a VAPID key that no longer matches). Drop it rather
     // than retrying it forever; the client re-subscribes on its next app open (see setupPush()
     // in app.js), which will overwrite this with a fresh, valid subscription.
-    // Only delete if it's still the SAME subscription that failed - sendNotification is async, and
-    // by the time this rejects the user may have already resubscribed (POST /api/push/subscribe
-    // overwrites DB.pushSubs[userId] synchronously); deleting unconditionally would wipe out that
-    // brand-new, working subscription instead of the stale one that actually failed.
-    if (err && (err.statusCode === 404 || err.statusCode === 410) && DB.pushSubs[userId] === sub) {
-      delete DB.pushSubs[userId];
-      save(DB).catch(e => console.error('notify: failed to persist dead-subscription cleanup:', e.message));
+    // Only delete if it's still the SAME subscription that failed. The old in-memory version
+    // checked this by object identity (DB.pushSubs[userId] === sub) because the same in-process
+    // object was still sitting there; now that this is read fresh from Postgres per call, there is
+    // no in-memory object to compare identity against. pgDeletePushSubIfEndpointMatches compares
+    // the one field that actually identifies a subscription (its endpoint) instead, atomically, in
+    // the WHERE clause — so a resubscribe racing against this delete can't be undone by it (if
+    // the stored endpoint no longer matches this stale one, 0 rows are affected). Arguably more
+    // correct than the old identity check, not just an equivalent translation of it: it works
+    // across requests/processes too, not only within the one process holding that exact object.
+    if (err && (err.statusCode === 404 || err.statusCode === 410)) {
+      db.pgDeletePushSubIfEndpointMatches(userId, sub.endpoint)
+        .catch(e => console.error('notify: failed to persist dead-subscription cleanup:', e && e.message));
     }
   });
 }
@@ -6775,7 +6881,11 @@ async function anonymizeAndDeleteAccount(targetId) {
     if (Array.isArray(other.followReqs)) other.followReqs = other.followReqs.filter(x => x !== me);
     if (Array.isArray(other.blocked)) other.blocked = other.blocked.filter(x => x !== me);
   }
-  delete DB.pushSubs[me];   // stop push delivery dead rather than let it 404/410 itself out later
+  // Oct 14 2026 (push subs slice): push_subs is no longer on DB at all (see db.js's
+  // EMPTY_DB/load() and the comment on POST /api/push/subscribe) -- deleting it is now its own
+  // direct Postgres call rather than an in-memory mutation this route's own save(DB) further
+  // down used to pick up.
+  await db.pgDeletePushSub(me);   // stop push delivery dead rather than let it 404/410 itself out later
 
   // Oct 2 2026 (deep audit finding): wipeUserFromAllSessions above cleans up every pending-action
   // type that lives on DB.sessions (invites, join requests, removals, suggestions, reinvite-asks),
@@ -8626,12 +8736,87 @@ function migrateExerciseRenames() {
 // time and useless for a later PUT/DELETE to actually find the same row again).
 function migrateCustomExerciseIds() {
   let n = 0;
+  // Oct 14 2026 (adversarial-review finding, reproduced live): a legacy/malformed row whose
+  // `data` is a plain object instead of an array (this app has real production history of
+  // exactly this shape of corruption -- see migrateSessionShapes' own comment) made the bare
+  // `arr || []` fall through to the object itself (objects are truthy), and `for...of` on a
+  // non-iterable object throws -- crashing boot, every single restart, until someone edited the
+  // database by hand. That is the exact outcome hard rule #7 exists to prevent. Array.isArray
+  // guards it the same defensive way the rest of this app's boot migrations already guard
+  // against malformed rows (see sanitizeExercise/migrateSessionShapes).
   for (const arr of Object.values(DB.customExercises || {})) {
-    for (const e of (arr || [])) {
+    for (const e of (Array.isArray(arr) ? arr : [])) {
       if (e && typeof e === 'object' && !e.id) { e.id = crypto.randomUUID(); n++; }
     }
   }
   if (n) console.log('migrateCustomExerciseIds: assigned ' + n + ' id(s)');
+  return n;
+}
+// Oct 14 2026 (push subs/custom exercises/reports slice -- dual-write phase, see CLAUDE.md
+// "Rearchitecture status"/"Rearchitecture safeguards"): one-time-per-exercise (but idempotent --
+// safe, and intended, to re-run every boot) flatten of DB.customExercises -- the OLD array-per-
+// owner shape, still the real driver of every read during this phase -- into the NEW one-row-
+// per-exercise custom_exercise_rows table (see SCHEMA_SQL's own comment in db.js for Jeff's
+// choice of this redesign over keeping the array with a transaction). Must run AFTER
+// migrateCustomExerciseIds() above, which is what guarantees every exercise already has the
+// stable id this new table's primary key needs -- an exercise with no id yet would have nothing
+// stable to upsert by.
+//
+// Reads from DB.customExercises itself, never a fresh raw read of the OLD Postgres table --
+// that in-memory object is already the authoritative, just-healed source every other boot
+// migration below it treats as ground truth, and is already what dual-write's own POST/PUT/
+// DELETE call sites treat as the real driver (see each route's own comment). Keyed from
+// Object.entries, not each exercise's own `.ownerId` field: this app has real production history
+// of malformed stored rows (see migrateSessionShapes' own comment on why defensive boot
+// migrations don't trust a row's own self-reported fields over its actual storage location) --
+// the array's own key is unambiguous, so the row written to Postgres is tagged with THAT, not
+// whatever (possibly missing or stale) ownerId the object itself happens to carry.
+//
+// pgUpsertCustomExerciseRow is a plain upsert keyed on id -- re-flattening something already
+// flattened is a harmless no-op write, not a duplicate row, which is what makes running this
+// every boot safe. It also means the new table self-heals against ADDED/EDITED drift during
+// this dual-write window (the array is still ground truth during that window, so re-flattening
+// it is always correct, never stale) -- and, since the reconciliation pass below, against
+// DELETED drift too (see that pass's own comment for why the original version of this function
+// could not heal a deletion, only ever add or overwrite).
+async function migrateCustomExerciseRowsIntoPostgres() {
+  let n = 0;
+  const validIds = new Set();
+  // Oct 14 2026 (adversarial-review finding, reproduced live): same malformed-row crash as
+  // migrateCustomExerciseIds just above, same fix -- Array.isArray guards a non-array `data`
+  // value instead of falling through to it and crashing on a non-iterable `for...of`.
+  for (const [ownerId, arr] of Object.entries(DB.customExercises || {})) {
+    for (const e of (Array.isArray(arr) ? arr : [])) {
+      if (!e || typeof e !== 'object' || !e.id) continue;   // tolerate a malformed exercise object rather than crash boot -- same stance as migrateCustomExerciseIds/sanitizeExercise
+      await db.pgUpsertCustomExerciseRow({ ...e, ownerId });
+      validIds.add(e.id);
+      n++;
+    }
+  }
+  // Correctness-review finding: this function originally only ever upserted -- it never removed
+  // anything from custom_exercise_rows, so a delete whose fire-and-forget pgDeleteCustomExerciseRow
+  // call failed (e.g. a transient Postgres hiccup -- see the SEVERE notify() finding just above
+  // for why that's a real, not hypothetical, failure mode) left a permanent GHOST row behind:
+  // removed from the old array (today's real driver) but stuck in the new table forever, surviving
+  // every future reboot, with the comment above wrongly claiming this "self-heals against ANY
+  // drift." Reproduced live: a row deleted from the old table only (simulating exactly that failed
+  // delete) was still sitting in custom_exercise_rows after a restart, before this fix.
+  //
+  // Fixed by making this a genuine two-way reconciliation, every boot: anything in the new table
+  // that is NOT in the id set just computed from the (freshly reloaded, authoritative) old array
+  // no longer belongs there, and is removed. Ownership for the delete comes from the ROW'S OWN
+  // stored owner_id (read back from custom_exercise_rows itself), not from the old array -- by
+  // definition an orphan has no entry left in the old array to read an ownerId from.
+  let removed = 0;
+  const existingRows = await db.pgListAllCustomExerciseRows();
+  for (const row of existingRows) {
+    if (row && row.id && !validIds.has(row.id)) {
+      await db.pgDeleteCustomExerciseRow(row.id, row.ownerId);
+      removed++;
+    }
+  }
+  if (n) console.log('migrateCustomExerciseRowsIntoPostgres: flattened ' + n + ' custom exercise row(s) into custom_exercise_rows');
+  if (removed) console.log('migrateCustomExerciseRowsIntoPostgres: removed ' + removed + ' orphaned row(s) no longer present in the old array');
   return n;
 }
 
@@ -9488,6 +9673,7 @@ app.use((err, req, res, next) => {
   migrateExerciseNames();     // before rebuildAllPrs, which groups by the name
   migrateExerciseRenames();   // after the stamp above (it walks exerciseName), before the PR regroup
   migrateCustomExerciseIds(); // backfill ids for edit/delete -- order doesn't matter, nothing else depends on them yet
+  await migrateCustomExerciseRowsIntoPostgres(); // dual-write phase: flatten into custom_exercise_rows -- MUST run after the id-backfill just above
   rebuildAllPrs();
   rebuildSessionsByUserIndex();   // Oct 12 2026 (scaling fix round 2) -- after every migration above has settled DB.sessions, same placement reasoning as rebuildAllPrs just above
   migrateLoadTypes();

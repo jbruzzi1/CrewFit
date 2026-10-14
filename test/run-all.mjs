@@ -124,6 +124,13 @@ const files = [
   // functions fighting over the same rows -- see db.js's own comment on that fix) the same run it
   // was written, same discipline as every entry above.
   'test/notifications-feed-migration-differential.mjs',
+  // Oct 14 2026 (rearchitecture, push subs/custom exercises/reports slice, task #258+'s
+  // ground-truth differential test -- see CLAUDE.md "Rearchitecture status"/"Rearchitecture
+  // safeguards"): same technique as the entry just above, for this slice. Also the test that
+  // proves the custom-exercises shadow-compare safety net actually fires on a real divergence,
+  // not just "it didn't throw." Added to this list the same run it was written, same discipline
+  // as every entry above.
+  'test/pushsubs-customex-reports-migration-differential.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
