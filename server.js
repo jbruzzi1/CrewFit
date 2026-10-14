@@ -1142,7 +1142,23 @@ app.post('/api/exercises/custom', auth, async (req, res) => {
   if (DB.customExercises[req.userId].length >= 500)
     return res.status(400).json({ error: 'You have reached the limit of custom exercises.' });
   DB.customExercises[req.userId].push(ex);
-  await save(DB);
+  // Oct 14 2026 (Jeff: "resolve the issue you flagged but are not fixing" -- the pre-existing
+  // mutate-before-maybe-failing-save hazard disclosed in the last slice's report, same bug class
+  // as the emitFeedEvent finding from the notifications/feed-events slice before it). Before this
+  // fix: a save(DB) failure here (already turned into a real 500 by the app-wide async-error
+  // wrapper near the top of this file, so the client WAS told it failed) left the push above in
+  // memory anyway -- DB.customExercises is shared, process-wide state, so a "failed" create
+  // became a real, globally-visible exercise (served to every user via GET /api/exercises,
+  // permanently burning one of this user's 500 slots) that only went away on the next restart.
+  // Reproduced live before this fix: rigged a real custom_exercises write failure, got the 500,
+  // then watched the "failed" exercise show up in GET /api/exercises anyway. Fixed by reverting
+  // the in-memory push on a failed save, so a 500 response and the in-memory state agree again.
+  try {
+    await save(DB);
+  } catch (e) {
+    DB.customExercises[req.userId] = DB.customExercises[req.userId].filter(x => x.id !== ex.id);
+    throw e; // still a real failure -- the app-wide wrapper turns this into the client's 500
+  }
   // Oct 14 2026 (push subs/custom exercises/reports slice -- dual-write phase, see CLAUDE.md
   // "Rearchitecture status"/"Rearchitecture safeguards"): mirrors this create onto the NEW
   // one-row-per-exercise custom_exercise_rows table. DB.customExercises above is still the real
@@ -1207,13 +1223,41 @@ app.put('/api/exercises/custom/:id', auth, async (req, res) => {
   }
   const equip = (Array.isArray(equipment) ? equipment : [])
     .filter(x => typeof x === 'string').map(x => x.slice(0, 40)).slice(0, 8);
+  // Oct 14 2026 (same fix as POST /api/exercises/custom above, same reasoning -- see that route's
+  // comment): snapshot every field this route is about to overwrite, so a failed save(DB) below
+  // can be undone, instead of leaving `ex` (a live reference inside DB.customExercises)
+  // permanently holding an edit Postgres never actually got.
+  const before = { muscle_groups: ex.muscle_groups, category: ex.category, equipment: ex.equipment, is_compound: ex.is_compound, level: ex.level, pattern: ex.pattern };
+  const newCategory = mg[0] || 'other', newLevel = capStr(level, 20) || 'beginner', newPattern = KNOWN_PATTERNS.has(pattern) ? pattern : 'other', newIsCompound = !!is_compound;
   ex.muscle_groups = mg;
-  ex.category = mg[0] || 'other';
+  ex.category = newCategory;
   ex.equipment = equip;
-  ex.is_compound = !!is_compound;
-  ex.level = capStr(level, 20) || 'beginner';
-  ex.pattern = KNOWN_PATTERNS.has(pattern) ? pattern : 'other';
-  await save(DB);
+  ex.is_compound = newIsCompound;
+  ex.level = newLevel;
+  ex.pattern = newPattern;
+  try {
+    await save(DB);
+  } catch (e) {
+    // Cold-review catch (independent reviewer, same day): an earlier version of this fix did a
+    // blind `Object.assign(ex, before)` here. `save(DB)` is queued end-to-end (db.js's enqueue())
+    // but reads DB's CURRENT in-memory content at the moment its turn actually runs, not a
+    // snapshot taken when save() was called -- so a second concurrent edit of this SAME exercise
+    // (double-tap, a client retry) can land its own successful mutation on `ex` while THIS
+    // request's save(DB) is still sitting in that queue. A blind restore-to-`before` would then
+    // stomp that other, already-committed edit back to this request's stale "before" value --
+    // worse than the original bug, since now a SUCCESSFUL request's result silently reverts too.
+    // Fixed by only reverting a field if it still holds exactly what THIS request set it to --
+    // i.e. nothing else has touched it since. A field some other concurrent request has since
+    // changed is left alone; the narrow residual case (two edits racing to the exact same field)
+    // falls back to ordinary last-write-wins, which this codebase already accepts elsewhere.
+    if (ex.muscle_groups === mg) ex.muscle_groups = before.muscle_groups;
+    if (ex.category === newCategory) ex.category = before.category;
+    if (ex.equipment === equip) ex.equipment = before.equipment;
+    if (ex.is_compound === newIsCompound) ex.is_compound = before.is_compound;
+    if (ex.level === newLevel) ex.level = before.level;
+    if (ex.pattern === newPattern) ex.pattern = before.pattern;
+    throw e;
+  }
   // Oct 14 2026 (dual-write phase -- see the comment on POST /api/exercises/custom above for the
   // full reasoning): `ex` here is the SAME object just mutated in place above, already carrying
   // its stable id/ownerId/name/custom/defaultSets/defaultReps untouched -- pgUpsertCustomExerciseRow
@@ -1250,7 +1294,27 @@ app.delete('/api/exercises/custom/:id', auth, async (req, res) => {
   if (exerciseNameEverLogged(ex.name))
     return res.status(409).json({ error: 'This exercise has sets logged against it, so it can’t be deleted. You can still stop using it going forward.' });
   DB.customExercises[req.userId] = list.filter(x => x.id !== req.params.id);
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    // Oct 14 2026 (same fix as POST /api/exercises/custom above, same reasoning -- revised same
+    // day after an independent reviewer caught a sharper version of the hazard this was meant to
+    // fix). An earlier draft restored `DB.customExercises[req.userId] = list` wholesale -- the
+    // exact pre-filter array reference. save(DB) is queued end-to-end (db.js's enqueue()) but
+    // each queued save reads DB's CURRENT content only when its own turn actually runs, not a
+    // snapshot from when save() was called -- so a concurrent create for this SAME user (a
+    // double-tap, a client retry) could push a brand-new exercise into
+    // DB.customExercises[req.userId] while THIS delete's save(DB) was still sitting in that
+    // queue. Restoring the stale pre-filter `list` wholesale would silently erase that new,
+    // unrelated exercise -- worse than the original bug, since it would destroy a DIFFERENT
+    // request's successful result, not just fail to persist this one. Fixed the same way the
+    // create route's own revert already does it (re-read the CURRENT array, touch only the one
+    // id that's actually ours to put back) instead of restoring a stale whole-array snapshot.
+    const current = DB.customExercises[req.userId] || [];
+    if (!current.some(x => x.id === ex.id)) current.push(ex);
+    DB.customExercises[req.userId] = current;
+    throw e;
+  }
   // Oct 14 2026 (dual-write phase -- see the comment on POST /api/exercises/custom above).
   // Ownership is baked into pgDeleteCustomExerciseRow's own WHERE clause as a second,
   // independent check (see that function's comment in db.js) -- belt-and-suspenders with the
@@ -2065,8 +2129,57 @@ app.post('/api/report', auth, async (req, res) => {
   // stranded unsaved -- the exact hazard the emitFeedEvent finding from the last slice flagged
   // (see that slice's report to Jeff), applied here proactively instead of rediscovering it.
   await db.pgInsertReport(row);
-  if (b.alsoBlock && targetUserId) blockUser(req.userId, targetUserId);
-  await save(DB);
+  // Oct 14 2026 (Jeff: "resolve the issue you flagged but are not fixing" -- the smaller echo of
+  // the same pre-existing hazard, fixed the same way as the custom-exercise routes above: capture
+  // what blockUser() is about to touch, so a failed save(DB) below can be undone instead of
+  // leaving a block/unfollow sitting in memory that Postgres never actually got. The report
+  // itself is unaffected either way -- pgInsertReport just above already committed on its own,
+  // independent of what happens next.
+  //
+  // Revised same day after an independent reviewer caught a sharper hazard in an earlier draft of
+  // this fix (same finding as the custom-exercise PUT/DELETE routes above): save(DB) is queued
+  // end-to-end (db.js's enqueue()) but reads DB's CURRENT content only when its own turn actually
+  // runs, not a snapshot from when save() was called -- so a concurrent action on this SAME pair
+  // of users (e.g. the target deleting their own account mid-flight, which strips references to
+  // them from every other user's arrays -- see anonymizeAndDeleteAccount) could land while THIS
+  // save(DB) is still queued. A blind restore-to-the-original-snapshot would silently undo that
+  // other, unrelated change too. Fixed the same way: only revert a field if it's still exactly
+  // what blockUser() just set it to (nothing else has touched it since); `me.blocked` is handled
+  // separately since blockUser mutates it with `.push()` in place rather than reassigning it, so
+  // simply removing the one id this request added (if still present) is the equivalent check.
+  let blockUndo = null;
+  if (b.alsoBlock && targetUserId) {
+    const me = DB.users[req.userId], target = DB.users[targetUserId];
+    if (me && target) {
+      ensureBlockArray(me); ensureFollowArrays(me); ensureFollowArrays(target);
+      const wasAlreadyBlocked = me.blocked.includes(targetUserId);
+      const prev = { meFollowing: me.following, meFollowers: me.followers, meFollowReqs: me.followReqs, targetFollowing: target.following, targetFollowers: target.followers, targetFollowReqs: target.followReqs };
+      blockUser(req.userId, targetUserId);
+      const after = { meFollowing: me.following, meFollowers: me.followers, meFollowReqs: me.followReqs, targetFollowing: target.following, targetFollowers: target.followers, targetFollowReqs: target.followReqs };
+      blockUndo = () => {
+        if (!wasAlreadyBlocked) {
+          const idx = me.blocked.indexOf(targetUserId);
+          if (idx !== -1) me.blocked.splice(idx, 1);
+        }
+        if (me.following === after.meFollowing) me.following = prev.meFollowing;
+        if (me.followers === after.meFollowers) me.followers = prev.meFollowers;
+        if (me.followReqs === after.meFollowReqs) me.followReqs = prev.meFollowReqs;
+        if (target.following === after.targetFollowing) target.following = prev.targetFollowing;
+        if (target.followers === after.targetFollowers) target.followers = prev.targetFollowers;
+        if (target.followReqs === after.targetFollowReqs) target.followReqs = prev.targetFollowReqs;
+      };
+    } else {
+      blockUser(req.userId, targetUserId); // mirrors the pre-fix call's own no-op-safe behavior when either side is missing
+    }
+  }
+  try {
+    await save(DB);
+  } catch (e) {
+    if (blockUndo) {
+      blockUndo();
+    }
+    throw e;
+  }
   res.json({ ok: true });
 });
 // ---- Admin: review reports (Sep 2026) ----
