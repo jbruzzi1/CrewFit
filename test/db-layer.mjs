@@ -38,7 +38,13 @@ console.log('load() on an empty database returns the expected empty shape');
   ok(Object.keys(d.users).length === 0, 'no users');
   ok(Object.keys(d.sessions).length === 0, 'no sessions');
   ok(Object.keys(d.templates).length === 0, 'no templates');
-  ok(Object.keys(d.pushSubs).length === 0, 'no pushSubs');
+  // Oct 14 2026 (push subs/custom exercises/reports slice, task #258+): pushSubs is gone from
+  // EMPTY_DB now -- it's no longer part of the generic DB object this round-trip test exercises
+  // at all (see db.js's EMPTY_DB/doLoad()/doSave() comments and
+  // test/pushsubs-customex-reports-migration-differential.mjs, which covers its real direct-
+  // Postgres path end to end instead). customExercises is still generic here -- it's mid-
+  // migration to a genuinely different shape (see CLAUDE.md "Rearchitecture status"), so this
+  // generic round-trip test still applies to it for now.
   ok(Object.keys(d.customExercises).length === 0, 'no customExercises');
   ok(Object.keys(d.prs).length === 0, 'no prs');
   ok(d.followApprovalV1 === undefined, 'no followApprovalV1 yet');
@@ -52,7 +58,6 @@ let seed;
   seed.users['u2'] = { id: 'u2', username: 'brian_k', displayName: 'Brian', friends: ['u1'], units: 'kg', createdAt: '2026-01-02T00:00:00.000Z', pinSalt: 'salt2', pinHash: 'hash2', bio: 'lifting since 2019', avatar: '/uploads/avatar_u2.png', followers: ['u1'], following: [], followReqs: [] };
   seed.sessions['s1'] = { id: 's1', creatorId: 'u1', scheduledAt: '2026-08-20T18:00:00.000Z', status: 'draft', visibility: 'friends', equipment: [], location: "Gold's Gym", lengthMin: 60, creatorNote: '', name: 'Leg Day', exercises: [{ id: 'e1', order: 0, name: 'Squat', defaultSets: 3, defaultReps: 8 }], participants: ['u1'], invited: ['u2'], variations: {}, suggestedEdits: [], joinRequests: [], attendance: { u1: 'in' }, logs: { u1: [{ id: 'log1', exerciseId: 'e1', exerciseName: 'Squat', weight: 225, reps: 5, set: 1, setType: 'normal', isPr: true, at: '2026-08-20T18:30:00.000Z' }] }, comments: [], history: [], posts: {} };
   seed.templates['t1'] = { id: 't1', ownerId: 'u1', name: 'Push Day', exercises: [{ name: 'Bench', defaultSets: 3, defaultReps: 8 }] };
-  seed.pushSubs['u1'] = { endpoint: 'https://push.example/abc', expirationTime: null, keys: { p256dh: 'p256dh-key', auth: 'auth-key' } };
   seed.customExercises['u1'] = [{ name: 'Cable Pull-Through', pattern: 'hinge', category: 'glutes', muscle_groups: ['glutes', 'hamstrings'], equipment: ['cable'], is_compound: true, level: 'intermediate', defaultSets: 3, defaultReps: 10, custom: true, ownerId: 'u1' }];
   seed.prs['u1'] = { Squat: { exercise: 'Squat', weight: 225, reps: 5, at: '2026-08-20T18:30:00.000Z', firstLog: false } };
   seed.followApprovalV1 = true;
@@ -64,7 +69,6 @@ let seed;
   ok(deepEqual(loaded.users['u2'], seed.users['u2']), 'user u2 round-tripped exactly (different unit, avatar, bio)');
   ok(deepEqual(loaded.sessions['s1'], seed.sessions['s1']), 'deeply nested session (exercises/logs/attendance) round-tripped exactly');
   ok(deepEqual(loaded.templates['t1'], seed.templates['t1']), 'template round-tripped');
-  ok(deepEqual(loaded.pushSubs['u1'], seed.pushSubs['u1']), 'push subscription round-tripped');
   ok(deepEqual(loaded.customExercises['u1'], seed.customExercises['u1']), 'custom exercises array round-tripped');
   ok(deepEqual(loaded.prs['u1'], seed.prs['u1']), 'PRs round-tripped');
   ok(loaded.followApprovalV1 === true, 'followApprovalV1 (the boot-migration marker) round-tripped');
