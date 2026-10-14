@@ -90,6 +90,16 @@ const normUser = v => String(v == null ? '' : v).trim().toLowerCase();
 // live notification/feed-event history. db.js's save()/doSave() already knows how to write these
 // two collections (see its bootstrap-only syncTableFull branch, which this script's call is the
 // ONLY thing that ever reaches) -- this script just needed to actually hand them over.
+// Oct 14 2026 (found while researching the NEXT migration slice's pre-mortem -- same bug class
+// as the notifications/feedEvents gap just above, not caught at the time because `reports` was
+// never cut over to direct-Postgres functions, so it's easy to assume the generic save()/load()
+// path "just works" for it -- but this script builds its own `d` object by hand, field by field,
+// and `reports` was simply never added to the list. Same consequence: every run of this script,
+// including the documented disaster-recovery path, silently wiped the `reports` table with
+// nothing restored in its place. Unlike notifications/feedEvents, `reports` is still fully
+// generic (db.js's EMPTY_DB/doLoad()/doSave() all still handle it the normal way), so the fix
+// here is simpler -- no raw-SQL readback workaround needed, db.load() already returns
+// `after.reports` correctly for the verification loop below once it's included in `counts`.
 const d = {
   users: raw.users || {},
   sessions: raw.sessions || {},
@@ -100,6 +110,7 @@ const d = {
   crews: raw.crews || {},
   notifications: raw.notifications || {},
   feedEvents: raw.feedEvents || {},
+  reports: raw.reports || {},
 };
 // Singleton bookkeeping field — only carried over if actually present in the source file, so a
 // migration never invents a value db.js's save() would otherwise have left untouched.
@@ -115,9 +126,10 @@ const counts = {
   crews: Object.keys(d.crews).length,
   notifications: Object.keys(d.notifications).length,
   feedEvents: Object.keys(d.feedEvents).length,
+  reports: Object.keys(d.reports).length,
 };
 console.log(`Migrating ${file} -> ${process.env.DATABASE_URL.replace(/:[^:@]*@/, ':***@')}`);
-console.log(`  users=${counts.users} sessions=${counts.sessions} templates=${counts.templates} pushSubs=${counts.pushSubs} customExercises=${counts.customExercises} prs=${counts.prs} crews=${counts.crews} notifications=${counts.notifications} feedEvents=${counts.feedEvents}`);
+console.log(`  users=${counts.users} sessions=${counts.sessions} templates=${counts.templates} pushSubs=${counts.pushSubs} customExercises=${counts.customExercises} prs=${counts.prs} crews=${counts.crews} notifications=${counts.notifications} feedEvents=${counts.feedEvents} reports=${counts.reports}`);
 
 const db = (await import('../db.js')).default;
 await db.ensureSchema();
