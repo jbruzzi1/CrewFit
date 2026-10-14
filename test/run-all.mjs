@@ -131,6 +131,14 @@ const files = [
   // not just "it didn't throw." Added to this list the same run it was written, same discipline
   // as every entry above.
   'test/pushsubs-customex-reports-migration-differential.mjs',
+  // Oct 14 2026 (Jeff: "resolve the issue you flagged but are not fixing" -- the pre-existing
+  // mutate-before-maybe-failing-save hazard disclosed, but deliberately not fixed, in the
+  // previous slice's report). Proves live, for all four affected routes (custom-exercise create/
+  // edit/delete, and POST /api/report's optional alsoBlock), that a rigged save(DB) failure no
+  // longer leaves its in-memory mutation stranded unpersisted -- each is reverted to match
+  // whatever Postgres actually ended up holding. Added to this list the same run it was written,
+  // same discipline as every entry above.
+  'test/mutate-before-save-ordering-regression.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
