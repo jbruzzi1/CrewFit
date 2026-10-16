@@ -165,6 +165,15 @@ const files = [
   // messages/challenges -- lossless, ORDER-preserving (a real regression risk this migration's own
   // design surfaced, not hypothetical), idempotent, and crash-safe.
   'test/crew-row-column-migration-differential.mjs',
+  // Oct 16 2026 (users slice, decision #1 -- follow-graph redesign). Ground-truth differential
+  // test for migrateUserFollowsIntoPostgres/user_follows, same discipline as the two crew entries
+  // just above -- written specifically because it catches a CRITICAL bug (both independent
+  // review passes found it, this test reproduces it live and proves it fixed) that
+  // test/follow.mjs's own migration test could not: seeding REALISTIC post-followApprovalV1
+  // legacy data (non-empty following/followReqs already embedded, matching any real deploy)
+  // rather than the trivial friends-only shape, which is what exposes the save-wipes-the-
+  // migration hazard. Added to this list the same run it was written.
+  'test/user-follows-migration-differential.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

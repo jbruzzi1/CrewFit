@@ -119,39 +119,52 @@ function boot(port, dir, databaseUrl) {
   const { srv, out } = await boot(PORT, DIR, testDb.url);
   ok(!!srv, 'server boots on pre-migration data, including a row with a non-array friends field');
   const readPg = new PgConnection(parseConnString(testDb.url));
+  // Oct 16 2026 (users decision #1): followers/following/followReqs no longer live in the users.data
+  // blob once migrateUserFollowsIntoPostgres() has run -- they're flattened into user_follows and
+  // deleted from the in-memory/persisted user object (see db.js's usersToParams). So this reads the
+  // dedicated table directly instead, the same fix already applied to the crew-messages/challenges
+  // migration test when that data moved out of its row's blob.
   const rows = await readPg.query('SELECT id, data FROM users');
   const state = await readPg.query('SELECT key, value FROM app_state');
+  const edgeRows = (await readPg.query('SELECT follower_id, followee_id, status FROM user_follows')).rows;
   readPg.close();
   const db = { users: {}, followApprovalV1: undefined };
   for (const row of rows.rows) db.users[row.id] = JSON.parse(row.data);
   for (const row of state.rows) if (row.key === 'followApprovalV1') db.followApprovalV1 = JSON.parse(row.value);
+  const hasEdge = (follower, followee, status) => edgeRows.some(e => e.follower_id === follower && e.followee_id === followee && e.status === status);
+  const touchesUser = id => edgeRows.some(e => e.follower_id === id || e.followee_id === id);
   console.log('\nthe migration grandfathers friends and pends old follows');
-  ok(db.users.u1.followers.includes('u2') && db.users.u2.followers.includes('u1'), 'mutual friends became mutual approved followers');
-  ok(!db.users.u2.followers.includes('u3'), 'the old one-directional follower is NOT auto-approved');
-  ok((db.users.u2.followReqs||[]).includes('u3'), 'it became a pending follow request instead');
-  ok(db.users.u1.following.includes('u2'), 'following is rebuilt from approved followers');
-  ok(Array.isArray(db.users.u4.followers) && db.users.u4.followers.length === 0, 'the malformed friends row is treated as having none, not a crash');
+  ok(Object.values(db.users).every(u => u.followers === undefined && u.following === undefined && u.followReqs === undefined),
+    'and the follow fields are gone from the users.data blob -- they live in user_follows now');
+  ok(hasEdge('u2', 'u1', 'accepted') && hasEdge('u1', 'u2', 'accepted'), 'mutual friends became mutual approved followers');
+  ok(!hasEdge('u3', 'u2', 'accepted'), 'the old one-directional follower is NOT auto-approved');
+  ok(hasEdge('u3', 'u2', 'pending'), 'it became a pending follow request instead');
+  ok(hasEdge('u1', 'u2', 'accepted'), 'following is rebuilt from approved followers');
+  ok(!touchesUser('u4'), 'the malformed friends row is treated as having none, not a crash');
   ok(db.followApprovalV1 === true, 'and the migration marks itself done (idempotent)');
 
   console.log('\nand it STAYS done across a restart — the flag actually persists, not just within one boot');
   {
-    // Directly grant u3 a real approved follow of u1 (bypassing the app), then reboot on the SAME
-    // already-migrated database. If followApprovalV1 were not actually persisted, this reboot would
-    // re-run the migration and silently demote u3's real approved follow back to a pending request.
+    // Directly grant u3 a real approved follow of u1 (bypassing the app) by inserting straight into
+    // user_follows -- that's where this edge lives post-migration -- then reboot on the SAME
+    // already-migrated database. If followApprovalV1/userFollowsTableV1 were not actually persisted,
+    // this reboot would re-run a migration and could clobber or duplicate u3's real approved follow.
     const midPg = new PgConnection(parseConnString(testDb.url));
-    const u1row = await midPg.query('SELECT data FROM users WHERE id = $1', ['u1']);
-    const u1 = JSON.parse(u1row.rows[0].data);
-    if (!u1.followers.includes('u3')) u1.followers.push('u3');
-    await midPg.query('UPDATE users SET data = $1::jsonb WHERE id = $2', [JSON.stringify(u1), 'u1']);
+    await midPg.query(
+      `INSERT INTO user_follows (follower_id, followee_id, status, created_at) VALUES ($1, $2, 'accepted', $3)
+       ON CONFLICT (follower_id, followee_id) DO UPDATE SET status = 'accepted'`,
+      ['u3', 'u1', new Date().toISOString()]
+    );
     midPg.close();
     try { srv && srv.kill(); } catch {}
     await new Promise(r => setTimeout(r, 300));
     const { srv: srv2 } = await boot(PORT, DIR, testDb.url);
     ok(!!srv2, 'reboots cleanly on the same already-migrated database');
     const finalPg = new PgConnection(parseConnString(testDb.url));
-    const u1final = JSON.parse((await finalPg.query('SELECT data FROM users WHERE id = $1', ['u1'])).rows[0].data);
+    const finalEdges = (await finalPg.query('SELECT follower_id, followee_id, status FROM user_follows')).rows;
     finalPg.close();
-    ok(u1final.followers.includes('u3'), `u3's genuine approved follow of u1 survives the restart (followers: ${JSON.stringify(u1final.followers)})`);
+    ok(finalEdges.some(e => e.follower_id === 'u3' && e.followee_id === 'u1' && e.status === 'accepted'),
+      `u3's genuine approved follow of u1 survives the restart (edges: ${JSON.stringify(finalEdges)})`);
     try { srv2 && srv2.kill(); } catch {}
   }
   rmSync(DIR, { recursive:true, force:true }); await testDb.drop();
