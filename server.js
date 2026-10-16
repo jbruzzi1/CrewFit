@@ -2298,6 +2298,35 @@ const CREW_NAME_MAX = 40;
 const CREW_MAX_MEMBERS = 20;      // a "crew," not a broadcast list
 const CREW_MSG_MAX = 2000;        // same cap as session/post comments above
 
+// Oct 16 2026 (crews deep-dive audit, Jeff: "find any additional [bugs] like you have and fix
+// them" -- found and reproduced live). A per-crew serialization queue for IN-MEMORY mutations to
+// DB.crews[id] -- a different concern from db.js's enqueue() (which only serializes the eventual
+// Postgres write). PUT /api/crews/:id reads c.memberIds, computes a new roster, assigns it, then
+// does one `await emitFeedEvent(...)` per newly-added member before the final save(DB) -- real
+// concurrent PUTs on the SAME crew (two tabs, or a client double-tap/retry) can interleave in that
+// window: each request's synchronous read-compute-assign can run between the OTHER request's
+// awaits, so one request's own addition gets silently overwritten by the other's, and the loser's
+// response body ends up echoing the WINNER's roster, not the one it itself just set. Reproduced
+// live with two genuinely concurrent PUTs each adding a different member to an empty crew: the
+// final roster only ever contained one of the two, and one request's own 200 response already
+// showed the other's winning roster.
+//
+// Fixed by serializing the ENTIRE read-compute-assign-notify-save sequence per crew id, mirroring
+// db.js's own enqueue() pattern exactly (a prior op's own failure never wedges the queue -- see
+// that function's comment for why `.then(fn)` on an always-settled accumulator guarantees this).
+// Keyed per crew id so unrelated crews' edits never wait on each other. Entries are deleted once
+// idle so this map doesn't grow by one entry for every crew ever edited over a long-running
+// process's life.
+const crewEditQueues = new Map();
+function withCrewLock(crewId, fn) {
+  const prevQueue = crewEditQueues.get(crewId) || Promise.resolve();
+  const run = prevQueue.then(fn);
+  const settled = run.then(() => {}, () => {});
+  crewEditQueues.set(crewId, settled);
+  settled.then(() => { if (crewEditQueues.get(crewId) === settled) crewEditQueues.delete(crewId); });
+  return run;
+}
+
 function ensureCrewShape(c) {
   if (!Array.isArray(c.memberIds)) c.memberIds = [];
   // Oct 2 2026 (#178, deep audit finding): guarded on c.ownerId being truthy -- see the
@@ -2423,6 +2452,14 @@ app.put('/api/crews/:id', auth, async (req, res) => {
   if (!c) return res.status(404).json({ error: 'not found' });
   ensureCrewShape(c);
   if (c.ownerId !== req.userId) return res.status(403).json({ error: 'only the owner can edit this crew' });
+  // Oct 16 2026 (crews deep-dive audit -- see withCrewLock's own long comment for the reproduced
+  // race this closes): the cap check and everything through save()+response now run inside one
+  // per-crew-serialized critical section, not just the mutation itself -- the cap check ALSO reads
+  // c.memberIds, so it has to be re-validated against FRESH data on each queued turn, not data read
+  // before this request ever got its turn.
+  await withCrewLock(c.id, () => crewPutCritical(c, req, res));
+});
+async function crewPutCritical(c, req, res) {
   const body = req.body || {};
   // Sep 24 2026 audit round 4: validated and returned FIRST, before the name block below can
   // mutate/notify anything -- checking this down inside the memberIds block (its natural spot)
@@ -2488,7 +2525,7 @@ app.put('/api/crews/:id', auth, async (req, res) => {
   }
   await save(DB);
   res.json(publicCrew(c, req.userId));
-});
+}
 // The owner can't "leave" -- a crew with no owner has nobody who can rename it or edit who's in
 // it, so ownership would need somewhere to go. Simplest and clearest for v1: the owner deletes
 // the crew (below) instead of leaving it orphaned.
@@ -2973,14 +3010,35 @@ app.delete('/api/crews/:id/challenge/:challengeId', auth, async (req, res) => {
   if (c.ownerId !== req.userId) return res.status(403).json({ error: 'only the owner can cancel a challenge' });
   const ch = runningChallenge(c);
   if (!ch || ch.id !== req.params.challengeId) return res.status(400).json({ error: 'no running challenge to cancel' });
-  c.challenges = c.challenges.filter(x => x.id !== ch.id);
-  // Oct 13 2026 (read cutover): used to check DB.feedEvents[ch.feedEventId] exists before
-  // deleting it in memory (gone now -- see EMPTY_DB/load() in db.js); pgDeleteFeedEvent is a
-  // plain `DELETE ... WHERE id = $1`, already a no-op if the row doesn't exist, so the existence
-  // check was only ever needed for the in-memory delete, not for this.
-  if (ch.feedEventId) await db.pgDeleteFeedEvent(ch.feedEventId);
-  await save(DB);
-  res.json(publicCrew(c, req.userId));
+  // Oct 16 2026 (crews deep-dive audit, Jeff: "find any additional [bugs] like you have and fix
+  // them" -- found and reproduced live): this used to mutate c.challenges (removing `ch`) BEFORE
+  // the two awaited calls below, either of which can fail. A failed feed-event delete or save(DB)
+  // correctly 500'd, but `ch` stayed gone from this live crew object for the rest of the process's
+  // life -- every other request reading this SAME crew (GET /api/crews/:id, the challenge-progress
+  // computation, etc.) saw it as already canceled, then it silently REAPPEARED on the next
+  // restart (load() re-reading the last real save), since the "cancel" was never actually
+  // persisted. Same mutate-before-maybe-failing-save hazard class as the custom-exercise/report
+  // fix from earlier this rearchitecture (see CLAUDE.md "Rearchitecture status"), just missed in
+  // crews at the time. Fixed the same way: wrapped in withCrewLock (serializes against any other
+  // concurrent edit on this SAME crew -- see that function's own comment), and on a failure,
+  // revert by re-adding `ch` to whatever c.challenges CURRENTLY is (not a blind restore of the
+  // pre-mutation array), so a concurrent, already-legitimate change to c.challenges isn't
+  // clobbered by this revert.
+  await withCrewLock(c.id, async () => {
+    c.challenges = c.challenges.filter(x => x.id !== ch.id);
+    try {
+      // Oct 13 2026 (read cutover): used to check DB.feedEvents[ch.feedEventId] exists before
+      // deleting it in memory (gone now -- see EMPTY_DB/load() in db.js); pgDeleteFeedEvent is a
+      // plain `DELETE ... WHERE id = $1`, already a no-op if the row doesn't exist, so the
+      // existence check was only ever needed for the in-memory delete, not for this.
+      if (ch.feedEventId) await db.pgDeleteFeedEvent(ch.feedEventId);
+      await save(DB);
+    } catch (e) {
+      if (!c.challenges.some(x => x.id === ch.id)) c.challenges.push(ch);
+      throw e;
+    }
+    res.json(publicCrew(c, req.userId));
+  });
 });
 
 // ---- Notifications (aggregated inbox) ----
