@@ -2535,22 +2535,40 @@ app.post('/api/crews/:id/leave', auth, async (req, res) => {
   ensureCrewShape(c);
   if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
   if (c.ownerId === req.userId) return res.status(400).json({ error: 'the owner can\'t leave -- delete the crew instead' });
-  c.memberIds = c.memberIds.filter(id => id !== req.userId);
-  // Sep 12 2026 (Jeff, three new Activity events): the mirror image of 'joined_crew' above --
-  // crew-scoped (see CREW_SCOPED_FEED_TYPES), so only the remaining members see it. The person who
-  // left won't see their own row (isCrewMember(crew, viewer) is now false for them), which is fine
-  // -- this is a record for the people still in the crew, not a receipt for the person who left.
-  await emitFeedEvent('left_crew', req.userId, { crewId: c.id, crewName: c.name, text: `left ${c.name}` });
-  // Sep 13 2026 (Jeff, crew-notification gaps): a real push/inbox notification too, not just the
-  // passive Activity-feed row above -- same reasoning as crew_renamed's notify loop just above in
-  // PUT /api/crews/:id. c.memberIds has already had req.userId filtered out by this point, so this
-  // reaches exactly the people still in the crew.
-  // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
-  // reason as crew_renamed's notify loop above (crew notifications deliberately untouched by a
-  // block; see the Sep 14 2026 comment on publicCrew()).
-  for (const mid of c.memberIds) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} left the crew`, link: { type: 'crew', crewId: c.id } });
-  await save(DB);
-  res.json({ ok: true });
+  // Oct 16 2026 (crews deep-dive part 2, Jeff: "find any additional [bugs]... and fix them",
+  // widening withCrewLock to every crew-editing action -- see that function's own comment): same
+  // mutate-before-maybe-failing-save hazard as challenge-cancel -- removed from memory before the
+  // awaited save(DB) that can fail, which would otherwise leave someone looking removed to every
+  // other request (and to themselves) with nothing actually persisted, then silently back in the
+  // crew again on the next restart. Reverted by re-adding req.userId into whatever c.memberIds
+  // CURRENTLY is, not a blind restore, so a concurrent legitimate membership change isn't
+  // clobbered by this revert. Note: the feed event/notification just below can still end up
+  // posted even if the save right after fails -- not a new gap introduced here, just this route
+  // inheriting the same already-accepted best-effort (not transactional with save()) behavior
+  // emitFeedEvent/notify already have everywhere else in this app.
+  await withCrewLock(c.id, async () => {
+    c.memberIds = c.memberIds.filter(id => id !== req.userId);
+    // Sep 12 2026 (Jeff, three new Activity events): the mirror image of 'joined_crew' above --
+    // crew-scoped (see CREW_SCOPED_FEED_TYPES), so only the remaining members see it. The person who
+    // left won't see their own row (isCrewMember(crew, viewer) is now false for them), which is fine
+    // -- this is a record for the people still in the crew, not a receipt for the person who left.
+    await emitFeedEvent('left_crew', req.userId, { crewId: c.id, crewName: c.name, text: `left ${c.name}` });
+    // Sep 13 2026 (Jeff, crew-notification gaps): a real push/inbox notification too, not just the
+    // passive Activity-feed row above -- same reasoning as crew_renamed's notify loop just above in
+    // PUT /api/crews/:id. c.memberIds has already had req.userId filtered out by this point, so this
+    // reaches exactly the people still in the crew.
+    // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
+    // reason as crew_renamed's notify loop above (crew notifications deliberately untouched by a
+    // block; see the Sep 14 2026 comment on publicCrew()).
+    for (const mid of c.memberIds) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} left the crew`, link: { type: 'crew', crewId: c.id } });
+    try {
+      await save(DB);
+    } catch (e) {
+      if (!c.memberIds.includes(req.userId)) c.memberIds.push(req.userId);
+      throw e;
+    }
+    res.json({ ok: true });
+  });
 });
 app.delete('/api/crews/:id', auth, async (req, res) => {
   const c = DB.crews[req.params.id];
@@ -2560,18 +2578,31 @@ app.delete('/api/crews/:id', auth, async (req, res) => {
   // never needed to before (it only used c.ownerId), but the notify loop just below is now the
   // first thing here that reads memberIds, so a legacy/malformed record without it would throw.
   ensureCrewShape(c);
-  // Sep 13 2026 (Jeff, crew-notification gaps -- "what else may be a problem"): tell remaining
-  // members before the crew disappears -- previously it just vanished from their crew list with
-  // zero signal, the same silent-disappearance pattern as the kicked-member case in PUT above. No
-  // feed event and no link: the crew itself (and any crewView route to it) is gone the instant this
-  // returns, so a link here would be a guaranteed dead tap.
-  // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
-  // reason as crew_renamed's notify loop above (crew notifications deliberately untouched by a
-  // block; see the Sep 14 2026 comment on publicCrew()).
-  for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} deleted the crew`, link: null });
-  delete DB.crews[req.params.id];
-  await save(DB);
-  res.json({ ok: true });
+  // Oct 16 2026 (crews deep-dive part 2, widening withCrewLock to every crew-editing action --
+  // see that function's own comment): same mutate-before-maybe-failing-save hazard as
+  // challenge-cancel -- DB.crews[id] used to be deleted before the awaited save(DB) that can
+  // fail, leaving the crew invisible to every other request (GET 404s, it vanishes from
+  // everyone's list) even though Postgres still had the row, which would then silently reappear
+  // on the next restart. Reverted by putting the SAME crew object back under its own id.
+  await withCrewLock(c.id, async () => {
+    // Sep 13 2026 (Jeff, crew-notification gaps -- "what else may be a problem"): tell remaining
+    // members before the crew disappears -- previously it just vanished from their crew list with
+    // zero signal, the same silent-disappearance pattern as the kicked-member case in PUT above. No
+    // feed event and no link: the crew itself (and any crewView route to it) is gone the instant this
+    // returns, so a link here would be a guaranteed dead tap.
+    // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
+    // reason as crew_renamed's notify loop above (crew notifications deliberately untouched by a
+    // block; see the Sep 14 2026 comment on publicCrew()).
+    for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} deleted the crew`, link: null });
+    delete DB.crews[req.params.id];
+    try {
+      await save(DB);
+    } catch (e) {
+      DB.crews[req.params.id] = c;
+      throw e;
+    }
+    res.json({ ok: true });
+  });
 });
 app.get('/api/crews/:id/messages', auth, async (req, res) => {
   const c = DB.crews[req.params.id];
@@ -2595,29 +2626,41 @@ app.post('/api/crews/:id/messages', auth, async (req, res) => {
   const text = capStr((req.body || {}).text, CREW_MSG_MAX);
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
   const m = { id: 'cm_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
-  c.messages.push(m);
-  await save(DB);
-  // Sep 8 2026 (Jeff: "I want a notification for ... comments ... We don't have to see multiple
-  // comments, just 'brian commented on XYZ' ... or grouped notifications ... '7 New Comments in
-  // XYZ Crew'"). Used to be history:false (a live group chat is exactly the kind of high-frequency
-  // notify() call the history feature was never meant to absorb one-row-per-message -- cold-review
-  // catch, Sep 5) -- now grouped instead of dropped: see the long comment above groupedHistoryWrite
-  // (right above notify()) for the aggregation rule. The chat thread itself is still the durable,
-  // full-detail place to catch up; this is just a pointer that something happened there.
-  // Sep 8 2026, cont'd (Jeff: "when i open the notification page ... I want to be able to click
-  // on the notification and it bring me to that notification ... if brian commented in our crew
-  // or workout - it brings me to see his comments"). `crew-chat` (distinct from plain `crew`,
-  // still used elsewhere for "added you to the crew"/challenge notifications, which correctly land
-  // at the TOP of the crew page) is its own link type specifically so a comment notification lands
-  // scrolled to the actual messages, not just somewhere on the crew page above them -- see
-  // openCrewChat() in app.js.
-  const who = DB.users[req.userId].displayName;
-  // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
-  // reason as the read side above (see the Sep 14 2026 comment on publicCrew()): crew chat
-  // notifications are deliberately left untouched by a block.
-  for (const pid of c.memberIds) if (pid !== req.userId) notify(pid, { title: c.name, body: `${who}: ${text.slice(0, 40)}`, link: { type: 'crew-chat', crewId: c.id } },
-    { group: { key: `crew:${c.id}:chat`, singularBody: `${who} commented in ${c.name}`, pluralBody: n => `${n} new comments in ${c.name}` } });
-  res.json(m);
+  // Oct 16 2026 (crews deep-dive part 2, widening withCrewLock to every crew-editing action --
+  // see that function's own comment): same mutate-before-maybe-failing-save hazard as
+  // challenge-cancel -- pushed into memory before the awaited save(DB) that can fail. Reverted by
+  // removing exactly this message (by id, from whatever c.messages CURRENTLY is), not a blind
+  // pre-mutation restore.
+  await withCrewLock(c.id, async () => {
+    c.messages.push(m);
+    try {
+      await save(DB);
+    } catch (e) {
+      c.messages = c.messages.filter(x => x.id !== m.id);
+      throw e;
+    }
+    // Sep 8 2026 (Jeff: "I want a notification for ... comments ... We don't have to see multiple
+    // comments, just 'brian commented on XYZ' ... or grouped notifications ... '7 New Comments in
+    // XYZ Crew'"). Used to be history:false (a live group chat is exactly the kind of high-frequency
+    // notify() call the history feature was never meant to absorb one-row-per-message -- cold-review
+    // catch, Sep 5) -- now grouped instead of dropped: see the long comment above groupedHistoryWrite
+    // (right above notify()) for the aggregation rule. The chat thread itself is still the durable,
+    // full-detail place to catch up; this is just a pointer that something happened there.
+    // Sep 8 2026, cont'd (Jeff: "when i open the notification page ... I want to be able to click
+    // on the notification and it bring me to that notification ... if brian commented in our crew
+    // or workout - it brings me to see his comments"). `crew-chat` (distinct from plain `crew`,
+    // still used elsewhere for "added you to the crew"/challenge notifications, which correctly land
+    // at the TOP of the crew page) is its own link type specifically so a comment notification lands
+    // scrolled to the actual messages, not just somewhere on the crew page above them -- see
+    // openCrewChat() in app.js.
+    const who = DB.users[req.userId].displayName;
+    // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
+    // reason as the read side above (see the Sep 14 2026 comment on publicCrew()): crew chat
+    // notifications are deliberately left untouched by a block.
+    for (const pid of c.memberIds) if (pid !== req.userId) notify(pid, { title: c.name, body: `${who}: ${text.slice(0, 40)}`, link: { type: 'crew-chat', crewId: c.id } },
+      { group: { key: `crew:${c.id}:chat`, singularBody: `${who} commented in ${c.name}`, pluralBody: n => `${n} new comments in ${c.name}` } });
+    res.json(m);
+  });
 });
 // Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one") -- same
 // own-message-only edit as the session chat and posted-recap comment editors. `c.messages` can
@@ -2638,10 +2681,25 @@ app.put('/api/crews/:id/messages/:messageId', auth, async (req, res) => {
   if (m.userId !== req.userId) return res.status(403).json({ error: 'forbidden' });
   const text = capStr((req.body || {}).text, CREW_MSG_MAX);
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
-  m.text = text;
-  m.editedAt = new Date().toISOString();
-  await save(DB);
-  res.json(m);
+  // Oct 16 2026 (crews deep-dive part 2, widening withCrewLock to every crew-editing action --
+  // see that function's own comment): same mutate-before-maybe-failing-save hazard as
+  // challenge-cancel -- the edit used to be applied to the live, shared message object before the
+  // awaited save(DB) that can fail. Reverted to its PRE-edit text/editedAt on failure (captured
+  // right here, before touching either field), since `m` is the same object every other reader
+  // sees.
+  const prevText = m.text, prevEditedAt = m.editedAt;
+  await withCrewLock(c.id, async () => {
+    m.text = text;
+    m.editedAt = new Date().toISOString();
+    try {
+      await save(DB);
+    } catch (e) {
+      m.text = prevText;
+      m.editedAt = prevEditedAt;
+      throw e;
+    }
+    res.json(m);
+  });
 });
 // Sep 8 2026 (Jeff: "I should be able to edit or delete any comment I have made anywhere also") --
 // own message only, same shape as the PUT just above (isCrewMember re-checked for the identical
@@ -2658,9 +2716,22 @@ app.delete('/api/crews/:id/messages/:messageId', auth, async (req, res) => {
   const m = (c.messages || []).find(x => x.id === req.params.messageId);
   if (!m) return res.status(404).json({ error: 'not found' });
   if (m.userId !== req.userId) return res.status(403).json({ error: 'forbidden' });
-  c.messages = c.messages.filter(x => x.id !== req.params.messageId);
-  await save(DB);
-  res.json({ ok: true });
+  // Oct 16 2026 (crews deep-dive part 2, widening withCrewLock to every crew-editing action --
+  // see that function's own comment): same mutate-before-maybe-failing-save hazard as
+  // challenge-cancel -- removed from memory before the awaited save(DB) that can fail. Reverted
+  // by re-adding the SAME message object back into whatever c.messages CURRENTLY is, not a blind
+  // restore of the pre-mutation array, so a concurrent legitimate change (e.g. a brand-new
+  // message posted in between) isn't clobbered by this revert.
+  await withCrewLock(c.id, async () => {
+    c.messages = c.messages.filter(x => x.id !== m.id);
+    try {
+      await save(DB);
+    } catch (e) {
+      if (!c.messages.some(x => x.id === m.id)) c.messages.push(m);
+      throw e;
+    }
+    res.json({ ok: true });
+  });
 });
 
 // ---- Crew Challenges (Sep 2026, Jeff: "make it more fun -- both collaborative AND competitive")
@@ -2972,25 +3043,39 @@ app.post('/api/crews/:id/challenge', auth, async (req, res) => {
     const unit = type === 'volume' ? ' lb' : '';
     notifyBody = `${DB.users[req.userId].displayName} started a challenge: ${ch.target}${unit} ${type} this week`;
   }
-  c.challenges.push(ch);
-  // Sep 11 2026 (Activity page): "started a challenge" -- attributed to the owner who started it,
-  // no heart in the UI (see friends() in app.js) since nothing has been earned yet. Reuses
-  // notifyBody's own wording, just without the "{displayName} " prefix -- app.js prepends the
-  // actor's name itself, same as every other feed row.
-  // Oct 10 2026 (audit finding, see the DELETE route right below): stashed on the challenge
-  // itself so a cancel can clean up this exact feed entry rather than leaving a stray "started a
-  // challenge" line sitting in the feed for something that got undone a minute later.
-  const fev = await emitFeedEvent('challenge_started', req.userId, { crewId: c.id, crewName: c.name, challengeType: ch.type,
-    target: ch.target ?? null, title: ch.title || null,
-    text: notifyBody.slice(DB.users[req.userId].displayName.length + 1) });
-  ch.feedEventId = fev.id;
-  await save(DB);
-  // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
-  // reason as the other crew-lifecycle notify loops (crew notifications deliberately untouched by
-  // a block; see the Sep 14 2026 comment on publicCrew()). GET /api/feed's own challenge_started
-  // event stays filtered, unchanged -- only this push/inbox notification is reverted.
-  for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: notifyBody, link: { type: 'crew', crewId: c.id } });
-  res.json(publicCrew(c, req.userId));
+  // Oct 16 2026 (crews deep-dive part 2, widening withCrewLock to every crew-editing action --
+  // see that function's own comment): same mutate-before-maybe-failing-save hazard as
+  // challenge-cancel, just on the OTHER side of the same lifecycle -- pushed into c.challenges
+  // before the awaited save(DB) that can fail. A rigged failure here used to leave a challenge
+  // showing as "running" to every other request (runningChallenge(c) already sees it in memory)
+  // that was never actually persisted, then vanishing again on the next restart. Reverted by
+  // removing exactly this challenge (by id) from whatever c.challenges CURRENTLY is.
+  await withCrewLock(c.id, async () => {
+    c.challenges.push(ch);
+    // Sep 11 2026 (Activity page): "started a challenge" -- attributed to the owner who started it,
+    // no heart in the UI (see friends() in app.js) since nothing has been earned yet. Reuses
+    // notifyBody's own wording, just without the "{displayName} " prefix -- app.js prepends the
+    // actor's name itself, same as every other feed row.
+    // Oct 10 2026 (audit finding, see the DELETE route right below): stashed on the challenge
+    // itself so a cancel can clean up this exact feed entry rather than leaving a stray "started a
+    // challenge" line sitting in the feed for something that got undone a minute later.
+    const fev = await emitFeedEvent('challenge_started', req.userId, { crewId: c.id, crewName: c.name, challengeType: ch.type,
+      target: ch.target ?? null, title: ch.title || null,
+      text: notifyBody.slice(DB.users[req.userId].displayName.length + 1) });
+    ch.feedEventId = fev.id;
+    try {
+      await save(DB);
+    } catch (e) {
+      c.challenges = c.challenges.filter(x => x.id !== ch.id);
+      throw e;
+    }
+    // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
+    // reason as the other crew-lifecycle notify loops (crew notifications deliberately untouched by
+    // a block; see the Sep 14 2026 comment on publicCrew()). GET /api/feed's own challenge_started
+    // event stays filtered, unchanged -- only this push/inbox notification is reverted.
+    for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: notifyBody, link: { type: 'crew', crewId: c.id } });
+    res.json(publicCrew(c, req.userId));
+  });
 });
 // Oct 10 2026 (audit finding): starting a challenge was a one-way door -- a wrong target, wrong
 // type, or a fat-finger tap committed the whole crew for the full 7 days with nothing the owner

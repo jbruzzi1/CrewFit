@@ -568,6 +568,95 @@ console.log('\nPUT /api/crews/:id: concurrent membership edits are fully seriali
   ok(eq(idsFinal, wantA) || eq(idsFinal, wantB), `the final persisted roster matches exactly ONE of the two requests' own full state -- whichever genuinely ran last -- never a mix of both and never something neither request asked for (got ${JSON.stringify([...idsFinal])})`);
 }
 
+console.log('\ncrews: the other 6 crew-editing actions revert cleanly on a save failure too, not just the two already covered above');
+{
+  // Oct 16 2026 (crews deep-dive part 2, Jeff: "find any additional [bugs]... and fix them" --
+  // widening withCrewLock to every crew-editing action, decision #2 of the crews pre-mortem).
+  // Mapping out the actual migration turned up the SAME mutate-before-maybe-failing-save hazard
+  // already fixed once for challenge-cancel, independently, in all 6 of the remaining
+  // crew-mutating routes -- each one mutated the live, shared crew object before an awaited
+  // save(DB) that can fail. Reproduced live BEFORE fixing (a throwaway script, not kept as a
+  // permanent test, broke the relevant table for each of the 6 and confirmed the stranded
+  // in-memory state); this locks in the fix the same way, one block per route, same
+  // breakTable/fixTable technique as test/mutate-before-save-ordering-regression.mjs.
+  const owner = await reg('revertowner1'), pal = await reg('revertpal1');
+  await connect(owner, pal);
+  const c = await post(owner, '/api/crews', { name: 'Revert Test', memberIds: [pal.id] }).then(x => x.json());
+  const raw = new PgConnection(parseConnString(testDb.url));
+  const breakT = name => raw.query(`ALTER TABLE ${name} RENAME TO ${name}_broken_for_test`);
+  const fixT = name => raw.query(`ALTER TABLE ${name}_broken_for_test RENAME TO ${name}`);
+
+  console.log('  POST /:id/messages');
+  {
+    await breakT('crews');
+    const r = await post(pal, `/api/crews/${c.id}/messages`, { text: 'ghost message' });
+    ok(r.status === 500, `returns a real error while crews is broken, got ${r.status}`);
+    await fixT('crews');
+    const msgs = await get(owner, `/api/crews/${c.id}/messages`);
+    ok(msgs.length === 0, `the "failed" post never actually took effect -- no phantom message in memory, got ${JSON.stringify(msgs)}`);
+  }
+
+  console.log('  PUT /:id/messages/:messageId');
+  {
+    const posted = await post(pal, `/api/crews/${c.id}/messages`, { text: 'original text' }).then(x => x.json());
+    await breakT('crews');
+    const r = await put(pal, `/api/crews/${c.id}/messages/${posted.id}`, { text: 'EDITED ghost text' });
+    ok(r.status === 500, `returns a real error while crews is broken, got ${r.status}`);
+    await fixT('crews');
+    const msgs = await get(owner, `/api/crews/${c.id}/messages`);
+    const m = msgs.find(x => x.id === posted.id);
+    ok(m && m.text === 'original text' && !m.editedAt, `the "failed" edit never actually took effect -- text/editedAt reverted to original, got ${JSON.stringify(m)}`);
+  }
+
+  console.log('  DELETE /:id/messages/:messageId');
+  {
+    const posted = await post(pal, `/api/crews/${c.id}/messages`, { text: 'to be ghost-deleted' }).then(x => x.json());
+    await breakT('crews');
+    const r = await del(pal, `/api/crews/${c.id}/messages/${posted.id}`);
+    ok(r.status === 500, `returns a real error while crews is broken, got ${r.status}`);
+    await fixT('crews');
+    const msgs = await get(owner, `/api/crews/${c.id}/messages`);
+    ok(msgs.some(x => x.id === posted.id), `the "failed" delete never actually took effect -- message is still there, got ${JSON.stringify(msgs.map(x => x.id))}`);
+  }
+
+  console.log('  POST /:id/leave');
+  {
+    await breakT('crews');
+    const r = await post(pal, `/api/crews/${c.id}/leave`);
+    ok(r.status === 500, `returns a real error while crews is broken, got ${r.status}`);
+    await fixT('crews');
+    const view = await get(owner, `/api/crews/${c.id}`);
+    ok(view.members.some(m => m.id === pal.id), `the "failed" leave never actually took effect -- pal is still a member, got ${JSON.stringify(view.members.map(m => m.id))}`);
+  }
+
+  console.log('  POST /:id/challenge (start)');
+  {
+    await breakT('crews');
+    const r = await post(owner, `/api/crews/${c.id}/challenge`, { type: 'workouts', target: 5 });
+    ok(r.status === 500, `returns a real error while crews is broken, got ${r.status}`);
+    await fixT('crews');
+    const view = await get(owner, `/api/crews/${c.id}`);
+    ok(view.challenge === null, `the "failed" challenge-start never actually took effect -- no challenge running, got ${JSON.stringify(view.challenge)}`);
+    // Confirm it's genuinely still startable, not left in some half-stranded state.
+    const real = await post(owner, `/api/crews/${c.id}/challenge`, { type: 'workouts', target: 5 });
+    ok(real.status === 200, `with the table fixed, a challenge can now actually be started, got ${real.status}`);
+  }
+
+  console.log('  DELETE /api/crews/:id');
+  {
+    await breakT('crews');
+    const r = await del(owner, `/api/crews/${c.id}`);
+    ok(r.status === 500, `returns a real error while crews is broken, got ${r.status}`);
+    await fixT('crews');
+    const view = await get(owner, `/api/crews/${c.id}`);
+    ok(view.id === c.id, `the "failed" delete never actually took effect -- the crew is still there, got ${JSON.stringify(view.id)}`);
+  }
+
+  raw.close();
+  const health = await get(owner, '/healthz');
+  ok(health.ok === true, 'server is still up after all 6 rigged failures');
+}
+
 } finally {
   await stop();
   await testDb.drop();
