@@ -235,6 +235,38 @@ console.log(`  users=${counts.users} sessions=${counts.sessions} templates=${cou
 const db = (await import('../db.js')).default;
 await db.ensureSchema();
 
+// Oct 16 2026 (users decision #1, CRITICAL finding from independent review -- reproduced live by
+// one of two review passes on this slice): a backup taken BEFORE the follow-graph migration
+// (migrateUserFollowsIntoPostgres, server.js) ran still has followers/following/followReqs
+// embedded in raw.users; one taken AFTER it ran has neither (they were deleted from DB in memory
+// before that backup was written, and the real data lives only in user_follows, a table
+// JSON.stringify(DB) never captures -- the same inherent gap as pushSubs/notifications/
+// feedEvents/reports/customExercises above/below, just without a top-level key to key off of,
+// so this checks raw.userFollowsTableV1 instead, the same signal doLoad()/migrateUserFollows-
+// IntoPostgres() themselves use). Restoring an old, pre-migration-shaped file's embedded follow
+// arrays into users.data while the TARGET database has ALREADY run that migration
+// (userFollowsTableV1 already true there) is exactly the "two different stories about the same
+// data" shape every legacyPresent check above exists to catch: this script never writes to
+// user_follows at all, so the restored blob's embedded values would just sit there until the
+// very next real server boot, where doLoad()'s own overwrite step (see its comment in db.js)
+// REBUILDS followers/following/followReqs from the (unrelated, already-existing) user_follows
+// table -- silently discarding whatever this script just restored into the blob, with no error
+// anywhere. Refuses outright rather than guessing, same as the malformed-legacy-value and
+// username-collision checks above -- there is no safe automatic merge of "this file's embedded
+// arrays" with "the target's real, current user_follows table."
+{
+  const targetFollowsState = await db.getConn().query("SELECT value FROM app_state WHERE key = 'userFollowsTableV1'");
+  const targetAlreadyMigratedFollows = targetFollowsState.rows.length > 0 && JSON.parse(targetFollowsState.rows[0].value) === true;
+  if (targetAlreadyMigratedFollows && raw.userFollowsTableV1 !== true) {
+    console.error(`FATAL: ${file} looks like it predates the follow-graph migration (no userFollowsTableV1:true in the file), but the TARGET database has already run that migration -- its user_follows table is the real, current source of truth for every follower/following/pending relationship. Restoring this file would have its embedded followers/following/followReqs silently discarded the next time the server boots (doLoad() always trusts user_follows over the blob once migrated), with no error anywhere.`);
+    console.error("This script never writes to user_follows, so there is no safe automatic way to merge the two. Resolve manually (e.g. confirm the target's user_follows table already has what you need and ignore this file's follow data, or restore onto a genuinely fresh/pre-migration database instead) before re-running.");
+    process.exit(1);
+  }
+  if (raw.userFollowsTableV1 === true) {
+    console.log('  userFollows=<not in backup -- this file postdates the migration, so follow relationships live only in user_follows, which this script never touches>');
+  }
+}
+
 // Snapshot the four cutover-only tables' CURRENT content before save() touches anything --
 // the only way to later prove a table genuinely marked "not in backup" was left byte-for-byte
 // alone, rather than just hoping db.save()'s updated guard (see its own comment) worked.

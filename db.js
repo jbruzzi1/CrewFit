@@ -168,6 +168,40 @@ CREATE TABLE IF NOT EXISTS feed_events (
   id text PRIMARY KEY,
   data jsonb NOT NULL
 );
+-- Oct 16 2026 (users slice, decision #1 -- follow-graph redesign, pre-mortem shown to Jeff): each
+-- user used to carry three separate plain arrays (followers/following/followReqs) embedded in
+-- their own data blob, with no cap -- the same growth/rewrite-size shape the crews chat/challenges
+-- fix already solved once (syncTableDiff rewrites a user's ENTIRE row on any change, so gaining
+-- one new follower meant rewriting the whole account, every existing follower included, not just
+-- the new one). Jeff's call, same as custom exercises/crew messages before it: "redesign now"
+-- rather than wait for this to actually bite (nobody's close to a size where it would yet).
+--
+-- One row per follow relationship replaces all three arrays with a single source of truth: an
+-- 'accepted' row IS the edge that me.following and target.followers used to separately (and
+-- redundantly) represent from each side, and a 'pending' row IS what target.followReqs alone used
+-- to hold. follower_id/followee_id name the DIRECTION explicitly (follower_id wants to follow, or
+-- already follows, followee_id) so a row never needs the reader to infer who's who. created_at
+-- preserves insertion order -- GET /api/notifications' followRequests listing shows pending
+-- requests newest-first by reversing the array it's always been handed, which only stays correct
+-- if rows come back in the same order they were created.
+--
+-- This does NOT remove followers/following/followReqs from the running app's in-memory user
+-- objects the way crew messages/challenges were removed from DB.crews -- doLoad() below rebuilds
+-- them on every boot from this table, so every synchronous reader (canSeeProfile, publicUser,
+-- profileOf, connectionsOf -- used throughout nearly every profile/session/search response) keeps
+-- working completely unmodified. Only PERSISTENCE moves to this table (see usersToParams,
+-- syncUserFollowsFull/Diff below) -- the same "stays cached, only the underlying storage moves"
+-- shape Jeff picked for the crew row itself (Option A), not the "removed from memory" shape
+-- messages/challenges got, because canSeeProfile alone would have to become async and ripple into
+-- everything that calls it, for no problem that actually needs that trade.
+CREATE TABLE IF NOT EXISTS user_follows (
+  follower_id text NOT NULL,
+  followee_id text NOT NULL,
+  status text NOT NULL,
+  created_at text,
+  PRIMARY KEY (follower_id, followee_id)
+);
+CREATE INDEX IF NOT EXISTS user_follows_followee_idx ON user_follows (followee_id);
 CREATE TABLE IF NOT EXISTS app_state (
   key text PRIMARY KEY,
   value jsonb NOT NULL
@@ -264,7 +298,60 @@ let lastPersisted = null; // null, or { users:{}, sessions:{}, ..., singletons:{
 // flattens straight into custom_exercise_rows instead (see its own comment) -- so there is no
 // bootstrapping write left for this baseline to track either.
 function freshSnapshot() {
-  return { users: {}, sessions: {}, templates: {}, prs: {}, crews: {}, notifications: {}, reports: {}, feed_events: {}, singletons: {} };
+  return { users: {}, sessions: {}, templates: {}, prs: {}, crews: {}, notifications: {}, reports: {}, feed_events: {}, singletons: {}, userFollows: {} };
+}
+
+// Oct 16 2026 (users slice, decision #1): sticky in-process flag, mirroring lastPersisted just
+// below -- true once a load() has confirmed the one-time follow-graph flatten
+// (migrateUserFollowsIntoPostgres, server.js) has already run. Read by usersToParams (to decide
+// whether followers/following/followReqs belong in the blob) and by doLoad() itself (to decide
+// whether those three fields should be rebuilt from user_follows or trusted from the blob as-is).
+// Set from d.userFollowsTableV1 at the top of every doLoad() call, and flipped true directly by
+// markFollowsTableReady() the moment the migration itself completes, so the SAME boot that just
+// migrated also starts excluding these fields from any later save() in that process, not only
+// after a restart.
+let followsTableReady = false;
+function markFollowsTableReady() { followsTableReady = true; }
+// Oct 16 2026 (users decision #1, CRITICAL fix -- found independently by BOTH review passes on
+// this slice, each reproduced live): migrateUserFollowsIntoPostgres() (server.js) writes the real
+// edges straight to Postgres via pgUpsertFollowEdge, bypassing doSave()'s own diffing entirely,
+// then deletes followers/following/followReqs from every in-memory user. Without this function,
+// the very next save(DB) in that same boot (server.js's boot IIFE calls it immediately after the
+// migration, before app.listen) would diff that now-empty in-memory state against
+// lastPersisted.userFollows -- which doLoad() captured from the PRE-migration blob, before this
+// migration had ever run. On a synthetic "first boot ever" test with no real legacy data that
+// baseline happens to already be empty too, which is exactly why this was missed in testing: on
+// any REAL deploy (where migrateFollowApproval already ran months ago and users have genuine
+// following/followReqs content sitting in their blob), that baseline is NON-empty, so every user
+// with real follow data "changed," and syncUserFollowsDiff calls writeUserFollowEdges for each
+// one -- which DELETEs the edges the migration just wrote and reinserts from the now-empty
+// arrays. Net effect: total, silent loss of the whole follow graph, in the same boot that
+// migrated it, on every real deploy. Reproduced live against a seeded user with genuine
+// following/followReqs content before this fix (confirmed by hand: user_follows was empty after
+// boot despite the migration's own log line claiming edges were flattened).
+//
+// The fix: reset the baseline to the TRUE current (post-deletion) state right after the
+// migration runs, so the following save() correctly sees "no change" for these fields and leaves
+// the table alone. Exported so server.js's migration can call it directly, right alongside
+// markFollowsTableReady().
+function syncUserFollowsBaseline(users) {
+  if (!lastPersisted) return;   // bootstrapping (no load() baseline yet) -- nothing to correct; the bootstrap save path below doesn't consult this baseline anyway
+  const map = {};
+  for (const id of Object.keys(users || {})) map[id] = userFollowKey(users[id]);
+  lastPersisted.userFollows = map;
+}
+// The one piece of each user's state that still needs its own derived diff key: comparing the
+// FULL user object (as syncTableDiff's generic diff already does) would also catch a pure
+// follow-list change and trigger a redundant blob rewrite -- not wrong, since the actual blob
+// payload is unchanged, just wasted I/O. Accepted as a minor, disclosed inefficiency rather than
+// threading a second comparison key into the generic syncTableDiff machinery other tables share;
+// this key is only used for user_follows' OWN diff (syncUserFollowsDiff below), which is separate
+// from and unaffected by that inefficiency.
+function userFollowKey(u) {
+  return JSON.stringify({
+    following: Array.isArray(u && u.following) ? u.following : [],
+    followReqs: Array.isArray(u && u.followReqs) ? u.followReqs : [],
+  });
 }
 
 // Reassembles the exact in-memory shape server.js has always used, from Postgres rows. Also the
@@ -292,6 +379,16 @@ async function doLoad() {
   const d = EMPTY_DB();
   const snap = freshSnapshot();
 
+  // Oct 16 2026 (users slice, decision #1): moved here from the bottom of this function --
+  // userFollowsTableV1 (the migration's own "already ran" flag) has to be known BEFORE users are
+  // loaded just below, so this function can decide whether followers/following/followReqs should
+  // come from the old embedded blob or from user_follows. Nothing else about this block changed,
+  // and moving it earlier doesn't change what server.js ever sees -- doLoad() still returns the
+  // whole `d` object at the end either way.
+  const state = await c.query('SELECT key, value FROM app_state');
+  for (const row of state.rows) { d[row.key] = JSON.parse(row.value); snap.singletons[row.key] = JSON.stringify(d[row.key]); }
+  followsTableReady = !!d.userFollowsTableV1;
+
   // Keyed by the table's own `id` COLUMN, not a `.id` field read back out of the parsed JSON.
   // A malformed/hand-edited row can have `data` be JSON null, or an object with no `id` at
   // all — this app has real production history of exactly this kind of malformed row (see
@@ -300,7 +397,42 @@ async function doLoad() {
   // else touches DB.sessions) is what actually decides whether a null/malformed entry gets
   // healed or dropped — load() must not crash before that healing step ever gets a chance to run.
   const users = await c.query('SELECT id, data FROM users');
-  for (const row of users.rows) { d.users[row.id] = JSON.parse(row.data); snap.users[row.id] = JSON.stringify(d.users[row.id]); }
+  for (const row of users.rows) { d.users[row.id] = JSON.parse(row.data); }
+
+  // Oct 16 2026 (users slice, decision #1 -- follow-graph redesign): once the one-time flatten
+  // (migrateUserFollowsIntoPostgres, server.js) has run, user_follows is the sole source of truth
+  // for these three fields -- this OVERWRITES whatever's on the freshly-parsed blob (normally
+  // nothing at all, since the migration deletes them before a user object is ever saved again --
+  // see usersToParams' own comment -- but a stale copy from an old backup restored after this
+  // shipped should never be trusted over the real table). Before the flag is set, this is skipped
+  // entirely and the blob's own embedded arrays stay authoritative, exactly as before this
+  // migration existed -- which is what lets the migration itself read them in the first place.
+  if (followsTableReady) {
+    const followers = {}, following = {}, followReqs = {};
+    const follows = await c.query('SELECT follower_id, followee_id, status FROM user_follows ORDER BY created_at');
+    for (const row of follows.rows) {
+      if (row.status === 'accepted') {
+        (following[row.follower_id] || (following[row.follower_id] = [])).push(row.followee_id);
+        (followers[row.followee_id] || (followers[row.followee_id] = [])).push(row.follower_id);
+      } else if (row.status === 'pending') {
+        (followReqs[row.followee_id] || (followReqs[row.followee_id] = [])).push(row.follower_id);
+      }
+    }
+    for (const id of Object.keys(d.users)) {
+      d.users[id].followers = followers[id] || [];
+      d.users[id].following = following[id] || [];
+      d.users[id].followReqs = followReqs[id] || [];
+    }
+  }
+  for (const row of users.rows) {
+    // AFTER the overwrite above, not right after parsing -- so this diff baseline matches the
+    // TRUE in-memory state the rest of this boot will actually run with, not a stale blob-era
+    // copy. Getting this order wrong would make syncTableDiff think every single user "changed"
+    // on the very first save() after every future boot (see that function's own comment on why a
+    // mismatched baseline format is exactly the kind of bug that's bitten this file before).
+    snap.users[row.id] = JSON.stringify(d.users[row.id]);
+    snap.userFollows[row.id] = userFollowKey(d.users[row.id]);
+  }
 
   const sessions = await c.query('SELECT id, data FROM sessions');
   for (const row of sessions.rows) { d.sessions[row.id] = JSON.parse(row.data); snap.sessions[row.id] = JSON.stringify(d.sessions[row.id]); }
@@ -381,8 +513,9 @@ async function doLoad() {
   // gained through the actual product flow would be silently dropped back into a pending
   // request on every deploy if this flag were lost. Stored as a row in app_state, mapped back
   // onto DB by name so server.js's call sites (DB.followApprovalV1 = ...) don't change at all.
-  const state = await c.query('SELECT key, value FROM app_state');
-  for (const row of state.rows) { d[row.key] = JSON.parse(row.value); snap.singletons[row.key] = JSON.stringify(d[row.key]); }
+  // (Oct 16 2026: this block itself moved to the TOP of this function -- see the comment up there
+  // for why -- this comment stays here since it documents the app_state/SINGLETON_FIELDS
+  // convention generally, not just where the one query happens to run.)
 
   lastPersisted = snap;
   return d;
@@ -404,7 +537,7 @@ async function doLoad() {
 // migrateFollowApproval() already called out for followApprovalV1, just not extended to its
 // siblings. Any future boot-migration flag added to server.js on this same pattern must be added
 // here too, or it will silently never persist.
-const SINGLETON_FIELDS = ['followApprovalV1', 'friendsRetiredV1', 'binaryVisibilityV1'];
+const SINGLETON_FIELDS = ['followApprovalV1', 'friendsRetiredV1', 'binaryVisibilityV1', 'userFollowsTableV1'];
 
 // Upserts every row of every collection inside one transaction. At this app's scale this was
 // trivial for Postgres either way and this keeps save()'s ~70 call sites in server.js completely
@@ -447,6 +580,17 @@ async function doSave(d) {
     pending.users = bootstrapping
       ? await syncTableFull(c, 'users', 'id', d.users, usersToParams, USERS_UPSERT_SQL)
       : await syncTableDiff(c, 'users', 'id', d.users, usersToParams, USERS_UPSERT_SQL, base.users);
+    // Oct 16 2026 (users slice, decision #1 -- follow-graph redesign): followers/following/
+    // followReqs no longer belong to the generic users blob sync just above once the one-time
+    // flatten has run (see usersToParams' own comment) -- this is their own sync, parallel in
+    // spirit to syncCrewsFull/Diff (crews decision #2) but diffing against a derived per-user key
+    // (userFollowKey) instead of the whole object, since a user's OWN unrelated field changes
+    // (bio, settings, ...) must not trigger a follow-table rewrite that has nothing to do with
+    // them. Before the flag is set, this is a no-op that just carries the (empty) prior baseline
+    // forward -- the blob is still the only thing being written for these fields at that point.
+    pending.userFollows = followsTableReady
+      ? (bootstrapping ? await syncUserFollowsFull(c, d.users) : await syncUserFollowsDiff(c, d.users, base.userFollows || {}))
+      : (bootstrapping ? {} : (base.userFollows || {}));
     pending.sessions = bootstrapping
       ? await syncTableFull(c, 'sessions', 'id', d.sessions, jsonToParams, SESSIONS_UPSERT_SQL)
       : await syncTableDiff(c, 'sessions', 'id', d.sessions, jsonToParams, SESSIONS_UPSERT_SQL, base.sessions);
@@ -597,7 +741,23 @@ async function doSave(d) {
 // value. A looser expression here would let this pre-check pass while the UNIQUE
 // constraint below still collides (or vice versa) — kept byte-for-byte in sync with
 // normUser() in server.js on purpose.
-const usersToParams = (id, u) => [id, String((u && u.username) == null ? '' : u.username).trim().toLowerCase(), JSON.stringify(u)];
+// Oct 16 2026 (users slice, decision #1): once the follow-graph migration has run,
+// followers/following/followReqs are owned exclusively by user_follows (syncUserFollowsFull/Diff,
+// via writeUserFollowEdges below) -- excluded here so they're never ALSO re-embedded into the
+// blob. doLoad()'s own overwrite step adds these three fields back onto every in-memory user
+// object on every boot (so every synchronous reader elsewhere in server.js keeps working
+// unmodified -- see that block's own comment), and without this exclusion every one of THOSE
+// freshly-re-added fields would get serialized straight back into `data` on the next save,
+// reopening the exact whole-row-rewrite-on-any-follow-change problem this migration exists to
+// remove, just one layer later than before.
+const usersToParams = (id, u) => {
+  let payload = u;
+  if (followsTableReady && u && (u.followers !== undefined || u.following !== undefined || u.followReqs !== undefined)) {
+    const { followers, following, followReqs, ...rest } = u;
+    payload = rest;
+  }
+  return [id, String((u && u.username) == null ? '' : u.username).trim().toLowerCase(), JSON.stringify(payload)];
+};
 const jsonToParams = (id, v) => [id, JSON.stringify(v)];
 
 const USERS_UPSERT_SQL = 'INSERT INTO users (id, username_lower, data) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO UPDATE SET username_lower = EXCLUDED.username_lower, data = EXCLUDED.data';
@@ -760,6 +920,94 @@ async function syncCrewsDiff(c, obj, lastMap) {
       await c.query('DELETE FROM crews WHERE id = $1', [k]);
       await c.query('DELETE FROM crew_members WHERE crew_id = $1', [k]);
       delete map[k];
+    }
+  }
+  return map;
+}
+
+// Oct 16 2026 (users slice, decision #1 -- follow-graph redesign): full replace of the edges a
+// SINGLE user owns -- their own outbound accepted follows (derived from u.following) and their
+// own incoming pending requests (derived from u.followReqs). Deliberately NOT also derived from
+// u.followers -- that array is the MIRROR of someone else's following (every accepted edge is
+// written exactly once, from the follower's own following array), and processing it here too
+// would mean every accepted edge gets written twice per save, for no benefit, assuming the two
+// arrays agree (see migrateUserFollowsIntoPostgres' own comment in server.js for why that's
+// trusted rather than independently verified here).
+//
+// Full delete+reinsert rather than diffing individual edges -- same reasoning writeCrewMembers
+// (crews decision #2) already gives for crew_members: simpler and just as correct at this app's
+// scale, and it sidesteps having to separately detect "an edge's status flipped" from "an edge
+// was added/removed." ON CONFLICT DO UPDATE guards against ever downgrading an edge some OTHER
+// user's own writeUserFollowEdges call already marked accepted, in case both sides of a pair
+// happen to be processed in the same save() (see userFollowsDiff/Full below).
+async function writeUserFollowEdges(c, userId, u) {
+  // Oct 16 2026 (users decision #1, MODERATE fix from independent review): this used to stamp
+  // EVERY row with one `now()` for the whole call -- since every call deletes and fully
+  // reinserts this user's owned edges, that silently reset every pending request's created_at
+  // to the same instant on ANY unrelated touch of this user's follow data (e.g. their own
+  // following list changing elsewhere in the same save), defeating doLoad()'s own
+  // `ORDER BY created_at` -- see the user_follows schema's own comment on why that ordering
+  // matters for the follow-requests-newest-first display. Fixed by looking up each existing
+  // row's created_at first and reusing it for anything still present; only a genuinely NEW edge
+  // gets a fresh timestamp.
+  const existing = await c.query(
+    'SELECT follower_id, followee_id, created_at FROM user_follows WHERE follower_id = $1 OR followee_id = $1',
+    [userId]
+  );
+  const existingCreatedAt = {};
+  for (const row of existing.rows) existingCreatedAt[row.follower_id + '>' + row.followee_id] = row.created_at;
+
+  await c.query('DELETE FROM user_follows WHERE follower_id = $1 AND status = $2', [userId, 'accepted']);
+  await c.query('DELETE FROM user_follows WHERE followee_id = $1 AND status = $2', [userId, 'pending']);
+  const following = Array.isArray(u && u.following) ? u.following : [];
+  const followReqs = Array.isArray(u && u.followReqs) ? u.followReqs : [];
+  const now = new Date().toISOString();
+  for (const followeeId of following) {
+    if (typeof followeeId !== 'string' || !followeeId || followeeId === userId) continue;
+    const createdAt = existingCreatedAt[userId + '>' + followeeId] || now;
+    await c.query(
+      `INSERT INTO user_follows (follower_id, followee_id, status, created_at) VALUES ($1, $2, 'accepted', $3)
+       ON CONFLICT (follower_id, followee_id) DO UPDATE SET status = 'accepted'`,
+      [userId, followeeId, createdAt]
+    );
+  }
+  for (const requesterId of followReqs) {
+    if (typeof requesterId !== 'string' || !requesterId || requesterId === userId) continue;
+    const createdAt = existingCreatedAt[requesterId + '>' + userId] || now;
+    await c.query(
+      `INSERT INTO user_follows (follower_id, followee_id, status, created_at) VALUES ($1, $2, 'pending', $3)
+       ON CONFLICT (follower_id, followee_id) DO UPDATE SET status = CASE WHEN user_follows.status = 'accepted' THEN 'accepted' ELSE 'pending' END`,
+      [requesterId, userId, createdAt]
+    );
+  }
+}
+async function syncUserFollowsFull(c, users) {
+  const current = users || {};
+  const map = {};
+  for (const id of Object.keys(current)) {
+    await writeUserFollowEdges(c, id, current[id]);
+    map[id] = userFollowKey(current[id]);
+  }
+  return map;
+}
+async function syncUserFollowsDiff(c, users, lastMap) {
+  const current = users || {};
+  const map = { ...lastMap };
+  for (const id of Object.keys(current)) {
+    const key = userFollowKey(current[id]);
+    if (map[id] !== key) {
+      await writeUserFollowEdges(c, id, current[id]);
+      map[id] = key;
+    }
+  }
+  for (const id of Object.keys(lastMap)) {
+    if (!Object.prototype.hasOwnProperty.call(current, id)) {
+      // A user id present in the last baseline but no longer in `d.users` at all -- doesn't
+      // normally happen (accounts are soft-deleted, not removed from DB.users -- see
+      // anonymizeAndDeleteAccount), but handled for symmetry with syncCrewsDiff's own
+      // removed-crew handling, and in case that ever changes.
+      await c.query('DELETE FROM user_follows WHERE follower_id = $1 OR followee_id = $1', [id]);
+      delete map[id];
     }
   }
   return map;
@@ -1378,6 +1626,25 @@ async function pgBackfillCrewRow(id, name, ownerId, createdAt, memberIds) {
   });
 }
 
+// ---- Oct 16 2026: users slice decision #1 (follow-graph redesign) one-time boot backfill ----
+//
+// Used only by migrateUserFollowsIntoPostgres() in server.js, which runs once per boot, after
+// load() (see doLoad()'s own comment for why load() has to be able to read a not-yet-flattened
+// user's embedded arrays too). Never downgrades an existing 'accepted' edge to 'pending' --
+// server.js processes each user's `following` (accepted) and `followReqs` (pending) entries in
+// the same loop, but across DIFFERENT users Object.values() iteration order isn't guaranteed, so
+// this has to be safe regardless of which user's entries land first.
+async function pgUpsertFollowEdge(followerId, followeeId, status) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.query(
+      `INSERT INTO user_follows (follower_id, followee_id, status, created_at) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (follower_id, followee_id) DO UPDATE SET status = CASE WHEN user_follows.status = 'accepted' THEN 'accepted' ELSE EXCLUDED.status END`,
+      [followerId, followeeId, status, new Date().toISOString()]
+    );
+  });
+}
+
 module.exports = {
   load, save, close, ensureSchema, EMPTY_DB, getConn,
   pgNotificationHistoryForUser, pgInsertNotification, pgDeleteNotification, pgMergedNotificationWrite, pgPruneOldNotifications,
@@ -1388,4 +1655,5 @@ module.exports = {
   pgInsertCrewMessage, pgListCrewMessagesByCrew, pgUpdateCrewMessageText, pgDeleteCrewMessage, pgInsertSystemCrewMessage, pgDeleteCrewMessagesByCrew,
   pgLastCrewChallenge, pgListCrewChallengesByCrew, pgUpsertCrewChallenge, pgInsertCrewChallengeIfNoneRunning, pgUpdateCrewChallengeFields, pgCompleteCrewChallengeIfNotAlready, pgDeleteCrewChallenge, pgDeleteCrewChallengesByCrew,
   pgListCrewsNeedingColumnBackfill, pgBackfillCrewRow,
+  pgUpsertFollowEdge, markFollowsTableReady, syncUserFollowsBaseline,
 };

@@ -53,6 +53,15 @@ async function readSessions(url) {
   for (const row of r.rows) sessions[row.id] = JSON.parse(row.data);
   return sessions;
 }
+// Oct 16 2026 (users decision #1): followers/following/followReqs no longer live in the users.data
+// blob -- they're flattened into user_follows (see db.js's usersToParams/user_follows comment), so
+// severance checks read the dedicated table instead of the now-absent blob fields.
+async function readFollowEdges(url) {
+  const pg = new PgConnection(parseConnString(url));
+  const r = await pg.query('SELECT follower_id, followee_id, status FROM user_follows');
+  pg.close();
+  return r.rows;
+}
 
 const DIR = mkdtempSync(join(tmpdir(), 'admin-users-'));
 const testDb = await freshTestDb('adminusers');
@@ -174,9 +183,12 @@ console.log("\nthe core scenario Jeff asked about before approving this: Jeff an
   ok(fakeRow.deleted === true, 'the deleted account is marked deleted');
   ok(fakeRow.displayName === 'Deleted user', 'display name anonymized, same as self-delete');
   ok(fakeRow.username.startsWith('deleted_'), 'username scrambled, same as self-delete (frees it for reuse)');
-  ok(!fakeRow.followers.includes(jeff.user.id) && !fakeRow.following.length, "the deleted account's follow graph is severed");
+  const edges = await readFollowEdges(testDb.url);
+  ok(!edges.some(e => e.follower_id === jeff.user.id && e.followee_id === fake.user.id),
+    "the deleted account's follow graph is severed -- jeff's follow of fake no longer exists in user_follows");
+  ok(!edges.some(e => e.follower_id === fake.user.id),
+    'and fake is not left following anyone either');
   const jeffRow = users[jeff.user.id];
-  ok(!(jeffRow.following || []).includes(fake.user.id), "Jeff's own following list no longer references the deleted account");
   ok(jeffRow.displayName === 'Jeff', "Jeff's own account is completely untouched -- only the OTHER account's identity changed");
 }
 

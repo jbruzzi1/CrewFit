@@ -1745,6 +1745,16 @@ app.post('/api/me/profile-visibility', auth, async (req, res) => {
   const { visibility } = req.body || {};
   const v = visibility === 'public' ? 'public' : 'private';
   const me = DB.users[req.userId];
+  // Oct 16 2026 (users slice, decision #1): this can touch `me`'s own profileVisibility AND
+  // potentially every pending requester's `from.following` below, all under the one save(DB) at
+  // the end -- snapshotting every object this route could touch (not just the follow fields) so
+  // a failed save reverts the whole thing consistently, not just part of it.
+  const fromUsers = [];
+  if (v === 'public' && Array.isArray(me.followReqs) && me.followReqs.length) {
+    for (const fromId of me.followReqs) { const from = DB.users[fromId]; if (from) fromUsers.push(from); }
+  }
+  const touchedFields = [...FOLLOW_FIELDS, 'profileVisibility'];
+  const before = snapshotMutableFields([me, ...fromUsers], touchedFields);
   me.profileVisibility = v;
   // Flipping to Public doesn't reject anyone waiting on approval -- it makes the wait moot, since
   // everyone (them included) can already see the profile. Approve them all outright rather than
@@ -1752,13 +1762,19 @@ app.post('/api/me/profile-visibility', auth, async (req, res) => {
   if (v === 'public' && Array.isArray(me.followReqs) && me.followReqs.length) {
     ensureFollowArrays(me);
     for (const fromId of me.followReqs.slice()) {
-      if (!me.followers.includes(fromId)) me.followers.push(fromId);
+      if (!me.followers.includes(fromId)) me.followers = [...me.followers, fromId];
       const from = DB.users[fromId];
-      if (from) { ensureFollowArrays(from); if (!from.following.includes(req.userId)) from.following.push(req.userId); }
+      if (from) { ensureFollowArrays(from); if (!from.following.includes(req.userId)) from.following = [...from.following, req.userId]; }
     }
     me.followReqs = [];
   }
-  await save(DB);
+  const after = snapshotMutableFields([me, ...fromUsers], touchedFields);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, touchedFields);
+    throw e;
+  }
   res.json({ profileVisibility: v });
 });
 // Same cap as a session's own location field (see POST/PUT /api/sessions) — a saved default gets
@@ -1871,6 +1887,29 @@ app.post('/api/me/password', auth, async (req, res) => {
   await save(DB);
   res.json({ ok: true, token: signToken(u.id) });
 });
+// Oct 16 2026 (users slice, decision #1 -- follow-graph redesign): the exact same mutate-before-
+// maybe-failing-save hazard already found and fixed once for blockUser's alsoBlock path (see the
+// long comment above that fix, further down) turned out to exist, unfixed, on every OTHER route
+// that touches followers/following/followReqs -- found while scoping this slice's own pre-mortem,
+// not by a review pass. snapshotMutableFields/revertFieldsIfUnchanged below pull that fix's own
+// pattern into a shared helper so every one of those routes gets the identical, already-reviewed
+// treatment instead of a bespoke copy: snapshot each tracked field's CURRENT reference on every
+// object about to be touched, then -- only if save(DB) afterward throws -- put a field back to
+// its pre-mutate value, but ONLY if nothing else has touched that SAME field since (it's still
+// the exact reference this mutation itself produced). This is why every follow-graph mutation
+// below reassigns (`arr = [...arr, x]` / `arr = arr.filter(...)`) instead of push/splice-in-place
+// -- an in-place mutation leaves the reference unchanged and would defeat this check, same
+// reasoning the alsoBlock fix's own comment already gives for why IT reassigns.
+const FOLLOW_FIELDS = ['followers', 'following', 'followReqs'];
+function snapshotMutableFields(objs, fields) {
+  return objs.map(u => { const s = { u }; for (const f of fields) s[f] = u[f]; return s; });
+}
+function revertFieldsIfUnchanged(before, after, fields) {
+  for (let i = 0; i < before.length; i++) {
+    const u = before[i].u;
+    for (const f of fields) if (u[f] === after[i][f]) u[f] = before[i][f];
+  }
+}
 // Following is a REQUEST now, not an instant grant. It stays pending until the target accepts.
 app.post('/api/follow/:id', auth, async (req, res) => {
   const target = DB.users[req.params.id];
@@ -1887,10 +1926,17 @@ app.post('/api/follow/:id', auth, async (req, res) => {
   // keeps the existing approval step. Public is the default (unset counts as public), same rule
   // as canSeeProfile.
   if (target.profileVisibility !== 'private') {
-    target.followers.push(req.userId);
     const me = DB.users[req.userId];
-    if (!me.following.includes(target.id)) me.following.push(target.id);
-    await save(DB);
+    const before = snapshotMutableFields([target, me], FOLLOW_FIELDS);
+    target.followers = [...target.followers, req.userId];
+    if (!me.following.includes(target.id)) me.following = [...me.following, target.id];
+    const after = snapshotMutableFields([target, me], FOLLOW_FIELDS);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, FOLLOW_FIELDS);
+      throw e;
+    }
     notify(target.id, { title: 'New follower', body: `${DB.users[req.userId].displayName} started following you`, link: { type: 'profile', userId: req.userId } });
     // Sep 12 2026 (Jeff, three new Activity events): the notify() above is the private 1:1 heads-up
     // to the person being followed; this is the separate, public Activity-feed record of it, shown
@@ -1900,8 +1946,15 @@ app.post('/api/follow/:id', auth, async (req, res) => {
     return res.json({ status: 'following' });
   }
   if (!target.followReqs.includes(req.userId)) {
-    target.followReqs.push(req.userId);
-    await save(DB);
+    const before = snapshotMutableFields([target], FOLLOW_FIELDS);
+    target.followReqs = [...target.followReqs, req.userId];
+    const after = snapshotMutableFields([target], FOLLOW_FIELDS);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, FOLLOW_FIELDS);
+      throw e;
+    }
     // history:false -- this is the live, still-pending "wants to follow you" ask, already shown
     // as an actionable row in GET /api/notifications' followRequests while it's pending; the
     // accepted/rejected outcome (line ~995 below) gets its own history entry instead.
@@ -1913,10 +1966,17 @@ app.post('/api/unfollow/:id', auth, async (req, res) => {
   const target = DB.users[req.params.id];
   if (!target) return res.json({ status: 'none' });
   ensureFollowArrays(target); const me = DB.users[req.userId]; ensureFollowArrays(me);
+  const before = snapshotMutableFields([target, me], FOLLOW_FIELDS);
   target.followers = target.followers.filter(x => x !== req.userId);   // stop being an approved follower
   target.followReqs = target.followReqs.filter(x => x !== req.userId); // or cancel a pending request
   me.following = me.following.filter(x => x !== req.params.id);
-  await save(DB);
+  const after = snapshotMutableFields([target, me], FOLLOW_FIELDS);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, FOLLOW_FIELDS);
+    throw e;
+  }
   res.json({ status: 'none', followers: target.followers.length });
 });
 // Sep 2026, Jeff: "remove followers from us on their account" -- the mirror image of
@@ -1932,9 +1992,16 @@ app.post('/api/remove-follower/:id', auth, async (req, res) => {
   if (!target) return res.json({ ok: true });
   const me = DB.users[req.userId]; ensureFollowArrays(me); ensureFollowArrays(target);
   if (req.params.id === req.userId) return res.status(400).json({ error: 'cannot remove yourself' });
+  const before = snapshotMutableFields([me, target], FOLLOW_FIELDS);
   me.followers = me.followers.filter(x => x !== req.params.id);
   target.following = target.following.filter(x => x !== req.userId);
-  await save(DB);
+  const after = snapshotMutableFields([me, target], FOLLOW_FIELDS);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, FOLLOW_FIELDS);
+    throw e;
+  }
   res.json({ ok: true, followers: me.followers.length });
 });
 // The target approves or rejects a pending follow request. :id is the requester.
@@ -1942,11 +2009,20 @@ app.post('/api/follow-requests/:id/accept', auth, async (req, res) => {
   const me = DB.users[req.userId]; ensureFollowArrays(me);
   const fromId = req.params.id;
   if (!me.followReqs.includes(fromId)) return res.status(404).json({ error: 'no such request' });
-  me.followReqs = me.followReqs.filter(x => x !== fromId);
-  if (!me.followers.includes(fromId)) me.followers.push(fromId);
   const from = DB.users[fromId];
-  if (from) { ensureFollowArrays(from); if (!from.following.includes(req.userId)) from.following.push(req.userId); }
-  await save(DB);
+  if (from) ensureFollowArrays(from);
+  const subjects = from ? [me, from] : [me];
+  const before = snapshotMutableFields(subjects, FOLLOW_FIELDS);
+  me.followReqs = me.followReqs.filter(x => x !== fromId);
+  if (!me.followers.includes(fromId)) me.followers = [...me.followers, fromId];
+  if (from && !from.following.includes(req.userId)) from.following = [...from.following, req.userId];
+  const after = snapshotMutableFields(subjects, FOLLOW_FIELDS);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, FOLLOW_FIELDS);
+    throw e;
+  }
   if (from) notify(fromId, { title: 'Follow request accepted', body: `${me.displayName} accepted your follow request`, link: { type: 'profile', userId: req.userId } });
   // Sep 12 2026: the private-profile mirror of the immediate-follow emit in POST /api/follow above
   // -- the follow only actually takes effect here (line ~1107), not when the request was sent, so
@@ -1957,8 +2033,15 @@ app.post('/api/follow-requests/:id/accept', auth, async (req, res) => {
 });
 app.post('/api/follow-requests/:id/reject', auth, async (req, res) => {
   const me = DB.users[req.userId]; ensureFollowArrays(me);
+  const before = snapshotMutableFields([me], FOLLOW_FIELDS);
   me.followReqs = me.followReqs.filter(x => x !== req.params.id);
-  await save(DB);
+  const after = snapshotMutableFields([me], FOLLOW_FIELDS);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, FOLLOW_FIELDS);
+    throw e;
+  }
   res.json({ ok: true });
 });
 
@@ -1982,7 +2065,16 @@ function blockUser(blockerId, targetId) {
   if (!me || !target || blockerId === targetId) return false;
   ensureBlockArray(me); ensureFollowArrays(me);
   ensureFollowArrays(target);
-  if (!me.blocked.includes(targetId)) me.blocked.push(targetId);
+  // Oct 16 2026 (users slice, decision #1, SEVERE fix from independent review): reassign rather
+  // than push in place, so `blocked` can go through the SAME reference-identity revert-on-
+  // failed-save as the three follow fields below, at every call site -- a by-VALUE revert
+  // (wasAlreadyBlocked/indexOf/splice) used to handle this field separately at both call sites
+  // (POST /api/block/:id and /api/report's alsoBlock), and could silently clobber a different,
+  // concurrently-and-successfully-saved block of the same pair (reviewer repro: two near-
+  // simultaneous requests blocking the same target, the first's failed-save revert
+  // unconditionally spliced the id back out, discarding the second request's already-persisted
+  // block). See those two call sites' own comments.
+  if (!me.blocked.includes(targetId)) me.blocked = [...me.blocked, targetId];
   me.following = me.following.filter(x => x !== targetId);
   me.followers = me.followers.filter(x => x !== targetId);
   me.followReqs = me.followReqs.filter(x => x !== targetId);
@@ -1994,15 +2086,39 @@ function blockUser(blockerId, targetId) {
 app.post('/api/block/:id', auth, async (req, res) => {
   if (!DB.users[req.params.id]) return res.status(404).json({ error: 'user not found' });
   if (req.params.id === req.userId) return res.status(400).json({ error: 'cannot block yourself' });
+  // Oct 16 2026 (users slice, decision #1): this route never had the revert-on-save-failure
+  // treatment the alsoBlock path below already got (Oct 14 2026) -- same hazard, just never
+  // checked here until now. Revised same day (SEVERE finding from independent review): `blocked`
+  // now goes through the SAME shared reference-identity helper as the three follow fields,
+  // rather than its own by-value wasAlreadyBlocked/indexOf/splice revert -- see blockUser()'s own
+  // comment for why that bespoke version could clobber a different, concurrently-successful
+  // block of the same pair.
+  const me = DB.users[req.userId], target = DB.users[req.params.id];
+  ensureBlockArray(me); ensureFollowArrays(me); ensureFollowArrays(target);
+  const BLOCK_FIELDS = ['blocked', ...FOLLOW_FIELDS];
+  const before = snapshotMutableFields([me, target], BLOCK_FIELDS);
   blockUser(req.userId, req.params.id);
-  await save(DB);
+  const after = snapshotMutableFields([me, target], BLOCK_FIELDS);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, BLOCK_FIELDS);
+    throw e;
+  }
   res.json({ ok: true, blocked: true });
 });
 app.post('/api/unblock/:id', auth, async (req, res) => {
   const me = DB.users[req.userId];
   ensureBlockArray(me);
+  const before = snapshotMutableFields([me], ['blocked']);
   me.blocked = me.blocked.filter(x => x !== req.params.id);
-  await save(DB);
+  const after = snapshotMutableFields([me], ['blocked']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['blocked']);
+    throw e;
+  }
   res.json({ ok: true, blocked: false });
 });
 // Powers Settings -> Blocked accounts. publicUser() is the same headline-only shape used
@@ -2079,30 +2195,28 @@ app.post('/api/report', auth, async (req, res) => {
   // them from every other user's arrays -- see anonymizeAndDeleteAccount) could land while THIS
   // save(DB) is still queued. A blind restore-to-the-original-snapshot would silently undo that
   // other, unrelated change too. Fixed the same way: only revert a field if it's still exactly
-  // what blockUser() just set it to (nothing else has touched it since); `me.blocked` is handled
-  // separately since blockUser mutates it with `.push()` in place rather than reassigning it, so
-  // simply removing the one id this request added (if still present) is the equivalent check.
+  // what blockUser() just set it to (nothing else has touched it since).
+  //
+  // Oct 16 2026 (users slice, decision #1, SEVERE fix from independent review): `me.blocked` used
+  // to be handled separately here (wasAlreadyBlocked/indexOf/splice), since blockUser() used to
+  // mutate it with `.push()` in place rather than reassigning it -- that by-VALUE revert could
+  // silently clobber a different, concurrently-successful block of the same pair (reviewer repro:
+  // two near-simultaneous requests blocking the same target; the first's failed-save revert
+  // unconditionally spliced the id back out, discarding the second request's already-persisted
+  // block). blockUser() now reassigns `blocked` too, so it goes through the SAME shared
+  // reference-identity helper (snapshotMutableFields/revertFieldsIfUnchanged) as the three follow
+  // fields and every other route above, closing that race here as well as at POST
+  // /api/block/:id, which had the identical pattern.
   let blockUndo = null;
   if (b.alsoBlock && targetUserId) {
     const me = DB.users[req.userId], target = DB.users[targetUserId];
     if (me && target) {
       ensureBlockArray(me); ensureFollowArrays(me); ensureFollowArrays(target);
-      const wasAlreadyBlocked = me.blocked.includes(targetUserId);
-      const prev = { meFollowing: me.following, meFollowers: me.followers, meFollowReqs: me.followReqs, targetFollowing: target.following, targetFollowers: target.followers, targetFollowReqs: target.followReqs };
+      const reportBlockFields = ['blocked', ...FOLLOW_FIELDS];
+      const before = snapshotMutableFields([me, target], reportBlockFields);
       blockUser(req.userId, targetUserId);
-      const after = { meFollowing: me.following, meFollowers: me.followers, meFollowReqs: me.followReqs, targetFollowing: target.following, targetFollowers: target.followers, targetFollowReqs: target.followReqs };
-      blockUndo = () => {
-        if (!wasAlreadyBlocked) {
-          const idx = me.blocked.indexOf(targetUserId);
-          if (idx !== -1) me.blocked.splice(idx, 1);
-        }
-        if (me.following === after.meFollowing) me.following = prev.meFollowing;
-        if (me.followers === after.meFollowers) me.followers = prev.meFollowers;
-        if (me.followReqs === after.meFollowReqs) me.followReqs = prev.meFollowReqs;
-        if (target.following === after.targetFollowing) target.following = prev.targetFollowing;
-        if (target.followers === after.targetFollowers) target.followers = prev.targetFollowers;
-        if (target.followReqs === after.targetFollowReqs) target.followReqs = prev.targetFollowReqs;
-      };
+      const after = snapshotMutableFields([me, target], reportBlockFields);
+      blockUndo = () => revertFieldsIfUnchanged(before, after, reportBlockFields);
     } else {
       blockUser(req.userId, targetUserId); // mirrors the pre-fix call's own no-op-safe behavior when either side is missing
     }
@@ -2553,6 +2667,62 @@ async function migrateCrewRowColumnsIntoPostgres() {
     }
   }
   if (migrated || failed) console.log(`crew-row column backfill: ${migrated} crew(s) migrated to real columns/crew_members${failed ? `, ${failed} failed and will retry next boot` : ''}`);
+}
+
+// Oct 16 2026 (users slice, decision #1 -- follow-graph redesign, pre-mortem shown to Jeff): each
+// user used to carry followers/following/followReqs as three plain arrays embedded in their own
+// data blob, with no cap -- the same growth/rewrite-size shape the crews chat/challenges fix
+// already solved once (syncTableDiff rewrites a user's ENTIRE row on any change, so gaining one
+// new follower meant rewriting the whole account, every existing follower included). Jeff's call,
+// same as custom exercises/crew messages before it: redesign it now rather than wait for this to
+// actually bite. See db.js's comment on the user_follows table for the full schema reasoning, and
+// doLoad()'s comment there for why these three fields stay on the in-memory user object
+// afterward (unlike crew messages/challenges, which were removed from memory entirely) -- this is
+// the "stays cached, only the underlying storage moves" shape Jeff picked for the crew row itself.
+//
+// Runs once: flattens whatever's still embedded in a user's OLD blob into user_follows, then
+// deletes the three fields from that in-memory object -- same "flatten on boot, skip (don't crash
+// on) anything malformed" shape as migrateCrewMessagesAndChallengesIntoPostgres. Guarded by
+// DB.userFollowsTableV1 (a true one-time global flag, not a per-row signal the way crews' own
+// `name IS NULL` is -- there's no single row that's "this migration's own row" the way a crew's
+// row is, so this follows the SAME pattern server.js's other legacy one-time boot migrations
+// already use -- see migrateFollowApproval's own comment on SINGLETON_FIELDS).
+//
+// Reads only `following` (for accepted edges) and `followReqs` (for pending ones) -- deliberately
+// NOT also `followers`, which is the mirror of someone ELSE's `following` and would just process
+// every accepted edge twice. This assumes the two arrays already agree, which every existing
+// follow/unfollow/accept/block route keeps true by construction (every one of them updates both
+// sides together) -- there's no known case of them drifting apart, but if one somehow existed,
+// this migration would silently trust `following` over it rather than cross-checking, a
+// reasonable-but-not-airtight assumption worth stating plainly rather than leaving implicit.
+async function migrateUserFollowsIntoPostgres() {
+  if (DB.userFollowsTableV1) return 0;
+  let migrated = 0, skippedMalformed = 0;
+  for (const u of Object.values(DB.users)) {
+    const following = Array.isArray(u.following) ? u.following : [];
+    const followReqs = Array.isArray(u.followReqs) ? u.followReqs : [];
+    for (const targetId of following) {
+      if (typeof targetId !== 'string' || !targetId || targetId === u.id || !DB.users[targetId]) { skippedMalformed++; continue; }
+      await db.pgUpsertFollowEdge(u.id, targetId, 'accepted');
+      migrated++;
+    }
+    for (const requesterId of followReqs) {
+      if (typeof requesterId !== 'string' || !requesterId || requesterId === u.id || !DB.users[requesterId]) { skippedMalformed++; continue; }
+      await db.pgUpsertFollowEdge(requesterId, u.id, 'pending');
+      migrated++;
+    }
+    delete u.followers; delete u.following; delete u.followReqs;
+  }
+  DB.userFollowsTableV1 = true;
+  db.markFollowsTableReady();   // same boot's later save()s must stop re-embedding these fields too, not only after a restart -- see db.js's own comment on followsTableReady
+  // CRITICAL fix (found independently by both review passes, reproduced live): the mandatory
+  // save(DB) right after this migration in the boot sequence would otherwise diff these now-
+  // empty in-memory arrays against the PRE-migration baseline doLoad() captured at the start of
+  // this same boot -- which is non-empty on any real deploy -- and silently wipe every edge this
+  // migration just wrote. See db.js's own comment on syncUserFollowsBaseline for the full trace.
+  db.syncUserFollowsBaseline(DB.users);
+  if (migrated || skippedMalformed) console.log(`user-follows migration: ${migrated} follow edge(s) flattened into user_follows${skippedMalformed ? `, skipped ${skippedMalformed} malformed/self/dangling entr${skippedMalformed === 1 ? 'y' : 'ies'}` : ''}`);
+  return migrated;
 }
 
 app.get('/api/crews', auth, async (req, res) => {
@@ -7259,12 +7429,23 @@ async function anonymizeAndDeleteAccount(targetId) {
   // for ONE other account at a time (the two people on either side of a single block); deletion
   // needs the same following/followers/followReqs/blocked cleanup applied against every account
   // that has a reference to `me` anywhere in those four lists.
+  // Oct 16 2026 (users slice, decision #1, MODERATE fix from independent review): only reassign
+  // a field when `me` is actually IN it -- `.filter()` always returns a new array, even one with
+  // nothing removed, which used to touch every OTHER user's reference here whether or not they
+  // ever had any relationship with the deleted account. The 8 routes above revert a failed
+  // save(DB) by checking "is this field still exactly the reference my own mutation produced" --
+  // a reference churned here by a no-op filter (for some unrelated third user, concurrently
+  // mid-request) would make that check wrongly conclude "something else legitimately touched
+  // this since," and skip reverting a mutation that genuinely needs it, reopening the exact
+  // mutate-before-failed-save hazard this slice exists to close, just triggered by an unrelated
+  // account deletion rather than a real conflicting edit. Same "check before mutate" idiom
+  // blockUser() and every route above already use to preserve identity when nothing changes.
   for (const other of Object.values(DB.users)) {
     if (other.id === me) continue;
-    if (Array.isArray(other.following)) other.following = other.following.filter(x => x !== me);
-    if (Array.isArray(other.followers)) other.followers = other.followers.filter(x => x !== me);
-    if (Array.isArray(other.followReqs)) other.followReqs = other.followReqs.filter(x => x !== me);
-    if (Array.isArray(other.blocked)) other.blocked = other.blocked.filter(x => x !== me);
+    if (Array.isArray(other.following) && other.following.includes(me)) other.following = other.following.filter(x => x !== me);
+    if (Array.isArray(other.followers) && other.followers.includes(me)) other.followers = other.followers.filter(x => x !== me);
+    if (Array.isArray(other.followReqs) && other.followReqs.includes(me)) other.followReqs = other.followReqs.filter(x => x !== me);
+    if (Array.isArray(other.blocked) && other.blocked.includes(me)) other.blocked = other.blocked.filter(x => x !== me);
   }
   // Oct 14 2026 (push subs slice): push_subs is no longer on DB at all (see db.js's
   // EMPTY_DB/load() and the comment on POST /api/push/subscribe) -- deleting it is now its own
@@ -10006,6 +10187,7 @@ app.use((err, req, res, next) => {
   await pruneOldFeedEvents();       // same, for the Activity page's ephemeral feed events
   await migrateCrewMessagesAndChallengesIntoPostgres();   // Oct 16 2026 (crews deep-dive, decision #1) -- flattens c.messages/c.challenges into their own Postgres tables; see its own comment and db.js's comment on crew_messages/crew_challenges
   await migrateCrewRowColumnsIntoPostgres();   // Oct 16 2026 (crews deep-dive, decision #2) -- backfills crews.name/owner_id/created_at + crew_members from the old data blob; see its own comment and db.js's comment on the crews table
+  await migrateUserFollowsIntoPostgres();   // Oct 16 2026 (users slice, decision #1) -- flattens followers/following/followReqs into user_follows; see its own comment and db.js's comment on the user_follows table
   await save(DB);
   server = app.listen(PORT, () => console.log('CrewFit on', PORT));
   module.exports.server = server;
