@@ -20,22 +20,36 @@
 //   - a "failed" report-with-block kept the block/unfollow effect live (visible to every other
 //     request reading DB.users) even though the report's own `alsoBlock` effect was supposed to
 //     have failed along with the save.
-// This test proves each of the four fixes: rig a real Postgres failure for the ONE write each
-// route depends on, confirm the route still answers with an error, then confirm (via a second,
-// independent read -- GET /api/exercises for the library-wide ones, a direct DB.users read via a
-// companion route for the block one) that the in-memory state was reverted, not left stale.
+// This test originally proved each of the four fixes: rig a real Postgres failure for the ONE
+// write each route depends on, confirm the route still answers with an error, then confirm (via a
+// second, independent read -- GET /api/exercises for the library-wide ones, a direct DB.users
+// read via a companion route for the block one) that the in-memory state was reverted, not left
+// stale.
 //
-// What this test does NOT attempt: reproducing the sharper concurrency hazard an independent
-// reviewer caught in the first draft of this fix (restoring a whole stale pre-mutation snapshot
-// could clobber a DIFFERENT, concurrent, already-SUCCEEDED request on the same user/pair --
-// e.g. a concurrent create landing between this delete's mutation and its revert). The PUT/
-// DELETE/report fixes below were rewritten to only undo exactly what THIS request itself changed
-// (matching the create route's own always-correct id-filtered revert), verified by tracing
-// db.js's enqueue()/doSave() (each queued save() reads DB's live content only at its own turn,
-// not a snapshot from when save() was called) rather than by forcing the actual cross-request
-// race over real HTTP/network timing here -- doing that reliably would need an artificial delay
-// hook inside server.js itself, which isn't worth adding just for this. The simpler, single-
-// request cases below ARE reproduced live, same as every other claim in this file.
+// Oct 16 2026 (read cutover, task #258+ phase 2, see CLAUDE.md "Rearchitecture status"): the
+// three custom-exercise scenarios below are retired, not just updated -- they are no longer
+// POSSIBLE to reproduce, which is itself the point. DB.customExercises is gone; POST/PUT/DELETE
+// /api/exercises/custom no longer mutate ANY shared, process-wide state before their one awaited
+// write (see each route's own comment) -- there is no revert-on-failure logic left to test
+// because there is nothing left to revert. What remains below for custom exercises is a single,
+// much simpler smoke check: breaking custom_exercise_rows (the table that now actually matters)
+// still produces a clean 500, not a crash or a hang, same guarantee as before just with a trivial
+// proof instead of a revert-tracing one. The report/blockUser scenario is UNCHANGED and still
+// fully real: DB.users is a different data domain, not yet touched by any rearchitecture slice,
+// so blockUser()'s own mutate-before-maybe-failing-save hazard and its concurrency-safe revert
+// (see POST /api/report's own comment) are still live code, still covered here exactly as before.
+//
+// What this test does NOT attempt (for the report/blockUser case, still the only one with a real
+// revert left): reproducing the sharper concurrency hazard an independent reviewer caught in the
+// first draft of this fix (restoring a whole stale pre-mutation snapshot could clobber a
+// DIFFERENT, concurrent, already-SUCCEEDED request on the same user/pair -- e.g. a concurrent
+// create landing between this delete's mutation and its revert). That fix was rewritten to only
+// undo exactly what THIS request itself changed, verified by tracing db.js's enqueue()/doSave()
+// (each queued save() reads DB's live content only at its own turn, not a snapshot from when
+// save() was called) rather than by forcing the actual cross-request race over real HTTP/network
+// timing here -- doing that reliably would need an artificial delay hook inside server.js itself,
+// which isn't worth adding just for this. The simpler, single-request cases below ARE reproduced
+// live, same as every other claim in this file.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -81,41 +95,32 @@ async function fixTable(name) { await raw.query(`ALTER TABLE ${name}_broken_for_
 const alice = await post('/api/register', { username: 'mbs_alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
 const bob = await post('/api/register', { username: 'mbs_bob', pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
 
-console.log('\nPOST /api/exercises/custom: a failed save(DB) does not leave a ghost exercise in memory');
+console.log('\nPOST/PUT/DELETE /api/exercises/custom: a failed write still just 500s cleanly -- nothing left to revert any more');
 {
-  await breakTable('custom_exercises');
-  const r = await post('/api/exercises/custom', { name: 'MBS Ghost Curl', muscle_groups: ['biceps'] }, alice.token);
-  ok(r.status === 500, `create returns a real error while the table is broken, got ${r.status}`);
-  await fixTable('custom_exercises');
-  const health = await get('/healthz');
-  ok(health.status === 200, 'server is still up after the rigged failure (the async-error wrapper, not a crash, handled it)');
-  const lib = await get('/api/exercises').then(r => r.json());
-  ok(!lib.some(e => e.name === 'MBS Ghost Curl'), 'the "failed" create is NOT present in the exercise library (in-memory push was reverted)');
-}
-
-console.log('\nPUT /api/exercises/custom/:id: a failed save(DB) reverts the edit, not just fails the response');
-{
+  // Oct 16 2026 (read cutover): breaks custom_exercise_rows -- the table that actually matters
+  // now, not the old, unused custom_exercises -- and confirms each route still answers with a
+  // real error and the server stays up. There is no second, independent read to check a revert
+  // against any more, because none of these routes mutate anything in shared memory before their
+  // one awaited write (see each route's own comment) -- a failed write simply never happened, by
+  // construction, not because something put it back.
   const created = await post('/api/exercises/custom', { name: 'MBS Edit Target', muscle_groups: ['biceps'] }, alice.token).then(r => r.json());
-  await breakTable('custom_exercises');
-  const r = await put(`/api/exercises/custom/${created.id}`, { muscle_groups: ['triceps'], level: 'advanced' }, alice.token);
-  ok(r.status === 500, `edit returns a real error while the table is broken, got ${r.status}`);
-  await fixTable('custom_exercises');
-  const lib = await get('/api/exercises').then(r => r.json());
-  const row = lib.find(e => e.name === 'MBS Edit Target');
-  ok(!!row, 'the exercise still exists after the failed edit');
-  ok(row && row.muscle_groups.includes('biceps') && !row.muscle_groups.includes('triceps'), `the edit was reverted -- still shows the ORIGINAL muscle group, not the failed one, got ${JSON.stringify(row && row.muscle_groups)}`);
-  ok(row && row.level === 'beginner', `level was also reverted to its original value, got ${row && row.level}`);
-}
 
-console.log('\nDELETE /api/exercises/custom/:id: a failed save(DB) un-deletes it, not just fails the response');
-{
-  const created = await post('/api/exercises/custom', { name: 'MBS Delete Target', muscle_groups: ['biceps'] }, alice.token).then(r => r.json());
-  await breakTable('custom_exercises');
-  const r = await del(`/api/exercises/custom/${created.id}`, alice.token);
-  ok(r.status === 500, `delete returns a real error while the table is broken, got ${r.status}`);
-  await fixTable('custom_exercises');
+  await breakTable('custom_exercise_rows');
+  const rCreate = await post('/api/exercises/custom', { name: 'MBS Ghost Curl', muscle_groups: ['biceps'] }, alice.token);
+  ok(rCreate.status === 500, `create returns a real error while the table is broken, got ${rCreate.status}`);
+  const rEdit = await put(`/api/exercises/custom/${created.id}`, { muscle_groups: ['triceps'], level: 'advanced' }, alice.token);
+  ok(rEdit.status === 500, `edit returns a real error while the table is broken, got ${rEdit.status}`);
+  const rDelete = await del(`/api/exercises/custom/${created.id}`, alice.token);
+  ok(rDelete.status === 500, `delete returns a real error while the table is broken, got ${rDelete.status}`);
+  await fixTable('custom_exercise_rows');
+
+  const health = await get('/healthz');
+  ok(health.status === 200, 'server is still up after all three rigged failures (the async-error wrapper, not a crash, handled them)');
   const lib = await get('/api/exercises').then(r => r.json());
-  ok(lib.some(e => e.name === 'MBS Delete Target'), 'the exercise is still present after the failed delete (in-memory filter was reverted)');
+  ok(!lib.some(e => e.name === 'MBS Ghost Curl'), 'the "failed" create never shows up in the exercise library');
+  const stillThere = lib.find(e => e.name === 'MBS Edit Target');
+  ok(!!stillThere && stillThere.muscle_groups.includes('biceps') && !stillThere.muscle_groups.includes('triceps'),
+    `the "failed" edit never took effect -- still shows the ORIGINAL muscle group, got ${JSON.stringify(stillThere && stillThere.muscle_groups)}`);
 }
 
 console.log('\nPOST /api/report (alsoBlock): a failed save(DB) reverts the block/unfollow, not just fails the response');
@@ -128,11 +133,12 @@ console.log('\nPOST /api/report (alsoBlock): a failed save(DB) reverts the block
   ok(Array.isArray(before) && before.some(u => u.id === bob.user.id), `sanity: alice follows bob before the report, got ${JSON.stringify(before)}`);
 
   // syncTableDiff only issues a query against a table whose content actually changed since the
-  // last save() baseline -- custom_exercises wouldn't be touched by THIS save (nothing about
-  // alice's/bob's custom exercises changed here), so breaking that table wouldn't actually fail
-  // this one. blockUser() mutates DB.users (alice's `following`, bob's `followers`), which DOES
-  // change between baseline and this save -- breaking `users` is what actually forces this
-  // specific save(DB) call to fail.
+  // last save() baseline -- templates/crews/etc. wouldn't be touched by THIS save (nothing about
+  // them changed here), so breaking one of those tables wouldn't actually fail this one.
+  // blockUser() mutates DB.users (alice's `following`, bob's `followers`), which DOES change
+  // between baseline and this save -- breaking `users` is what actually forces this specific
+  // save(DB) call to fail. (custom_exercises is no longer part of this generic save() mechanism
+  // at all -- see db.js's EMPTY_DB/doSave() comments -- so it's not even a candidate here any more.)
   await breakTable('users');
   const r = await post('/api/report', { targetType: 'user', targetUserId: bob.user.id, reason: 'harassment', alsoBlock: true }, alice.token);
   ok(r.status === 500, `report-with-block returns a real error while save(DB) is broken, got ${r.status}`);

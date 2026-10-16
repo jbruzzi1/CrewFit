@@ -81,12 +81,14 @@ CREATE TABLE IF NOT EXISTS custom_exercise_rows (
   data jsonb NOT NULL
 );
 CREATE INDEX IF NOT EXISTS custom_exercise_rows_owner_idx ON custom_exercise_rows (owner_id);
--- Backs findExLibEntry's global by-name fallback scan (server.js) -- today that's an in-memory
--- Object.values().find() over every owner's array -- the Postgres equivalent is a WHERE on this
+-- Backs pgFindCustomExerciseRowByName's global by-name fallback query (below) -- a WHERE on this
 -- expression index instead of a table scan. Table is tiny today (a few hundred rows at most) so
 -- this isn't solving a real performance problem yet -- it's here because it's nearly free to add
 -- now and this is exactly the kind of lookup that gets slow silently if left until it's actually
--- slow.
+-- slow. (Oct 16 2026, read cutover: findExLibEntry itself -- server.js's own by-name lookup used
+-- by Progress/volume -- does NOT hit this table per lookup -- see that function's own comment for
+-- why it takes a pre-fetched row list instead. This index is for pgFindCustomExerciseRowByName's
+-- direct callers, and for any future direct-Postgres caller that does need a single-name query.)
 CREATE INDEX IF NOT EXISTS custom_exercise_rows_name_idx ON custom_exercise_rows ((data->>'name'));
 CREATE TABLE IF NOT EXISTS prs (
   user_id text PRIMARY KEY,
@@ -147,11 +149,23 @@ async function ensureSchema() {
 // needed no dual-write window the way notifications/feed-events and customExercises did/do --
 // same table, same shape, just a different caller). `reports` dropped the same way right after
 // -- GET /api/admin/reports, POST /api/report, and POST /api/admin/reports/:id/resolve all go
-// through pgListReports/pgInsertReport/pgResolveReport now. `customExercises` is still untouched
-// here -- it's mid-migration to a genuinely different shape (see custom_exercise_rows in
-// SCHEMA_SQL and CLAUDE.md's "Rearchitecture status"), the one piece of this slice that still
-// needs an actual dual-write window before its cutover, unlike push subs/reports.
-const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, customExercises: {}, prs: {}, crews: {} });
+// through pgListReports/pgInsertReport/pgResolveReport now.
+// Oct 16 2026 (same slice, read cutover, task #258+ phase 2): `customExercises` dropped too, the
+// LAST piece of this slice. Unlike push subs/notifications/feed-events/reports, this one did not
+// just move the SAME shape behind direct-Postgres functions -- Jeff picked a genuine redesign
+// (one row per exercise, custom_exercise_rows, instead of one array per owner) back at this
+// slice's own pre-mortem, to remove a concurrent-edit race by construction instead of managing it
+// with a transaction. GET /api/exercises, findExLibEntry, findMyCustomExercise, and the create/
+// edit/delete routes all read/write exclusively through pgUpsertCustomExerciseRow/
+// pgGetCustomExerciseRow/pgListCustomExerciseRowsByOwner/pgListAllCustomExerciseRows/
+// pgDeleteCustomExerciseRow now (see "direct Postgres access" below). pgFindCustomExerciseRowByName
+// is exported from the same section but NOT currently called from anywhere in server.js -- see
+// its own comment for why. The OLD custom_exercises table (array-per-owner) is left in place, unused -- not
+// dropped, same "leave dead weight rather than risk an irreversible DROP" call this project
+// already made once for DB.friendships (see this file's top comment) -- but nothing reads or
+// writes it any more, including the one-shot scripts/migrate-to-postgres.mjs restore path, which
+// now flattens straight into custom_exercise_rows instead (see that script's own comment).
+const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, prs: {}, crews: {} });
 
 // ---- diffed writes ----
 //
@@ -181,8 +195,18 @@ const EMPTY_DB = () => ({ users: {}, sessions: {}, templates: {}, customExercise
 // to rule out (see the file-based-save incident this design replaced, referenced above).
 let lastPersisted = null; // null, or { users:{}, sessions:{}, ..., singletons:{} } — each inner value id/key -> last-written JSON string
 
+// Oct 16 2026 (read cutover, task #258+ phase 2): custom_exercises dropped from this baseline --
+// unlike notifications/reports/feed_events just below, which each KEPT a bootstrapping-only
+// syncTableFull branch in doSave for scripts/migrate-to-postgres.mjs's one-shot restore path (see
+// that function's own comment), custom_exercises has no such branch left at all. Those three kept
+// writing into the exact same table/shape their new direct-Postgres functions already read, so
+// migrate-to-postgres.mjs restoring into that same table was still correct. custom_exercises
+// (array-per-owner) and custom_exercise_rows (one row per exercise) are genuinely different
+// shapes -- nothing reads the old table any more, including that restore script, which now
+// flattens straight into custom_exercise_rows instead (see its own comment) -- so there is no
+// bootstrapping write left for this baseline to track either.
 function freshSnapshot() {
-  return { users: {}, sessions: {}, templates: {}, custom_exercises: {}, prs: {}, crews: {}, notifications: {}, reports: {}, feed_events: {}, singletons: {} };
+  return { users: {}, sessions: {}, templates: {}, prs: {}, crews: {}, notifications: {}, reports: {}, feed_events: {}, singletons: {} };
 }
 
 // Reassembles the exact in-memory shape server.js has always used, from Postgres rows. Also the
@@ -234,8 +258,13 @@ async function doLoad() {
   // DB.pushSubs map, so there is nothing left for doLoad() to populate or for lastPersisted to
   // baseline here.
 
-  const customExercises = await c.query('SELECT owner_id, data FROM custom_exercises');
-  for (const row of customExercises.rows) { d.customExercises[row.owner_id] = JSON.parse(row.data); snap.custom_exercises[row.owner_id] = JSON.stringify(d.customExercises[row.owner_id]); }
+  // Oct 16 2026 (read cutover, task #258+ phase 2): customExercises used to be loaded wholesale
+  // here too, same as every other collection -- that's gone now. GET /api/exercises, findExLibEntry,
+  // findMyCustomExercise, and every create/edit/delete route in server.js already read/write
+  // exclusively through pgUpsertCustomExerciseRow/pgGetCustomExerciseRow/
+  // pgListCustomExerciseRowsByOwner/pgListAllCustomExerciseRows/pgDeleteCustomExerciseRow (below),
+  // not through an in-memory DB.customExercises map, so there is nothing left for doLoad() to
+  // populate or for lastPersisted to baseline here.
 
   const prs = await c.query('SELECT user_id, data FROM prs');
   for (const row of prs.rows) { d.prs[row.user_id] = JSON.parse(row.data); snap.prs[row.user_id] = JSON.stringify(d.prs[row.user_id]); }
@@ -343,9 +372,10 @@ async function doSave(d) {
     pending.templates = bootstrapping
       ? await syncTableFull(c, 'templates', 'id', d.templates, jsonToParams, TEMPLATES_UPSERT_SQL)
       : await syncTableDiff(c, 'templates', 'id', d.templates, jsonToParams, TEMPLATES_UPSERT_SQL, base.templates);
-    pending.custom_exercises = bootstrapping
-      ? await syncTableFull(c, 'custom_exercises', 'owner_id', d.customExercises, jsonToParams, CUSTOM_EXERCISES_UPSERT_SQL)
-      : await syncTableDiff(c, 'custom_exercises', 'owner_id', d.customExercises, jsonToParams, CUSTOM_EXERCISES_UPSERT_SQL, base.custom_exercises);
+    // Oct 16 2026 (read cutover, task #258+ phase 2): custom_exercises used to be synced here too,
+    // the same generic way as every other table above -- removed, see freshSnapshot()'s own
+    // comment for why this one has no bootstrapping-only branch left either, unlike notifications/
+    // feed_events/push_subs/reports just below.
     pending.prs = bootstrapping
       ? await syncTableFull(c, 'prs', 'user_id', d.prs, jsonToParams, PRS_UPSERT_SQL)
       : await syncTableDiff(c, 'prs', 'user_id', d.prs, jsonToParams, PRS_UPSERT_SQL, base.prs);
@@ -467,7 +497,9 @@ const USERS_UPSERT_SQL = 'INSERT INTO users (id, username_lower, data) VALUES ($
 const SESSIONS_UPSERT_SQL = 'INSERT INTO sessions (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
 const TEMPLATES_UPSERT_SQL = 'INSERT INTO templates (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
 const PUSH_SUBS_UPSERT_SQL = 'INSERT INTO push_subs (user_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data';
-const CUSTOM_EXERCISES_UPSERT_SQL = 'INSERT INTO custom_exercises (owner_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (owner_id) DO UPDATE SET data = EXCLUDED.data';
+// CUSTOM_EXERCISES_UPSERT_SQL (the old custom_exercises table, array-per-owner) removed Oct 16
+// 2026 (read cutover, task #258+ phase 2) -- nothing writes that table any more, see
+// freshSnapshot()'s own comment.
 const PRS_UPSERT_SQL = 'INSERT INTO prs (user_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data';
 const CREWS_UPSERT_SQL = 'INSERT INTO crews (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
 const NOTIFICATIONS_UPSERT_SQL = 'INSERT INTO notifications (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
@@ -749,8 +781,10 @@ async function pgPruneOldFeedEvents(cutoffIso) {
 // Custom exercises DOES change shape — see the custom_exercise_rows table comment in SCHEMA_SQL
 // above for the full reasoning (Jeff's choice, Oct 14 2026: redesign to one row per exercise
 // rather than keep the array-per-owner shape with a transaction). Functions below operate on
-// the NEW custom_exercise_rows table; the old custom_exercises table/column stays untouched by
-// this file from here on except for the one-time migration read in server.js's boot sequence.
+// the NEW custom_exercise_rows table; the old custom_exercises table/column is now untouched by
+// this app entirely (Oct 16 2026, read cutover) — the one-time migration read that used to run in
+// server.js's boot sequence is gone too (see that removal's own comment there), since nothing
+// writes the old table any more for it to ever catch up to.
 async function pgGetPushSub(userId) {
   return enqueue(async () => {
     const c = getConn();
@@ -840,6 +874,31 @@ async function pgUpsertCustomExerciseRow(row) {
     return row;
   });
 }
+// Oct 16 2026 (race fix, caught by two independent review passes after the read cutover landed,
+// both reproduced live): POST /api/exercises/custom's 500-per-owner cap used to be race-safe for
+// free -- it read DB.customExercises[userId].length and pushed the new exercise in the same
+// synchronous stretch, no await in between, so Node's single-threaded execution made the pair
+// atomic by construction. The cutover's first version split that into two separate awaited calls
+// (pgListCustomExerciseRowsByOwner, then this function) with the route's own `if` in between --
+// each awaited call is its own separate enqueue() turn, so another concurrent create from the
+// SAME user could interleave between them, read the same stale under-cap count, and also pass.
+// Reproduced live by both review passes (504 and 501 rows from a seeded 495/499 base, 10/2
+// concurrent creates). Fixed here, not by adding locking in server.js, by doing the count check
+// AND the insert inside ONE enqueue()'d function: db.js's enqueue() queue serializes at the
+// granularity of a whole enqueue() call (nothing else on this app's one shared connection runs
+// until this entire async callback -- both its queries -- has resolved), not at the granularity
+// of a single await, so nothing can land between the count and the insert any more, closing
+// exactly the gap the two-call version reopened.
+async function pgInsertCustomExerciseRowIfUnderCap(row, cap) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query('SELECT COUNT(*) AS n FROM custom_exercise_rows WHERE owner_id = $1', [row.ownerId]);
+    const n = Number(r.rows[0].n);
+    if (n >= cap) return { ok: false, count: n };
+    await c.query(CUSTOM_EXERCISE_ROWS_UPSERT_SQL, [row.id, row.ownerId, JSON.stringify(row)]);
+    return { ok: true, count: n + 1 };
+  });
+}
 async function pgGetCustomExerciseRow(id) {
   return enqueue(async () => {
     const c = getConn();
@@ -854,9 +913,9 @@ async function pgListCustomExerciseRowsByOwner(ownerId) {
     return r.rows.map(row => JSON.parse(row.data));
   });
 }
-// Backs GET /api/exercises' Object.values(DB.customExercises||{}).flat() — every custom
-// exercise, from every owner, is shown to every user by design (see that route's own comment in
-// server.js), so this has no WHERE clause at all, same reach as the in-memory version.
+// Backs GET /api/exercises (and GET /api/progress's own customRows pre-fetch, see
+// findExLibEntry's comment) — every custom exercise, from every owner, is shown to every user by
+// design (see GET /api/exercises' own comment in server.js), so this has no WHERE clause at all.
 async function pgListAllCustomExerciseRows() {
   return enqueue(async () => {
     const c = getConn();
@@ -878,9 +937,20 @@ async function pgDeleteCustomExerciseRow(id, ownerId) {
 // Mirrors findExLibEntry's exact priority order in server.js (the acting user's own list, then —
 // if a session creator is given and differs — the creator's own list, then a fully global first
 // match) — three sequential queries, each only run if the previous found nothing, same
-// short-circuiting shape as the in-memory version's three lookups. Used by the shadow-compare
-// during the dual-write phase; not yet the real path server.js's own findExLibEntry takes (that
-// cutover is a later step, same two-phase shape as the notifications+feed-events slice).
+// short-circuiting shape as the in-memory version's three lookups.
+//
+// Oct 14 2026: used by the dual-write phase's shadow-compare, confirming this priority order
+// against the old array-per-owner read before the read cutover switched the source over.
+// Oct 16 2026 (read cutover): that shadow-compare is retired along with the old source it
+// compared against (see GET /api/exercises' own comment), and findExLibEntry itself deliberately
+// does NOT call this -- a per-logged-set lookup through this app's one shared Postgres connection
+// would have been a real page-load slowdown (see findExLibEntry's own comment for the full
+// reasoning); it takes a pre-fetched row list and searches that in memory instead. So this
+// function currently has no caller anywhere in server.js. Left in place, not removed, as a
+// correct, already-verified building block for any FUTURE direct-Postgres caller that genuinely
+// does need a single by-name lookup outside a hot per-set loop (unlike the two boot migrations
+// removed the same day, which can structurally never run again -- this one simply has no current
+// caller, a different situation).
 async function pgFindCustomExerciseRowByName(name, userId, creatorId) {
   return enqueue(async () => {
     const c = getConn();
@@ -901,5 +971,5 @@ module.exports = {
   pgInsertFeedEvent, pgDeleteFeedEvent, pgGetFeedEvent, pgFeedEventsSince, pgToggleFeedEventReaction, pgPruneOldFeedEvents,
   pgGetPushSub, pgSetPushSub, pgDeletePushSubIfEndpointMatches, pgDeletePushSub,
   pgInsertReport, pgListReports, pgResolveReport,
-  pgUpsertCustomExerciseRow, pgGetCustomExerciseRow, pgListCustomExerciseRowsByOwner, pgListAllCustomExerciseRows, pgDeleteCustomExerciseRow, pgFindCustomExerciseRowByName,
+  pgUpsertCustomExerciseRow, pgInsertCustomExerciseRowIfUnderCap, pgGetCustomExerciseRow, pgListCustomExerciseRowsByOwner, pgListAllCustomExerciseRows, pgDeleteCustomExerciseRow, pgFindCustomExerciseRowByName,
 };

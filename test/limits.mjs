@@ -20,13 +20,16 @@ const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fai
 const H = t => ({ ...J, Authorization: 'Bearer ' + t });
 const post = (p, b, t) => fetch(B + p, { method: 'POST', headers: t ? H(t) : J, body: JSON.stringify(b) });
 const put  = (p, b, t) => fetch(B + p, { method: 'PUT', headers: H(t), body: JSON.stringify(b) });
-// Reassembles the same {users, sessions, pushSubs, templates, customExercises} shape the old
-// data.json read gave — reads straight from Postgres. customExercises stays an array PER USER
-// (matching db()['customExercises'][id] being an array in server.js), same as it always was.
+// Reassembles the same {users, sessions, pushSubs, templates, customExerciseRows} shape the old
+// data.json read gave — reads straight from Postgres.
+// Oct 16 2026 (read cutover, task #258+ phase 2): customExerciseRows reads custom_exercise_rows
+// (one row per exercise, keyed by its own id) now, not the old array-per-owner custom_exercises
+// table -- so it comes back as a plain {id: exercise} map here, same per-row shape as every other
+// collection this helper already reads, instead of the old array-per-owner shape.
 async function db() {
   const pg = new PgConnection(parseConnString(testDb.url));
-  const out = { users: {}, sessions: {}, pushSubs: {}, templates: {}, customExercises: {} };
-  for (const [table, key, col] of [['users','id','users'], ['sessions','id','sessions'], ['push_subs','user_id','pushSubs'], ['templates','id','templates'], ['custom_exercises','owner_id','customExercises']]) {
+  const out = { users: {}, sessions: {}, pushSubs: {}, templates: {}, customExerciseRows: {} };
+  for (const [table, key, col] of [['users','id','users'], ['sessions','id','sessions'], ['push_subs','user_id','pushSubs'], ['templates','id','templates'], ['custom_exercise_rows','id','customExerciseRows']]) {
     const r = await pg.query(`SELECT ${key}, data FROM ${table}`);
     for (const row of r.rows) out[col][row[key]] = JSON.parse(row.data);
   }
@@ -177,7 +180,7 @@ console.log('\nthe three vectors a second review caught are closed too');
   // custom exercise pattern/level fields (stored raw before), and category from a validated group
   await post('/api/exercises/custom', { name: 'Capped', muscle_groups: ['chest'], pattern: huge, level: huge, category: huge }, alice.token);
   d = await db();
-  const cx = Object.values(d.customExercises).flat().find(e => e.name === 'Capped');
+  const cx = Object.values(d.customExerciseRows).find(e => e.name === 'Capped');
   ok(cx && cx.pattern.length <= 40, `custom exercise pattern capped (${cx && cx.pattern.length})`);
   ok(cx && cx.level.length <= 20, `custom exercise level capped (${cx && cx.level.length})`);
   ok(cx && cx.category === 'chest', `category comes from the validated group, not raw input (${cx && cx.category})`);

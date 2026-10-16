@@ -33,9 +33,19 @@ async function firstUserId() {
   pg.close();
   return r.rows[0] && r.rows[0].id;
 }
-async function putCustomExercises(ownerId, value) {
+// Oct 16 2026 (read cutover, task #258+ phase 2): writes straight into custom_exercise_rows (one
+// row per exercise, the real table GET /api/exercises reads now) instead of the old, now-unused
+// custom_exercises (array-per-owner). `value` is still an array of exercise objects, same calling
+// shape as before this cutover -- each one just becomes its OWN row now, with a freshly-minted id
+// for the SQL primary key (the whole point of this test is rows written before id/shape
+// validation existed at all, so the row's own `data` deliberately does NOT get an id/ownerId
+// injected into it beyond what the caller already supplied).
+async function putCustomExerciseRows(ownerId, exercises) {
   const pg = new PgConnection(parseConnString(testDb.url));
-  await pg.query('INSERT INTO custom_exercises (owner_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (owner_id) DO UPDATE SET data = EXCLUDED.data', [ownerId, JSON.stringify(value)]);
+  for (const e of exercises) {
+    const id = (e && e.id) || ('legacy_' + Math.random().toString(36).slice(2));
+    await pg.query('INSERT INTO custom_exercise_rows (id, owner_id, data) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO UPDATE SET owner_id = EXCLUDED.owner_id, data = EXCLUDED.data', [id, ownerId, JSON.stringify(e)]);
+  }
   pg.close();
 }
 async function putSessionRaw(id, value) {
@@ -364,7 +374,7 @@ console.log('\nrows stored before the write checks existed are cleaned on the wa
   // store, which is exactly what a pre-v177 POST left behind.
   await stop();                      // the row has to be in the database before the server reads it
   const owner = await firstUserId();
-  await putCustomExercises(owner, [
+  await putCustomExerciseRows(owner, [
     { name: 'Legacy Junk', muscle_groups: ['x" onerror="alert(1)" z="', 'biceps'], equipment: 42,
       level: { a: 1 }, pattern: [], is_compound: 'yes' },
     { name: 99, muscle_groups: 'biceps', equipment: [{}, 'cable', 7] },

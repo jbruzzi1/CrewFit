@@ -4,24 +4,30 @@
 // drive the REAL, running server through its REAL HTTP routes, then check what actually landed
 // in Postgres, directly, from a second independent connection.
 //
-// Three pieces, two different verification shapes:
-//   - Push subs and reports were cut over directly (no dual-write window -- see the comment on
-//     POST /api/push/subscribe and POST /api/report in server.js for why: same table, same
-//     shape, nothing to reconcile two implementations against). What matters here is durability
-//     through a real restart -- these routes no longer put anything on DB at all, so the ONLY
-//     thing keeping a subscription/report alive across a deploy is this table. Verified by
-//     actually killing the server and booting a fresh one against the same database.
-//   - Custom exercises is mid dual-write: DB.customExercises (array-per-owner) is still what
-//     every real read in the app serves from; this test proves the NEW custom_exercise_rows
-//     table (one row per exercise) ends up holding the same data, via real create/edit/delete
-//     HTTP calls, not a hand-rolled script. Also proves the boot-time flatten migration
-//     (migrateCustomExerciseRowsIntoPostgres) actually catches a pre-existing row, and that the
-//     shadow-compare added to GET /api/exercises genuinely detects a real divergence rather than
-//     being a no-op safety net nobody ever verified fires.
+// All three pieces now have the SAME shape, even though they landed on different days:
+//   - Push subs and reports were cut over directly on Oct 14 2026 (no dual-write window -- see
+//     the comment on POST /api/push/subscribe and POST /api/report in server.js for why: same
+//     table, same shape, nothing to reconcile two implementations against).
+//   - Custom exercises took two steps -- a dual-write phase (Oct 14 2026, DB.customExercises
+//     array-per-owner still the real driver, custom_exercise_rows mirrored alongside it,
+//     fire-and-forget) followed by the read cutover (Oct 16 2026, see CLAUDE.md "Rearchitecture
+//     status") that made custom_exercise_rows the one and only source, the same as push subs/
+//     reports already were. The dual-write-era assertions this file used to carry -- proving the
+//     old array and the fire-and-forget mirror agreed, that the boot-time flatten migration
+//     caught a pre-existing legacy row, that the shadow-compare on GET /api/exercises actually
+//     fired on a deliberate divergence -- are gone along with the mechanisms they tested
+//     (migrateCustomExerciseRowsIntoPostgres and shadowCompareCustomExerciseRows were both
+//     removed as part of the cutover; see their removal's own comment in server.js). What's left
+//     below for custom exercises is the same shape as push subs/reports: real HTTP calls, in,
+//     then a real, independent read of custom_exercise_rows to prove it's really there -- plus
+//     the SAME durability-through-a-real-restart proof push subs/reports already get, since
+//     nothing else keeps a custom exercise alive across a deploy now either.
 //
-// Every dual-write/shadow-compare call is deliberately fire-and-forget (must never add latency
-// to the real response) -- pollUntil() below polls with a short timeout instead of asserting on
-// the very next tick, same reasoning the notifications-slice differential test uses.
+// All three write paths are now directly awaited by their route before responding (no more
+// fire-and-forget dual-write for custom exercises either -- see POST/PUT/DELETE
+// /api/exercises/custom's own comments), so a plain read immediately after the HTTP response
+// returns is enough. pollUntil() (used by the dual-write-era custom-exercises assertions this
+// file no longer has) is removed along with its last caller, for the same reason.
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -59,17 +65,6 @@ function boot(port, dir, databaseUrl) {
     s.on('exit', () => res({ srv: null, adminToken: token }));
     setTimeout(() => res({ srv: s, adminToken: token }), 8000);
   });
-}
-
-async function pollUntil(fn, checkFn, timeoutMs = 2000) {
-  const start = Date.now();
-  let last;
-  while (Date.now() - start < timeoutMs) {
-    last = await fn();
-    if (checkFn(last)) return last;
-    await new Promise(r => setTimeout(r, 40));
-  }
-  return last;
 }
 
 ({ srv, adminToken } = await boot(PORT, DIR, testDb.url));
@@ -150,7 +145,7 @@ console.log('\nreports: a resolved report survives a real server restart (report
   ok(afterRestart.length >= 1 && afterRestart.every(r => r.status === 'resolved'), `the report is still there and still resolved after restart, got ${JSON.stringify(afterRestart)}`);
 }
 
-console.log('\ncustom exercises (dual-write phase): POST /api/exercises/custom lands in BOTH the old array AND the new row table');
+console.log('\ncustom exercises: POST /api/exercises/custom writes straight to custom_exercise_rows (no dual-write mirror any more)');
 let createdId;
 {
   const body = { name: 'Diff Test Curl', muscle_groups: ['biceps'], equipment: ['dumbbell'], level: 'intermediate', is_compound: false, pattern: 'pull' };
@@ -158,84 +153,88 @@ let createdId;
   createdId = r.id;
   ok(!!createdId, `create returns a real exercise with an id, got ${JSON.stringify(r)}`);
 
-  const oldList = await get('/api/exercises', alice.token).then(r2 => r2.json());
-  const oldEntry = oldList.find(e => e.name === 'Diff Test Curl');
-  ok(!!oldEntry && oldEntry.mine === true, 'old path (GET /api/exercises, still the real driver) shows it, tagged mine:true');
+  const list = await get('/api/exercises', alice.token).then(r2 => r2.json());
+  const entry = list.find(e => e.name === 'Diff Test Curl');
+  ok(!!entry && entry.mine === true, 'GET /api/exercises shows it, tagged mine:true');
 
-  const newRow = await pollUntil(() => db.pgGetCustomExerciseRow(createdId), row => !!row);
-  ok(!!newRow, `new table has a row with the SAME id the create returned, got ${JSON.stringify(newRow)}`);
-  ok(newRow && newRow.name === 'Diff Test Curl' && newRow.ownerId === alice.user.id && JSON.stringify(newRow.muscle_groups) === JSON.stringify(['biceps']),
-    `and its content matches (name/ownerId/muscle_groups) -- new: ${JSON.stringify(newRow)}`);
+  // No pollUntil needed here any more: the route awaits pgUpsertCustomExerciseRow before it ever
+  // responds (see that route's own comment), so the row is already committed by the time the HTTP
+  // response above came back -- a plain read is enough.
+  const row = await db.pgGetCustomExerciseRow(createdId);
+  ok(!!row, `custom_exercise_rows has a row with the SAME id the create returned, got ${JSON.stringify(row)}`);
+  ok(row && row.name === 'Diff Test Curl' && row.ownerId === alice.user.id && JSON.stringify(row.muscle_groups) === JSON.stringify(['biceps']),
+    `and its content matches (name/ownerId/muscle_groups) -- row: ${JSON.stringify(row)}`);
 }
 
-console.log('\ncustom exercises (dual-write phase): PUT edit updates the new row the same way it updates the old array entry');
+console.log('\ncustom exercises: PUT edit updates custom_exercise_rows directly');
 {
   const r = await put(`/api/exercises/custom/${createdId}`, { muscle_groups: ['biceps'], equipment: ['dumbbell', 'cable'], level: 'advanced', is_compound: true, pattern: 'pull' }, alice.token);
   ok(r.status === 200, `edit returns 200, got ${r.status}`);
-  const newRow = await pollUntil(() => db.pgGetCustomExerciseRow(createdId), row => row && row.level === 'advanced');
-  ok(newRow && newRow.level === 'advanced' && newRow.is_compound === true && JSON.stringify(newRow.equipment) === JSON.stringify(['dumbbell', 'cable']),
-    `new row reflects the edit, got ${JSON.stringify(newRow)}`);
+  const row = await db.pgGetCustomExerciseRow(createdId);
+  ok(row && row.level === 'advanced' && row.is_compound === true && JSON.stringify(row.equipment) === JSON.stringify(['dumbbell', 'cable']),
+    `row reflects the edit, got ${JSON.stringify(row)}`);
 }
 
-console.log('\ncustom exercises (dual-write phase): DELETE removes the new row the same way it removes the old array entry, and ownership is enforced independently on the new table too');
+console.log('\ncustom exercises: DELETE removes the row directly, and ownership is enforced independently on the table too');
 {
   const stolen = await db.pgDeleteCustomExerciseRow(createdId, bob.user.id);
-  ok(stolen === false, 'a non-owner cannot delete the new row directly either (defense in depth, mirrors the route\'s own ownership check)');
+  ok(stolen === false, 'a non-owner cannot delete the row directly either (defense in depth, mirrors the route\'s own ownership check)');
 
   const r = await del(`/api/exercises/custom/${createdId}`, alice.token);
   ok(r.status === 200, `delete returns 200, got ${r.status}`);
-  const gone = await pollUntil(() => db.pgGetCustomExerciseRow(createdId), row => row === null);
-  ok(gone === null, 'new row is gone after the real delete');
+  const gone = await db.pgGetCustomExerciseRow(createdId);
+  ok(gone === null, 'row is gone after the real delete');
 
-  const oldList = await get('/api/exercises', alice.token).then(r2 => r2.json());
-  ok(!oldList.some(e => e.name === 'Diff Test Curl'), 'old path (still the real driver) no longer shows it either');
+  const list = await get('/api/exercises', alice.token).then(r2 => r2.json());
+  ok(!list.some(e => e.name === 'Diff Test Curl'), 'GET /api/exercises no longer shows it either');
 }
 
-console.log('\ncustom exercises: the boot-time flatten migration catches a pre-existing row the dual-write writes never touched');
+console.log('\ncustom exercises: survives a real server restart (the read cutover, Oct 16 2026, means custom_exercise_rows is the ONLY thing keeping it alive now -- DB.customExercises is gone)');
 {
-  // Simulates exactly the real-world case this migration exists for: a custom exercise that was
-  // already sitting in the OLD custom_exercises table (array-per-owner) from before this slice's
-  // code ever ran, so no dual-write call site ever wrote it into the new table. A fresh row
-  // written straight into the OLD table, bypassing every route in this app, then a restart
-  // (which re-runs migrateCustomExerciseRowsIntoPostgres at boot) is what should surface it in
-  // the new table -- not any request-time code.
-  const preExisting = { id: 'ce_preexisting_1', name: 'Legacy Pre-Slice Row', pattern: 'push', category: 'chest', muscle_groups: ['chest'], equipment: [], is_compound: false, level: 'beginner', defaultSets: 3, defaultReps: 10, custom: true, ownerId: bob.user.id };
-  const c = db.getConn ? db.getConn() : null;
-  await c.query(
-    `INSERT INTO custom_exercises (owner_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (owner_id) DO UPDATE SET data = (CASE WHEN custom_exercises.data @> $2::jsonb THEN custom_exercises.data ELSE custom_exercises.data || $2::jsonb END)`,
-    [bob.user.id, JSON.stringify([preExisting])]
-  );
-  // bob may already have had an array from earlier in this file (none so far, but be safe): read
-  // what's there and append rather than assume this INSERT's ON CONFLICT path appended correctly
-  // for every Postgres version's jsonb `||` semantics on arrays -- just verify the END STATE below
-  // has the row, which is what actually matters.
+  const body = { name: 'Diff Durability Row', muscle_groups: ['chest'], equipment: [], level: 'beginner', is_compound: false, pattern: 'push' };
+  const created = await post('/api/exercises/custom', body, bob.token).then(r2 => r2.json());
+  ok(!!created.id, `setup: created a row to survive the restart, got ${JSON.stringify(created)}`);
+
   srv.kill();
   await new Promise(r => setTimeout(r, 600));
   ({ srv } = await boot(PORT, DIR, testDb.url));
-  ok(!!srv, 'server re-boots a third time (runs migrateCustomExerciseRowsIntoPostgres again)');
-  const flattened = await db.pgGetCustomExerciseRow('ce_preexisting_1');
-  ok(!!flattened && flattened.name === 'Legacy Pre-Slice Row' && flattened.ownerId === bob.user.id,
-    `the pre-existing row the dual-write writes never touched was picked up by the boot flatten, got ${JSON.stringify(flattened)}`);
+  ok(!!srv, 'server re-boots against the same database');
+
+  const list = await get('/api/exercises', bob.token).then(r2 => r2.json());
+  const stillThere = list.find(e => e.name === 'Diff Durability Row');
+  ok(!!stillThere && stillThere.mine === true, `the custom exercise survived the restart, got ${JSON.stringify(stillThere)}`);
 }
 
-console.log('\ncustom exercises: the shadow-compare added to GET /api/exercises genuinely detects a real divergence (not a no-op safety net)');
+console.log('\ncustom exercises: the 500-per-owner cap holds exactly under real CONCURRENT creates (regression -- two independent reviews caught and reproduced this race the same day the cutover landed)');
 {
-  // Deliberately desyncs the two tables behind the app's back -- deletes the row this test just
-  // proved the flatten created, from the NEW table only, leaving the OLD array (DB.customExercises,
-  // still what GET /api/exercises actually serves) untouched. The very next GET /api/exercises
-  // call should trigger shadowCompareCustomExerciseRows() and log a mismatch -- this proves the
-  // safety net this phase depends on to catch a real missed-dual-write bug actually fires, rather
-  // than silently passing because nothing ever triggers it in practice.
-  const c = db.getConn();
-  await c.query('DELETE FROM custom_exercise_rows WHERE id = $1', ['ce_preexisting_1']);
+  // The read cutover's first version checked the cap with `const mine = await
+  // pgListCustomExerciseRowsByOwner(...); if (mine.length >= 500) ...` -- a separate awaited call
+  // BEFORE the eventual awaited insert, each its own turn in db.js's enqueue() queue. That reopened
+  // a race the OLD synchronous check-then-push code never had (no await between the two at all,
+  // so Node's single-threaded execution made the pair atomic for free): concurrent creates from
+  // the SAME user could each read the same stale under-cap count in the gap and all succeed,
+  // landing over 500. Fixed by pgInsertCustomExerciseRowIfUnderCap, which does the count check and
+  // the insert inside ONE enqueue()'d call (see its own comment in db.js). Proven here against the
+  // real route over real HTTP, not just against db.js directly: seed alice to exactly one below
+  // the cap, then fire several real concurrent POST requests and confirm AT MOST ONE succeeds and
+  // the final count never exceeds 500.
+  const seedOwner = alice.user.id;
+  for (let i = 0; i < 499; i++) {
+    await db.pgUpsertCustomExerciseRow({ id: `cap_seed_${i}`, ownerId: seedOwner, name: `Cap Seed ${i}`, muscle_groups: ['chest'], equipment: [], is_compound: false, level: 'beginner', pattern: 'push', custom: true, defaultSets: 3, defaultReps: 10 });
+  }
+  const before = (await db.pgListCustomExerciseRowsByOwner(seedOwner)).length;
+  ok(before === 499, `setup: alice sits at exactly one below the cap, got ${before}`);
 
-  let sawMismatchLog = false;
-  const onData = d => { if (String(d).includes('[migration shadow-compare] custom_exercise_rows id-set mismatch')) sawMismatchLog = true; };
-  srv.stderr.on('data', onData);
-  await get('/api/exercises', bob.token);   // throttled to once/minute -- this is the first call since boot, so it fires
-  await new Promise(r => setTimeout(r, 300));   // the compare itself is async (fire-and-forget)
-  srv.stderr.off('data', onData);
-  ok(sawMismatchLog, 'a deliberately-introduced divergence between the old array and the new table was logged by the shadow-compare');
+  const concurrent = await Promise.all([0, 1, 2, 3, 4].map(i =>
+    post('/api/exercises/custom', { name: `Cap Race ${i}`, muscle_groups: ['chest'] }, alice.token)
+  ));
+  const succeeded = concurrent.filter(r => r.status === 200).length;
+  const rejected = concurrent.filter(r => r.status === 400).length;
+  ok(succeeded === 1, `exactly one of 5 concurrent creates at the cap boundary succeeds, got ${succeeded}`);
+  ok(rejected === 4, `and the other 4 are cleanly rejected with the cap error, got ${rejected}`);
+
+  const after = (await db.pgListCustomExerciseRowsByOwner(seedOwner)).length;
+  ok(after === 500, `the real row count never exceeds the documented cap of 500, got ${after}`);
 }
 
 console.log(fails === 0 ? '\nall assertions passed' : `\n${fails} assertion(s) FAILED`);
