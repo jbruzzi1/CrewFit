@@ -442,14 +442,34 @@ async function doSave(d) {
     // the race is silently gone." Scoped to bootstrapping (migrate-to-postgres.mjs's one-shot
     // disaster-recovery path) only, same reasoning as notifications/feed_events: that script is
     // never running alongside real user traffic, so it cannot reopen the race this exists to avoid.
+    // Oct 16 2026 (found while writing a regression test for the custom-exercise-rows orphan fix
+    // just below sibling functions, reported to Jeff, fixed same day on his go-ahead): these four
+    // bootstrap branches used to run syncTableFull(d.pushSubs) etc. unconditionally whenever
+    // bootstrapping was true -- and `d.pushSubs`/`d.notifications`/`d.feedEvents`/`d.reports` are
+    // ALWAYS `{}` now for any backup taken since each collection's own cutover (see EMPTY_DB/
+    // doLoad() above -- the live DB object, and therefore the JSON.stringify(DB) backup snapshot,
+    // has not carried these fields at all since then). syncTableFull's whole point is to be a true
+    // full-replace -- upsert what's given AND delete every row NOT given -- so handing it `{}`
+    // every time doesn't mean "nothing to restore," it means "delete everything in this table."
+    // Reproduced live: seeded a push sub and a report, took a real backup, ran
+    // scripts/migrate-to-postgres.mjs against it, watched both rows get deleted while the script
+    // printed "Migration verified." Same root cause, same fix shape, as the SINGLETON_FIELDS
+    // `d[key] === undefined` convention just below this block already uses: `undefined` means
+    // "this save() call has nothing to say about this collection," not "this collection is empty."
+    // scripts/migrate-to-postgres.mjs now only sets d.pushSubs/d.notifications/d.feedEvents/
+    // d.reports to a real object when the SOURCE FILE actually has that key (an old-style backup
+    // taken BEFORE that collection's cutover, where it's a genuine complete snapshot worth fully
+    // replacing with) -- see that script's own comment. When the key is absent (every backup from
+    // now on), `d.<field>` is `undefined` and the table is left completely untouched: no upsert,
+    // no delete, not even a transaction touching it.
     pending.push_subs = bootstrapping
-      ? await syncTableFull(c, 'push_subs', 'user_id', d.pushSubs, jsonToParams, PUSH_SUBS_UPSERT_SQL)
+      ? (d.pushSubs !== undefined ? await syncTableFull(c, 'push_subs', 'user_id', d.pushSubs, jsonToParams, PUSH_SUBS_UPSERT_SQL) : {})
       : (base.push_subs || {});
     pending.notifications = bootstrapping
-      ? await syncTableFull(c, 'notifications', 'id', d.notifications, jsonToParams, NOTIFICATIONS_UPSERT_SQL)
+      ? (d.notifications !== undefined ? await syncTableFull(c, 'notifications', 'id', d.notifications, jsonToParams, NOTIFICATIONS_UPSERT_SQL) : {})
       : (base.notifications || {});
     pending.feed_events = bootstrapping
-      ? await syncTableFull(c, 'feed_events', 'id', d.feedEvents, jsonToParams, FEED_EVENTS_UPSERT_SQL)
+      ? (d.feedEvents !== undefined ? await syncTableFull(c, 'feed_events', 'id', d.feedEvents, jsonToParams, FEED_EVENTS_UPSERT_SQL) : {})
       : (base.feed_events || {});
     // Oct 14 2026: reports gets the same bootstrap-only treatment as push_subs/notifications/
     // feed_events just above, for the same reason -- POST /api/report, GET /api/admin/reports,
@@ -457,8 +477,10 @@ async function doSave(d) {
     // pgResolveReport, so a generic sync running alongside them on live traffic would reopen the
     // same "two writers fight over the final value" class of bug. Scoped to bootstrapping
     // (migrate-to-postgres.mjs's one-shot disaster-recovery path) only.
+    // Oct 16 2026: same `d.reports !== undefined` guard as the three siblings just above, same
+    // reproduced bug, same fix -- see the long comment at the top of this block.
     pending.reports = bootstrapping
-      ? await syncTableFull(c, 'reports', 'id', d.reports, jsonToParams, REPORTS_UPSERT_SQL)
+      ? (d.reports !== undefined ? await syncTableFull(c, 'reports', 'id', d.reports, jsonToParams, REPORTS_UPSERT_SQL) : {})
       : (base.reports || {});
 
     // Singletons: never deleted for being merely absent from `d` (unlike collections above) —
