@@ -139,6 +139,16 @@ const files = [
   // whatever Postgres actually ended up holding. Added to this list the same run it was written,
   // same discipline as every entry above.
   'test/mutate-before-save-ordering-regression.mjs',
+  // Oct 16 2026 (disaster-recovery wipe bug -- found while writing a regression test for the
+  // customExerciseRows orphan-deletion fix in the differential test above, reported to Jeff
+  // immediately per hard rule #11, fixed same day on his go-ahead -- see CLAUDE.md
+  // "Rearchitecture status"). Proves live that the documented recovery script
+  // (scripts/migrate-to-postgres.mjs) no longer wipes push_subs/notifications/feed_events/
+  // reports/custom_exercise_rows when run against a backup taken by the current app (every
+  // backup from now on), while still correctly restoring -- including orphan deletion -- from a
+  // genuine old-style backup that predates these collections' cutovers. Added to this list the
+  // same run it was written, same discipline as every entry above.
+  'test/migrate-recovery-no-wipe-regression.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

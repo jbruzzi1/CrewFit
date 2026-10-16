@@ -76,6 +76,34 @@ const normUser = v => String(v == null ? '' : v).trim().toLowerCase();
   }
 }
 
+// Oct 16 2026 (adversarial review of the disaster-recovery wipe fix just below, reproduced live
+// by the reviewer): the original version of the `legacyPresent` check (see its own long comment
+// below) only tested whether the key was PRESENT, not whether its value actually looks like a
+// genuine collection snapshot. A source file with `"pushSubs": null` (or any non-object value)
+// for one of these five keys passed that check as "a real old-style backup, safe to fully
+// replace" -- and since syncTableFull's `Object.keys(obj || {})` silently treats `null` as `{}`,
+// that "replace" was a full, silent wipe, the exact failure mode the fix below exists to close,
+// just reached through a different input shape. Reproduced by the reviewer: seeded a real
+// push_subs row, wrote a backup with `pushSubs: null` alongside real users, ran this script
+// against it, watched the row disappear while the script printed "Migration verified." A
+// malformed value here can only come from a hand-edited or corrupted file (every historical
+// EMPTY_DB-era version of the live DB object defaulted these fields to a real `{}`, never `null`,
+// so a genuine backup file was never going to produce this on its own) -- which is exactly the
+// kind of input this disaster-recovery tool specifically has to be trusted against, not the kind
+// it can afford to guess about. So this refuses outright rather than silently picking a side
+// (treat it as empty-and-wipe, or as absent-and-skip): a human has to look at the file and decide.
+function isPlainCollectionObject(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+{
+  const malformed = ['pushSubs', 'notifications', 'feedEvents', 'reports', 'customExercises']
+    .filter(key => Object.prototype.hasOwnProperty.call(raw, key) && !isPlainCollectionObject(raw[key]));
+  if (malformed.length) {
+    console.error(`FATAL: ${file} has a malformed value for: ${malformed.join(', ')} — expected a plain object (or the key to be entirely absent, which is normal for any backup taken since that collection's own cutover), got something else (null / an array / a primitive) instead.`);
+    console.error('This script refuses to guess whether that means "this collection is genuinely empty" (safe to fully replace with nothing) or "this file is corrupted/hand-edited wrong" (NOT safe to touch) -- deciding wrong either way can silently destroy real data in the target database.');
+    console.error('Fix the file by hand (set it to a real object, e.g. {}, if it really is meant to be an old-style snapshot of this collection -- or remove the key entirely if this collection is not meant to be restored from this file) and re-run.');
+    process.exit(1);
+  }
+}
+
 // Reshape into exactly the DB object shape db.js's save() expects — see EMPTY_DB in db.js.
 // Falling back to {} for a missing collection means an old file that never had, say, `templates`
 // at all still migrates cleanly rather than throwing.
@@ -105,16 +133,55 @@ const normUser = v => String(v == null ? '' : v).trim().toLowerCase();
 // feedEvents were dropped before it (see db.js's own comment on EMPTY_DB) -- it is handled
 // separately, below, by flattening straight into custom_exercise_rows instead of handing it to
 // db.save() like every other collection here.
+// Oct 16 2026 (disaster-recovery wipe bug, found while writing a regression test for the
+// customExerciseRows orphan-deletion fix below, reported to Jeff, fixed same day on his go-ahead
+// "I want to fix the above issue"): pushSubs/notifications/feedEvents/reports/customExercises are
+// only ever genuinely present in a source file that predates that specific collection's own
+// cutover -- the point in time each one was removed from the live DB object entirely (see db.js's
+// EMPTY_DB/doLoad() comments). EVERY backup taken since (this app backs up with a plain
+// `JSON.stringify(DB)` -- see backupOnBoot() in server.js) genuinely does not have the key at all,
+// which is NOT the same thing as "this backup has zero items in this collection." The difference
+// matters because `raw.pushSubs || {}` (what this script used to do) collapses both cases to the
+// same `{}` -- and db.save()'s bootstrap-only branches for these four tables, and this script's
+// own customExerciseRows flatten below, treat `{}` as a real, complete, authoritative snapshot:
+// upsert what's given AND delete every row that isn't. Fed `{}` every single time (because the
+// key is never actually there any more), that is a full wipe disguised as a restore.
+//
+// Reproduced live, three different ways, before this fix: seeded a push subscription, a user
+// report, and a custom exercise; took one real backup; ran this script against it; all three were
+// silently deleted, and the script printed "Migration verified." This was not unique to today's
+// custom-exercise work -- push_subs/reports (cut over Oct 14) and notifications/feed_events (cut
+// over Oct 13) have had this exact gap since their own cutovers landed, just never noticed,
+// because the one test that exercises this script (test/data-safety.mjs's "documented recovery
+// path") only ever asserted on the user count surviving.
+//
+// The fix checks for the KEY'S PRESENCE, not its truthiness or content: `'pushSubs' in raw` is
+// true for an old-style backup (even a genuinely empty `{}` one, from back when that was still a
+// real, complete snapshot) and false for every backup since that collection's cutover. Only the
+// true case gets handed a real object; the false case gets `undefined` instead of `{}` --
+// `undefined` already means "this save() call has nothing to say about this field" by convention
+// in this file (see the SINGLETON_FIELDS loop in doSave()), extended here to these four
+// collections too. db.save() (see its own updated comment) and this script's own verification
+// below both now treat `undefined` as "leave this table completely untouched," not "replace it
+// with nothing."
+const legacyPresent = {
+  pushSubs: Object.prototype.hasOwnProperty.call(raw, 'pushSubs'),
+  notifications: Object.prototype.hasOwnProperty.call(raw, 'notifications'),
+  feedEvents: Object.prototype.hasOwnProperty.call(raw, 'feedEvents'),
+  reports: Object.prototype.hasOwnProperty.call(raw, 'reports'),
+  customExercises: Object.prototype.hasOwnProperty.call(raw, 'customExercises'),
+};
+
 const d = {
   users: raw.users || {},
   sessions: raw.sessions || {},
   templates: raw.templates || {},
-  pushSubs: raw.pushSubs || {},
+  pushSubs: legacyPresent.pushSubs ? raw.pushSubs : undefined,
   prs: raw.prs || {},
   crews: raw.crews || {},
-  notifications: raw.notifications || {},
-  feedEvents: raw.feedEvents || {},
-  reports: raw.reports || {},
+  notifications: legacyPresent.notifications ? raw.notifications : undefined,
+  feedEvents: legacyPresent.feedEvents ? raw.feedEvents : undefined,
+  reports: legacyPresent.reports ? raw.reports : undefined,
 };
 // Singleton bookkeeping field — only carried over if actually present in the source file, so a
 // migration never invents a value db.js's save() would otherwise have left untouched.
@@ -124,68 +191,104 @@ const counts = {
   users: Object.keys(d.users).length,
   sessions: Object.keys(d.sessions).length,
   templates: Object.keys(d.templates).length,
-  pushSubs: Object.keys(d.pushSubs).length,
   prs: Object.keys(d.prs).length,
   crews: Object.keys(d.crews).length,
-  notifications: Object.keys(d.notifications).length,
-  feedEvents: Object.keys(d.feedEvents).length,
-  reports: Object.keys(d.reports).length,
 };
+// pushSubs/notifications/feedEvents/reports are deliberately NOT in `counts` any more -- they are
+// no longer guaranteed to be plain row-count-able objects (can be `undefined`), and -- now that
+// db.load() doesn't return them either -- they get their own direct-SQL before/after verification
+// below, same treatment customExerciseRows already needed for the same reason.
 // customExerciseRows is counted separately below, once raw.customExercises (old array-per-owner
 // shape) is actually flattened -- Object.keys(raw.customExercises||{}).length would only count
 // OWNERS, not individual exercises, which is the wrong number for this collection specifically
 // (every other collection above is already keyed one-row-per-entity, so Object.keys().length IS
 // the row count for those).
+const legacyLabel = (name, present) => present ? `${name}=${Object.keys(d[name] ?? raw[name] ?? {}).length}` : `${name}=<not in backup, left untouched>`;
 console.log(`Migrating ${file} -> ${process.env.DATABASE_URL.replace(/:[^:@]*@/, ':***@')}`);
-console.log(`  users=${counts.users} sessions=${counts.sessions} templates=${counts.templates} pushSubs=${counts.pushSubs} prs=${counts.prs} crews=${counts.crews} notifications=${counts.notifications} feedEvents=${counts.feedEvents} reports=${counts.reports}`);
+console.log(`  users=${counts.users} sessions=${counts.sessions} templates=${counts.templates} prs=${counts.prs} crews=${counts.crews} ${legacyLabel('pushSubs', legacyPresent.pushSubs)} ${legacyLabel('notifications', legacyPresent.notifications)} ${legacyLabel('feedEvents', legacyPresent.feedEvents)} ${legacyLabel('reports', legacyPresent.reports)}`);
 
 const db = (await import('../db.js')).default;
 await db.ensureSchema();
+
+// Snapshot the four cutover-only tables' CURRENT content before save() touches anything --
+// the only way to later prove a table genuinely marked "not in backup" was left byte-for-byte
+// alone, rather than just hoping db.save()'s updated guard (see its own comment) worked.
+async function readTable(table, idCol) {
+  const r = await db.getConn().query(`SELECT ${idCol} AS id, data FROM ${table}`);
+  const out = {};
+  for (const row of r.rows) out[row.id] = JSON.parse(row.data);
+  return out;
+}
+const beforePushSubs = await readTable('push_subs', 'user_id');
+const beforeNotifications = await readTable('notifications', 'id');
+const beforeFeedEvents = await readTable('feed_events', 'id');
+const beforeReports = await readTable('reports', 'id');
+const beforeCustomExerciseRows = await readTable('custom_exercise_rows', 'id');
+
 await db.save(d);
 
 // Oct 16 2026 (read cutover, task #258+ phase 2): flattens raw.customExercises (the OLD array-
-// per-owner shape every existing backup/data.json file still has) straight into the NEW
+// per-owner shape a backup taken BEFORE the customExercises cutover has) straight into the NEW
 // custom_exercise_rows table (one row per exercise) -- the exact flatten
 // migrateCustomExerciseRowsIntoPostgres used to do every boot in server.js, now retired now that
 // DB.customExercises can never exist again (see that removal's own comment in server.js). Same
 // defensive id-backfill migrateCustomExerciseIds used to apply at boot: a legacy row from before
 // Sep 30 2026 has no `id` yet, and this script never runs that old boot migration, so a brand-new
-// one is minted here instead. Vanishingly unlikely against a REAL backup (every backup taken
-// since that migration first landed already has ids, persisted by the very boot that made it),
-// but cheap insurance against a much older hand-supplied file.
-const expectedCustomExerciseRows = {};
-for (const [ownerId, arr] of Object.entries(raw.customExercises || {})) {
-  for (const e of (Array.isArray(arr) ? arr : [])) {
-    if (!e || typeof e !== 'object') continue;   // tolerate a malformed exercise object rather than crash the migration -- same stance server.js's own boot migrations already took
-    if (!e.id) e.id = crypto.randomUUID();
-    const row = { ...e, ownerId };
-    await db.pgUpsertCustomExerciseRow(row);
-    expectedCustomExerciseRows[row.id] = row;
-  }
-}
-// Adversarial-review finding (reproduced live): every OTHER collection this script restores goes
-// through db.js's syncTableFull, which is a true full-replace -- it deletes any row in the
-// target table that ISN'T in the backup, not just upserts what is. The loop just above was
-// upsert-only, so restoring a backup into a database that already had SOME custom_exercise_rows
-// not present in that backup (live traffic since the snapshot, or any stray leftover row) left
-// those orphans silently surviving a "restore" -- exactly the two-way-reconciliation gap the old
-// migrateCustomExerciseRowsIntoPostgres boot migration had already been fixed to close once
-// (see its own comment, before it was retired along with DB.customExercises). Reproduced: seeding
-// one pre-existing row for a different owner before running this script against a backup that
-// didn't mention it left that row behind, and the read-back verification below correctly caught
-// it as an unexpected extra row. Fixed by actually deleting anything in the table that isn't in
-// `expectedCustomExerciseRows`, so this script's restore is a real full-replace like every other
-// collection's, not a merge.
-const existingCustomExerciseRows = (await db.getConn().query('SELECT id, owner_id FROM custom_exercise_rows')).rows;
+// one is minted here instead. Vanishingly unlikely against a REAL old-style backup (every backup
+// taken since that migration first landed already has ids, persisted by the very boot that made
+// it), but cheap insurance against a much older hand-supplied file.
+//
+// Oct 16 2026, same day (disaster-recovery wipe bug, see the long comment above `legacyPresent`):
+// this whole block -- flatten AND the orphan-deletion fix just below it -- now only runs when
+// `legacyPresent.customExercises` is true, i.e. the source file is an old-style backup that
+// genuinely predates the customExercises cutover and actually has the key. Every backup since
+// that cutover does not have `raw.customExercises` at all -- running this unconditionally (as it
+// did until today) meant `expectedCustomExerciseRows` was always `{}`, and the orphan-deletion
+// loop then deleted every real row in custom_exercise_rows on every single run, reporting it as
+// "removed N orphan(s)" as if that were a good thing. Reproduced live, fixed by skipping this
+// block entirely when the backup doesn't cover this collection -- see the matching `else` branch
+// in the verification section below, which proves the table was left byte-for-byte alone instead.
+let expectedCustomExerciseRows = null;
 let removedCustomExerciseRowOrphans = 0;
-for (const row of existingCustomExerciseRows) {
-  if (!expectedCustomExerciseRows[row.id]) {
-    await db.pgDeleteCustomExerciseRow(row.id, row.owner_id);
-    removedCustomExerciseRowOrphans++;
+if (legacyPresent.customExercises) {
+  expectedCustomExerciseRows = {};
+  for (const [ownerId, arr] of Object.entries(raw.customExercises || {})) {
+    for (const e of (Array.isArray(arr) ? arr : [])) {
+      if (!e || typeof e !== 'object') continue;   // tolerate a malformed exercise object rather than crash the migration -- same stance server.js's own boot migrations already took
+      if (!e.id) e.id = crypto.randomUUID();
+      const row = { ...e, ownerId };
+      await db.pgUpsertCustomExerciseRow(row);
+      expectedCustomExerciseRows[row.id] = row;
+    }
   }
+  // Adversarial-review finding (reproduced live): every OTHER collection this script restores
+  // goes through db.js's syncTableFull, which is a true full-replace -- it deletes any row in the
+  // target table that ISN'T in the backup, not just upserts what is. The loop just above was
+  // upsert-only, so restoring an OLD-STYLE backup into a database that already had SOME
+  // custom_exercise_rows not present in that backup (live traffic since the snapshot, or any
+  // stray leftover row) left those orphans silently surviving a "restore" -- exactly the
+  // two-way-reconciliation gap the old migrateCustomExerciseRowsIntoPostgres boot migration had
+  // already been fixed to close once (see its own comment, before it was retired along with
+  // DB.customExercises). Reproduced: seeding one pre-existing row for a different owner before
+  // running this script against an old-style backup that didn't mention it left that row behind,
+  // and the read-back verification below correctly caught it as an unexpected extra row. Fixed by
+  // actually deleting anything in the table that isn't in `expectedCustomExerciseRows`, so this
+  // script's restore of an old-style backup is a real full-replace like every other collection's,
+  // not a merge. (This is correct ONLY because we already know, from the `if` above, that this
+  // backup is a genuine complete snapshot of this collection -- the exact thing that stopped being
+  // true for every backup going forward, which is why the `if` exists at all now.)
+  const existingCustomExerciseRows = (await db.getConn().query('SELECT id, owner_id FROM custom_exercise_rows')).rows;
+  for (const row of existingCustomExerciseRows) {
+    if (!expectedCustomExerciseRows[row.id]) {
+      await db.pgDeleteCustomExerciseRow(row.id, row.owner_id);
+      removedCustomExerciseRowOrphans++;
+    }
+  }
+  const customExerciseRowCount = Object.keys(expectedCustomExerciseRows).length;
+  console.log(`  customExerciseRows=${customExerciseRowCount} (flattened from raw.customExercises)${removedCustomExerciseRowOrphans ? `, removed ${removedCustomExerciseRowOrphans} orphan(s) not present in the source file` : ''}`);
+} else {
+  console.log('  customExerciseRows=<not in backup, left untouched>');
 }
-const customExerciseRowCount = Object.keys(expectedCustomExerciseRows).length;
-console.log(`  customExerciseRows=${customExerciseRowCount} (flattened from raw.customExercises)${removedCustomExerciseRowOrphans ? `, removed ${removedCustomExerciseRowOrphans} orphan(s) not present in the source file` : ''}`);
 
 // Order-independent deep equality — Postgres's jsonb column type does NOT preserve object key
 // order (it stores a canonicalized binary form and reconstructs keys in its own order on
@@ -213,42 +316,53 @@ function deepEqual(a, b) {
 // whole database is dozens of rows, so a full deep-compare of every collection is cheap —
 // there's no scale reason to settle for the weaker check.
 const after = await db.load();
-// Oct 13 2026 (read cutover, task #252): notifications/feedEvents are no longer part of what
-// db.load() returns at all -- they're served through the direct-Postgres functions now (see
-// db.js's EMPTY_DB/doLoad() comments), not the generic in-memory DB object this script otherwise
-// verifies against. Read them back with a plain SELECT off the same connection instead, so the
-// addition above actually gets verified rather than silently skipped.
-const notifRows = (await db.getConn().query('SELECT id, data FROM notifications')).rows;
-const afterNotifications = {}; for (const r of notifRows) afterNotifications[r.id] = JSON.parse(r.data);
-const feedRows = (await db.getConn().query('SELECT id, data FROM feed_events')).rows;
-const afterFeedEvents = {}; for (const r of feedRows) afterFeedEvents[r.id] = JSON.parse(r.data);
-const afterByCollection = { ...after, notifications: afterNotifications, feedEvents: afterFeedEvents };
-// Oct 16 2026 (read cutover, task #258+ phase 2): custom_exercise_rows verified the same raw-SQL
-// way as notifications/feed_events just above, for the same reason (db.load() doesn't return it
-// either) -- but NOT folded into the generic counts/afterByCollection loop below, unlike those
-// two: that loop compares against `d[collection]`, which is keyed by id already for every other
-// collection, while raw.customExercises is keyed by OWNER with an array value -- comparing it
-// against this table (keyed by exercise id) needs its own loop, against the already-flattened
-// `expectedCustomExerciseRows` built above, not against `d` or `raw` directly.
-const customExerciseRowsResult = (await db.getConn().query('SELECT id, data FROM custom_exercise_rows')).rows;
-const afterCustomExerciseRows = {}; for (const r of customExerciseRowsResult) afterCustomExerciseRows[r.id] = JSON.parse(r.data);
 const problems = [];
-{
-  const afterKeys = Object.keys(afterCustomExerciseRows);
-  if (afterKeys.length !== customExerciseRowCount) {
-    problems.push(`customExerciseRows: expected ${customExerciseRowCount} row(s), found ${afterKeys.length}`);
-  }
-  for (const id of Object.keys(expectedCustomExerciseRows)) {
-    if (!deepEqual(afterCustomExerciseRows[id], expectedCustomExerciseRows[id])) {
-      problems.push(`customExerciseRows/${id}: content does not match the source file after read-back`);
+
+// Oct 13/14/16 2026 (read cutover, tasks #252/#258+): push_subs/notifications/feed_events/
+// reports/custom_exercise_rows are no longer part of what db.load() returns at all -- they're
+// served through the direct-Postgres functions now (see db.js's EMPTY_DB/doLoad() comments), not
+// the generic in-memory DB object this script otherwise verifies against. Each is read back with
+// a plain SELECT off the same connection instead.
+//
+// Oct 16 2026 (disaster-recovery wipe bug): each of these five now verifies ONE of two different
+// things, depending on `legacyPresent` (see its own long comment above): if the source file
+// genuinely covered this collection (an old-style backup), verify its content matches the source
+// exactly, same as every other collection below. If it didn't (every backup since that
+// collection's own cutover), verify the table was left COMPLETELY UNCHANGED from its pre-save
+// snapshot (`before*`, captured above, right before db.save(d) ran) -- proving this script
+// actually did nothing to a collection it has no business touching, rather than just hoping the
+// `undefined`-means-"don't touch" convention (see db.js's updated comment) held.
+function verifyCutoverCollection(name, present, afterRows, beforeRows, expected) {
+  if (present) {
+    const afterKeys = Object.keys(afterRows);
+    const expectedKeys = Object.keys(expected);
+    if (afterKeys.length !== expectedKeys.length) {
+      problems.push(`${name}: expected ${expectedKeys.length} row(s) from the backup, found ${afterKeys.length}`);
+      return;
+    }
+    for (const id of expectedKeys) {
+      if (!deepEqual(afterRows[id], expected[id])) {
+        problems.push(`${name}/${id}: content does not match the source file after read-back`);
+      }
+    }
+  } else {
+    if (!deepEqual(afterRows, beforeRows)) {
+      problems.push(`${name}: not present in this backup, but the table changed anyway (expected it to be left completely untouched) -- before had ${Object.keys(beforeRows).length} row(s), after has ${Object.keys(afterRows).length}`);
     }
   }
 }
+
+verifyCutoverCollection('pushSubs', legacyPresent.pushSubs, await readTable('push_subs', 'user_id'), beforePushSubs, d.pushSubs || {});
+verifyCutoverCollection('notifications', legacyPresent.notifications, await readTable('notifications', 'id'), beforeNotifications, d.notifications || {});
+verifyCutoverCollection('feedEvents', legacyPresent.feedEvents, await readTable('feed_events', 'id'), beforeFeedEvents, d.feedEvents || {});
+verifyCutoverCollection('reports', legacyPresent.reports, await readTable('reports', 'id'), beforeReports, d.reports || {});
+verifyCutoverCollection('customExerciseRows', legacyPresent.customExercises, await readTable('custom_exercise_rows', 'id'), beforeCustomExerciseRows, expectedCustomExerciseRows || {});
+
 for (const [collection, n] of Object.entries(counts)) {
-  const afterKeys = Object.keys(afterByCollection[collection] || {});
+  const afterKeys = Object.keys(after[collection] || {});
   if (afterKeys.length !== n) { problems.push(`${collection}: expected ${n} row(s), found ${afterKeys.length}`); continue; }
   for (const id of Object.keys(d[collection])) {
-    if (!deepEqual(afterByCollection[collection][id], d[collection][id])) {
+    if (!deepEqual(after[collection][id], d[collection][id])) {
       problems.push(`${collection}/${id}: content does not match the source file after read-back`);
     }
   }
@@ -263,5 +377,5 @@ if (problems.length) {
   process.exit(1);
 }
 
-console.log('Migration verified: every collection\'s row counts AND content match on read-back.');
+console.log('Migration verified: every collection covered by this backup matches on read-back, and every collection NOT covered by it (see any "left untouched" lines above) was provably left alone.');
 db.close();
