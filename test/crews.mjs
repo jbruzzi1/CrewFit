@@ -479,6 +479,95 @@ console.log('\ncrew challenges: "custom" goals require a title, track no number,
   ok(palViewAfterPublic.challenge.completed === false, 'a custom goal never marks itself complete, no matter what gets posted');
 }
 
+console.log('\ncrew challenges: canceling one reverts cleanly if the feed-event delete or save fails -- never leaves it silently stranded');
+{
+  // Oct 16 2026 (crews deep-dive audit, Jeff: "find any additional [bugs] like you have and fix
+  // them" -- found and reproduced live, then fixed via withCrewLock -- see server.js's own
+  // comment on DELETE /api/crews/:id/challenge/:challengeId). This used to mutate c.challenges
+  // (removing the running challenge) BEFORE two awaited calls that can each fail -- a rigged
+  // failure left the challenge gone from the live in-memory crew (visible to every other request
+  // reading it) but never actually persisted, so it would have silently REAPPEARED on the next
+  // restart. Same technique as test/mutate-before-save-ordering-regression.mjs: a second,
+  // independent raw connection to the SAME database the spawned server uses, renaming a table out
+  // from under it to force a real failure without touching the server's own connection.
+  const owner = await reg('cancelowner1'), pal = await reg('cancelpal1');
+  await connect(owner, pal);
+  const c = await post(owner, '/api/crews', { name: 'Cancel Test', memberIds: [pal.id] }).then(x => x.json());
+  const started = await post(owner, `/api/crews/${c.id}/challenge`, { type: 'workouts', target: 5 }).then(x => x.json());
+  ok(started.challenge && started.challenge.id, 'challenge started');
+
+  const raw = new PgConnection(parseConnString(testDb.url));
+  await raw.query('ALTER TABLE feed_events RENAME TO feed_events_broken_for_test');
+  const failed = await del(owner, `/api/crews/${c.id}/challenge/${started.challenge.id}`);
+  ok(failed.status === 500, `cancel returns a real error while feed_events is broken, got ${failed.status}`);
+  await raw.query('ALTER TABLE feed_events_broken_for_test RENAME TO feed_events');
+  raw.close();
+
+  const health = await get(owner, '/healthz');
+  ok(health.ok === true, 'server is still up after the rigged cancel failure, not crashed');
+
+  const afterFail = await get(owner, `/api/crews/${c.id}`);
+  ok(afterFail.challenge && afterFail.challenge.id === started.challenge.id && afterFail.challenge.completed === false,
+    `the "failed" cancel never actually took effect -- the challenge is still shown as running, got ${JSON.stringify(afterFail.challenge)}`);
+
+  // Not just a lucky in-memory echo that would vanish on restart -- prove it by actually
+  // canceling the SAME challenge for real now that the table is fixed, confirming the revert left
+  // it in a genuinely cancelable state rather than some half-stranded in-between.
+  const real = await del(owner, `/api/crews/${c.id}/challenge/${started.challenge.id}`);
+  ok(real.status === 200, `with the table fixed, the SAME challenge can now actually be canceled, got ${real.status}`);
+  const afterReal = await get(owner, `/api/crews/${c.id}`);
+  ok(afterReal.challenge === null, 'and now it really is gone');
+}
+
+console.log('\nPUT /api/crews/:id: concurrent membership edits are fully serialized -- each response reflects exactly what IT persisted, never a borrowed read of the other request\'s overwrite');
+{
+  // Oct 16 2026 (crews deep-dive audit, Jeff: "find any additional [bugs] like you have and fix
+  // them" -- found and reproduced live, then fixed via withCrewLock -- see server.js's own
+  // comment on PUT /api/crews/:id / withCrewLock). PUT here is a full-roster REPLACE, not an
+  // additive patch (see validCrewMemberIds) -- so this test does NOT claim both concurrent
+  // additions survive together; whichever request's critical section runs second always fully
+  // overwrites the first's addition, and that part is unchanged, inherent to this endpoint's
+  // contract, not something a per-crew lock can or should fix. What WAS actually broken, and is
+  // what this locks in: the memberIds assignment and the final res.json used to be separated by
+  // real awaited Postgres calls (the per-new-member emitFeedEvent loop, then save(DB)) -- long
+  // enough for a genuinely concurrent second request to run its OWN assignment against the same
+  // shared crew object in between, so the first request's res.json (reading that live, shared
+  // object at response time) could echo the SECOND request's roster instead of the one it itself
+  // had just set. Reproduced live before the fix: one request's own 200 body showed a roster it
+  // never asked for.
+  const owner = await reg('raceowner1');
+  const existing = [];
+  for (let i = 0; i < 3; i++) {
+    const f = await reg(`racefriend${i}1`);
+    await connect(owner, f);
+    existing.push(f);
+  }
+  const friendA = await reg('racefrienda1'), friendB = await reg('racefriendb1');
+  await connect(owner, friendA);
+  await connect(owner, friendB);
+  const baseIds = existing.map(f => f.id);
+  const c = await post(owner, '/api/crews', { name: 'Race Test', memberIds: baseIds }).then(x => x.json());
+  ok(c.members.length === existing.length + 1, `sanity: crew starts with owner + ${existing.length} friends (got ${c.members.length})`);
+
+  const [ra, rb] = await Promise.all([
+    put(owner, `/api/crews/${c.id}`, { memberIds: [...baseIds, friendA.id] }),
+    put(owner, `/api/crews/${c.id}`, { memberIds: [...baseIds, friendB.id] }),
+  ]);
+  ok(ra.status === 200 && rb.status === 200, `both concurrent PUTs succeed, got ${ra.status}/${rb.status}`);
+  const [bodyA, bodyB] = await Promise.all([ra.json(), rb.json()]);
+
+  const idSet = body => new Set(body.members.map(m => m.id));
+  const eq = (s1, s2) => s1.size === s2.size && [...s1].every(x => s2.has(x));
+  const wantA = new Set([owner.id, ...baseIds, friendA.id]);
+  const wantB = new Set([owner.id, ...baseIds, friendB.id]);
+  ok(eq(idSet(bodyA), wantA), `request A's own response shows exactly what A itself set, never borrowed from B's edit (got ${JSON.stringify([...idSet(bodyA)])})`);
+  ok(eq(idSet(bodyB), wantB), `request B's own response shows exactly what B itself set, never borrowed from A's edit (got ${JSON.stringify([...idSet(bodyB)])})`);
+
+  const final = await get(owner, `/api/crews/${c.id}`);
+  const idsFinal = idSet(final);
+  ok(eq(idsFinal, wantA) || eq(idsFinal, wantB), `the final persisted roster matches exactly ONE of the two requests' own full state -- whichever genuinely ran last -- never a mix of both and never something neither request asked for (got ${JSON.stringify([...idsFinal])})`);
+}
+
 } finally {
   await stop();
   await testDb.drop();
