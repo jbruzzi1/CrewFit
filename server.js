@@ -2488,6 +2488,73 @@ async function migrateCrewMessagesAndChallengesIntoPostgres() {
   if (crewsTouched) console.log(`migrated ${crewsTouched} crew(s) off the old embedded shape: ${messagesMoved} message(s), ${challengesMoved} challenge(s) moved to their own tables${skippedMalformed ? `, skipped ${skippedMalformed} malformed entr${skippedMalformed === 1 ? 'y' : 'ies'} (missing/invalid id)` : ''}`);
 }
 
+// Oct 16 2026 (crews deep-dive, decision #2 -- crew-row normalization): backfills the new
+// crews.name/owner_id/created_at columns and the crew_members join table (db.js) from the OLD
+// data jsonb blob, for any crew row not yet migrated (db.pgListCrewsNeedingColumnBackfill()
+// checks `name IS NULL`). Runs every boot, right after load() -- same boot-sequence slot as
+// migrateCrewMessagesAndChallengesIntoPostgres above -- and is a true no-op (one empty SELECT)
+// once every row has been migrated.
+//
+// Every field is sanitized HERE, in JS, before it's ever written -- same defensive instinct as
+// the malformed-entry handling above, applied to a case that's actually easier to get wrong
+// (unlike a malformed message/challenge, which can just be dropped, a crew row with no sane
+// fallback can't just be skipped without silently losing a whole crew's membership). A crew
+// that's missing or has a malformed name/ownerId/createdAt/memberIds gets a safe default
+// (name falls back to "Crew", ownerId to null -- a legitimate state, see ensureCrewShape's own
+// comment on ownerless crews -- createdAt to right now, memberIds to an empty array) rather than
+// crashing boot or writing garbage into the new columns.
+//
+// A real write failure (not malformed data -- a genuine Postgres error) is logged and left for
+// the NEXT boot to retry: this does NOT mark that row done, because doLoad() in db.js uses this
+// exact same `name IS NULL` gate to decide whether a row is safe to read from the new columns --
+// silently giving up on a row here would leave it stuck reading the pre-migration shape forever
+// with no way to self-heal.
+async function migrateCrewRowColumnsIntoPostgres() {
+  const pending = await db.pgListCrewsNeedingColumnBackfill();
+  let migrated = 0, failed = 0;
+  for (const row of pending) {
+    const data = (row.data && typeof row.data === 'object') ? row.data : {};
+    const name = (typeof data.name === 'string' && data.name.trim()) ? data.name : 'Crew';
+    const ownerId = (typeof data.ownerId === 'string' && data.ownerId) ? data.ownerId : null;
+    const createdAt = (typeof data.createdAt === 'string' && data.createdAt) ? data.createdAt : new Date().toISOString();
+    // Oct 16 2026: de-duped here too, not just filtered for shape -- writeCrewMembers' own
+    // `ON CONFLICT (crew_id, user_id) DO NOTHING` already drops a duplicate id at the Postgres
+    // INSERT, but that's invisible to this JS array. Caught by this migration's own differential
+    // test immediately after the DB.crews[row.id] fix just below was added: Postgres's
+    // crew_members ended up correctly deduped (3 rows), while DB.crews[row.id].memberIds -- built
+    // from this same variable -- still had all 5 raw entries, including the 2 duplicates, so the
+    // member list rendered with repeats over the API this whole boot even though Postgres agreed.
+    // [...new Set(...)] preserves first-occurrence order, matching writeCrewMembers' own
+    // first-occurrence-wins `seq` assignment exactly.
+    const memberIds = Array.isArray(data.memberIds) ? [...new Set(data.memberIds.filter(x => typeof x === 'string' && x))] : [];
+    try {
+      await db.pgBackfillCrewRow(row.id, name, ownerId, createdAt, memberIds);
+      // Oct 16 2026 (CRITICAL + SEVERE, found independently by both review passes, both
+      // reproduced live): this used to stop at writing the sanitized values to Postgres. load()
+      // (server.js's boot IIFE) runs BEFORE this function, so DB.crews[row.id] was still sitting
+      // on the OLD, un-sanitized legacy object the whole rest of this process's life -- every
+      // request this boot served (GET /api/crews/:id, the member roster, challenge-progress loops
+      // that iterate memberIds) read the dirty version, not the clean one Postgres now had. Worse:
+      // the very next real edit to that crew (any PUT/leave/etc.) calls save(DB), which diffs the
+      // STILL-dirty DB.crews[row.id] against it and writes THAT back over the clean columns --
+      // including writing a missing `name` as literal NULL, which is also doLoad()'s own signal
+      // for "not yet migrated," so the row silently un-migrates and the edit that just returned
+      // 200 to the client is lost on the next restart (falls back to the stale pre-edit blob).
+      // Reproduced live both ways: a crew missing `name` showed up nameless in GET responses
+      // immediately after this migration ran, and a crew with duplicate/malformed memberIds
+      // rendered the duplicates in the member list until the NEXT restart. Fixed by overwriting
+      // DB.crews[row.id] with the exact same sanitized object just written to Postgres, so RAM and
+      // Postgres agree from this instant, not just after a future restart.
+      DB.crews[row.id] = { id: row.id, name, ownerId, memberIds, createdAt };
+      migrated++;
+    } catch (e) {
+      failed++;
+      console.error('migrateCrewRowColumnsIntoPostgres: failed to backfill crew (will retry next boot):', row.id, e && e.message);
+    }
+  }
+  if (migrated || failed) console.log(`crew-row column backfill: ${migrated} crew(s) migrated to real columns/crew_members${failed ? `, ${failed} failed and will retry next boot` : ''}`);
+}
+
 app.get('/api/crews', auth, async (req, res) => {
   res.json(await Promise.all(crewsFor(req.userId).map(c => publicCrew(c, req.userId))));
 });
@@ -9938,6 +10005,7 @@ app.use((err, req, res, next) => {
   await pruneOldNotifications();    // storage hygiene, not a schema migration -- see its own comment
   await pruneOldFeedEvents();       // same, for the Activity page's ephemeral feed events
   await migrateCrewMessagesAndChallengesIntoPostgres();   // Oct 16 2026 (crews deep-dive, decision #1) -- flattens c.messages/c.challenges into their own Postgres tables; see its own comment and db.js's comment on crew_messages/crew_challenges
+  await migrateCrewRowColumnsIntoPostgres();   // Oct 16 2026 (crews deep-dive, decision #2) -- backfills crews.name/owner_id/created_at + crew_members from the old data blob; see its own comment and db.js's comment on the crews table
   await save(DB);
   server = app.listen(PORT, () => console.log('CrewFit on', PORT));
   module.exports.server = server;

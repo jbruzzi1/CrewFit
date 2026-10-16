@@ -159,6 +159,12 @@ const files = [
   // with one that still has embedded fields, each handled independently). Added to this list the
   // same run it was written, same discipline as every entry above.
   'test/crew-messages-challenges-migration-differential.mjs',
+  // Oct 16 2026 (crews deep-dive, decision #2 -- crew-row normalization): ground-truth
+  // differential test for migrateCrewRowColumnsIntoPostgres, same discipline as decision #1's own
+  // entry just above but for name/owner_id/created_at + the crew_members join table instead of
+  // messages/challenges -- lossless, ORDER-preserving (a real regression risk this migration's own
+  // design surfaced, not hypothetical), idempotent, and crash-safe.
+  'test/crew-row-column-migration-differential.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

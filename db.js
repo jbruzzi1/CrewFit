@@ -98,6 +98,46 @@ CREATE TABLE IF NOT EXISTS crews (
   id text PRIMARY KEY,
   data jsonb NOT NULL
 );
+-- Oct 16 2026 (crews deep-dive, decision #2 -- crew-row normalization, after decision #1 below
+-- moved messages/challenges off this blob): name/owner_id/created_at pulled out of the jsonb blob
+-- into real columns, and memberIds gets a real join table (crew_members) instead of a json array
+-- -- Jeff's call, after being shown there's no bug behind this one (unlike decision #1): "normalize
+-- the crew row anyway" (Option A -- real columns, but crews stays loaded into memory at boot
+-- exactly like users/sessions/templates always have, since there's no growth/concurrency problem
+-- here to fix by removing that cache -- see CLAUDE.md). ADD COLUMN IF NOT EXISTS rather than
+-- editing the CREATE TABLE above -- this table already has real production rows, and CREATE TABLE
+-- IF NOT EXISTS is a no-op against one that already exists, so the new columns have to be added
+-- explicitly. All three start nullable -- see migrateCrewRowColumnsIntoPostgres() in server.js for
+-- the one-time backfill from the old 'data' blob, and doLoad() below for why NOT NULL isn't
+-- enforced at the schema level (name IS NULL is also how doLoad() tells a not-yet-backfilled row
+-- apart from a migrated one, so it can fall back to parsing 'data' for just that one row instead
+-- of crashing boot over it). The OLD 'data' column is left in place, unused, once a row is
+-- migrated -- not maintained, not dropped -- same "leave dead weight rather than risk an
+-- irreversible DROP" call this project already made for custom_exercises/DB.friendships.
+ALTER TABLE crews ADD COLUMN IF NOT EXISTS name text;
+ALTER TABLE crews ADD COLUMN IF NOT EXISTS owner_id text;
+ALTER TABLE crews ADD COLUMN IF NOT EXISTS created_at text;
+-- The original CREATE TABLE above declared 'data jsonb NOT NULL' back when it was this table's
+-- only column. A row created AFTER this migration never has a 'data' blob at all (there's no
+-- legacy shape left to carry), so the NOT NULL constraint has to go -- caught live writing this
+-- migration's own first test: a brand-new crew's INSERT (which only ever sets id/name/owner_id/
+-- created_at now) 500'd on "null value in column data violates not-null constraint" before this
+-- line existed.
+ALTER TABLE crews ALTER COLUMN data DROP NOT NULL;
+-- seq preserves the member list's real order (owner first, then invite/keep order) across a
+-- restart -- a bare join table has no inherent row order, and that order is genuinely visible to
+-- Jeff's users: the crew-list card's avatar stack (first 4, "+N more") and the crew page's member
+-- roster both render straight off this array's own order (see publicCrew() in server.js and
+-- avatar-stack/memberRows in app.js). Without this, a restart could silently reshuffle whose
+-- avatar shows first -- found while designing this migration, not an existing bug, but a real
+-- regression this schema change could have introduced if memberIds just became an unordered set.
+CREATE TABLE IF NOT EXISTS crew_members (
+  crew_id text NOT NULL,
+  user_id text NOT NULL,
+  seq integer NOT NULL,
+  PRIMARY KEY (crew_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS crew_members_crew_idx ON crew_members (crew_id);
 -- Oct 16 2026 (crews deep-dive, decision #1 of the crews migration pre-mortem, Jeff: "do it right
 -- the first time" -- same reasoning as the custom-exercises redesign): crews.data used to embed
 -- BOTH of these as arrays that grew without limit for as long as a crew stayed active (every chat
@@ -287,8 +327,31 @@ async function doLoad() {
   const prs = await c.query('SELECT user_id, data FROM prs');
   for (const row of prs.rows) { d.prs[row.user_id] = JSON.parse(row.data); snap.prs[row.user_id] = JSON.stringify(d.prs[row.user_id]); }
 
-  const crews = await c.query('SELECT id, data FROM crews');
-  for (const row of crews.rows) { d.crews[row.id] = JSON.parse(row.data); snap.crews[row.id] = JSON.stringify(d.crews[row.id]); }
+  // Oct 16 2026 (crew-row normalization, decision #2): a crew row might not be backfilled onto
+  // the new name/owner_id/created_at columns yet -- migrateCrewRowColumnsIntoPostgres() (server.js)
+  // runs AFTER this load(), same boot-sequence position as every other boot migration in this
+  // app, so the very first load() after this ships (and any row that migration fails to reach --
+  // see its own comment for why that's a real possibility, not just theoretical) sees name still
+  // NULL here. name IS NULL is exactly the same gate that migration uses to know a row still
+  // needs it, so checking it here too, per row, lets this fall back to the pre-migration shape
+  // (parse `data` directly, same as every boot before this one did) instead of crashing or
+  // silently losing that crew's membership. A migrated row ignores `data` entirely and is
+  // reassembled from the real columns + crew_members below.
+  const crewsRaw = await c.query('SELECT id, name, owner_id, created_at, data FROM crews');
+  const crewMembersRows = await c.query('SELECT crew_id, user_id FROM crew_members ORDER BY crew_id, seq');
+  const membersByCrew = {};
+  for (const row of crewMembersRows.rows) {
+    (membersByCrew[row.crew_id] || (membersByCrew[row.crew_id] = [])).push(row.user_id);
+  }
+  for (const row of crewsRaw.rows) {
+    if (row.name !== null) {
+      d.crews[row.id] = { id: row.id, name: row.name, ownerId: row.owner_id, memberIds: membersByCrew[row.id] || [], createdAt: row.created_at };
+    } else {
+      const parsed = JSON.parse(row.data);
+      d.crews[row.id] = (parsed && typeof parsed === 'object') ? parsed : { id: row.id };
+    }
+    snap.crews[row.id] = JSON.stringify(d.crews[row.id]);
+  }
 
   // Oct 13 2026 (read cutover, task #252): notifications used to be loaded wholesale here too,
   // the same way as every other collection -- that's gone now. GET /api/notifications and every
@@ -397,9 +460,13 @@ async function doSave(d) {
     pending.prs = bootstrapping
       ? await syncTableFull(c, 'prs', 'user_id', d.prs, jsonToParams, PRS_UPSERT_SQL)
       : await syncTableDiff(c, 'prs', 'user_id', d.prs, jsonToParams, PRS_UPSERT_SQL, base.prs);
+    // Oct 16 2026 (crew-row normalization, decision #2): crews no longer fits the generic
+    // syncTableFull/syncTableDiff shape (one row, one jsonb column) -- it's real columns plus a
+    // crew_members join table now, so it gets its own pair of sync functions below, same role as
+    // syncTableFull/syncTableDiff but also diffing crew membership against that join table.
     pending.crews = bootstrapping
-      ? await syncTableFull(c, 'crews', 'id', d.crews, jsonToParams, CREWS_UPSERT_SQL)
-      : await syncTableDiff(c, 'crews', 'id', d.crews, jsonToParams, CREWS_UPSERT_SQL, base.crews);
+      ? await syncCrewsFull(c, d.crews)
+      : await syncCrewsDiff(c, d.crews, base.crews);
     // Oct 13 2026 (rearchitecture, notifications+feed-events slice -- REAL finding from task
     // #245's differential test, not a hypothetical): `notifications` and `feed_events` used to be
     // synced here too, the same generic way as every other table. That is now deliberately
@@ -541,7 +608,11 @@ const PUSH_SUBS_UPSERT_SQL = 'INSERT INTO push_subs (user_id, data) VALUES ($1, 
 // 2026 (read cutover, task #258+ phase 2) -- nothing writes that table any more, see
 // freshSnapshot()'s own comment.
 const PRS_UPSERT_SQL = 'INSERT INTO prs (user_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data';
-const CREWS_UPSERT_SQL = 'INSERT INTO crews (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
+// CREWS_UPSERT_SQL (the old one-jsonb-column upsert) removed Oct 16 2026 (crew-row normalization,
+// decision #2) -- crews writes real columns now, via CREWS_ROW_UPSERT_SQL and syncCrewsFull/
+// syncCrewsDiff below, never the old `data` blob (see doLoad()'s own comment for why `data` is
+// left in place but unmaintained on an already-migrated row).
+const CREWS_ROW_UPSERT_SQL = 'INSERT INTO crews (id, name, owner_id, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, owner_id = EXCLUDED.owner_id, created_at = EXCLUDED.created_at';
 const CREW_MESSAGES_UPSERT_SQL = 'INSERT INTO crew_messages (id, crew_id, data) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO UPDATE SET crew_id = EXCLUDED.crew_id, data = EXCLUDED.data';
 const CREW_CHALLENGES_UPSERT_SQL = 'INSERT INTO crew_challenges (id, crew_id, data) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO UPDATE SET crew_id = EXCLUDED.crew_id, data = EXCLUDED.data';
 const NOTIFICATIONS_UPSERT_SQL = 'INSERT INTO notifications (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
@@ -611,6 +682,83 @@ async function syncTableDiff(c, table, keyCol, obj, toParams, upsertSql, lastMap
   for (const k of Object.keys(lastMap)) {
     if (!Object.prototype.hasOwnProperty.call(current, k)) {
       await c.query(`DELETE FROM ${table} WHERE ${keyCol} = $1`, [k]);
+      delete map[k];
+    }
+  }
+  return map;
+}
+
+// Oct 16 2026 (crew-row normalization, decision #2): crews' own pair, parallel in spirit to
+// syncTableFull/syncTableDiff just above but for the real-columns-plus-join-table shape instead
+// of one row/one jsonb column. Both run INSIDE doSave()'s already-open transaction (same as
+// syncTableFull/syncTableDiff -- neither of those opens its own transaction either), so a crew's
+// row update and its full membership replace below always land or roll back together.
+//
+// Membership is written as a full replace (delete every crew_members row for that crew, then
+// reinsert the current memberIds with their array index as `seq`) rather than diffing added/
+// removed members individually. Simpler and just as correct at this app's scale (a crew tops out
+// at CREW_MAX_MEMBERS=20, and a membership edit is a deliberate, infrequent owner action, nothing
+// like the per-message write rate decision #1 above was built for) -- and it sidesteps a real
+// subtlety a diff-based version would have to get right anyway: `seq` has to reflect the CURRENT
+// full order every time, including members that didn't change, so an edit that only reorders
+// (removes and re-adds the same person elsewhere in the list) still needs every row rewritten.
+function crewMemberIdsOf(crew) { return Array.isArray(crew && crew.memberIds) ? crew.memberIds : []; }
+// Oct 16 2026 (defense in depth, added after a CRITICAL finding both review passes caught
+// independently -- see migrateCrewRowColumnsIntoPostgres()'s own comment in server.js for the
+// full story): `name IS NULL` is doLoad()'s ONLY signal for "this row hasn't been backfilled
+// yet" -- so writing a falsy name here, from ANY future caller, silently un-migrates a row that
+// was already done, not just a one-off bad value. The real bug is already fixed at its source
+// (that migration function now keeps DB.crews in sync with what it writes), but this is cheap,
+// permanent insurance against the exact same class of mistake happening again some other way --
+// same "Crew" fallback the migration itself already uses for a missing name.
+function crewRowParams(id, crew) {
+  const name = (crew && typeof crew.name === 'string' && crew.name.trim()) ? crew.name : 'Crew';
+  return [id, name, (crew && crew.ownerId) || null, (crew && crew.createdAt) || null];
+}
+async function writeCrewMembers(c, crewId, memberIds) {
+  await c.query('DELETE FROM crew_members WHERE crew_id = $1', [crewId]);
+  let seq = 0;
+  for (const uid of memberIds) {
+    await c.query('INSERT INTO crew_members (crew_id, user_id, seq) VALUES ($1, $2, $3) ON CONFLICT (crew_id, user_id) DO NOTHING', [crewId, uid, seq++]);
+  }
+}
+async function syncCrewsFull(c, obj) {
+  const current = obj || {};
+  const keys = Object.keys(current);
+  const map = {};
+  for (const k of keys) {
+    const crew = current[k];
+    const json = JSON.stringify(crew);
+    await c.query(CREWS_ROW_UPSERT_SQL, crewRowParams(k, crew));
+    await writeCrewMembers(c, k, crewMemberIdsOf(crew));
+    map[k] = json;
+  }
+  const existing = await c.query('SELECT id as k FROM crews');
+  const keep = new Set(keys);
+  for (const row of existing.rows) {
+    if (!keep.has(row.k)) {
+      await c.query('DELETE FROM crews WHERE id = $1', [row.k]);
+      await c.query('DELETE FROM crew_members WHERE crew_id = $1', [row.k]);
+    }
+  }
+  return map;
+}
+async function syncCrewsDiff(c, obj, lastMap) {
+  const current = obj || {};
+  const map = { ...lastMap };
+  for (const k of Object.keys(current)) {
+    const crew = current[k];
+    const json = JSON.stringify(crew);
+    if (map[k] !== json) {
+      await c.query(CREWS_ROW_UPSERT_SQL, crewRowParams(k, crew));
+      await writeCrewMembers(c, k, crewMemberIdsOf(crew));
+      map[k] = json;
+    }
+  }
+  for (const k of Object.keys(lastMap)) {
+    if (!Object.prototype.hasOwnProperty.call(current, k)) {
+      await c.query('DELETE FROM crews WHERE id = $1', [k]);
+      await c.query('DELETE FROM crew_members WHERE crew_id = $1', [k]);
       delete map[k];
     }
   }
@@ -1201,6 +1349,35 @@ async function pgDeleteCrewChallengesByCrew(crewId) {
   });
 }
 
+// ---- Oct 16 2026: crew-row normalization (decision #2) one-time boot backfill ----
+//
+// Used only by migrateCrewRowColumnsIntoPostgres() in server.js, which runs once per boot, after
+// load() (see that function's own comment, and doLoad()'s comment above for why load() has to be
+// able to read a not-yet-backfilled row too). Every field server.js hands in has already been
+// sanitized there (malformed/missing name, ownerId, createdAt, memberIds all get a safe
+// fallback) -- this function's own job is just "write it, atomically, and never half-apply it."
+async function pgListCrewsNeedingColumnBackfill() {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query('SELECT id, data FROM crews WHERE name IS NULL');
+    return r.rows.map(row => ({ id: row.id, data: JSON.parse(row.data) }));
+  });
+}
+async function pgBackfillCrewRow(id, name, ownerId, createdAt, memberIds) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.begin();
+    try {
+      await c.query(CREWS_ROW_UPSERT_SQL, crewRowParams(id, { name, ownerId, createdAt }));
+      await writeCrewMembers(c, id, memberIds);
+      await c.commit();
+    } catch (e) {
+      await c.rollback();
+      throw e;
+    }
+  });
+}
+
 module.exports = {
   load, save, close, ensureSchema, EMPTY_DB, getConn,
   pgNotificationHistoryForUser, pgInsertNotification, pgDeleteNotification, pgMergedNotificationWrite, pgPruneOldNotifications,
@@ -1210,4 +1387,5 @@ module.exports = {
   pgUpsertCustomExerciseRow, pgInsertCustomExerciseRowIfUnderCap, pgGetCustomExerciseRow, pgListCustomExerciseRowsByOwner, pgListAllCustomExerciseRows, pgDeleteCustomExerciseRow, pgFindCustomExerciseRowByName,
   pgInsertCrewMessage, pgListCrewMessagesByCrew, pgUpdateCrewMessageText, pgDeleteCrewMessage, pgInsertSystemCrewMessage, pgDeleteCrewMessagesByCrew,
   pgLastCrewChallenge, pgListCrewChallengesByCrew, pgUpsertCrewChallenge, pgInsertCrewChallengeIfNoneRunning, pgUpdateCrewChallengeFields, pgCompleteCrewChallengeIfNotAlready, pgDeleteCrewChallenge, pgDeleteCrewChallengesByCrew,
+  pgListCrewsNeedingColumnBackfill, pgBackfillCrewRow,
 };
