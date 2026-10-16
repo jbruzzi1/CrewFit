@@ -100,12 +100,16 @@ const normUser = v => String(v == null ? '' : v).trim().toLowerCase();
 // generic (db.js's EMPTY_DB/doLoad()/doSave() all still handle it the normal way), so the fix
 // here is simpler -- no raw-SQL readback workaround needed, db.load() already returns
 // `after.reports` correctly for the verification loop below once it's included in `counts`.
+// Oct 16 2026 (read cutover, task #258+ phase 2): customExercises is deliberately NOT part of
+// this object any more. db.js's EMPTY_DB/doLoad()/doSave() dropped it the same way notifications/
+// feedEvents were dropped before it (see db.js's own comment on EMPTY_DB) -- it is handled
+// separately, below, by flattening straight into custom_exercise_rows instead of handing it to
+// db.save() like every other collection here.
 const d = {
   users: raw.users || {},
   sessions: raw.sessions || {},
   templates: raw.templates || {},
   pushSubs: raw.pushSubs || {},
-  customExercises: raw.customExercises || {},
   prs: raw.prs || {},
   crews: raw.crews || {},
   notifications: raw.notifications || {},
@@ -121,19 +125,67 @@ const counts = {
   sessions: Object.keys(d.sessions).length,
   templates: Object.keys(d.templates).length,
   pushSubs: Object.keys(d.pushSubs).length,
-  customExercises: Object.keys(d.customExercises).length,
   prs: Object.keys(d.prs).length,
   crews: Object.keys(d.crews).length,
   notifications: Object.keys(d.notifications).length,
   feedEvents: Object.keys(d.feedEvents).length,
   reports: Object.keys(d.reports).length,
 };
+// customExerciseRows is counted separately below, once raw.customExercises (old array-per-owner
+// shape) is actually flattened -- Object.keys(raw.customExercises||{}).length would only count
+// OWNERS, not individual exercises, which is the wrong number for this collection specifically
+// (every other collection above is already keyed one-row-per-entity, so Object.keys().length IS
+// the row count for those).
 console.log(`Migrating ${file} -> ${process.env.DATABASE_URL.replace(/:[^:@]*@/, ':***@')}`);
-console.log(`  users=${counts.users} sessions=${counts.sessions} templates=${counts.templates} pushSubs=${counts.pushSubs} customExercises=${counts.customExercises} prs=${counts.prs} crews=${counts.crews} notifications=${counts.notifications} feedEvents=${counts.feedEvents} reports=${counts.reports}`);
+console.log(`  users=${counts.users} sessions=${counts.sessions} templates=${counts.templates} pushSubs=${counts.pushSubs} prs=${counts.prs} crews=${counts.crews} notifications=${counts.notifications} feedEvents=${counts.feedEvents} reports=${counts.reports}`);
 
 const db = (await import('../db.js')).default;
 await db.ensureSchema();
 await db.save(d);
+
+// Oct 16 2026 (read cutover, task #258+ phase 2): flattens raw.customExercises (the OLD array-
+// per-owner shape every existing backup/data.json file still has) straight into the NEW
+// custom_exercise_rows table (one row per exercise) -- the exact flatten
+// migrateCustomExerciseRowsIntoPostgres used to do every boot in server.js, now retired now that
+// DB.customExercises can never exist again (see that removal's own comment in server.js). Same
+// defensive id-backfill migrateCustomExerciseIds used to apply at boot: a legacy row from before
+// Sep 30 2026 has no `id` yet, and this script never runs that old boot migration, so a brand-new
+// one is minted here instead. Vanishingly unlikely against a REAL backup (every backup taken
+// since that migration first landed already has ids, persisted by the very boot that made it),
+// but cheap insurance against a much older hand-supplied file.
+const expectedCustomExerciseRows = {};
+for (const [ownerId, arr] of Object.entries(raw.customExercises || {})) {
+  for (const e of (Array.isArray(arr) ? arr : [])) {
+    if (!e || typeof e !== 'object') continue;   // tolerate a malformed exercise object rather than crash the migration -- same stance server.js's own boot migrations already took
+    if (!e.id) e.id = crypto.randomUUID();
+    const row = { ...e, ownerId };
+    await db.pgUpsertCustomExerciseRow(row);
+    expectedCustomExerciseRows[row.id] = row;
+  }
+}
+// Adversarial-review finding (reproduced live): every OTHER collection this script restores goes
+// through db.js's syncTableFull, which is a true full-replace -- it deletes any row in the
+// target table that ISN'T in the backup, not just upserts what is. The loop just above was
+// upsert-only, so restoring a backup into a database that already had SOME custom_exercise_rows
+// not present in that backup (live traffic since the snapshot, or any stray leftover row) left
+// those orphans silently surviving a "restore" -- exactly the two-way-reconciliation gap the old
+// migrateCustomExerciseRowsIntoPostgres boot migration had already been fixed to close once
+// (see its own comment, before it was retired along with DB.customExercises). Reproduced: seeding
+// one pre-existing row for a different owner before running this script against a backup that
+// didn't mention it left that row behind, and the read-back verification below correctly caught
+// it as an unexpected extra row. Fixed by actually deleting anything in the table that isn't in
+// `expectedCustomExerciseRows`, so this script's restore is a real full-replace like every other
+// collection's, not a merge.
+const existingCustomExerciseRows = (await db.getConn().query('SELECT id, owner_id FROM custom_exercise_rows')).rows;
+let removedCustomExerciseRowOrphans = 0;
+for (const row of existingCustomExerciseRows) {
+  if (!expectedCustomExerciseRows[row.id]) {
+    await db.pgDeleteCustomExerciseRow(row.id, row.owner_id);
+    removedCustomExerciseRowOrphans++;
+  }
+}
+const customExerciseRowCount = Object.keys(expectedCustomExerciseRows).length;
+console.log(`  customExerciseRows=${customExerciseRowCount} (flattened from raw.customExercises)${removedCustomExerciseRowOrphans ? `, removed ${removedCustomExerciseRowOrphans} orphan(s) not present in the source file` : ''}`);
 
 // Order-independent deep equality — Postgres's jsonb column type does NOT preserve object key
 // order (it stores a canonicalized binary form and reconstructs keys in its own order on
@@ -171,7 +223,27 @@ const afterNotifications = {}; for (const r of notifRows) afterNotifications[r.i
 const feedRows = (await db.getConn().query('SELECT id, data FROM feed_events')).rows;
 const afterFeedEvents = {}; for (const r of feedRows) afterFeedEvents[r.id] = JSON.parse(r.data);
 const afterByCollection = { ...after, notifications: afterNotifications, feedEvents: afterFeedEvents };
+// Oct 16 2026 (read cutover, task #258+ phase 2): custom_exercise_rows verified the same raw-SQL
+// way as notifications/feed_events just above, for the same reason (db.load() doesn't return it
+// either) -- but NOT folded into the generic counts/afterByCollection loop below, unlike those
+// two: that loop compares against `d[collection]`, which is keyed by id already for every other
+// collection, while raw.customExercises is keyed by OWNER with an array value -- comparing it
+// against this table (keyed by exercise id) needs its own loop, against the already-flattened
+// `expectedCustomExerciseRows` built above, not against `d` or `raw` directly.
+const customExerciseRowsResult = (await db.getConn().query('SELECT id, data FROM custom_exercise_rows')).rows;
+const afterCustomExerciseRows = {}; for (const r of customExerciseRowsResult) afterCustomExerciseRows[r.id] = JSON.parse(r.data);
 const problems = [];
+{
+  const afterKeys = Object.keys(afterCustomExerciseRows);
+  if (afterKeys.length !== customExerciseRowCount) {
+    problems.push(`customExerciseRows: expected ${customExerciseRowCount} row(s), found ${afterKeys.length}`);
+  }
+  for (const id of Object.keys(expectedCustomExerciseRows)) {
+    if (!deepEqual(afterCustomExerciseRows[id], expectedCustomExerciseRows[id])) {
+      problems.push(`customExerciseRows/${id}: content does not match the source file after read-back`);
+    }
+  }
+}
 for (const [collection, n] of Object.entries(counts)) {
   const afterKeys = Object.keys(afterByCollection[collection] || {});
   if (afterKeys.length !== n) { problems.push(`${collection}: expected ${n} row(s), found ${afterKeys.length}`); continue; }

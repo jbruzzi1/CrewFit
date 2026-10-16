@@ -999,7 +999,12 @@ app.get('/api/exercises', async (req, res) => {
   // the same soft, optional way userIdFromToken already supports elsewhere in this file -- a
   // missing/invalid token just means every custom exercise reads as not-mine, same as a guest.
   const myId = userIdFromToken((req.headers['authorization'] || '').replace(/^Bearer\s/, ''));
-  const custom = Object.values(DB.customExercises || {}).flat()
+  // Oct 16 2026 (read cutover, see CLAUDE.md "Rearchitecture status"): this used to read
+  // Object.values(DB.customExercises || {}).flat() -- the old array-per-owner in-memory shape.
+  // custom_exercise_rows (one row per exercise, with its own ownerId column) is now the real,
+  // only source; the shadow-compare that used to run alongside this read (comparing the two) is
+  // retired below along with it, since there is no longer an "old" side left to compare against.
+  const custom = (await db.pgListAllCustomExerciseRows())
     .map(({ ownerId, ...rest }) => {
       const mine = !!myId && ownerId === myId;
       const sanitized = sanitizeExercise(rest);
@@ -1014,38 +1019,8 @@ app.get('/api/exercises', async (req, res) => {
     // audit added Dumbbell Romanian Deadlift, Incline Dumbbell Fly, ...) would list twice --
     // findExLibEntry already resolves that name to the library entry, so show only that one
     .filter(c => !EX_LIB.some(e => e.name === c.name));
-  // computed per request, never at boot — 203 entries is nothing, and startup work in this file
-  // has crashed the server three times
-  shadowCompareCustomExerciseRows();
   res.json(EX_LIB.concat(custom).map(withTarget));
 });
-// ---- Oct 14 2026: shadow-compare for the custom-exercises redesign (dual-write phase) ----
-// Same technique and same reasoning as shadowCompareNotificationHistory/shadowCompareFeedEvents
-// from the notifications+feed-events slice (see git history, task #245) -- compares what the OLD
-// array-per-owner read (DB.customExercises, still what actually serves this route) would produce
-// against the NEW one-row-per-exercise table, without changing the response either way. Compared
-// as an ID SET, not full content: this route's own sanitizeExercise()/withTarget() already
-// transform the raw stored shape before it ever reaches a client, so comparing post-transform
-// output would just be re-testing those functions against themselves, not testing whether the
-// new table holds the same underlying rows the old one does -- which is the actual thing this
-// phase needs to verify before task (the read cutover) switches the SOURCE over. Throttled to
-// once a minute, same reasoning as the notifications slice: this route is hit on every exercise-
-// library open, and comparing on literally every request would double real query load on this
-// app's one shared Postgres connection for a background verification step.
-let lastCustomExerciseRowsShadowCompareAt = 0;
-function shadowCompareCustomExerciseRows() {
-  const now = Date.now();
-  if (now - lastCustomExerciseRowsShadowCompareAt < 60000) return;
-  lastCustomExerciseRowsShadowCompareAt = now;
-  const oldIds = Object.values(DB.customExercises || {}).flat()
-    .filter(e => e && typeof e === 'object' && e.id).map(e => e.id).sort();
-  db.pgListAllCustomExerciseRows().then(rows => {
-    const newIds = rows.map(r => r.id).sort();
-    if (JSON.stringify(oldIds) !== JSON.stringify(newIds)) {
-      console.error('[migration shadow-compare] custom_exercise_rows id-set mismatch:', 'onlyInOld:', oldIds.filter(id => !newIds.includes(id)), 'onlyInNew:', newIds.filter(id => !oldIds.includes(id)));
-    }
-  }).catch(e => console.error('[migration shadow-compare] pgListAllCustomExerciseRows failed:', e && e.message));
-}
 // Custom exercises written before the POST route validated anything are still in the database, and
 // nothing migrates them — so the write-side checks protect new rows only. This is the read side:
 // every row is normalised on the way OUT, which is the one place that covers rows already stored.
@@ -1123,9 +1098,8 @@ app.post('/api/exercises/custom', auth, async (req, res) => {
   // uses (push/pull/legs/core/cardio); anything else falls back to 'other', same as a library
   // entry with no real pattern of its own.
   const pat = KNOWN_PATTERNS.has(pattern) ? pattern : 'other';
-  DB.customExercises[req.userId] = DB.customExercises[req.userId] || [];
   const ex = {
-    id: crypto.randomUUID(),   // Sep 30 2026: stable address for PUT/DELETE below -- see migrateCustomExerciseIds' comment on why name alone can't be one
+    id: crypto.randomUUID(),   // Sep 30 2026: stable address for PUT/DELETE below -- and now custom_exercise_rows' own primary key (Oct 16 2026 read cutover) -- name alone can't be one, since duplicate names are explicitly allowed (see this route's own comment below)
     name: cleanName,
     pattern: pat,
     category: mg[0] || 'other',                         // a validated group, never raw req.body
@@ -1136,38 +1110,33 @@ app.post('/api/exercises/custom', auth, async (req, res) => {
     defaultSets: 3, defaultReps: 10,
     custom: true, ownerId: req.userId
   };
-  // Every custom exercise persists into the one data.json AND is served to every user, so an
-  // unbounded push is a slow wedge. 500 is far past any real athlete's own library (the built-in
-  // one is 203).
-  if (DB.customExercises[req.userId].length >= 500)
+  // Oct 16 2026 (read cutover, see CLAUDE.md "Rearchitecture status"): used to be
+  // (DB.customExercises[req.userId]||[]).length -- custom_exercise_rows (one row per exercise,
+  // with an owner_id column, see db.js) is the real source now. Every custom exercise persists
+  // into Postgres AND is served to every user, so an unbounded count is a slow wedge. 500 is far
+  // past any real athlete's own library (the built-in one is 203).
+  //
+  // Correctness-review finding (two independent passes, same day, both reproduced live): the
+  // first version of this cutover checked the cap with a separate, earlier await
+  // (pgListCustomExerciseRowsByOwner) before this one -- which reopened a race the OLD
+  // synchronous-check-then-push code never had (that pair had no await between them at all, so
+  // Node's single-threaded execution made it atomic by construction). Two concurrent creates from
+  // the same user could both read a stale under-cap count in the gap between the two awaited
+  // calls and both succeed, landing over 500. Fixed by pgInsertCustomExerciseRowIfUnderCap, which
+  // does the count check and the insert inside ONE enqueue()'d call -- see its own comment in
+  // db.js for why that closes the gap.
+  //
+  // This also used to push `ex` into DB.customExercises[req.userId] BEFORE its own await, then
+  // revert that push in a catch block if the save failed (see git history, task #258+, for the
+  // full mutate-before-maybe-failing-save hazard that fix addressed). That revert logic is
+  // structurally unnecessary now, not just removed for tidiness: `ex` was never a reference into
+  // any shared, process-wide state to begin with -- it's a local object, and the call below IS
+  // the one and only authoritative write. If it fails, nothing was ever mutated anywhere for this
+  // request to undo; the app-wide async-error wrapper near the top of this file turns the thrown
+  // error into the client's 500, exactly as before.
+  const result = await db.pgInsertCustomExerciseRowIfUnderCap(ex, 500);
+  if (!result.ok)
     return res.status(400).json({ error: 'You have reached the limit of custom exercises.' });
-  DB.customExercises[req.userId].push(ex);
-  // Oct 14 2026 (Jeff: "resolve the issue you flagged but are not fixing" -- the pre-existing
-  // mutate-before-maybe-failing-save hazard disclosed in the last slice's report, same bug class
-  // as the emitFeedEvent finding from the notifications/feed-events slice before it). Before this
-  // fix: a save(DB) failure here (already turned into a real 500 by the app-wide async-error
-  // wrapper near the top of this file, so the client WAS told it failed) left the push above in
-  // memory anyway -- DB.customExercises is shared, process-wide state, so a "failed" create
-  // became a real, globally-visible exercise (served to every user via GET /api/exercises,
-  // permanently burning one of this user's 500 slots) that only went away on the next restart.
-  // Reproduced live before this fix: rigged a real custom_exercises write failure, got the 500,
-  // then watched the "failed" exercise show up in GET /api/exercises anyway. Fixed by reverting
-  // the in-memory push on a failed save, so a 500 response and the in-memory state agree again.
-  try {
-    await save(DB);
-  } catch (e) {
-    DB.customExercises[req.userId] = DB.customExercises[req.userId].filter(x => x.id !== ex.id);
-    throw e; // still a real failure -- the app-wide wrapper turns this into the client's 500
-  }
-  // Oct 14 2026 (push subs/custom exercises/reports slice -- dual-write phase, see CLAUDE.md
-  // "Rearchitecture status"/"Rearchitecture safeguards"): mirrors this create onto the NEW
-  // one-row-per-exercise custom_exercise_rows table. DB.customExercises above is still the real
-  // driver of every read in this app during this phase (GET /api/exercises, findExLibEntry,
-  // findMyCustomExercise, the 500-cap check just above) -- this is fire-and-forget and must never
-  // block or fail the actual create, same reasoning notify()'s own push send and the
-  // notifications/feed-events slice's dual-write writes already use for a side write that isn't
-  // this request's primary purpose.
-  db.pgUpsertCustomExerciseRow(ex).catch(e => console.error('[migration dual-write] pgUpsertCustomExerciseRow (create) failed:', e && e.message));
   res.json(ex);
 });
 // Sep 30 2026 (audit finding, Jeff: "build now" -- there was no way to edit or delete a custom
@@ -1180,11 +1149,17 @@ app.post('/api/exercises/custom', auth, async (req, res) => {
 // stays fixed after creation the same way the built-in library's own names are effectively fixed.
 // Every other field (muscle groups, equipment, level, type, pattern) is freely editable, same
 // validation as creation.
-function findMyCustomExercise(userId, id) {
-  return ((DB.customExercises || {})[userId] || []).find(x => x.id === id) || null;
+// Oct 16 2026 (read cutover, see CLAUDE.md "Rearchitecture status"): now async, reading the one
+// row directly from custom_exercise_rows by its primary key instead of scanning an in-memory
+// array -- the ownership check (`row.ownerId === userId`) replaces what used to be "found inside
+// THIS user's own array slot" by construction, same meaning either way: this id exists AND it's
+// this caller's.
+async function findMyCustomExercise(userId, id) {
+  const row = await db.pgGetCustomExerciseRow(id);
+  return (row && row.ownerId === userId) ? row : null;
 }
 app.put('/api/exercises/custom/:id', auth, async (req, res) => {
-  const ex = findMyCustomExercise(req.userId, req.params.id);
+  const ex = await findMyCustomExercise(req.userId, req.params.id);
   if (!ex) return res.status(404).json({ error: 'not found' });
   const { muscle_groups, equipment, level, is_compound, pattern } = req.body || {};
   if (!Array.isArray(muscle_groups) || !muscle_groups.length) return res.status(400).json({ error: 'muscle_groups required' });
@@ -1223,49 +1198,28 @@ app.put('/api/exercises/custom/:id', auth, async (req, res) => {
   }
   const equip = (Array.isArray(equipment) ? equipment : [])
     .filter(x => typeof x === 'string').map(x => x.slice(0, 40)).slice(0, 8);
-  // Oct 14 2026 (same fix as POST /api/exercises/custom above, same reasoning -- see that route's
-  // comment): snapshot every field this route is about to overwrite, so a failed save(DB) below
-  // can be undone, instead of leaving `ex` (a live reference inside DB.customExercises)
-  // permanently holding an edit Postgres never actually got.
-  const before = { muscle_groups: ex.muscle_groups, category: ex.category, equipment: ex.equipment, is_compound: ex.is_compound, level: ex.level, pattern: ex.pattern };
-  const newCategory = mg[0] || 'other', newLevel = capStr(level, 20) || 'beginner', newPattern = KNOWN_PATTERNS.has(pattern) ? pattern : 'other', newIsCompound = !!is_compound;
-  ex.muscle_groups = mg;
-  ex.category = newCategory;
-  ex.equipment = equip;
-  ex.is_compound = newIsCompound;
-  ex.level = newLevel;
-  ex.pattern = newPattern;
-  try {
-    await save(DB);
-  } catch (e) {
-    // Cold-review catch (independent reviewer, same day): an earlier version of this fix did a
-    // blind `Object.assign(ex, before)` here. `save(DB)` is queued end-to-end (db.js's enqueue())
-    // but reads DB's CURRENT in-memory content at the moment its turn actually runs, not a
-    // snapshot taken when save() was called -- so a second concurrent edit of this SAME exercise
-    // (double-tap, a client retry) can land its own successful mutation on `ex` while THIS
-    // request's save(DB) is still sitting in that queue. A blind restore-to-`before` would then
-    // stomp that other, already-committed edit back to this request's stale "before" value --
-    // worse than the original bug, since now a SUCCESSFUL request's result silently reverts too.
-    // Fixed by only reverting a field if it still holds exactly what THIS request set it to --
-    // i.e. nothing else has touched it since. A field some other concurrent request has since
-    // changed is left alone; the narrow residual case (two edits racing to the exact same field)
-    // falls back to ordinary last-write-wins, which this codebase already accepts elsewhere.
-    if (ex.muscle_groups === mg) ex.muscle_groups = before.muscle_groups;
-    if (ex.category === newCategory) ex.category = before.category;
-    if (ex.equipment === equip) ex.equipment = before.equipment;
-    if (ex.is_compound === newIsCompound) ex.is_compound = before.is_compound;
-    if (ex.level === newLevel) ex.level = before.level;
-    if (ex.pattern === newPattern) ex.pattern = before.pattern;
-    throw e;
-  }
-  // Oct 14 2026 (dual-write phase -- see the comment on POST /api/exercises/custom above for the
-  // full reasoning): `ex` here is the SAME object just mutated in place above, already carrying
-  // its stable id/ownerId/name/custom/defaultSets/defaultReps untouched -- pgUpsertCustomExerciseRow
-  // overwrites the whole row, so handing it the fully-updated object is correct whether this id
-  // already has a row (the common case) or not yet (a pre-existing exercise this boot's flatten
-  // migration hasn't caught up to yet, vanishingly unlikely but handled the same way either way).
-  db.pgUpsertCustomExerciseRow(ex).catch(e => console.error('[migration dual-write] pgUpsertCustomExerciseRow (edit) failed:', e && e.message));
-  res.json(ex);
+  // Oct 16 2026 (read cutover, see CLAUDE.md "Rearchitecture status"): this whole route used to
+  // mutate `ex` in place -- a live reference inside DB.customExercises -- which is exactly what
+  // made the Oct 14 2026 mutate-before-maybe-failing-save hazard (and the sharper concurrent-
+  // request-clobbering version of it an independent review caught the same day; see git history,
+  // task #258+) possible in the first place: shared, process-wide state getting changed before an
+  // await that can fail. `ex` here is now the plain object findMyCustomExercise just fetched by
+  // value from Postgres -- not a reference anything else can see or race against -- so building
+  // the updated version in a fresh object and writing it in one awaited call needs no snapshot,
+  // no before/after comparison, and no revert-on-failure logic at all. If the write fails, nothing
+  // was ever mutated anywhere for this request to undo; the stored row is exactly what it was
+  // before this request started.
+  const updated = {
+    ...ex,
+    muscle_groups: mg,
+    category: mg[0] || 'other',
+    equipment: equip,
+    is_compound: !!is_compound,
+    level: capStr(level, 20) || 'beginner',
+    pattern: KNOWN_PATTERNS.has(pattern) ? pattern : 'other',
+  };
+  await db.pgUpsertCustomExerciseRow(updated);
+  res.json(updated);
 });
 // Sep 30 2026 (audit finding). A custom exercise's name is the only link a logged set/session
 // exercise/history row ever stores back to it (see the comment above PUT) -- deleting the
@@ -1288,38 +1242,19 @@ function exerciseNameEverLogged(name) {
   return false;
 }
 app.delete('/api/exercises/custom/:id', auth, async (req, res) => {
-  const list = (DB.customExercises || {})[req.userId] || [];
-  const ex = list.find(x => x.id === req.params.id);
+  const ex = await findMyCustomExercise(req.userId, req.params.id);
   if (!ex) return res.status(404).json({ error: 'not found' });
   if (exerciseNameEverLogged(ex.name))
     return res.status(409).json({ error: 'This exercise has sets logged against it, so it can’t be deleted. You can still stop using it going forward.' });
-  DB.customExercises[req.userId] = list.filter(x => x.id !== req.params.id);
-  try {
-    await save(DB);
-  } catch (e) {
-    // Oct 14 2026 (same fix as POST /api/exercises/custom above, same reasoning -- revised same
-    // day after an independent reviewer caught a sharper version of the hazard this was meant to
-    // fix). An earlier draft restored `DB.customExercises[req.userId] = list` wholesale -- the
-    // exact pre-filter array reference. save(DB) is queued end-to-end (db.js's enqueue()) but
-    // each queued save reads DB's CURRENT content only when its own turn actually runs, not a
-    // snapshot from when save() was called -- so a concurrent create for this SAME user (a
-    // double-tap, a client retry) could push a brand-new exercise into
-    // DB.customExercises[req.userId] while THIS delete's save(DB) was still sitting in that
-    // queue. Restoring the stale pre-filter `list` wholesale would silently erase that new,
-    // unrelated exercise -- worse than the original bug, since it would destroy a DIFFERENT
-    // request's successful result, not just fail to persist this one. Fixed the same way the
-    // create route's own revert already does it (re-read the CURRENT array, touch only the one
-    // id that's actually ours to put back) instead of restoring a stale whole-array snapshot.
-    const current = DB.customExercises[req.userId] || [];
-    if (!current.some(x => x.id === ex.id)) current.push(ex);
-    DB.customExercises[req.userId] = current;
-    throw e;
-  }
-  // Oct 14 2026 (dual-write phase -- see the comment on POST /api/exercises/custom above).
-  // Ownership is baked into pgDeleteCustomExerciseRow's own WHERE clause as a second,
-  // independent check (see that function's comment in db.js) -- belt-and-suspenders with the
-  // `list.find` ownership check above, not a replacement for it.
-  db.pgDeleteCustomExerciseRow(req.params.id, req.userId).catch(e => console.error('[migration dual-write] pgDeleteCustomExerciseRow failed:', e && e.message));
+  // Oct 16 2026 (read cutover, see CLAUDE.md "Rearchitecture status"): this route used to filter
+  // `ex` out of DB.customExercises[req.userId] BEFORE the save, then restore it on a failed save
+  // (see git history, task #258+, for the concurrency-safe-revert fix that required). That whole
+  // revert existed only because deleting meant mutating a shared, process-wide array first --
+  // there is no DB.customExercises any more for anything to mutate, so this is now a single
+  // awaited delete with nothing to undo if it throws. Ownership is checked twice, same
+  // belt-and-suspenders as before: once above (findMyCustomExercise's own ownerId check) and once
+  // more in pgDeleteCustomExerciseRow's own WHERE clause (see that function's comment in db.js).
+  await db.pgDeleteCustomExerciseRow(req.params.id, req.userId);
   res.json({ ok: true });
 });
 
@@ -7431,11 +7366,12 @@ const MUSCLE_TARGETS = {
 };
 const MUSCLE_ORDER = Object.keys(MUSCLE_TARGETS);
 
-// Custom exercises (POST /api/exercises/custom) live in DB.customExercises, never merged into
-// EX_LIB itself — GET /api/exercises already concats the two for display (see the `custom` const
-// above). Volume needs the same reach: a set logged against someone's own custom exercise still
-// targets real muscle groups and should count, not silently vanish from the meter just because
-// it isn't a library stock lift.
+// Custom exercises (POST /api/exercises/custom) live in Postgres's custom_exercise_rows table
+// (one row per exercise, see db.js — Oct 16 2026 read cutover, previously DB.customExercises),
+// never merged into EX_LIB itself — GET /api/exercises already concats the two for display (see
+// the `custom` const above). Volume needs the same reach: a set logged against someone's own
+// custom exercise still targets real muscle groups and should count, not silently vanish from the
+// meter just because it isn't a library stock lift.
 // Cold-review catch (Aug 31): name is NOT unique, not even per-user — POST /api/exercises/custom
 // enforces no uniqueness at all, and every custom exercise is visible/loggable by every OTHER user
 // too (see that route's own comment). An earlier version of this scanned every user's custom list
@@ -7460,20 +7396,33 @@ function exMuscles(lib) {
 // global scan -- still a fallback, not a guarantee, since a session carries no owner tag per
 // exercise (and never will -- see POST /api/exercises/custom's own comment on why ownerId isn't
 // exposed to other users at all), but it resolves the common real case instead of only the rare one.
-function findExLibEntry(name, userId, s) {
+// Oct 16 2026 (phase 2 of the push subs/custom exercises/reports slice -- read cutover, see
+// CLAUDE.md "Rearchitecture status"): took a new `customRows` param (every custom exercise, one
+// row per exercise -- see db.js's pgListAllCustomExerciseRows) in place of reading DB.customExercises
+// directly. NOT turned into an `async function` that queries Postgres itself, even though that
+// would have been the more literal translation -- this function is called once per LOGGED SET
+// inside volumeFor/volumeTrendFor/recentlyTrainedMusclesFor's own loops (see each one's own
+// comment), so a user with a long training history could trigger hundreds of calls rebuilding one
+// Progress-page request. This app has exactly one shared, unpooled Postgres connection (see
+// pgmini.js's own comment) -- hundreds of per-call round trips through that single connection's
+// queue would have gone from an instant in-memory lookup to a visibly slow page load, not a
+// cosmetic regression. Every call site below now fetches the full row list ONCE per request
+// (db.pgListAllCustomExerciseRows(), the exact same call GET /api/exercises already makes) and
+// hands it down as `customRows`, so Postgres is still the one source of truth -- it's just read
+// once per request instead of once per set, same as before this cutover in every way that
+// matters to how fast the page loads.
+function findExLibEntry(name, userId, s, customRows) {
   const hit = EX_LIB.find(x => x.name === name);
   if (hit) return hit;
-  const mine = ((DB.customExercises || {})[userId] || []).find(x => x.name === name);
+  const rows = customRows || [];
+  const mine = rows.find(x => x.ownerId === userId && x.name === name);
   if (mine) return mine;
   if (s && s.creatorId && s.creatorId !== userId) {
-    const creatorsOwn = ((DB.customExercises || {})[s.creatorId] || []).find(x => x.name === name);
+    const creatorsOwn = rows.find(x => x.ownerId === s.creatorId && x.name === name);
     if (creatorsOwn) return creatorsOwn;
   }
-  for (const arr of Object.values(DB.customExercises || {})) {
-    const c = (arr || []).find(x => x.name === name);
-    if (c) return c;
-  }
-  return null;
+  const c = rows.find(x => x.name === name);
+  return c || null;
 }
 
 // Sep 28 2026 (audit finding: "Chest shows 0/16 sets this week even though a set was logged and
@@ -7504,7 +7453,7 @@ function sessionDateFor(s, userId) {
 // the PER-WEEK AVERAGE instead of a raw count, so it's directly comparable to the same target —
 // e.g. weeks=4 answers "what has this looked like lately" without one light or one heavy week
 // swinging the number. weeks=1 (the default) is untouched — same math as before this existed.
-function volumeFor(userId, weeks = 1, localToday) {
+function volumeFor(userId, weeks = 1, localToday, customRows) {
   const today = isValidLocalDateStr(localToday) ? localToday : new Date().toISOString().slice(0, 10);
   const [ty, tm, td] = today.split('-').map(Number);
   const monday = new Date(Date.UTC(ty, tm - 1, td));
@@ -7523,7 +7472,7 @@ function volumeFor(userId, weeks = 1, localToday) {
     if (at < a || at >= b) continue;
     for (const l of mine) {
       if (!isWorkingSet(l)) continue;
-      const lib = findExLibEntry(logExerciseName(s, l, userId), userId, s);
+      const lib = findExLibEntry(logExerciseName(s, l, userId), userId, s, customRows);
       if (!lib) continue;
       for (const m of exMuscles(lib)) if (sets.hasOwnProperty(m)) sets[m]++;
     }
@@ -7547,7 +7496,7 @@ function volumeFor(userId, weeks = 1, localToday) {
 // trailing-average window — a trend chart needs real week-by-week bars, not one blended number.
 // Every muscle group gets a bucketed set count for every week in range, same "full credit to
 // every muscle group the exercise targets" rule volumeFor already uses.
-function volumeTrendFor(userId, weeks, localToday) {
+function volumeTrendFor(userId, weeks, localToday, customRows) {
   const today = isValidLocalDateStr(localToday) ? localToday : new Date().toISOString().slice(0, 10);
   const [ty, tm, td] = today.split('-').map(Number);
   const monday = new Date(Date.UTC(ty, tm - 1, td));
@@ -7570,7 +7519,7 @@ function volumeTrendFor(userId, weeks, localToday) {
     if (!bucket) continue;
     for (const l of mine) {
       if (!isWorkingSet(l)) continue;
-      const lib = findExLibEntry(logExerciseName(s, l, userId), userId, s);
+      const lib = findExLibEntry(logExerciseName(s, l, userId), userId, s, customRows);
       if (!lib) continue;
       for (const m of exMuscles(lib)) if (bucket.sets.hasOwnProperty(m)) bucket.sets[m]++;
     }
@@ -7617,7 +7566,7 @@ function firstLogDateFor(userId) {
 // volume sometime in that window is still "yours to keep up with" and can flag; one with nothing in
 // it at all -- whether truly never-trained, or simply abandoned more than 3 months ago -- now reads
 // the same, and neither flags.
-function recentlyTrainedMusclesFor(userId, localToday) {
+function recentlyTrainedMusclesFor(userId, localToday, customRows) {
   const today = isValidLocalDateStr(localToday) ? localToday : new Date().toISOString().slice(0, 10);
   const [ty, tm, td] = today.split('-').map(Number);
   const monday = new Date(Date.UTC(ty, tm - 1, td));
@@ -7643,7 +7592,7 @@ function recentlyTrainedMusclesFor(userId, localToday) {
     if (at < a || at >= b) continue;
     for (const l of mine) {
       if (!isWorkingSet(l)) continue;
-      const lib = findExLibEntry(logExerciseName(s, l, userId), userId, s);
+      const lib = findExLibEntry(logExerciseName(s, l, userId), userId, s, customRows);
       if (!lib) continue;
       for (const m of exMuscles(lib)) touched.add(m);
     }
@@ -7669,12 +7618,12 @@ function recentlyTrainedMusclesFor(userId, localToday) {
 // Oct 9 2026: narrowed further, from "ever trained" to "recently trained" (recentlyTrainedMusclesFor,
 // trailing 3 months) -- see that function's own comment for why an all-time check still let a
 // long-abandoned muscle flag forever.
-function muscleBalanceFor(userId, localToday) {
-  const vt = volumeTrendFor(userId, 3, localToday);
+function muscleBalanceFor(userId, localToday, customRows) {
+  const vt = volumeTrendFor(userId, 3, localToday, customRows);
   const [twoAgo, oneAgo] = vt.weeks;   // vt.weeks[2] is the current, in-progress week -- excluded
   const firstLog = firstLogDateFor(userId);
   if (!firstLog || firstLog > twoAgo.a) return { groups: [] };
-  const recentlyTrained = recentlyTrainedMusclesFor(userId, localToday);
+  const recentlyTrained = recentlyTrainedMusclesFor(userId, localToday, customRows);
   const byGroup2 = {}; for (const g of twoAgo.groups) byGroup2[g.group] = g.sets;
   const byGroup1 = {}; for (const g of oneAgo.groups) byGroup1[g.group] = g.sets;
   const flagged = [];
@@ -8423,6 +8372,11 @@ app.get('/api/progress/recommendations', auth, async (req, res) => {
 app.get('/api/progress', auth, async (req, res) => {
   const weeks = Math.min(52, Math.max(4, Number(req.query.weeks) || 13));
   const rec = recommendationsFor(req.userId);
+  // Oct 16 2026 (read cutover -- see findExLibEntry's own comment for the full reasoning): fetched
+  // ONCE here, up front, and handed down into every volumeFor/volumeTrendFor/
+  // recentlyTrainedMusclesFor/muscleBalanceFor call below instead of each of them (or findExLibEntry
+  // itself) asking Postgres on every one of the many logged-set lookups this one request can do.
+  const customRows = await db.pgListAllCustomExerciseRows();
   // localToday: same trust rule as /streak-status and /profile/me (self-view) -- this is always
   // the caller's OWN live request, so their own local calendar day is safe to accept. See the
   // comment above weeksFor for what this fixes.
@@ -8462,18 +8416,18 @@ app.get('/api/progress', auth, async (req, res) => {
     // Sep 28 2026: all four now take req.query.localToday, same trust rule as weeksFor just above
     // (this is always the caller's own live request) -- see the comment above sessionDateFor for
     // the bug this fixes (volume was disagreeing with weeksFor/Home on what "this week" means).
-    volume: volumeFor(req.userId, 1, req.query.localToday),
-    volumeAvg: volumeFor(req.userId, 4, req.query.localToday),
-    volume3mo: volumeFor(req.userId, 13, req.query.localToday),
+    volume: volumeFor(req.userId, 1, req.query.localToday, customRows),
+    volumeAvg: volumeFor(req.userId, 4, req.query.localToday, customRows),
+    volume3mo: volumeFor(req.userId, 13, req.query.localToday, customRows),
     // No longer consumed by the client's Volume trend view as of round 5 (it used to drive a
     // per-week SVG trend chart, now retired in favor of the range-picker bar rows above) — left
     // computed/returned since Consistency's own weeksFor still needs this same `weeks` param, and
     // nothing else currently depends on removing this field. Candidate for cleanup later if truly
     // nothing else ever needs real per-week history again.
-    volumeTrend: volumeTrendFor(req.userId, weeks, req.query.localToday),
+    volumeTrend: volumeTrendFor(req.userId, weeks, req.query.localToday, customRows),
     // Sep 14 2026 additions -- see topLiftsFor()/muscleBalanceFor() for the reasoning behind each.
     topLifts: topLiftsFor(req.userId),
-    muscleBalance: muscleBalanceFor(req.userId, req.query.localToday)
+    muscleBalance: muscleBalanceFor(req.userId, req.query.localToday, customRows)
   });
 });
 
@@ -8841,97 +8795,17 @@ function migrateExerciseRenames() {
   return n;
 }
 
-// Sep 30 2026 (audit finding, custom exercise edit/delete): every custom exercise created before
-// today has no `id` -- POST /api/exercises/custom never assigned one, and name alone can't address
-// one to edit/delete now that duplicate names are explicitly allowed (see that route's own
-// comment) -- two of a user's own exercises can share a name on purpose. Backfills a stable id
-// once, here, rather than generating one fresh on every read (which would be a different id each
-// time and useless for a later PUT/DELETE to actually find the same row again).
-function migrateCustomExerciseIds() {
-  let n = 0;
-  // Oct 14 2026 (adversarial-review finding, reproduced live): a legacy/malformed row whose
-  // `data` is a plain object instead of an array (this app has real production history of
-  // exactly this shape of corruption -- see migrateSessionShapes' own comment) made the bare
-  // `arr || []` fall through to the object itself (objects are truthy), and `for...of` on a
-  // non-iterable object throws -- crashing boot, every single restart, until someone edited the
-  // database by hand. That is the exact outcome hard rule #7 exists to prevent. Array.isArray
-  // guards it the same defensive way the rest of this app's boot migrations already guard
-  // against malformed rows (see sanitizeExercise/migrateSessionShapes).
-  for (const arr of Object.values(DB.customExercises || {})) {
-    for (const e of (Array.isArray(arr) ? arr : [])) {
-      if (e && typeof e === 'object' && !e.id) { e.id = crypto.randomUUID(); n++; }
-    }
-  }
-  if (n) console.log('migrateCustomExerciseIds: assigned ' + n + ' id(s)');
-  return n;
-}
-// Oct 14 2026 (push subs/custom exercises/reports slice -- dual-write phase, see CLAUDE.md
-// "Rearchitecture status"/"Rearchitecture safeguards"): one-time-per-exercise (but idempotent --
-// safe, and intended, to re-run every boot) flatten of DB.customExercises -- the OLD array-per-
-// owner shape, still the real driver of every read during this phase -- into the NEW one-row-
-// per-exercise custom_exercise_rows table (see SCHEMA_SQL's own comment in db.js for Jeff's
-// choice of this redesign over keeping the array with a transaction). Must run AFTER
-// migrateCustomExerciseIds() above, which is what guarantees every exercise already has the
-// stable id this new table's primary key needs -- an exercise with no id yet would have nothing
-// stable to upsert by.
-//
-// Reads from DB.customExercises itself, never a fresh raw read of the OLD Postgres table --
-// that in-memory object is already the authoritative, just-healed source every other boot
-// migration below it treats as ground truth, and is already what dual-write's own POST/PUT/
-// DELETE call sites treat as the real driver (see each route's own comment). Keyed from
-// Object.entries, not each exercise's own `.ownerId` field: this app has real production history
-// of malformed stored rows (see migrateSessionShapes' own comment on why defensive boot
-// migrations don't trust a row's own self-reported fields over its actual storage location) --
-// the array's own key is unambiguous, so the row written to Postgres is tagged with THAT, not
-// whatever (possibly missing or stale) ownerId the object itself happens to carry.
-//
-// pgUpsertCustomExerciseRow is a plain upsert keyed on id -- re-flattening something already
-// flattened is a harmless no-op write, not a duplicate row, which is what makes running this
-// every boot safe. It also means the new table self-heals against ADDED/EDITED drift during
-// this dual-write window (the array is still ground truth during that window, so re-flattening
-// it is always correct, never stale) -- and, since the reconciliation pass below, against
-// DELETED drift too (see that pass's own comment for why the original version of this function
-// could not heal a deletion, only ever add or overwrite).
-async function migrateCustomExerciseRowsIntoPostgres() {
-  let n = 0;
-  const validIds = new Set();
-  // Oct 14 2026 (adversarial-review finding, reproduced live): same malformed-row crash as
-  // migrateCustomExerciseIds just above, same fix -- Array.isArray guards a non-array `data`
-  // value instead of falling through to it and crashing on a non-iterable `for...of`.
-  for (const [ownerId, arr] of Object.entries(DB.customExercises || {})) {
-    for (const e of (Array.isArray(arr) ? arr : [])) {
-      if (!e || typeof e !== 'object' || !e.id) continue;   // tolerate a malformed exercise object rather than crash boot -- same stance as migrateCustomExerciseIds/sanitizeExercise
-      await db.pgUpsertCustomExerciseRow({ ...e, ownerId });
-      validIds.add(e.id);
-      n++;
-    }
-  }
-  // Correctness-review finding: this function originally only ever upserted -- it never removed
-  // anything from custom_exercise_rows, so a delete whose fire-and-forget pgDeleteCustomExerciseRow
-  // call failed (e.g. a transient Postgres hiccup -- see the SEVERE notify() finding just above
-  // for why that's a real, not hypothetical, failure mode) left a permanent GHOST row behind:
-  // removed from the old array (today's real driver) but stuck in the new table forever, surviving
-  // every future reboot, with the comment above wrongly claiming this "self-heals against ANY
-  // drift." Reproduced live: a row deleted from the old table only (simulating exactly that failed
-  // delete) was still sitting in custom_exercise_rows after a restart, before this fix.
-  //
-  // Fixed by making this a genuine two-way reconciliation, every boot: anything in the new table
-  // that is NOT in the id set just computed from the (freshly reloaded, authoritative) old array
-  // no longer belongs there, and is removed. Ownership for the delete comes from the ROW'S OWN
-  // stored owner_id (read back from custom_exercise_rows itself), not from the old array -- by
-  // definition an orphan has no entry left in the old array to read an ownerId from.
-  let removed = 0;
-  const existingRows = await db.pgListAllCustomExerciseRows();
-  for (const row of existingRows) {
-    if (row && row.id && !validIds.has(row.id)) {
-      await db.pgDeleteCustomExerciseRow(row.id, row.ownerId);
-      removed++;
-    }
-  }
-  if (n) console.log('migrateCustomExerciseRowsIntoPostgres: flattened ' + n + ' custom exercise row(s) into custom_exercise_rows');
-  if (removed) console.log('migrateCustomExerciseRowsIntoPostgres: removed ' + removed + ' orphaned row(s) no longer present in the old array');
-  return n;
-}
+// Oct 16 2026 (read cutover, see CLAUDE.md "Rearchitecture status"): migrateCustomExerciseIds()
+// (backfilled a stable id onto any legacy custom exercise with none) and
+// migrateCustomExerciseRowsIntoPostgres() (flattened DB.customExercises into custom_exercise_rows
+// every boot, during the dual-write window) both lived here. Both are removed, not just
+// unreferenced, now that DB.customExercises is gone from EMPTY_DB/doLoad() in db.js entirely --
+// there is no in-memory array left for either one to ever read from again, so keeping them around
+// would only have meant two functions guaranteed to silently no-op on every future boot forever.
+// Any custom exercise already in custom_exercise_rows stays there untouched; scripts/migrate-to-
+// postgres.mjs now does the one-time legacy-id-backfill-and-flatten this pair used to do, for the
+// one path that still needs it (restoring a pre-cutover data.json/backup — see that script's own
+// comment).
 
 // v168: replace every stored plaintext password with a scrypt hash. Runs once; after it the
 // clear password is gone from Postgres and from every future JSON snapshot backup. There is no
@@ -9785,8 +9659,9 @@ app.use((err, req, res, next) => {
   migratePostAndSessionVisibilityBinary();   // 3-way post + 2-way session visibility -> one binary rule
   migrateExerciseNames();     // before rebuildAllPrs, which groups by the name
   migrateExerciseRenames();   // after the stamp above (it walks exerciseName), before the PR regroup
-  migrateCustomExerciseIds(); // backfill ids for edit/delete -- order doesn't matter, nothing else depends on them yet
-  await migrateCustomExerciseRowsIntoPostgres(); // dual-write phase: flatten into custom_exercise_rows -- MUST run after the id-backfill just above
+  // Oct 16 2026 (read cutover): migrateCustomExerciseIds()/migrateCustomExerciseRowsIntoPostgres()
+  // used to run here -- removed along with their definitions, see the comment where they used to
+  // be defined for why.
   rebuildAllPrs();
   rebuildSessionsByUserIndex();   // Oct 12 2026 (scaling fix round 2) -- after every migration above has settled DB.sessions, same placement reasoning as rebuildAllPrs just above
   migrateLoadTypes();
