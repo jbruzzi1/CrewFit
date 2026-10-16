@@ -178,6 +178,31 @@ const d = {
   templates: raw.templates || {},
   pushSubs: legacyPresent.pushSubs ? raw.pushSubs : undefined,
   prs: raw.prs || {},
+  // Oct 16 2026 (crews deep-dive, decision #1 -- messages/challenges moved to their own tables):
+  // checked whether `crews` needed the same legacyPresent-style disaster-recovery treatment as
+  // pushSubs/notifications/feedEvents/reports/customExercises just above/below, since Jeff flagged
+  // this as non-negotiable for the new crew_messages/crew_challenges tables too. It doesn't, for a
+  // structural reason specific to how this one migration is shaped (verified, not assumed):
+  //   1. crew_messages/crew_challenges are read/written ONLY through db.js's direct-Postgres
+  //      functions (pgInsertCrewMessage, pgUpsertCrewChallenge, etc.) -- they are never part of
+  //      db.save()'s generic table sync at all (unlike push_subs/notifications/feed_events/reports,
+  //      which WERE syncTableFull'd by db.save() itself, which is what made the `{}`-vs-`undefined`
+  //      distinction below load-bearing for THEM). This script's `db.save(d)` call below physically
+  //      cannot write to, and so cannot wipe, crew_messages/crew_challenges -- there's no code path
+  //      from here to those tables at all.
+  //   2. Unlike customExercises (which needed its own explicit flatten a few lines down, because
+  //      EMPTY_DB/doLoad()/doSave() dropped that collection from the generic DB object ENTIRELY,
+  //      leaving no other path for old data to survive), `crews` is still a fully generic,
+  //      untouched db.save()-handled collection -- CREWS_UPSERT_SQL stores each crew's `data`
+  //      verbatim (jsonToParams does a plain JSON.stringify, no field filtering), so an old-style
+  //      backup's embedded c.messages/c.challenges arrays ride along into the crews table's jsonb
+  //      blob exactly as they always did, untouched by this script either way.
+  // Net effect: restoring an old-style backup through this script does not lose or silently wipe
+  // any message/challenge data -- it just defers moving it into the new tables to the very next
+  // server boot, which already has a dedicated, idempotent, crash-safe migration for exactly that
+  // (migrateCrewMessagesAndChallengesIntoPostgres in server.js, same "flatten on boot" pattern the
+  // now-retired migrateCustomExerciseRowsIntoPostgres used). See test/crews.mjs's migration test
+  // for the end-to-end proof of that boot-time flatten; nothing further is needed here.
   crews: raw.crews || {},
   notifications: legacyPresent.notifications ? raw.notifications : undefined,
   feedEvents: legacyPresent.feedEvents ? raw.feedEvents : undefined,

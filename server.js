@@ -2337,16 +2337,27 @@ function ensureCrewShape(c) {
   // double-count against CREW_MAX_MEMBERS, and corrupt challenge-progress math that iterates
   // memberIds expecting every entry to be a real user id.
   if (c.ownerId && !c.memberIds.includes(c.ownerId)) c.memberIds.push(c.ownerId);
-  if (!Array.isArray(c.messages)) c.messages = [];
-  if (!Array.isArray(c.challenges)) c.challenges = [];
+  // Oct 16 2026 (crews deep-dive, decision #1 -- messages/challenges moved to their own tables,
+  // see db.js's comment on crew_messages/crew_challenges): this used to also default c.messages/
+  // c.challenges to [] here. Neither lives on the in-memory crew object any more at all -- every
+  // read and write for both goes through db.js's direct-Postgres functions now, same as
+  // notifications/feed_events. A crew object migrated by migrateCrewMessagesAndChallengesIntoPostgres
+  // (or created fresh after this shipped) simply never has these fields; nothing left here needs
+  // to default them.
 }
 function isCrewMember(c, userId) { return Array.isArray(c.memberIds) && c.memberIds.includes(userId); }
 function crewsFor(userId) {
   return Object.values(DB.crews || {}).filter(c => isCrewMember(c, userId))
     .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
 }
-function publicCrew(c, viewerId) {
-  const challenges = Array.isArray(c.challenges) ? c.challenges : [];
+async function publicCrew(c, viewerId) {
+  // Oct 16 2026 (crews deep-dive, decision #1): challenges used to be read straight off
+  // c.challenges (an in-memory array on the crew blob). Now that crew_challenges is its own
+  // Postgres table (same "no in-memory caching for cut-over collections" pattern as
+  // notifications/feed_events/custom-exercises), this always queries fresh -- consistent with the
+  // rest of the codebase, and crew count per user is typically 0-1 so this isn't a hot loop.
+  const challenges = await db.pgListCrewChallengesByCrew(c.id);
+  const last = challenges.length ? challenges[challenges.length - 1] : null;
   return {
     id: c.id, name: c.name, ownerId: c.ownerId, isOwner: c.ownerId === viewerId,
     createdAt: c.createdAt,
@@ -2366,7 +2377,7 @@ function publicCrew(c, viewerId) {
     // crewView's `m.streak>1` check in app.js, which treats null exactly like "nothing to show,"
     // same as it already does for a real 0-day streak).
     members: c.memberIds.filter(id => DB.users[id]).map(id => ({ ...publicUser(id), streak: isBlocked(id, viewerId) ? null : currentStreak(id) })),
-    challenge: publicChallenge(c, lastChallenge(c), viewerId),
+    challenge: publicChallenge(c, last, viewerId),
     // Everything before the most-recent challenge, newest first -- the crew's track record. Added
     // Sep 6 (Jeff: the crew page "seemed poor and quickly done... difficult to track" -- wants to
     // tap into a challenge for full details). Reuses publicChallenge for each past entry so a
@@ -2414,8 +2425,71 @@ function validCrewMemberIds(ownerId, requested, existingMemberIds) {
   return [...new Set((Array.isArray(requested) ? requested : []).filter(id => id !== ownerId && (allowed.has(id) || already.has(id))))];
 }
 
+// Oct 16 2026 (crews deep-dive, decision #1 -- messages/challenges moved to their own tables, boot
+// migration). One-time move of each crew's EXISTING, already-created `messages`/`challenges`
+// arrays (the OLD embedded-in-the-blob shape) into crew_messages/crew_challenges (the NEW
+// one-row-per-item shape) -- same "flatten on boot" pattern the custom-exercises redesign used
+// (see that migration's own now-removed comment in CLAUDE.md's "Rearchitecture status" for the
+// precedent). Idempotent and safe to run every boot: each row upserts by its own stable id (a
+// message/challenge re-migrated twice just overwrites itself with the same content, not a
+// duplicate), and a crew whose fields are already gone (migrated on an earlier boot, or created
+// fresh after this shipped and never had them) is skipped with no query at all. Deleting the two
+// fields off the in-memory crew object right after migrating them means the NEXT save(DB) is what
+// actually stops re-persisting the old copies into the crew's own blob — a one-time shrink, same
+// as every other "boot-flatten" migration in this file.
+//
+// Safe against an interrupted boot (crash mid-run): nothing here is a single all-or-nothing
+// transaction across every crew, by design — each crew's own messages/challenges are fully
+// migrated (or not touched at all yet) independently, and the ONLY observable effect of a crew
+// being interrupted half-migrated is that its fields are still sitting in the blob next boot,
+// which this function will just try again. The upserts make re-running a partial crew safe too.
+async function migrateCrewMessagesAndChallengesIntoPostgres() {
+  let crewsTouched = 0, messagesMoved = 0, challengesMoved = 0, skippedMalformed = 0;
+  for (const c of Object.values(DB.crews || {})) {
+    const hasMessages = Array.isArray(c.messages) && c.messages.length > 0;
+    const hasChallenges = Array.isArray(c.challenges) && c.challenges.length > 0;
+    if (!hasMessages && !hasChallenges) {
+      // Still worth clearing an EMPTY leftover array/field so it stops riding along in the blob
+      // forever doing nothing -- cheap, no Postgres call needed either way.
+      if (c.messages !== undefined) delete c.messages;
+      if (c.challenges !== undefined) delete c.challenges;
+      continue;
+    }
+    // Oct 16 2026 (adversarial review finding, CRITICAL, reproduced live): the first version of
+    // this handed every entry straight to pgInsertCrewMessage/pgUpsertCrewChallenge with no shape
+    // check at all. crew_messages.id/crew_challenges.id are NOT NULL primary keys -- a malformed
+    // legacy entry (null, or an object missing `id`) threw a raw Postgres constraint error that
+    // propagated straight up through this boot IIFE's own top-level `.catch(e => ...
+    // process.exit(1))`, taking the WHOLE server down on every single restart until someone
+    // hand-fixed the bad row in Postgres directly. Exactly the "one malformed row stops the
+    // server booting, permanently" failure mode the "Boot migrations" header comment above was
+    // written after (CLAUDE.md hard rule #7) -- reintroduced here for crews. Tolerated the same
+    // way scripts/migrate-to-postgres.mjs's own customExercises flatten already tolerates a
+    // malformed exercise object: skip just that one entry and keep going, rather than losing
+    // every other crew's real data to one bad row.
+    if (hasMessages) {
+      for (const m of c.messages) {
+        if (!m || typeof m !== 'object' || !m.id) { skippedMalformed++; continue; }
+        await db.pgInsertCrewMessage({ ...m, crewId: c.id });
+        messagesMoved++;
+      }
+    }
+    if (hasChallenges) {
+      for (const ch of c.challenges) {
+        if (!ch || typeof ch !== 'object' || !ch.id) { skippedMalformed++; continue; }
+        await db.pgUpsertCrewChallenge({ ...ch, crewId: c.id });
+        challengesMoved++;
+      }
+    }
+    delete c.messages;
+    delete c.challenges;
+    crewsTouched++;
+  }
+  if (crewsTouched) console.log(`migrated ${crewsTouched} crew(s) off the old embedded shape: ${messagesMoved} message(s), ${challengesMoved} challenge(s) moved to their own tables${skippedMalformed ? `, skipped ${skippedMalformed} malformed entr${skippedMalformed === 1 ? 'y' : 'ies'} (missing/invalid id)` : ''}`);
+}
+
 app.get('/api/crews', auth, async (req, res) => {
-  res.json(crewsFor(req.userId).map(c => publicCrew(c, req.userId)));
+  res.json(await Promise.all(crewsFor(req.userId).map(c => publicCrew(c, req.userId))));
 });
 app.post('/api/crews', auth, async (req, res) => {
   const name = capStr((req.body || {}).name, CREW_NAME_MAX).trim();
@@ -2424,7 +2498,7 @@ app.post('/api/crews', auth, async (req, res) => {
   // Sep 24 2026 audit round 4: see the comment on validCrewMemberIds above -- was a silent
   // truncation, now a real error before the crew is ever created.
   if (memberIds.length > CREW_MAX_MEMBERS - 1) return res.status(400).json({ error: `a crew is limited to ${CREW_MAX_MEMBERS} members` });
-  const c = { id: 'crew_' + uid(), name, ownerId: req.userId, memberIds: [req.userId, ...memberIds], messages: [], createdAt: new Date().toISOString() };
+  const c = { id: 'crew_' + uid(), name, ownerId: req.userId, memberIds: [req.userId, ...memberIds], createdAt: new Date().toISOString() };
   DB.crews[c.id] = c;
   // Cold-review catch (Sep 11 2026): PUT /api/crews/:id already emits 'joined_crew' for anyone
   // ADDED later, but founding members picked right here at creation got nothing -- the exact same
@@ -2436,14 +2510,14 @@ app.post('/api/crews', auth, async (req, res) => {
   // follow accepted, new follower) -- being silently dropped into a standing group chat with no
   // signal until you happen to open the Friends tab would be the odd one out (cold-review catch).
   for (const mid of memberIds) notify(mid, { title: c.name, body: `${DB.users[req.userId].displayName} added you to the crew`, link: { type: 'crew', crewId: c.id } });
-  res.json(publicCrew(c, req.userId));
+  res.json(await publicCrew(c, req.userId));
 });
 app.get('/api/crews/:id', auth, async (req, res) => {
   const c = DB.crews[req.params.id];
   if (!c) return res.status(404).json({ error: 'not found' });
   ensureCrewShape(c);
   if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
-  res.json(publicCrew(c, req.userId));
+  res.json(await publicCrew(c, req.userId));
 });
 // Rename and/or replace the member list in one call -- matches the client's picker, which always
 // re-submits the full checked set rather than tracking individual adds/removes.
@@ -2524,7 +2598,7 @@ async function crewPutCritical(c, req, res) {
     await checkChallengeCompletion(c);
   }
   await save(DB);
-  res.json(publicCrew(c, req.userId));
+  res.json(await publicCrew(c, req.userId));
 }
 // The owner can't "leave" -- a crew with no owner has nobody who can rename it or edit who's in
 // it, so ownership would need somewhere to go. Simplest and clearest for v1: the owner deletes
@@ -2601,6 +2675,20 @@ app.delete('/api/crews/:id', auth, async (req, res) => {
       DB.crews[req.params.id] = c;
       throw e;
     }
+    // Oct 16 2026 (crews deep-dive, decision #1 cleanup -- cold-review catch): messages/challenges
+    // used to live inside this crew's own JSON blob, so deleting DB.crews[id] above already threw
+    // them away for free. Now that they're their own tables, nothing above touches them at all --
+    // clean them up explicitly so a deleted crew doesn't leave orphaned rows behind forever. This
+    // only runs after save(DB) above has actually succeeded (the crew is gone for good by now), and
+    // is best-effort: nothing can reach these rows through the API any more regardless (every
+    // message/challenge route 404s once DB.crews[id] is gone), so a failure here is a storage-
+    // hygiene miss, not a correctness problem.
+    try {
+      await db.pgDeleteCrewMessagesByCrew(c.id);
+      await db.pgDeleteCrewChallengesByCrew(c.id);
+    } catch (e) {
+      console.error('crew delete: failed to clean up crew_messages/crew_challenges for', c.id, e);
+    }
     res.json({ ok: true });
   });
 });
@@ -2616,7 +2704,9 @@ app.get('/api/crews/:id/messages', auth, async (req, res) => {
   // the owner notice a missing member and start asking questions -- the opposite of what blocking
   // is supposed to protect against. Only per-member profile-detail numbers (the roster's `streak`
   // field, the challenge leaderboard's `count`) are hidden; the shared chat thread itself is not.
-  res.json(c.messages);
+  // Oct 16 2026 (crews deep-dive, decision #1): reads crew_messages directly now instead of
+  // c.messages -- see db.js's comment on the table and migrateCrewMessagesAndChallengesIntoPostgres.
+  res.json(await db.pgListCrewMessagesByCrew(c.id));
 });
 app.post('/api/crews/:id/messages', auth, async (req, res) => {
   const c = DB.crews[req.params.id];
@@ -2625,46 +2715,48 @@ app.post('/api/crews/:id/messages', auth, async (req, res) => {
   if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
   const text = capStr((req.body || {}).text, CREW_MSG_MAX);
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
-  const m = { id: 'cm_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
-  // Oct 16 2026 (crews deep-dive part 2, widening withCrewLock to every crew-editing action --
-  // see that function's own comment): same mutate-before-maybe-failing-save hazard as
-  // challenge-cancel -- pushed into memory before the awaited save(DB) that can fail. Reverted by
-  // removing exactly this message (by id, from whatever c.messages CURRENTLY is), not a blind
-  // pre-mutation restore.
-  await withCrewLock(c.id, async () => {
-    c.messages.push(m);
-    try {
-      await save(DB);
-    } catch (e) {
-      c.messages = c.messages.filter(x => x.id !== m.id);
-      throw e;
-    }
-    // Sep 8 2026 (Jeff: "I want a notification for ... comments ... We don't have to see multiple
-    // comments, just 'brian commented on XYZ' ... or grouped notifications ... '7 New Comments in
-    // XYZ Crew'"). Used to be history:false (a live group chat is exactly the kind of high-frequency
-    // notify() call the history feature was never meant to absorb one-row-per-message -- cold-review
-    // catch, Sep 5) -- now grouped instead of dropped: see the long comment above groupedHistoryWrite
-    // (right above notify()) for the aggregation rule. The chat thread itself is still the durable,
-    // full-detail place to catch up; this is just a pointer that something happened there.
-    // Sep 8 2026, cont'd (Jeff: "when i open the notification page ... I want to be able to click
-    // on the notification and it bring me to that notification ... if brian commented in our crew
-    // or workout - it brings me to see his comments"). `crew-chat` (distinct from plain `crew`,
-    // still used elsewhere for "added you to the crew"/challenge notifications, which correctly land
-    // at the TOP of the crew page) is its own link type specifically so a comment notification lands
-    // scrolled to the actual messages, not just somewhere on the crew page above them -- see
-    // openCrewChat() in app.js.
-    const who = DB.users[req.userId].displayName;
-    // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
-    // reason as the read side above (see the Sep 14 2026 comment on publicCrew()): crew chat
-    // notifications are deliberately left untouched by a block.
-    for (const pid of c.memberIds) if (pid !== req.userId) notify(pid, { title: c.name, body: `${who}: ${text.slice(0, 40)}`, link: { type: 'crew-chat', crewId: c.id } },
-      { group: { key: `crew:${c.id}:chat`, singularBody: `${who} commented in ${c.name}`, pluralBody: n => `${n} new comments in ${c.name}` } });
-    res.json(m);
-  });
+  const m = { id: 'cm_' + uid(), crewId: c.id, userId: req.userId, text, at: new Date().toISOString() };
+  // Oct 16 2026 (crews deep-dive, decision #1 -- messages/challenges moved to their own tables):
+  // this used to be wrapped in withCrewLock, pushing into c.messages before an awaited save(DB)
+  // that could fail, with a revert-by-id on failure (see the git history for that fix's own
+  // writeup). pgInsertCrewMessage is a single atomic INSERT -- the insert IS the persistence, so
+  // there's no in-memory mutation left to strand and nothing to revert.
+  // Oct 16 2026, same day (adversarial review finding, MODERATE-HIGH, reproduced live): dropping
+  // withCrewLock here entirely (not just the revert logic) reopened a different race than the one
+  // it was added for -- DELETE /api/crews/:id's own withCrewLock-protected body deletes the crew
+  // AND cleans up crew_messages/crew_challenges for it (see that route's own comment), but with no
+  // lock here, this insert could still be in flight (read the crew, passed isCrewMember, about to
+  // insert) when that cleanup already ran, landing a brand-new message row for a crew that no
+  // longer exists -- a permanently orphaned row nothing can ever reach or clean up again (every
+  // route that could read it 404s once the crew is gone). Still wrapped in withCrewLock, just with
+  // no try/catch/revert inside it -- the lock here is pure serialization against concurrent
+  // deletion of this SAME crew, not protection for an in-memory mutation that no longer exists.
+  await withCrewLock(c.id, () => db.pgInsertCrewMessage(m));
+  // Sep 8 2026 (Jeff: "I want a notification for ... comments ... We don't have to see multiple
+  // comments, just 'brian commented on XYZ' ... or grouped notifications ... '7 New Comments in
+  // XYZ Crew'"). Used to be history:false (a live group chat is exactly the kind of high-frequency
+  // notify() call the history feature was never meant to absorb one-row-per-message -- cold-review
+  // catch, Sep 5) -- now grouped instead of dropped: see the long comment above groupedHistoryWrite
+  // (right above notify()) for the aggregation rule. The chat thread itself is still the durable,
+  // full-detail place to catch up; this is just a pointer that something happened there.
+  // Sep 8 2026, cont'd (Jeff: "when i open the notification page ... I want to be able to click
+  // on the notification and it bring me to that notification ... if brian commented in our crew
+  // or workout - it brings me to see his comments"). `crew-chat` (distinct from plain `crew`,
+  // still used elsewhere for "added you to the crew"/challenge notifications, which correctly land
+  // at the TOP of the crew page) is its own link type specifically so a comment notification lands
+  // scrolled to the actual messages, not just somewhere on the crew page above them -- see
+  // openCrewChat() in app.js.
+  const who = DB.users[req.userId].displayName;
+  // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
+  // reason as the read side above (see the Sep 14 2026 comment on publicCrew()): crew chat
+  // notifications are deliberately left untouched by a block.
+  for (const pid of c.memberIds) if (pid !== req.userId) notify(pid, { title: c.name, body: `${who}: ${text.slice(0, 40)}`, link: { type: 'crew-chat', crewId: c.id } },
+    { group: { key: `crew:${c.id}:chat`, singularBody: `${who} commented in ${c.name}`, pluralBody: n => `${n} new comments in ${c.name}` } });
+  res.json(m);
 });
 // Sep 8 2026 (Jeff: "I want to be able to edit my comments - anywhere I can post one") -- same
-// own-message-only edit as the session chat and posted-recap comment editors. `c.messages` can
-// also hold a `system` row (crew-challenge-hit celebrations, no real userId) -- those simply have
+// own-message-only edit as the session chat and posted-recap comment editors. A crew_messages row
+// can also be a `system` row (crew-challenge-hit celebrations, no real userId) -- those simply have
 // no matching userId to compare against req.userId, so this refuses them the same as anyone
 // else's message, with no special-casing needed.
 // Cold-review fix: also re-check isCrewMember, matching the sibling GET/POST routes just above --
@@ -2676,30 +2768,30 @@ app.put('/api/crews/:id/messages/:messageId', auth, async (req, res) => {
   if (!c) return res.status(404).json({ error: 'not found' });
   ensureCrewShape(c);
   if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
-  const m = (c.messages || []).find(x => x.id === req.params.messageId);
-  if (!m) return res.status(404).json({ error: 'not found' });
-  if (m.userId !== req.userId) return res.status(403).json({ error: 'forbidden' });
   const text = capStr((req.body || {}).text, CREW_MSG_MAX);
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
-  // Oct 16 2026 (crews deep-dive part 2, widening withCrewLock to every crew-editing action --
-  // see that function's own comment): same mutate-before-maybe-failing-save hazard as
-  // challenge-cancel -- the edit used to be applied to the live, shared message object before the
-  // awaited save(DB) that can fail. Reverted to its PRE-edit text/editedAt on failure (captured
-  // right here, before touching either field), since `m` is the same object every other reader
-  // sees.
-  const prevText = m.text, prevEditedAt = m.editedAt;
-  await withCrewLock(c.id, async () => {
-    m.text = text;
-    m.editedAt = new Date().toISOString();
-    try {
-      await save(DB);
-    } catch (e) {
-      m.text = prevText;
-      m.editedAt = prevEditedAt;
-      throw e;
-    }
-    res.json(m);
-  });
+  // Oct 16 2026 (crews deep-dive, decision #1): used to find the live message object in c.messages
+  // and mutate its text/editedAt in place before an awaited save(DB), with a revert-to-captured-
+  // previous-text on failure (see the git history for that fix's own writeup). pgUpdateCrewMessageText
+  // is a single atomic UPDATE with ownership (userId) AND crew (c.id) both baked into its WHERE
+  // clause -- see db.js's comment on CREW_MESSAGE_EDIT_SQL, including the adversarial-review finding
+  // that caught the first version of this missing the crew_id scoping entirely (ownership alone let
+  // a caller edit their own message via ANY crew they belonged to, not just the one it's actually
+  // in). Does the existence check, the ownership check, and the crew check all in one statement, and
+  // returns null if the message doesn't exist IN THIS CREW or isn't the caller's (same 404/403 split
+  // as before, just derived from the query result instead of a separate find()+ownership check up
+  // front).
+  const updated = await db.pgUpdateCrewMessageText(req.params.messageId, c.id, req.userId, text, new Date().toISOString());
+  if (!updated) {
+    // Match the old 404-vs-403 distinction: look the message up read-only just to pick the right
+    // status code (this extra read is not part of the edit's atomicity -- it only decides which
+    // error to report).
+    const msgs = await db.pgListCrewMessagesByCrew(c.id);
+    const m = msgs.find(x => x.id === req.params.messageId);
+    if (!m) return res.status(404).json({ error: 'not found' });
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  res.json(updated);
 });
 // Sep 8 2026 (Jeff: "I should be able to edit or delete any comment I have made anywhere also") --
 // own message only, same shape as the PUT just above (isCrewMember re-checked for the identical
@@ -2713,25 +2805,20 @@ app.delete('/api/crews/:id/messages/:messageId', auth, async (req, res) => {
   if (!c) return res.status(404).json({ error: 'not found' });
   ensureCrewShape(c);
   if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
-  const m = (c.messages || []).find(x => x.id === req.params.messageId);
-  if (!m) return res.status(404).json({ error: 'not found' });
-  if (m.userId !== req.userId) return res.status(403).json({ error: 'forbidden' });
-  // Oct 16 2026 (crews deep-dive part 2, widening withCrewLock to every crew-editing action --
-  // see that function's own comment): same mutate-before-maybe-failing-save hazard as
-  // challenge-cancel -- removed from memory before the awaited save(DB) that can fail. Reverted
-  // by re-adding the SAME message object back into whatever c.messages CURRENTLY is, not a blind
-  // restore of the pre-mutation array, so a concurrent legitimate change (e.g. a brand-new
-  // message posted in between) isn't clobbered by this revert.
-  await withCrewLock(c.id, async () => {
-    c.messages = c.messages.filter(x => x.id !== m.id);
-    try {
-      await save(DB);
-    } catch (e) {
-      if (!c.messages.some(x => x.id === m.id)) c.messages.push(m);
-      throw e;
-    }
-    res.json({ ok: true });
-  });
+  // Oct 16 2026 (crews deep-dive, decision #1): used to find-then-filter c.messages in memory
+  // before an awaited save(DB), with a revert-by-re-adding-the-same-object on failure (see the git
+  // history for that fix's own writeup). pgDeleteCrewMessage is a single atomic DELETE with
+  // ownership AND crew (c.id) both baked into its WHERE clause, same reasoning (and same
+  // adversarial-review finding on the missing crew scoping) as the edit above -- the delete IS the
+  // persistence, so there's nothing left in memory to strand or revert.
+  const deleted = await db.pgDeleteCrewMessage(req.params.messageId, c.id, req.userId);
+  if (!deleted) {
+    const msgs = await db.pgListCrewMessagesByCrew(c.id);
+    const m = msgs.find(x => x.id === req.params.messageId);
+    if (!m) return res.status(404).json({ error: 'not found' });
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  res.json({ ok: true });
 });
 
 // ---- Crew Challenges (Sep 2026, Jeff: "make it more fun -- both collaborative AND competitive")
@@ -2740,7 +2827,10 @@ app.delete('/api/crews/:id/messages/:messageId', auth, async (req, res) => {
 // with visible individual credit, not an anonymous shared number. Progress is DERIVED at read time
 // from s.history/s.logs, the same "never store a counter" rule currentStreak/weeksFor/volumeFor
 // above already follow -- there is nothing to keep in sync if a session is later unlocked, edited,
-// or left. Lives inline on the crew object (c.challenges), same as c.messages -- no new table.
+// or left. Oct 16 2026 (crews deep-dive, decision #1): used to live inline on the crew object
+// (c.challenges), same as c.messages -- now its own crew_challenges table (see db.js's comment on
+// it and migrateCrewMessagesAndChallengesIntoPostgres), same reasoning as the notifications/
+// feed_events/custom-exercises collections before it.
 const CHALLENGE_MIN_TARGET = 1;
 const CHALLENGE_MAX_TARGET = 500;   // sanity cap for workouts/sets/PRs; volume has its own, higher cap below
 const CHALLENGE_VOLUME_MAX_TARGET = 500000;   // lb -- volume targets run much bigger than a rep/set count
@@ -2764,9 +2854,11 @@ const CHALLENGE_DURATION_DAYS = 7;  // v1: one length, matches the app's existin
 // The most recent challenge, whatever state it's in -- what the client always DISPLAYS (a just-won
 // challenge should still show its final numbers and the celebration banner, not vanish back to
 // "no challenge running" the instant it's complete). Only ever superseded by starting a new one.
-function lastChallenge(c) {
-  if (!Array.isArray(c.challenges) || !c.challenges.length) return null;
-  return c.challenges[c.challenges.length - 1];
+// Oct 16 2026 (crews deep-dive, decision #1): used to read c.challenges (in-memory array)
+// synchronously. Now queries crew_challenges directly -- see publicCrew's own comment on why this
+// moved to an always-fresh Postgres read instead of an in-memory cache.
+async function lastChallenge(c) {
+  return db.pgLastCrewChallenge(c.id);
 }
 // The challenge currently in progress, if any -- narrower than lastChallenge above, and used only
 // to gate two things: whether the owner may start a new challenge, and whether checkCrewChallenges
@@ -2775,8 +2867,8 @@ function lastChallenge(c) {
 // NOT "in progress" even if calendar days remain in its window -- either way the outcome is already
 // decided, so the owner is free to start a fresh one immediately (chaining challenges) rather than
 // waiting out a dead week, while lastChallenge above keeps showing the finished one until they do.
-function runningChallenge(c) {
-  const last = lastChallenge(c);
+async function runningChallenge(c) {
+  const last = await lastChallenge(c);
   if (!last) return null;
   const today = new Date().toISOString().slice(0, 10);
   return (!last.completedAt && today < last.endDate) ? last : null;
@@ -2916,27 +3008,65 @@ function publicChallenge(c, ch, viewerId) {
 // else later (cold-review catch). Returns whether it just completed, so callers than don't already
 // unconditionally save() can decide to.
 async function checkChallengeCompletion(c) {
-  const ch = runningChallenge(c);
+  const ch = await runningChallenge(c);
   if (!ch) return false;
   // A custom goal's target is undefined, so `total < ch.target` (total is always 0 for one -- see
   // challengeProgress's own short-circuit) compares against undefined and is always false here --
   // that IS "never auto-completes," not a case this function needs to special-case separately.
   const { total } = challengeProgress(c, ch);
   if (total < ch.target) return false;
-  ch.completedAt = new Date().toISOString();
-  const unit = ch.type === 'volume' ? ' lb' : '';
-  // A system message (userId: null) so the client renders it as a celebration banner in the
-  // thread, not attributed to "Someone" the way a departed member's old message is (see
-  // crewView's own comment on that fallback) -- those two blanks mean different things.
-  c.messages.push({ id: 'cm_' + uid(), userId: null, system: true, at: ch.completedAt,
-    text: `🎉 Challenge complete! ${total}${unit} ${ch.type} as a crew.` });
-  for (const mid of c.memberIds) notify(mid, { title: c.name, body: `Challenge complete: ${ch.target}${unit} ${ch.type} this week! 🎉`, link: { type: 'crew', crewId: c.id } });
-  // Sep 11 2026 (Activity page): one shared feed event, `by` left null (see notify's own system-
-  // message pattern just above) since this is the crew's win, not any one member's -- app.js
-  // shows it once per viewer who's a member, same as the crew challenge banner already does.
-  await emitFeedEvent('challenge_completed', null, { crewId: c.id, crewName: c.name, challengeType: ch.type,
-    target: ch.target, total, memberIds: [...c.memberIds], text: `crushed the ${ch.type} challenge — ${total}${unit} as a crew` });
-  return true;
+  const completedAt = new Date().toISOString();
+  // Oct 16 2026 (crews deep-dive, decision #1): used to mutate `ch.completedAt` in place on the
+  // in-memory array element, relying on the caller's later save(DB) to persist it.
+  // Oct 16 2026, same day (correctness/concurrency review findings, SEVERE + HIGH, both fixed
+  // here together):
+  //   1. SEVERE -- the first version of this cutover checked "already completed?" (the
+  //      runningChallenge() call above, now async -- its own separate enqueue()'d SELECT) and
+  //      then WROTE completedAt in a SEPARATE enqueue()'d call (pgUpdateCrewChallengeFields, no
+  //      guard). Two concurrent finishes -- two members completing qualifying workouts within
+  //      milliseconds of each other, both routed through checkCrewChallenges -- could both see
+  //      "not yet completed" in their own SELECT before either one's UPDATE ran, and both
+  //      successfully mark it complete: two celebration messages, every member notified/pushed
+  //      twice, two challenge_completed feed events. Before this migration, this whole check was
+  //      synchronous with no await until the (already non-throwing) emitFeedEvent, so Node's
+  //      single-threaded execution made it atomic for free -- making runningChallenge() async to
+  //      reach Postgres reopened exactly the TOCTOU race pgInsertCrewChallengeIfNoneRunning was
+  //      deliberately built to close for challenge-START, just never applied to
+  //      challenge-COMPLETION. pgCompleteCrewChallengeIfNotAlready closes it the same way: the
+  //      "not already completed" check and the write are now one atomic statement (see its own
+  //      comment in db.js). A null return means someone else's concurrent call already completed
+  //      it (or it was deleted/changed out from under us) -- either way, nothing more to do.
+  //   2. HIGH -- this whole block used to run with no try/catch at all. checkChallengeCompletion
+  //      is reached from POST /api/sessions/:id/lock and .../leave (via checkCrewChallenges)
+  //      AFTER creditFinish has already mutated the session `s` in memory -- a thrown Postgres
+  //      error here would propagate past that point and 500 an otherwise-successful workout
+  //      finish, with the just-applied credit left stranded, unsaved, in memory until some later
+  //      unrelated save() happened to flush it (or lost entirely on a restart before that) --
+  //      the exact mutate-before-maybe-failing-write hazard this whole rearchitecture exists to
+  //      eliminate, reintroduced one level up the call stack. The celebration/completion marker
+  //      doesn't need to be transactional with the session-finish response, so a failure here is
+  //      caught and logged, not thrown -- the next real finish (or roster edit, which also calls
+  //      this) just tries the same still-not-completed challenge again.
+  try {
+    const updated = await db.pgCompleteCrewChallengeIfNotAlready(ch.id, c.id, completedAt);
+    if (!updated) return false;
+    const unit = ch.type === 'volume' ? ' lb' : '';
+    // A system message (userId: null) so the client renders it as a celebration banner in the
+    // thread, not attributed to "Someone" the way a departed member's old message is (see
+    // crewView's own comment on that fallback) -- those two blanks mean different things.
+    await db.pgInsertSystemCrewMessage({ id: 'cm_' + uid(), crewId: c.id, userId: null, system: true, at: completedAt,
+      text: `🎉 Challenge complete! ${total}${unit} ${ch.type} as a crew.` });
+    for (const mid of c.memberIds) notify(mid, { title: c.name, body: `Challenge complete: ${ch.target}${unit} ${ch.type} this week! 🎉`, link: { type: 'crew', crewId: c.id } });
+    // Sep 11 2026 (Activity page): one shared feed event, `by` left null (see notify's own system-
+    // message pattern just above) since this is the crew's win, not any one member's -- app.js
+    // shows it once per viewer who's a member, same as the crew challenge banner already does.
+    await emitFeedEvent('challenge_completed', null, { crewId: c.id, crewName: c.name, challengeType: ch.type,
+      target: ch.target, total, memberIds: [...c.memberIds], text: `crushed the ${ch.type} challenge — ${total}${unit} as a crew` });
+    return true;
+  } catch (e) {
+    console.error('checkChallengeCompletion: failed to mark challenge complete / celebrate (continuing -- not fatal to the caller):', c.id, ch.id, e && e.message);
+    return false;
+  }
 }
 // Called right after a workout gets credited (session lock, and a keep-leave -- see creditFinish's
 // two call sites) so a challenge notices the moment it's actually won, not on the next unrelated
@@ -2955,11 +3085,11 @@ async function checkCrewChallenges(userId) {
 // inside checkCrewChallenges itself -- it must be captured this early by the caller and handed to
 // emitFinishFeedEvents below. Uses crewChallengeRank (defined near emitFeedEvent), which itself
 // short-circuits to null for a crew with no running, non-custom challenge.
-function crewRanksSnapshot(userId) {
+async function crewRanksSnapshot(userId) {
   const snap = {};
   for (const c of Object.values(DB.crews || {})) {
     if (!isCrewMember(c, userId)) continue;
-    snap[c.id] = crewChallengeRank(c, userId);
+    snap[c.id] = await crewChallengeRank(c, userId);
   }
   return snap;
 }
@@ -3011,9 +3141,9 @@ async function emitFinishFeedEvents(s, userId, ranksBefore, localDate) {
   for (const c of Object.values(DB.crews || {})) {
     if (!isCrewMember(c, userId)) continue;
     const before = ranksBefore[c.id];
-    const after = crewChallengeRank(c, userId);
+    const after = await crewChallengeRank(c, userId);
     if (before == null || after == null || after >= before) continue;   // no challenge, or rank didn't improve
-    if (!runningChallenge(c)) continue;   // completed in this same update -- that event covers it
+    if (!(await runningChallenge(c))) continue;   // completed in this same update -- that event covers it
     await emitFeedEvent('rank', userId, { crewId: c.id, crewName: c.name, rank: after, text: `moved to #${after}` });
   }
 }
@@ -3022,12 +3152,11 @@ app.post('/api/crews/:id/challenge', auth, async (req, res) => {
   if (!c) return res.status(404).json({ error: 'not found' });
   ensureCrewShape(c);
   if (c.ownerId !== req.userId) return res.status(403).json({ error: 'only the owner can start a challenge' });
-  if (runningChallenge(c)) return res.status(400).json({ error: 'a challenge is already running' });
   const body = req.body || {};
   const CHALLENGE_TYPES = ['workouts', 'sets', 'volume', 'prs', 'custom'];
   const type = CHALLENGE_TYPES.includes(body.type) ? body.type : 'workouts';
   const startDate = new Date().toISOString().slice(0, 10);
-  const base = { id: 'chal_' + uid(), type, startDate, endDate: shiftDateStr(startDate, CHALLENGE_DURATION_DAYS),
+  const base = { id: 'chal_' + uid(), crewId: c.id, type, startDate, endDate: shiftDateStr(startDate, CHALLENGE_DURATION_DAYS),
     createdBy: req.userId, createdAt: new Date().toISOString(), completedAt: null };
   let ch, notifyBody;
   if (type === 'custom') {
@@ -3043,39 +3172,44 @@ app.post('/api/crews/:id/challenge', auth, async (req, res) => {
     const unit = type === 'volume' ? ' lb' : '';
     notifyBody = `${DB.users[req.userId].displayName} started a challenge: ${ch.target}${unit} ${type} this week`;
   }
-  // Oct 16 2026 (crews deep-dive part 2, widening withCrewLock to every crew-editing action --
-  // see that function's own comment): same mutate-before-maybe-failing-save hazard as
-  // challenge-cancel, just on the OTHER side of the same lifecycle -- pushed into c.challenges
-  // before the awaited save(DB) that can fail. A rigged failure here used to leave a challenge
-  // showing as "running" to every other request (runningChallenge(c) already sees it in memory)
-  // that was never actually persisted, then vanishing again on the next restart. Reverted by
-  // removing exactly this challenge (by id) from whatever c.challenges CURRENTLY is.
-  await withCrewLock(c.id, async () => {
-    c.challenges.push(ch);
-    // Sep 11 2026 (Activity page): "started a challenge" -- attributed to the owner who started it,
-    // no heart in the UI (see friends() in app.js) since nothing has been earned yet. Reuses
-    // notifyBody's own wording, just without the "{displayName} " prefix -- app.js prepends the
-    // actor's name itself, same as every other feed row.
-    // Oct 10 2026 (audit finding, see the DELETE route right below): stashed on the challenge
-    // itself so a cancel can clean up this exact feed entry rather than leaving a stray "started a
-    // challenge" line sitting in the feed for something that got undone a minute later.
-    const fev = await emitFeedEvent('challenge_started', req.userId, { crewId: c.id, crewName: c.name, challengeType: ch.type,
-      target: ch.target ?? null, title: ch.title || null,
-      text: notifyBody.slice(DB.users[req.userId].displayName.length + 1) });
-    ch.feedEventId = fev.id;
-    try {
-      await save(DB);
-    } catch (e) {
-      c.challenges = c.challenges.filter(x => x.id !== ch.id);
-      throw e;
-    }
-    // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
-    // reason as the other crew-lifecycle notify loops (crew notifications deliberately untouched by
-    // a block; see the Sep 14 2026 comment on publicCrew()). GET /api/feed's own challenge_started
-    // event stays filtered, unchanged -- only this push/inbox notification is reverted.
-    for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: notifyBody, link: { type: 'crew', crewId: c.id } });
-    res.json(publicCrew(c, req.userId));
-  });
+  // Oct 16 2026 (crews deep-dive, decision #1 -- messages/challenges moved to their own tables):
+  // this used to be wrapped in withCrewLock, checking runningChallenge(c) up top and then pushing
+  // onto c.challenges before an awaited save(DB) that could fail -- a rigged failure there used to
+  // leave a challenge showing as "running" in memory that was never actually persisted, then
+  // vanishing again on the next restart (the exact mutate-before-maybe-failing-save hazard this
+  // whole migration exists to eliminate). Now pgInsertCrewChallengeIfNoneRunning does the
+  // check-then-insert as ONE atomic Postgres statement (see its own comment in db.js for why that
+  // closes the same race withCrewLock used to) -- nothing on the in-memory crew object changes
+  // here any more, so there's nothing left to revert on a later failure and no save(DB) is needed.
+  // Oct 16 2026, same day (adversarial review finding, MODERATE-HIGH, same class as the one on
+  // POST /:id/messages just above -- see that route's own comment): still wrapped in withCrewLock,
+  // not for the challenge-insert's own atomicity (pgInsertCrewChallengeIfNoneRunning already
+  // handles that by itself), but to serialize against DELETE /api/crews/:id's own
+  // withCrewLock-protected crew_challenges cleanup -- without this, a challenge-start that read the
+  // crew and passed the ownership check could still land its insert after the crew (and its
+  // challenge history) was already deleted, orphaning the new row for good.
+  const result = await withCrewLock(c.id, () => db.pgInsertCrewChallengeIfNoneRunning(ch, startDate));
+  if (!result.ok) return res.status(400).json({ error: 'a challenge is already running' });
+  // Sep 11 2026 (Activity page): "started a challenge" -- attributed to the owner who started it,
+  // no heart in the UI (see friends() in app.js) since nothing has been earned yet. Reuses
+  // notifyBody's own wording, just without the "{displayName} " prefix -- app.js prepends the
+  // actor's name itself, same as every other feed row.
+  // Oct 10 2026 (audit finding, see the DELETE route right below): stashed on the challenge
+  // itself so a cancel can clean up this exact feed entry rather than leaving a stray "started a
+  // challenge" line sitting in the feed for something that got undone a minute later. If this
+  // emit (or the fields update right after it) fails, the challenge row itself is already
+  // correctly persisted without a feedEventId -- a harmless degraded state, not a hazard, since
+  // there's no in-memory copy left to drift from what's actually in Postgres.
+  const fev = await emitFeedEvent('challenge_started', req.userId, { crewId: c.id, crewName: c.name, challengeType: ch.type,
+    target: ch.target ?? null, title: ch.title || null,
+    text: notifyBody.slice(DB.users[req.userId].displayName.length + 1) });
+  await db.pgUpdateCrewChallengeFields(ch.id, c.id, { feedEventId: fev.id });
+  // Sep 24 2026 audit round 4: a first draft added an isBlocked check here -- reverted, same
+  // reason as the other crew-lifecycle notify loops (crew notifications deliberately untouched by
+  // a block; see the Sep 14 2026 comment on publicCrew()). GET /api/feed's own challenge_started
+  // event stays filtered, unchanged -- only this push/inbox notification is reverted.
+  for (const mid of c.memberIds) if (mid !== req.userId) notify(mid, { title: c.name, body: notifyBody, link: { type: 'crew', crewId: c.id } });
+  res.json(await publicCrew(c, req.userId));
 });
 // Oct 10 2026 (audit finding): starting a challenge was a one-way door -- a wrong target, wrong
 // type, or a fat-finger tap committed the whole crew for the full 7 days with nothing the owner
@@ -3093,37 +3227,30 @@ app.delete('/api/crews/:id/challenge/:challengeId', auth, async (req, res) => {
   if (!c) return res.status(404).json({ error: 'not found' });
   ensureCrewShape(c);
   if (c.ownerId !== req.userId) return res.status(403).json({ error: 'only the owner can cancel a challenge' });
-  const ch = runningChallenge(c);
+  const ch = await runningChallenge(c);
   if (!ch || ch.id !== req.params.challengeId) return res.status(400).json({ error: 'no running challenge to cancel' });
-  // Oct 16 2026 (crews deep-dive audit, Jeff: "find any additional [bugs] like you have and fix
-  // them" -- found and reproduced live): this used to mutate c.challenges (removing `ch`) BEFORE
-  // the two awaited calls below, either of which can fail. A failed feed-event delete or save(DB)
-  // correctly 500'd, but `ch` stayed gone from this live crew object for the rest of the process's
-  // life -- every other request reading this SAME crew (GET /api/crews/:id, the challenge-progress
-  // computation, etc.) saw it as already canceled, then it silently REAPPEARED on the next
-  // restart (load() re-reading the last real save), since the "cancel" was never actually
-  // persisted. Same mutate-before-maybe-failing-save hazard class as the custom-exercise/report
-  // fix from earlier this rearchitecture (see CLAUDE.md "Rearchitecture status"), just missed in
-  // crews at the time. Fixed the same way: wrapped in withCrewLock (serializes against any other
-  // concurrent edit on this SAME crew -- see that function's own comment), and on a failure,
-  // revert by re-adding `ch` to whatever c.challenges CURRENTLY is (not a blind restore of the
-  // pre-mutation array), so a concurrent, already-legitimate change to c.challenges isn't
-  // clobbered by this revert.
-  await withCrewLock(c.id, async () => {
-    c.challenges = c.challenges.filter(x => x.id !== ch.id);
-    try {
-      // Oct 13 2026 (read cutover): used to check DB.feedEvents[ch.feedEventId] exists before
-      // deleting it in memory (gone now -- see EMPTY_DB/load() in db.js); pgDeleteFeedEvent is a
-      // plain `DELETE ... WHERE id = $1`, already a no-op if the row doesn't exist, so the
-      // existence check was only ever needed for the in-memory delete, not for this.
-      if (ch.feedEventId) await db.pgDeleteFeedEvent(ch.feedEventId);
-      await save(DB);
-    } catch (e) {
-      if (!c.challenges.some(x => x.id === ch.id)) c.challenges.push(ch);
-      throw e;
-    }
-    res.json(publicCrew(c, req.userId));
-  });
+  // Oct 16 2026 (crews deep-dive, decision #1 -- messages/challenges moved to their own tables):
+  // this used to mutate c.challenges (removing `ch`) BEFORE the two awaited calls below, either of
+  // which could fail, and was fixed earlier this same deep-dive by wrapping the whole thing in
+  // withCrewLock with a revert-on-failure (see the git history for that fix's own writeup). Now
+  // pgDeleteCrewChallenge is the single atomic statement that actually cancels the challenge --
+  // the delete IS the persistence, so there's no in-memory mutation left that a later failure
+  // could leave stranded, and nothing to revert. If this returns false, someone else already
+  // canceled (or re-matched) this exact challenge id between the read above and here; treat it
+  // the same as "no running challenge to cancel" rather than a 500.
+  const deleted = await db.pgDeleteCrewChallenge(ch.id, c.id);
+  if (!deleted) return res.status(400).json({ error: 'no running challenge to cancel' });
+  // The feed event cleanup is best-effort, not part of the cancel's atomicity -- the challenge is
+  // already gone for good by the time we get here, so a failure to also delete its "started a
+  // challenge" feed row isn't worth 500ing the whole cancel over (the owner already sees it
+  // canceled; a stray feed line for an undone challenge is cosmetic, not a correctness problem).
+  // Oct 13 2026 (read cutover): pgDeleteFeedEvent is a plain `DELETE ... WHERE id = $1`, already a
+  // no-op if the row doesn't exist, so no existence check is needed first.
+  if (ch.feedEventId) {
+    try { await db.pgDeleteFeedEvent(ch.feedEventId); }
+    catch (e) { console.error('crew challenge cancel: feed-event cleanup failed', ch.feedEventId, e); }
+  }
+  res.json(await publicCrew(c, req.userId));
 });
 
 // ---- Notifications (aggregated inbox) ----
@@ -4126,8 +4253,8 @@ async function pruneOldFeedEvents() {
 // Current 1-based leaderboard rank of `userId` in crew `c`'s running challenge, or null when
 // there's no running (non-custom) challenge to rank against -- a 'custom' challenge has no
 // tracked number (see challengeProgress's own short-circuit), so there is nothing to rank.
-function crewChallengeRank(c, userId) {
-  const ch = runningChallenge(c);
+async function crewChallengeRank(c, userId) {
+  const ch = await runningChallenge(c);
   if (!ch || ch.type === 'custom') return null;
   if (!c.memberIds.includes(userId)) return null;
   const { perMember } = challengeProgress(c, ch);
@@ -5337,7 +5464,7 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // way here as there. Same for the Activity page's own feed events (ranksBefore captured before
   // creditFinish runs -- see emitFinishFeedEvents' own comment on why).
   if (!discard) {
-    const ranksBefore = crewRanksSnapshot(me);
+    const ranksBefore = await crewRanksSnapshot(me);
     const credited = creditFinish(s, me, req.body && req.body.localDate);
     await checkCrewChallenges(me);
     if (credited) await emitFinishFeedEvents(s, me, ranksBefore, req.body && req.body.localDate);
@@ -9434,7 +9561,7 @@ app.post('/api/sessions/:id/lock', auth, async (req, res) => {
   // this user belongs to notices it's been won -- checked only on an actual new credit, not a
   // repeat /lock ping, same reasoning as the save() just below. ranksBefore (Activity page) is
   // captured before creditFinish runs -- see emitFinishFeedEvents' own comment on why it must be.
-  const ranksBefore = crewRanksSnapshot(req.userId);
+  const ranksBefore = await crewRanksSnapshot(req.userId);
   if (creditFinish(s, req.userId, req.body && req.body.localDate)) {
     await checkCrewChallenges(req.userId);
     await emitFinishFeedEvents(s, req.userId, ranksBefore, req.body && req.body.localDate);
@@ -9810,6 +9937,7 @@ app.use((err, req, res, next) => {
   migrateLoadTypes();
   await pruneOldNotifications();    // storage hygiene, not a schema migration -- see its own comment
   await pruneOldFeedEvents();       // same, for the Activity page's ephemeral feed events
+  await migrateCrewMessagesAndChallengesIntoPostgres();   // Oct 16 2026 (crews deep-dive, decision #1) -- flattens c.messages/c.challenges into their own Postgres tables; see its own comment and db.js's comment on crew_messages/crew_challenges
   await save(DB);
   server = app.listen(PORT, () => console.log('CrewFit on', PORT));
   module.exports.server = server;

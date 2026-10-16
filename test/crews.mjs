@@ -26,6 +26,12 @@ const testDb = await freshTestDb('crews');
 let fails = 0, srv = null;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fails++; };
 const J = { 'Content-Type': 'application/json' };
+// Direct access to db.js's own functions, from this test process -- a second, independent
+// connection to the SAME database the spawned server uses (its own DATABASE_URL is set
+// explicitly in boot()'s env below, so this assignment only affects this process, not the
+// child). Used by the pgCompleteCrewChallengeIfNotAlready concurrency test further down.
+process.env.DATABASE_URL = testDb.url;
+const db = await import('../db.js');
 
 function boot() {
   return new Promise((res, rej) => {
@@ -43,13 +49,17 @@ const stop = () => new Promise(r => { if (!srv) return r(); srv.on('exit', r); s
 // stop-the-server / patch-the-jsonb-column / reboot shape test/streak-reminders.mjs uses to backdate
 // s.history rows -- the server holds everything in memory and only re-reads from Postgres at boot,
 // so there is no in-process way to fake the passage of days.
-async function withCrewsDb(mutator) {
+// Oct 16 2026 (crews deep-dive, decision #1 -- messages/challenges moved to their own tables):
+// this used to read/rewrite the WHOLE crews.data blob (challenges lived embedded inside it). Now
+// challenges are their own one-row-per-challenge table, so this operates on crew_challenges
+// directly instead -- same stop/patch/reboot shape, just against the new table.
+async function withCrewChallengesDb(mutator) {
   await stop();
   const pg = new PgConnection(parseConnString(testDb.url));
-  const r = await pg.query('SELECT id, data FROM crews');
+  const r = await pg.query('SELECT id, data FROM crew_challenges');
   const rows = r.rows.map(row => ({ id: row.id, data: JSON.parse(row.data) }));
   await mutator(rows);
-  for (const row of rows) await pg.query('UPDATE crews SET data = $1::jsonb WHERE id = $2', [JSON.stringify(row.data), row.id]);
+  for (const row of rows) await pg.query('UPDATE crew_challenges SET data = $1::jsonb WHERE id = $2', [JSON.stringify(row.data), row.id]);
   pg.close();
   await boot();
 }
@@ -139,6 +149,41 @@ console.log('\nonly members can read or post crew messages; posting is visible t
 
   const empty = await post(pal, `/api/crews/${c.id}/messages`, { text: '   ' });
   ok(empty.status === 400, `whitespace-only text is rejected (got ${empty.status})`);
+}
+
+console.log('\na message can only be edited/deleted through the crew it actually belongs to, not through some OTHER crew the caller happens to belong to');
+{
+  // Oct 16 2026 (adversarial review finding, SEVERE, reproduced live). The first version of
+  // pgUpdateCrewMessageText/pgDeleteCrewMessage scoped ownership on userId alone, with no crew_id
+  // in the WHERE clause -- the ROUTE checks isCrewMember() against the crew id in the URL, but the
+  // db.js call underneath never checked that the message actually belongs to THAT crew. Since a
+  // user's own message id is stable and guessable-in-practice (it's returned straight back to
+  // them by POST), this let someone edit/delete their own message via ANY crew they currently
+  // belong to -- including one that has nothing to do with where the message actually lives, or
+  // one they're still in after having been removed from the crew the message is really in.
+  const owner = await reg('scopeowner1'), pal = await reg('scopepal1');
+  await connect(owner, pal);
+  const crewA = await post(owner, '/api/crews', { name: 'Crew A', memberIds: [pal.id] }).then(x => x.json());
+  const crewB = await post(owner, '/api/crews', { name: 'Crew B', memberIds: [pal.id] }).then(x => x.json());
+  const m = await post(pal, `/api/crews/${crewA.id}/messages`, { text: 'posted in crew A' }).then(x => x.json());
+  ok(m.id, 'pal posted a message in crew A');
+
+  const wrongCrewEdit = await put(pal, `/api/crews/${crewB.id}/messages/${m.id}`, { text: 'sneaked in via crew B' });
+  ok(wrongCrewEdit.status === 404, `editing crew A's message through crew B's URL 404s (not forbidden-but-silently-allowed), got ${wrongCrewEdit.status}`);
+  const stillOriginal = await get(owner, `/api/crews/${crewA.id}/messages`);
+  const stillThere = stillOriginal.find(x => x.id === m.id);
+  ok(stillThere && stillThere.text === 'posted in crew A' && !stillThere.editedAt, 'the message in crew A is completely untouched by the cross-crew edit attempt');
+
+  const wrongCrewDelete = await del(pal, `/api/crews/${crewB.id}/messages/${m.id}`);
+  ok(wrongCrewDelete.status === 404, `deleting crew A's message through crew B's URL 404s too, got ${wrongCrewDelete.status}`);
+  const stillThere2 = await get(owner, `/api/crews/${crewA.id}/messages`);
+  ok(stillThere2.some(x => x.id === m.id), 'the message in crew A survives the cross-crew delete attempt');
+
+  // The real same-crew edit/delete still work, same as every other test in this file already
+  // covers -- this isn't locking pal out of their own message, just out of reaching it from the
+  // wrong crew.
+  const realEdit = await put(pal, `/api/crews/${crewA.id}/messages/${m.id}`, { text: 'edited through the right crew' });
+  ok(realEdit.status === 200, `editing through the ACTUAL crew the message is in still works, got ${realEdit.status}`);
 }
 
 console.log('\nonly the owner can rename the crew or edit its membership');
@@ -296,6 +341,37 @@ console.log('\ncrew challenges: hitting the target marks it complete, posts a ce
   ok(after.challenge && after.challenge.type === 'sets' && after.challenge.total === 0, 'a fresh challenge starts immediately, at zero, once the previous one is won');
 }
 
+console.log('\ncrew challenges: marking one complete cannot double-fire under real concurrency -- exactly one of many simultaneous attempts wins');
+{
+  // Oct 16 2026 (correctness/concurrency review finding, SEVERE, reproduced live). Before this
+  // fix, checkChallengeCompletion's "is it already complete?" check (runningChallenge, now async
+  // to reach Postgres) and its completedAt WRITE were two SEPARATE enqueue()'d Postgres calls --
+  // two near-simultaneous triggers (two members finishing qualifying workouts within milliseconds
+  // of each other, both routed through checkCrewChallenges) could each run their own SELECT before
+  // either one's UPDATE landed, both see "not yet completed," and both go on to celebrate: two
+  // system messages, doubled notifications, two challenge_completed feed events. Fixed the same
+  // way pgInsertCrewChallengeIfNoneRunning already closes the equivalent race for challenge-START:
+  // pgCompleteCrewChallengeIfNotAlready does the "not already completed" check and the write as
+  // ONE atomic statement. Proven directly against db.js's own function (the actual mechanism the
+  // fix lives in) under real concurrency, same technique as the custom-exercise cap race
+  // regression test -- many genuinely concurrent attempts to complete the SAME challenge, and
+  // exactly one of them must win.
+  const owner = await reg('racechalowner1'), pal = await reg('racechalpal1');
+  await connect(owner, pal);
+  const c = await post(owner, '/api/crews', { name: 'Completion Race', memberIds: [pal.id] }).then(x => x.json());
+  const started = await post(owner, `/api/crews/${c.id}/challenge`, { type: 'workouts', target: 50 }).then(x => x.json());
+  const chId = started.challenge.id;
+  ok(!started.challenge.completed, 'sanity: freshly started, not already complete');
+
+  const completedAt = new Date().toISOString();
+  const results = await Promise.all(Array.from({ length: 10 }, () => db.pgCompleteCrewChallengeIfNotAlready(chId, c.id, completedAt)));
+  const winners = results.filter(r => r !== null);
+  ok(winners.length === 1, `exactly one of 10 genuinely concurrent completion attempts on the same challenge wins, got ${winners.length}`);
+
+  const retry = await db.pgCompleteCrewChallengeIfNotAlready(chId, c.id, new Date().toISOString());
+  ok(retry === null, 'and a later attempt on the already-completed challenge correctly no-ops instead of re-completing it');
+}
+
 console.log('\ncrew challenges: the "sets" type counts working sets, not just finished workouts');
 {
   const owner = await reg('chalowner4'), pal = await reg('chalpal4');
@@ -368,9 +444,9 @@ console.log('\ncrew challenges: a challenge that runs out its full week without 
   await logWorkout(owner);
 
   const longAgo = new Date(Date.now() - 20 * 86400000).toISOString();
-  await withCrewsDb(async rows => {
-    const row = rows.find(r => r.data.id === c.id);
-    const ch = row.data.challenges[row.data.challenges.length - 1];
+  await withCrewChallengesDb(async rows => {
+    const row = rows.find(r => r.data.crewId === c.id);
+    const ch = row.data;
     ch.createdAt = longAgo;
     ch.startDate = longAgo.slice(0, 10);
     ch.endDate = new Date(Date.now() - 13 * 86400000).toISOString().slice(0, 10); // ended a week ago
@@ -479,44 +555,64 @@ console.log('\ncrew challenges: "custom" goals require a title, track no number,
   ok(palViewAfterPublic.challenge.completed === false, 'a custom goal never marks itself complete, no matter what gets posted');
 }
 
-console.log('\ncrew challenges: canceling one reverts cleanly if the feed-event delete or save fails -- never leaves it silently stranded');
+console.log('\ncrew challenges: canceling one is a single atomic delete, and the feed-event cleanup is best-effort');
 {
-  // Oct 16 2026 (crews deep-dive audit, Jeff: "find any additional [bugs] like you have and fix
-  // them" -- found and reproduced live, then fixed via withCrewLock -- see server.js's own
-  // comment on DELETE /api/crews/:id/challenge/:challengeId). This used to mutate c.challenges
-  // (removing the running challenge) BEFORE two awaited calls that can each fail -- a rigged
-  // failure left the challenge gone from the live in-memory crew (visible to every other request
-  // reading it) but never actually persisted, so it would have silently REAPPEARED on the next
-  // restart. Same technique as test/mutate-before-save-ordering-regression.mjs: a second,
-  // independent raw connection to the SAME database the spawned server uses, renaming a table out
-  // from under it to force a real failure without touching the server's own connection.
+  // Oct 16 2026 (crews deep-dive, decision #1 -- messages/challenges moved to their own tables).
+  // This test used to rely on withCrewLock + a revert-on-failure around TWO awaited calls (an
+  // optional feed-event delete, then save(DB)) -- a rigged feed_events failure used to 500 the
+  // whole cancel (see the git history for that version's own writeup). Now pgDeleteCrewChallenge
+  // is the one atomic statement that actually cancels a challenge, and the feed-event cleanup
+  // after it is explicitly best-effort (caught and logged, never re-thrown -- see server.js's own
+  // comment on this route). Two different failure points now behave two different ways, both
+  // asserted here: breaking feed_events must NOT fail the cancel at all (the challenge is already
+  // genuinely gone); breaking crew_challenges itself must fail it cleanly, with the challenge left
+  // exactly as it was (nothing to revert -- the delete simply never happened). Same
+  // breakTable/fixTable technique as test/mutate-before-save-ordering-regression.mjs: a second,
+  // independent raw connection to the SAME database the spawned server uses.
   const owner = await reg('cancelowner1'), pal = await reg('cancelpal1');
   await connect(owner, pal);
   const c = await post(owner, '/api/crews', { name: 'Cancel Test', memberIds: [pal.id] }).then(x => x.json());
-  const started = await post(owner, `/api/crews/${c.id}/challenge`, { type: 'workouts', target: 5 }).then(x => x.json());
-  ok(started.challenge && started.challenge.id, 'challenge started');
-
   const raw = new PgConnection(parseConnString(testDb.url));
-  await raw.query('ALTER TABLE feed_events RENAME TO feed_events_broken_for_test');
-  const failed = await del(owner, `/api/crews/${c.id}/challenge/${started.challenge.id}`);
-  ok(failed.status === 500, `cancel returns a real error while feed_events is broken, got ${failed.status}`);
-  await raw.query('ALTER TABLE feed_events_broken_for_test RENAME TO feed_events');
+  const breakT = name => raw.query(`ALTER TABLE ${name} RENAME TO ${name}_broken_for_test`);
+  const fixT = name => raw.query(`ALTER TABLE ${name}_broken_for_test RENAME TO ${name}`);
+
+  console.log('  feed_events broken: cancel still succeeds (best-effort cleanup, not part of the cancel\'s atomicity)');
+  {
+    const started = await post(owner, `/api/crews/${c.id}/challenge`, { type: 'workouts', target: 5 }).then(x => x.json());
+    ok(started.challenge && started.challenge.id, 'challenge started');
+    await breakT('feed_events');
+    const cancelled = await del(owner, `/api/crews/${c.id}/challenge/${started.challenge.id}`);
+    ok(cancelled.status === 200, `cancel succeeds even though its feed-event cleanup can't run, got ${cancelled.status}`);
+    await fixT('feed_events');
+    const after = await get(owner, `/api/crews/${c.id}`);
+    ok(after.challenge === null, 'and the challenge really is canceled, not left running because of the unrelated feed_events failure');
+  }
+
+  console.log('  crew_challenges broken: cancel fails cleanly, challenge left exactly as it was');
+  {
+    const started = await post(owner, `/api/crews/${c.id}/challenge`, { type: 'workouts', target: 5 }).then(x => x.json());
+    ok(started.challenge && started.challenge.id, 'a fresh challenge started');
+    await breakT('crew_challenges');
+    const failed = await del(owner, `/api/crews/${c.id}/challenge/${started.challenge.id}`);
+    ok(failed.status === 500, `cancel returns a real error while crew_challenges is broken, got ${failed.status}`);
+    await fixT('crew_challenges');
+
+    const health = await get(owner, '/healthz');
+    ok(health.ok === true, 'server is still up after the rigged cancel failure, not crashed');
+
+    const afterFail = await get(owner, `/api/crews/${c.id}`);
+    ok(afterFail.challenge && afterFail.challenge.id === started.challenge.id && afterFail.challenge.completed === false,
+      `the "failed" cancel never actually took effect -- the atomic delete simply never ran, so there was nothing to revert; the challenge is still shown as running, got ${JSON.stringify(afterFail.challenge)}`);
+
+    // Not just a lucky in-memory echo that would vanish on restart -- prove it by actually
+    // canceling the SAME challenge for real now that the table is fixed.
+    const real = await del(owner, `/api/crews/${c.id}/challenge/${started.challenge.id}`);
+    ok(real.status === 200, `with the table fixed, the SAME challenge can now actually be canceled, got ${real.status}`);
+    const afterReal = await get(owner, `/api/crews/${c.id}`);
+    ok(afterReal.challenge === null, 'and now it really is gone');
+  }
+
   raw.close();
-
-  const health = await get(owner, '/healthz');
-  ok(health.ok === true, 'server is still up after the rigged cancel failure, not crashed');
-
-  const afterFail = await get(owner, `/api/crews/${c.id}`);
-  ok(afterFail.challenge && afterFail.challenge.id === started.challenge.id && afterFail.challenge.completed === false,
-    `the "failed" cancel never actually took effect -- the challenge is still shown as running, got ${JSON.stringify(afterFail.challenge)}`);
-
-  // Not just a lucky in-memory echo that would vanish on restart -- prove it by actually
-  // canceling the SAME challenge for real now that the table is fixed, confirming the revert left
-  // it in a genuinely cancelable state rather than some half-stranded in-between.
-  const real = await del(owner, `/api/crews/${c.id}/challenge/${started.challenge.id}`);
-  ok(real.status === 200, `with the table fixed, the SAME challenge can now actually be canceled, got ${real.status}`);
-  const afterReal = await get(owner, `/api/crews/${c.id}`);
-  ok(afterReal.challenge === null, 'and now it really is gone');
 }
 
 console.log('\nPUT /api/crews/:id: concurrent membership edits are fully serialized -- each response reflects exactly what IT persisted, never a borrowed read of the other request\'s overwrite');
@@ -568,7 +664,7 @@ console.log('\nPUT /api/crews/:id: concurrent membership edits are fully seriali
   ok(eq(idsFinal, wantA) || eq(idsFinal, wantB), `the final persisted roster matches exactly ONE of the two requests' own full state -- whichever genuinely ran last -- never a mix of both and never something neither request asked for (got ${JSON.stringify([...idsFinal])})`);
 }
 
-console.log('\ncrews: the other 6 crew-editing actions revert cleanly on a save failure too, not just the two already covered above');
+console.log('\ncrews: the other 6 crew-editing actions fail cleanly on a save/insert failure too, not just cancel covered above');
 {
   // Oct 16 2026 (crews deep-dive part 2, Jeff: "find any additional [bugs]... and fix them" --
   // widening withCrewLock to every crew-editing action, decision #2 of the crews pre-mortem).
@@ -577,8 +673,20 @@ console.log('\ncrews: the other 6 crew-editing actions revert cleanly on a save 
   // crew-mutating routes -- each one mutated the live, shared crew object before an awaited
   // save(DB) that can fail. Reproduced live BEFORE fixing (a throwaway script, not kept as a
   // permanent test, broke the relevant table for each of the 6 and confirmed the stranded
-  // in-memory state); this locks in the fix the same way, one block per route, same
+  // in-memory state); this locked in the fix the same way, one block per route, same
   // breakTable/fixTable technique as test/mutate-before-save-ordering-regression.mjs.
+  //
+  // Oct 16 2026, same day (decision #1 -- messages/challenges moved to their own tables): the 4
+  // message/challenge-start sub-blocks below no longer go through withCrewLock + revert at all --
+  // each one is now a single atomic Postgres statement (pgInsertCrewMessage,
+  // pgUpdateCrewMessageText, pgDeleteCrewMessage, pgInsertCrewChallengeIfNoneRunning), so the
+  // table that actually has to be broken to force their failure changed from `crews` to
+  // `crew_messages`/`crew_challenges` -- breaking `crews` alone no longer touches these 4 routes
+  // at all, since nothing they do reads or writes the crews table any more. The outward behavior
+  // asserted is the same as before (a clean 500, no phantom change) -- only which table is broken,
+  // and why there's nothing left to "revert" (the atomic statement simply never ran), changed.
+  // POST /:id/leave and DELETE /api/crews/:id are UNCHANGED by this migration (still mutate
+  // c.memberIds / DB.crews directly) and still correctly break `crews`.
   const owner = await reg('revertowner1'), pal = await reg('revertpal1');
   await connect(owner, pal);
   const c = await post(owner, '/api/crews', { name: 'Revert Test', memberIds: [pal.id] }).then(x => x.json());
@@ -588,33 +696,33 @@ console.log('\ncrews: the other 6 crew-editing actions revert cleanly on a save 
 
   console.log('  POST /:id/messages');
   {
-    await breakT('crews');
+    await breakT('crew_messages');
     const r = await post(pal, `/api/crews/${c.id}/messages`, { text: 'ghost message' });
-    ok(r.status === 500, `returns a real error while crews is broken, got ${r.status}`);
-    await fixT('crews');
+    ok(r.status === 500, `returns a real error while crew_messages is broken, got ${r.status}`);
+    await fixT('crew_messages');
     const msgs = await get(owner, `/api/crews/${c.id}/messages`);
-    ok(msgs.length === 0, `the "failed" post never actually took effect -- no phantom message in memory, got ${JSON.stringify(msgs)}`);
+    ok(msgs.length === 0, `the "failed" post never actually took effect -- the insert simply never ran, no phantom message, got ${JSON.stringify(msgs)}`);
   }
 
   console.log('  PUT /:id/messages/:messageId');
   {
     const posted = await post(pal, `/api/crews/${c.id}/messages`, { text: 'original text' }).then(x => x.json());
-    await breakT('crews');
+    await breakT('crew_messages');
     const r = await put(pal, `/api/crews/${c.id}/messages/${posted.id}`, { text: 'EDITED ghost text' });
-    ok(r.status === 500, `returns a real error while crews is broken, got ${r.status}`);
-    await fixT('crews');
+    ok(r.status === 500, `returns a real error while crew_messages is broken, got ${r.status}`);
+    await fixT('crew_messages');
     const msgs = await get(owner, `/api/crews/${c.id}/messages`);
     const m = msgs.find(x => x.id === posted.id);
-    ok(m && m.text === 'original text' && !m.editedAt, `the "failed" edit never actually took effect -- text/editedAt reverted to original, got ${JSON.stringify(m)}`);
+    ok(m && m.text === 'original text' && !m.editedAt, `the "failed" edit never actually took effect -- the atomic UPDATE simply never ran, text/editedAt still original, got ${JSON.stringify(m)}`);
   }
 
   console.log('  DELETE /:id/messages/:messageId');
   {
     const posted = await post(pal, `/api/crews/${c.id}/messages`, { text: 'to be ghost-deleted' }).then(x => x.json());
-    await breakT('crews');
+    await breakT('crew_messages');
     const r = await del(pal, `/api/crews/${c.id}/messages/${posted.id}`);
-    ok(r.status === 500, `returns a real error while crews is broken, got ${r.status}`);
-    await fixT('crews');
+    ok(r.status === 500, `returns a real error while crew_messages is broken, got ${r.status}`);
+    await fixT('crew_messages');
     const msgs = await get(owner, `/api/crews/${c.id}/messages`);
     ok(msgs.some(x => x.id === posted.id), `the "failed" delete never actually took effect -- message is still there, got ${JSON.stringify(msgs.map(x => x.id))}`);
   }
@@ -631,12 +739,12 @@ console.log('\ncrews: the other 6 crew-editing actions revert cleanly on a save 
 
   console.log('  POST /:id/challenge (start)');
   {
-    await breakT('crews');
+    await breakT('crew_challenges');
     const r = await post(owner, `/api/crews/${c.id}/challenge`, { type: 'workouts', target: 5 });
-    ok(r.status === 500, `returns a real error while crews is broken, got ${r.status}`);
-    await fixT('crews');
+    ok(r.status === 500, `returns a real error while crew_challenges is broken, got ${r.status}`);
+    await fixT('crew_challenges');
     const view = await get(owner, `/api/crews/${c.id}`);
-    ok(view.challenge === null, `the "failed" challenge-start never actually took effect -- no challenge running, got ${JSON.stringify(view.challenge)}`);
+    ok(view.challenge === null, `the "failed" challenge-start never actually took effect -- the atomic check-then-insert simply never ran, no challenge running, got ${JSON.stringify(view.challenge)}`);
     // Confirm it's genuinely still startable, not left in some half-stranded state.
     const real = await post(owner, `/api/crews/${c.id}/challenge`, { type: 'workouts', target: 5 });
     ok(real.status === 200, `with the table fixed, a challenge can now actually be started, got ${real.status}`);
