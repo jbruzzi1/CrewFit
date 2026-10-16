@@ -149,6 +149,16 @@ const files = [
   // genuine old-style backup that predates these collections' cutovers. Added to this list the
   // same run it was written, same discipline as every entry above.
   'test/migrate-recovery-no-wipe-regression.mjs',
+  // Oct 16 2026 (crews deep-dive, decision #1 -- messages/challenges moved to their own tables,
+  // Jeff: "good to go ahead" -- ground-truth differential test, see CLAUDE.md "Rearchitecture
+  // status"/"Rearchitecture safeguards"). Proves migrateCrewMessagesAndChallengesIntoPostgres is
+  // lossless (every legacy embedded message/challenge actually lands in the new tables with its
+  // content intact, and the old embedded fields are actually removed from the crew's row),
+  // idempotent (a second boot against an already-migrated database is a true no-op, not a
+  // duplication), and crash-safe (a crew already migrated on an earlier boot coexists correctly
+  // with one that still has embedded fields, each handled independently). Added to this list the
+  // same run it was written, same discipline as every entry above.
+  'test/crew-messages-challenges-migration-differential.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

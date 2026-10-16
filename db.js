@@ -98,6 +98,24 @@ CREATE TABLE IF NOT EXISTS crews (
   id text PRIMARY KEY,
   data jsonb NOT NULL
 );
+-- Oct 16 2026 (crews deep-dive, decision #1 of the crews migration pre-mortem, Jeff: "do it right
+-- the first time" -- same reasoning as the custom-exercises redesign): crews.data used to embed
+-- BOTH of these as arrays that grew without limit for as long as a crew stayed active (every chat
+-- message ever sent, every weekly challenge ever run), rewriting the ENTIRE crew blob -- every
+-- past message, every past challenge -- on every single new one. One row per message/challenge
+-- instead, same shape as custom_exercise_rows below: a write only ever touches its own row.
+CREATE TABLE IF NOT EXISTS crew_messages (
+  id text PRIMARY KEY,
+  crew_id text NOT NULL,
+  data jsonb NOT NULL
+);
+CREATE INDEX IF NOT EXISTS crew_messages_crew_idx ON crew_messages (crew_id);
+CREATE TABLE IF NOT EXISTS crew_challenges (
+  id text PRIMARY KEY,
+  crew_id text NOT NULL,
+  data jsonb NOT NULL
+);
+CREATE INDEX IF NOT EXISTS crew_challenges_crew_idx ON crew_challenges (crew_id);
 CREATE TABLE IF NOT EXISTS notifications (
   id text PRIMARY KEY,
   data jsonb NOT NULL
@@ -524,6 +542,8 @@ const PUSH_SUBS_UPSERT_SQL = 'INSERT INTO push_subs (user_id, data) VALUES ($1, 
 // freshSnapshot()'s own comment.
 const PRS_UPSERT_SQL = 'INSERT INTO prs (user_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data';
 const CREWS_UPSERT_SQL = 'INSERT INTO crews (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
+const CREW_MESSAGES_UPSERT_SQL = 'INSERT INTO crew_messages (id, crew_id, data) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO UPDATE SET crew_id = EXCLUDED.crew_id, data = EXCLUDED.data';
+const CREW_CHALLENGES_UPSERT_SQL = 'INSERT INTO crew_challenges (id, crew_id, data) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO UPDATE SET crew_id = EXCLUDED.crew_id, data = EXCLUDED.data';
 const NOTIFICATIONS_UPSERT_SQL = 'INSERT INTO notifications (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
 const REPORTS_UPSERT_SQL = 'INSERT INTO reports (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
 const FEED_EVENTS_UPSERT_SQL = 'INSERT INTO feed_events (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
@@ -987,6 +1007,200 @@ async function pgFindCustomExerciseRowByName(name, userId, creatorId) {
   });
 }
 
+// ---- Oct 16 2026: direct Postgres access for crew messages + crew challenges ----
+//
+// Decision #1 of the crews migration pre-mortem (Jeff: "do it right the first time" -- same call
+// as the custom-exercises redesign). crews.data used to embed both of these as arrays, rewriting
+// the WHOLE crew blob on every single new message or challenge -- see the schema comment above
+// crew_messages' CREATE TABLE for the full reasoning. server.js no longer keeps either array on
+// the in-memory crew object at all (a true read cutover, same as notifications/feed_events) --
+// every read and write for these two goes exclusively through the functions below.
+//
+// One real, useful side effect of normalizing this way: several of these are now a SINGLE atomic
+// statement (an UPDATE/DELETE with ownership baked into the WHERE clause, same pattern as
+// pgDeleteNotification), where the old array-in-one-blob version needed server.js's own
+// mutate-then-maybe-revert-on-save-failure dance (see withCrewLock's long comment in server.js,
+// and the Oct 16 2026 crews deep-dive this migration follows). A single atomic statement either
+// fully happens or fully doesn't -- there is no in-memory array left to strand half-mutated any
+// more, so that entire bug CLASS is closed by construction for the message routes, not just
+// patched. The two routes that genuinely need a check-then-act (is a challenge already running,
+// before starting a new one) get that done inside ONE enqueue()'d function instead, the same fix
+// already proven for pgInsertCustomExerciseRowIfUnderCap's cap race -- see
+// pgInsertCrewChallengeIfNoneRunning below.
+async function pgInsertCrewMessage(row) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.query(CREW_MESSAGES_UPSERT_SQL, [row.id, row.crewId, JSON.stringify(row)]);
+    return row;
+  });
+}
+async function pgListCrewMessagesByCrew(crewId) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(`SELECT data FROM crew_messages WHERE crew_id = $1 ORDER BY data->>'at'`, [crewId]);
+    return r.rows.map(row => JSON.parse(row.data));
+  });
+}
+// Ownership check baked into the WHERE clause, same reasoning as pgDeleteNotification -- a single
+// atomic statement, so a concurrent edit/delete of the SAME message can't land in some
+// in-between state, and the caller can't edit a message it doesn't own just by getting the id
+// right. jsonb_set writes both fields in one expression so this is still one statement, not two.
+// Returns the updated row, or null if the message doesn't exist or isn't the caller's (same 404,
+// no info leak either way).
+// Oct 16 2026 (adversarial review finding, SEVERE, reproduced live): the first version of this
+// scoped ownership on userId alone, with no crew_id in the WHERE clause at all -- the ROUTE
+// checks isCrewMember() against the crew id in the URL, but then called this with only the
+// message id + caller's own userId, never the crew id. That meant a user could edit/delete their
+// OWN message by going through ANY crew they currently belong to, not just the one the message
+// actually lives in -- e.g. post a message in crew A, get removed from crew A (losing all access
+// to it), then successfully PUT/DELETE that same message via PUT/DELETE
+// /api/crews/B/messages/:messageId for some unrelated crew B they still belong to, since nothing
+// here ever checked the message's own crew_id against B. crew_id is now part of the WHERE clause,
+// matching pgUpdateCrewChallengeFields/pgDeleteCrewChallenge, which were scoped correctly from the
+// start -- the inconsistency between the two is what caught this.
+const CREW_MESSAGE_EDIT_SQL = `UPDATE crew_messages
+  SET data = jsonb_set(jsonb_set(data, '{text}', to_jsonb($4::text)), '{editedAt}', to_jsonb($5::text))
+  WHERE id = $1 AND crew_id = $2 AND data->>'userId' = $3
+  RETURNING data`;
+async function pgUpdateCrewMessageText(id, crewId, userId, text, editedAtIso) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(CREW_MESSAGE_EDIT_SQL, [id, crewId, userId, text, editedAtIso]);
+    return r.rows.length ? JSON.parse(r.rows[0].data) : null;
+  });
+}
+async function pgDeleteCrewMessage(id, crewId, userId) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(`DELETE FROM crew_messages WHERE id = $1 AND crew_id = $2 AND data->>'userId' = $3`, [id, crewId, userId]);
+    const m = /^DELETE (\d+)$/.exec(r.commandTag || '');
+    return !!m && Number(m[1]) > 0;
+  });
+}
+// A system message (userId left out of the WHERE entirely) needs its own delete-free insert path
+// -- checkChallengeCompletion's celebration row has no userId to match against, and was never
+// meant to be user-deletable anyway (see that function's own comment in server.js). Reuses the
+// same upsert as a real user message; `system: true` in the row data is what the client keys off
+// of to render it as a celebration banner, not a stored-procedure distinction.
+async function pgInsertSystemCrewMessage(row) {
+  return pgInsertCrewMessage(row);
+}
+// Oct 16 2026 (crews deep-dive, decision #1 cleanup -- cold-review catch on DELETE /api/crews/:id):
+// messages used to live inside the crew's own JSON blob, so deleting the crew (DB.crews[id]) threw
+// its messages away for free. Now that they're their own table, deleting the crew no longer
+// touches crew_messages at all -- without this, every deleted crew would leave its whole message
+// history behind forever, unreachable through the API (every message route 404s once the crew is
+// gone) but still sitting in Postgres. No ownership check needed -- the caller (crew deletion) has
+// already verified it owns the crew being torn down.
+async function pgDeleteCrewMessagesByCrew(crewId) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.query('DELETE FROM crew_messages WHERE crew_id = $1', [crewId]);
+  });
+}
+async function pgLastCrewChallenge(crewId) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(`SELECT data FROM crew_challenges WHERE crew_id = $1 ORDER BY data->>'createdAt' DESC LIMIT 1`, [crewId]);
+    return r.rows.length ? JSON.parse(r.rows[0].data) : null;
+  });
+}
+// Oldest-first, matching the order c.challenges (the old array) was always built in -- callers
+// that want newest-first (publicCrew's own pastChallenges) reverse it themselves, same as they
+// always did against the old array.
+async function pgListCrewChallengesByCrew(crewId) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(`SELECT data FROM crew_challenges WHERE crew_id = $1 ORDER BY data->>'createdAt' ASC`, [crewId]);
+    return r.rows.map(row => JSON.parse(row.data));
+  });
+}
+// Oct 16 2026 (same fix shape as pgInsertCustomExerciseRowIfUnderCap's cap race, see that
+// function's own comment): the old in-memory version's "is one already running? then push" was
+// atomic for free (synchronous, no await in between). Splitting the check and the insert into two
+// separately-awaited calls would reopen that exact race for two concurrent challenge-starts on
+// the same crew. Done here instead, inside ONE enqueue()'d function, the same way the cap-race fix
+// closed its own version of this gap -- nothing else on this app's one shared connection can run
+// between the SELECT and the INSERT below. `isRunning(last, todayStr)` mirrors runningChallenge()'s
+// own definition in server.js exactly (not completed, and today is still before its endDate).
+// Plain upsert, no "is one already running" guard -- used by the one-time boot migration that
+// moves a crew's EXISTING, already-created challenge history out of its old embedded array (see
+// server.js's migrateCrewMessagesAndChallengesIntoPostgres), where every row being written already
+// legitimately existed and the guard's question doesn't apply. The live challenge-START route
+// uses pgInsertCrewChallengeIfNoneRunning below instead, never this.
+async function pgUpsertCrewChallenge(row) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.query(CREW_CHALLENGES_UPSERT_SQL, [row.id, row.crewId, JSON.stringify(row)]);
+    return row;
+  });
+}
+async function pgInsertCrewChallengeIfNoneRunning(row, todayStr) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(`SELECT data FROM crew_challenges WHERE crew_id = $1 ORDER BY data->>'createdAt' DESC LIMIT 1`, [row.crewId]);
+    const last = r.rows.length ? JSON.parse(r.rows[0].data) : null;
+    const running = last && !last.completedAt && todayStr < last.endDate;
+    if (running) return { ok: false, running: last };
+    await c.query(CREW_CHALLENGES_UPSERT_SQL, [row.id, row.crewId, JSON.stringify(row)]);
+    return { ok: true, row };
+  });
+}
+// Generic jsonb merge (not a full replace) -- used for stamping a challenge's feedEventId once
+// the "started" feed event exists. `data || patch` keeps every field patch doesn't mention
+// untouched. Ownership scoped to crew_id, same reasoning as every other ownership-in-WHERE
+// function above. Returns the updated row, or null if the challenge doesn't exist / isn't this
+// crew's (caller treats either the same way the array version silently no-op'd on a stale id).
+// Oct 16 2026 (correctness/concurrency review finding, SEVERE, reproduced live): this used to ALSO
+// be how checkChallengeCompletion stamped completedAt -- but with no completedAt-is-still-null
+// guard in the WHERE clause, and the "is it already complete" check (runningChallenge, now async,
+// its own separate enqueue()'d SELECT) happening in a SEPARATE enqueue() call before this one,
+// two concurrent finishes (two members completing qualifying workouts within milliseconds of each
+// other, both routed through checkCrewChallenges) could both see "not yet completed" and both
+// successfully run this UPDATE -- double-firing the celebration message/notification/feed event.
+// See pgCompleteCrewChallengeIfNotAlready below, which closes this the same way
+// pgInsertCrewChallengeIfNoneRunning closed the equivalent race for challenge-START: the check and
+// the write are now one atomic statement, not two. This function keeps the feedEventId-stamping
+// use (which has no "already done" concept to race on) and is no longer used for completedAt.
+async function pgUpdateCrewChallengeFields(id, crewId, patch) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(`UPDATE crew_challenges SET data = data || $3::jsonb WHERE id = $1 AND crew_id = $2 RETURNING data`, [id, crewId, JSON.stringify(patch)]);
+    return r.rows.length ? JSON.parse(r.rows[0].data) : null;
+  });
+}
+// Marks a challenge complete ONLY if it isn't already -- the check (completedAt IS NULL) and the
+// write are one atomic statement, same shape as pgInsertCrewChallengeIfNoneRunning's
+// check-then-insert. Returns the updated row on success, or null if the challenge doesn't exist,
+// isn't this crew's, OR (the case this function exists for) someone else's concurrent call already
+// completed it first -- the caller treats a null return as "nothing more to do here," not an
+// error, since by definition the challenge is already marked complete either way.
+async function pgCompleteCrewChallengeIfNotAlready(id, crewId, completedAt) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(
+      `UPDATE crew_challenges SET data = data || $3::jsonb WHERE id = $1 AND crew_id = $2 AND data->>'completedAt' IS NULL RETURNING data`,
+      [id, crewId, JSON.stringify({ completedAt })]);
+    return r.rows.length ? JSON.parse(r.rows[0].data) : null;
+  });
+}
+async function pgDeleteCrewChallenge(id, crewId) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query('DELETE FROM crew_challenges WHERE id = $1 AND crew_id = $2', [id, crewId]);
+    const m = /^DELETE (\d+)$/.exec(r.commandTag || '');
+    return !!m && Number(m[1]) > 0;
+  });
+}
+// Same cleanup reasoning as pgDeleteCrewMessagesByCrew just above, for the other table this
+// migration split out of the crew blob.
+async function pgDeleteCrewChallengesByCrew(crewId) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.query('DELETE FROM crew_challenges WHERE crew_id = $1', [crewId]);
+  });
+}
+
 module.exports = {
   load, save, close, ensureSchema, EMPTY_DB, getConn,
   pgNotificationHistoryForUser, pgInsertNotification, pgDeleteNotification, pgMergedNotificationWrite, pgPruneOldNotifications,
@@ -994,4 +1208,6 @@ module.exports = {
   pgGetPushSub, pgSetPushSub, pgDeletePushSubIfEndpointMatches, pgDeletePushSub,
   pgInsertReport, pgListReports, pgResolveReport,
   pgUpsertCustomExerciseRow, pgInsertCustomExerciseRowIfUnderCap, pgGetCustomExerciseRow, pgListCustomExerciseRowsByOwner, pgListAllCustomExerciseRows, pgDeleteCustomExerciseRow, pgFindCustomExerciseRowByName,
+  pgInsertCrewMessage, pgListCrewMessagesByCrew, pgUpdateCrewMessageText, pgDeleteCrewMessage, pgInsertSystemCrewMessage, pgDeleteCrewMessagesByCrew,
+  pgLastCrewChallenge, pgListCrewChallengesByCrew, pgUpsertCrewChallenge, pgInsertCrewChallengeIfNoneRunning, pgUpdateCrewChallengeFields, pgCompleteCrewChallengeIfNotAlready, pgDeleteCrewChallenge, pgDeleteCrewChallengesByCrew,
 };
