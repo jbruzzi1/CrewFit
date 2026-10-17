@@ -182,6 +182,12 @@ const files = [
   // a real post-migration edit surviving a restart, and a brand-new user needing no backfill at
   // all. Added to this list the same run it was written.
   'test/user-scalar-columns-migration-differential.mjs',
+  // Oct 17 2026: proves the NUL-byte/lone-surrogate save-jamming fix (pgmini.js's
+  // sanitizePgText(), the universal bound-parameter backstop + capStr()'s own use of it) --
+  // a poisoned text field no longer 500s a save and, critically, no longer jams a COMPLETELY
+  // DIFFERENT user's very next save the way the pre-fix code did. Added the same run it was
+  // written.
+  'test/nul-byte-save-sanitization-regression.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
