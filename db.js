@@ -49,6 +49,50 @@ CREATE TABLE IF NOT EXISTS users (
   username_lower text UNIQUE NOT NULL,
   data jsonb NOT NULL
 );
+-- Oct 16 2026 (users slice, decision #2 -- scalar profile/settings column normalization, after
+-- decision #1 above moved followers/following/followReqs off this blob into user_follows). Jeff,
+-- "yes" (authorizing this now rather than later): the ~19 scalar profile/settings fields every
+-- user object carries -- identity (username, displayName, bio, avatar), settings (defaultGym,
+-- profileVisibility, units, trainingPhase, notifyStreakReminders, notifyWorkoutReminders), auth
+-- (pinHash, pinSalt), account lifecycle (createdAt, createdAtEstimated, deleted, deletedAt,
+-- tokensValidFrom), and small timestamps (seenRirExplainer, lastStreakReminderAt,
+-- lastWorkoutReminderAt) -- move out of the jsonb blob into real columns, same "Option A: stays
+-- cached in memory, only the storage shape moves" call Jeff already made for the crew row, not
+-- the "removed from memory" shape messages/challenges/user_follows' own blob fields got. No
+-- forcing bug behind this one either (unlike decision #1) -- pure storage-shape/scale-readiness,
+-- disclosed to Jeff as such before starting.
+--
+-- ADD COLUMN IF NOT EXISTS, same reason as crews below: this table already has real production
+-- rows. All nullable -- see migrateUserScalarColumnsIntoPostgres() in server.js for the one-time
+-- backfill from the old 'data' blob, and doLoad() below for why NOT NULL isn't enforced at the
+-- schema level. 'username IS NULL' is this table's migration-complete signal, mirroring crews'
+-- 'name IS NULL' -- every real user always has a non-empty username (same invariant
+-- username_lower above already relies on), so NULL here unambiguously means "not yet backfilled."
+-- Unlike crews, 'data' KEEPS its NOT NULL constraint and keeps being written forever, even for a
+-- fully-migrated row -- blocked[] (still unbounded, flagged, not moved) and a handful of dead
+-- legacy fields (friends, incoming, outgoing, ...) still live there, so the blob is never actually
+-- empty the way a migrated crew row's is. See usersToParams' own comment for exactly which fields
+-- stop being written into 'data' once a row's id is in userColumnsMigrated, and which never do.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS bio text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS default_gym text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_visibility text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS units text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at_estimated boolean;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pin_hash text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pin_salt text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted boolean;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS tokens_valid_from text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS seen_rir_explainer boolean;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS training_phase text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_streak_reminders boolean;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_workout_reminders boolean;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_streak_reminder_at text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_workout_reminder_at text;
 CREATE TABLE IF NOT EXISTS sessions (
   id text PRIMARY KEY,
   data jsonb NOT NULL
@@ -312,6 +356,23 @@ function freshSnapshot() {
 // after a restart.
 let followsTableReady = false;
 function markFollowsTableReady() { followsTableReady = true; }
+
+// Oct 16 2026 (users slice, decision #2 -- scalar column normalization): per-ROW counterpart to
+// followsTableReady just above, not a single global flag -- unlike decision #1's follow-graph
+// flatten (one all-or-nothing pass across the whole dataset), this migration backfills each
+// user's columns independently (same per-row shape crews' own column backfill uses, retry-on-
+// failure included), so "is this id done" has to be a per-id answer. Populated two ways: by
+// doLoad() below for every row already migrated as of THIS boot (its `username` column is
+// already non-null at load time), and by markUserColumnsMigrated() itself, called by
+// migrateUserScalarColumnsIntoPostgres() (server.js) right after it successfully backfills a
+// not-yet-migrated row during this boot -- mirroring markFollowsTableReady()'s role, just keyed
+// per-id via .add(id) instead of a single boolean flip. Read by usersToParams (to decide whether
+// THIS user's ~19 scalar fields still belong in the blob) -- a user not in this set always gets
+// the old full-blob write, which is always correct (just redundant with the real columns once
+// they're filled in by the backfill), so there's no failure mode where a not-yet-migrated row's
+// data goes unwritten.
+const userColumnsMigrated = new Set();
+function markUserColumnsMigrated(id) { userColumnsMigrated.add(id); }
 // Oct 16 2026 (users decision #1, CRITICAL fix -- found independently by BOTH review passes on
 // this slice, each reproduced live): migrateUserFollowsIntoPostgres() (server.js) writes the real
 // edges straight to Postgres via pgUpsertFollowEdge, bypassing doSave()'s own diffing entirely,
@@ -352,6 +413,107 @@ function userFollowKey(u) {
     following: Array.isArray(u && u.following) ? u.following : [],
     followReqs: Array.isArray(u && u.followReqs) ? u.followReqs : [],
   });
+}
+
+// Oct 16 2026 (users slice, decision #2): pgmini's client always requests TEXT result format
+// (see its own comment on PgConnection.query) -- every value comes back as a string or null,
+// never a native JS type. For a jsonb column that's fine (JSON.parse handles it), but a
+// Postgres `boolean` column comes back as the literal one-character string 't' or 'f', NOT a JS
+// true/false -- and 'f' is a non-empty string, so it's TRUTHY in JS. Found at pre-mortem time,
+// before any code shipped: skipping this conversion would have silently flipped every false/
+// not-yet-set flag (deleted, createdAtEstimated, seenRirExplainer, notifyStreakReminders,
+// notifyWorkoutReminders) to "on" for every migrated user, the moment this landed. Every one of
+// this migration's new boolean-shaped columns is decoded through this helper, never trusted as
+// already being a real boolean.
+function pgBool(v) { return v === null ? null : v === 't'; }
+
+// Oct 16 2026 (users slice, decision #2): overlays a migrated row's real columns onto the
+// freshly-parsed user object (mutates `u` in place), AFTER JSON.parse(row.data) -- same
+// "the real column wins over whatever's still in the blob" rule decision #1 already applies to
+// followers/following/followReqs just above in doLoad(). ONLY sets a key when the column is
+// NOT null -- deliberately NOT the "always overwrite, defaulting to a chosen value" shape
+// decision #1 uses for followers/following/followReqs (those always get a real default, `[]`,
+// because "no followers" is a meaningful value every user has). There's no equivalent sane
+// default for most of these ~20 fields (a user who's never touched training-phase or bio has no
+// honest value to invent), and a column is null in exactly the cases where the field was never
+// set on the object in the first place (userColumnParams below writes null ONLY when the
+// in-memory field was already null/undefined) -- so skipping the key here faithfully reproduces
+// "this field was never set," the exact shape the blob itself always had before this migration
+// existed, rather than manufacturing a `key: null` entry that wasn't there before.
+//
+// Found live, not hypothetically: scripts/migrate-to-postgres.mjs's own read-back verification
+// (deep-equality against the literal source backup file) failed on a hand-built old-style backup
+// with a sparse user object (just id/username/pin/displayName) the first time this used
+// unconditional assignment -- the read-back grew 18 extra `field: null` keys the source file
+// never had, and the script's (correct, deliberately strict) deep-equal check flagged that as
+// "content does not match the source file," a false FATAL during what should have been a clean
+// disaster-recovery restore. Fixed by only ever adding a key, never materializing one that
+// wasn't already meaningfully present.
+function applyUserColumnsRow(u, row) {
+  if (row.username !== null) u.username = row.username;
+  if (row.display_name !== null) u.displayName = row.display_name;
+  if (row.bio !== null) u.bio = row.bio;
+  if (row.avatar !== null) u.avatar = row.avatar;
+  if (row.default_gym !== null) u.defaultGym = row.default_gym;
+  if (row.profile_visibility !== null) u.profileVisibility = row.profile_visibility;
+  if (row.units !== null) u.units = row.units;
+  if (row.created_at !== null) u.createdAt = row.created_at;
+  if (row.created_at_estimated !== null) u.createdAtEstimated = pgBool(row.created_at_estimated);
+  if (row.pin_hash !== null) u.pinHash = row.pin_hash;
+  if (row.pin_salt !== null) u.pinSalt = row.pin_salt;
+  if (row.deleted !== null) u.deleted = pgBool(row.deleted);
+  if (row.deleted_at !== null) u.deletedAt = row.deleted_at;
+  if (row.tokens_valid_from !== null) u.tokensValidFrom = row.tokens_valid_from;
+  if (row.seen_rir_explainer !== null) u.seenRirExplainer = pgBool(row.seen_rir_explainer);
+  if (row.training_phase !== null) u.trainingPhase = row.training_phase;
+  if (row.notify_streak_reminders !== null) u.notifyStreakReminders = pgBool(row.notify_streak_reminders);
+  if (row.notify_workout_reminders !== null) u.notifyWorkoutReminders = pgBool(row.notify_workout_reminders);
+  if (row.last_streak_reminder_at !== null) u.lastStreakReminderAt = row.last_streak_reminder_at;
+  if (row.last_workout_reminder_at !== null) u.lastWorkoutReminderAt = row.last_workout_reminder_at;
+}
+// The same ~19 field names just above, as the keys they're stored under on the in-memory user
+// object -- used by usersToParams to strip them out of the blob once a row is in
+// userColumnsMigrated. Kept as one array rather than repeating the list a third time.
+const USER_SCALAR_COLUMN_FIELDS = [
+  'username', 'displayName', 'bio', 'avatar', 'defaultGym', 'profileVisibility', 'units',
+  'createdAt', 'createdAtEstimated', 'pinHash', 'pinSalt', 'deleted', 'deletedAt',
+  'tokensValidFrom', 'seenRirExplainer', 'trainingPhase', 'notifyStreakReminders',
+  'notifyWorkoutReminders', 'lastStreakReminderAt', 'lastWorkoutReminderAt',
+];
+// Oct 16 2026 (users slice, decision #2): the fresh column VALUES for a user, derived straight
+// from the current in-memory object -- called unconditionally by usersToParams below, regardless
+// of userColumnsMigrated membership (see that function's own comment for why always-write is
+// deliberate, not a bug to guard against). `username` gets the same defense-in-depth crews'
+// crewRowParams already uses for `name`: never write a falsy value into the column that doLoad()
+// treats as the migration-complete signal, even from some future caller that hands this a
+// malformed object -- id (always real, always present) is the fallback here, mirroring crews'
+// 'Crew' fallback for the same reason. Every other field is left exactly as it is on `u`,
+// including null/undefined -- there's no equivalent signal-column risk for any of the other 19,
+// so no fallback is needed or wanted for them (a real null should stay a real null).
+function userColumnParams(id, u) {
+  const username = (u && typeof u.username === 'string' && u.username.trim()) ? u.username : id;
+  return [
+    username,
+    (u && u.displayName) == null ? null : String(u.displayName),
+    (u && u.bio) == null ? null : String(u.bio),
+    (u && u.avatar) == null ? null : String(u.avatar),
+    (u && u.defaultGym) == null ? null : String(u.defaultGym),
+    (u && u.profileVisibility) == null ? null : String(u.profileVisibility),
+    (u && u.units) == null ? null : String(u.units),
+    (u && u.createdAt) == null ? null : String(u.createdAt),
+    (u && u.createdAtEstimated) == null ? null : !!u.createdAtEstimated,
+    (u && u.pinHash) == null ? null : String(u.pinHash),
+    (u && u.pinSalt) == null ? null : String(u.pinSalt),
+    (u && u.deleted) == null ? null : !!u.deleted,
+    (u && u.deletedAt) == null ? null : String(u.deletedAt),
+    (u && u.tokensValidFrom) == null ? null : String(u.tokensValidFrom),
+    (u && u.seenRirExplainer) == null ? null : !!u.seenRirExplainer,
+    (u && u.trainingPhase) == null ? null : String(u.trainingPhase),
+    (u && u.notifyStreakReminders) == null ? null : !!u.notifyStreakReminders,
+    (u && u.notifyWorkoutReminders) == null ? null : !!u.notifyWorkoutReminders,
+    (u && u.lastStreakReminderAt) == null ? null : String(u.lastStreakReminderAt),
+    (u && u.lastWorkoutReminderAt) == null ? null : String(u.lastWorkoutReminderAt),
+  ];
 }
 
 // Reassembles the exact in-memory shape server.js has always used, from Postgres rows. Also the
@@ -396,8 +558,30 @@ async function doLoad() {
   // and always present; migrateSessionShapes() (which runs right after load(), before anything
   // else touches DB.sessions) is what actually decides whether a null/malformed entry gets
   // healed or dropped — load() must not crash before that healing step ever gets a chance to run.
-  const users = await c.query('SELECT id, data FROM users');
-  for (const row of users.rows) { d.users[row.id] = JSON.parse(row.data); }
+  // Oct 16 2026 (users slice, decision #2 -- scalar column normalization): the ~19 new columns
+  // are read alongside `data` on every load, same as crews' name/owner_id/created_at above.
+  // `username IS NULL` (row.username, the new real column -- distinct from username_lower,
+  // which has always existed and is NOT this signal) means this row hasn't been backfilled yet,
+  // so it's left exactly as before: the blob is the only source for these fields, and this id is
+  // NOT added to userColumnsMigrated, so usersToParams keeps writing the full blob for it too. A
+  // migrated row gets its real columns overlaid onto the freshly-parsed blob below (authoritative
+  // over whatever happens to still be sitting in `data` for these fields -- same "the real column
+  // wins over a possibly-stale blob copy" rule decision #1 already established for followers/
+  // following/followReqs) and is added to the set, so usersToParams starts excluding these same
+  // fields from this id's blob on the very next save.
+  const users = await c.query(
+    'SELECT id, data, username, display_name, bio, avatar, default_gym, profile_visibility, units, ' +
+    'created_at, created_at_estimated, pin_hash, pin_salt, deleted, deleted_at, tokens_valid_from, ' +
+    'seen_rir_explainer, training_phase, notify_streak_reminders, notify_workout_reminders, ' +
+    'last_streak_reminder_at, last_workout_reminder_at FROM users'
+  );
+  for (const row of users.rows) {
+    d.users[row.id] = JSON.parse(row.data);
+    if (row.username !== null) {
+      applyUserColumnsRow(d.users[row.id], row);
+      userColumnsMigrated.add(row.id);
+    }
+  }
 
   // Oct 16 2026 (users slice, decision #1 -- follow-graph redesign): once the one-time flatten
   // (migrateUserFollowsIntoPostgres, server.js) has run, user_follows is the sole source of truth
@@ -750,17 +934,81 @@ async function doSave(d) {
 // freshly-re-added fields would get serialized straight back into `data` on the next save,
 // reopening the exact whole-row-rewrite-on-any-follow-change problem this migration exists to
 // remove, just one layer later than before.
+// Oct 16 2026 (users slice, decision #2): same exclusion shape as decision #1's followers/
+// following/followReqs just above, extended to the ~19 scalar fields -- once an id is in
+// userColumnsMigrated (doLoad() populates it for every already-backfilled row at boot;
+// migrateUserScalarColumnsIntoPostgres/server.js adds to it live as each row gets backfilled
+// this boot; new registrations are added to it immediately, see /api/register), those fields
+// stop being re-embedded into `data` here, for the exact same reason decision #1's exclusion
+// exists: without it, doLoad()'s own overlay (applyUserColumnsRow, above) would put them right
+// back onto the in-memory object every boot, and the next save would just write them straight
+// back into the blob, reopening the redundancy this migration exists to remove. A NOT-yet-
+// migrated id is simply skipped by this whole block -- its full blob (scalars included) keeps
+// being written exactly as it always has, which is always correct, never destructive.
+//
+// The real column values themselves (userColumnParams below) are computed UNCONDITIONALLY,
+// regardless of userColumnsMigrated membership -- deliberately NOT gated the way the blob
+// exclusion above is. A not-yet-migrated row gets its columns written too on any save that
+// touches it (redundant with its still-intact blob copy until the boot backfill or a restart
+// adds it to the set), which is always correct and never destructive: USERS_UPSERT_SQL is one
+// INSERT...ON CONFLICT DO UPDATE, so there's no extra risk or cost to always including these
+// params, and it means an ordinary edit can incidentally finish a row's backfill before the
+// dedicated migration function ever gets to it, with no special-casing needed either way.
 const usersToParams = (id, u) => {
   let payload = u;
   if (followsTableReady && u && (u.followers !== undefined || u.following !== undefined || u.followReqs !== undefined)) {
     const { followers, following, followReqs, ...rest } = u;
     payload = rest;
   }
-  return [id, String((u && u.username) == null ? '' : u.username).trim().toLowerCase(), JSON.stringify(payload)];
+  if (userColumnsMigrated.has(id) && payload) {
+    const rest = { ...payload };
+    for (const f of USER_SCALAR_COLUMN_FIELDS) delete rest[f];
+    payload = rest;
+  }
+  return [
+    id, String((u && u.username) == null ? '' : u.username).trim().toLowerCase(), JSON.stringify(payload),
+    ...userColumnParams(id, u),
+  ];
 };
 const jsonToParams = (id, v) => [id, JSON.stringify(v)];
 
-const USERS_UPSERT_SQL = 'INSERT INTO users (id, username_lower, data) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO UPDATE SET username_lower = EXCLUDED.username_lower, data = EXCLUDED.data';
+// Oct 16 2026 (users slice, decision #2): extended with the ~19 new scalar columns, same table/
+// same row as before -- unlike crews' own decision #2, this is NOT a separate sync-function pair,
+// because there's no join table involved and `data` keeps being written forever (see the ALTER
+// TABLE comment above). One upsert statement, used both for every ongoing save (via
+// syncTableFull/Diff, unchanged) AND for the one-time backfill (pgBackfillUserColumns below
+// reuses this exact statement+params function rather than a second, hand-duplicated one -- see
+// that function's own comment for why that's safe here in a way it wasn't for crews).
+const USERS_UPSERT_SQL = `INSERT INTO users (
+  id, username_lower, data,
+  username, display_name, bio, avatar, default_gym, profile_visibility, units,
+  created_at, created_at_estimated, pin_hash, pin_salt, deleted, deleted_at, tokens_valid_from,
+  seen_rir_explainer, training_phase, notify_streak_reminders, notify_workout_reminders,
+  last_streak_reminder_at, last_workout_reminder_at
+) VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+ON CONFLICT (id) DO UPDATE SET
+  username_lower = EXCLUDED.username_lower,
+  data = EXCLUDED.data,
+  username = EXCLUDED.username,
+  display_name = EXCLUDED.display_name,
+  bio = EXCLUDED.bio,
+  avatar = EXCLUDED.avatar,
+  default_gym = EXCLUDED.default_gym,
+  profile_visibility = EXCLUDED.profile_visibility,
+  units = EXCLUDED.units,
+  created_at = EXCLUDED.created_at,
+  created_at_estimated = EXCLUDED.created_at_estimated,
+  pin_hash = EXCLUDED.pin_hash,
+  pin_salt = EXCLUDED.pin_salt,
+  deleted = EXCLUDED.deleted,
+  deleted_at = EXCLUDED.deleted_at,
+  tokens_valid_from = EXCLUDED.tokens_valid_from,
+  seen_rir_explainer = EXCLUDED.seen_rir_explainer,
+  training_phase = EXCLUDED.training_phase,
+  notify_streak_reminders = EXCLUDED.notify_streak_reminders,
+  notify_workout_reminders = EXCLUDED.notify_workout_reminders,
+  last_streak_reminder_at = EXCLUDED.last_streak_reminder_at,
+  last_workout_reminder_at = EXCLUDED.last_workout_reminder_at`;
 const SESSIONS_UPSERT_SQL = 'INSERT INTO sessions (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
 const TEMPLATES_UPSERT_SQL = 'INSERT INTO templates (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data';
 const PUSH_SUBS_UPSERT_SQL = 'INSERT INTO push_subs (user_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data';
@@ -1645,6 +1893,34 @@ async function pgUpsertFollowEdge(followerId, followeeId, status) {
   });
 }
 
+// ---- Oct 16 2026: users slice decision #2 (scalar column normalization) one-time boot backfill ----
+//
+// Used only by migrateUserScalarColumnsIntoPostgres() in server.js, which runs once per boot,
+// after load() (mirrors pgListCrewsNeedingColumnBackfill/pgBackfillCrewRow above). Unlike that
+// crew-row pair, pgBackfillUserColumns takes the live in-memory user object directly and just
+// reuses usersToParams/USERS_UPSERT_SQL -- the same statement every ongoing save already uses --
+// rather than a second, hand-written upsert. That's safe here in a way it wasn't for crews:
+// crews' backfill writes a NEW shape (real columns, no more `data`) via its own dedicated SQL,
+// while this one is still the exact same row/same `data` column every other save writes, just
+// with the new columns added -- there's no second shape for a duplicated statement to drift out
+// of sync with. At backfill time `id` is never yet in userColumnsMigrated (that only happens
+// AFTER a successful call here -- see server.js's own comment on the write-then-mark ordering),
+// so this call's own blob payload is still the full, un-excluded one -- correct and harmless
+// redundancy with the columns it's writing in the same statement, exactly as intended.
+async function pgListUsersNeedingColumnBackfill() {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query('SELECT id, data FROM users WHERE username IS NULL');
+    return r.rows.map(row => ({ id: row.id, data: JSON.parse(row.data) }));
+  });
+}
+async function pgBackfillUserColumns(id, u) {
+  return enqueue(async () => {
+    const c = getConn();
+    await c.query(USERS_UPSERT_SQL, usersToParams(id, u));
+  });
+}
+
 module.exports = {
   load, save, close, ensureSchema, EMPTY_DB, getConn,
   pgNotificationHistoryForUser, pgInsertNotification, pgDeleteNotification, pgMergedNotificationWrite, pgPruneOldNotifications,
@@ -1656,4 +1932,5 @@ module.exports = {
   pgLastCrewChallenge, pgListCrewChallengesByCrew, pgUpsertCrewChallenge, pgInsertCrewChallengeIfNoneRunning, pgUpdateCrewChallengeFields, pgCompleteCrewChallengeIfNotAlready, pgDeleteCrewChallenge, pgDeleteCrewChallengesByCrew,
   pgListCrewsNeedingColumnBackfill, pgBackfillCrewRow,
   pgUpsertFollowEdge, markFollowsTableReady, syncUserFollowsBaseline,
+  pgListUsersNeedingColumnBackfill, pgBackfillUserColumns, markUserColumnsMigrated,
 };

@@ -856,6 +856,14 @@ app.post('/api/register', async (req, res) => {
     // use, same as ever; there is no separate "friends" concept to seed any more (see canSeeProfile).
     profileVisibility: 'public',
     createdAt: new Date().toISOString() }, hashed);
+  // Oct 16 2026 (users slice, decision #2): a brand-new account needs no backfill -- mark it
+  // migrated before its first save() so that very first write already excludes these scalar
+  // fields from the blob (see usersToParams' own comment in db.js), instead of waiting for a
+  // restart (when doLoad() would otherwise be the first thing to notice its username column is
+  // non-null and add it to the set). The real columns themselves get written either way --
+  // usersToParams derives them fresh from this object unconditionally -- this only controls
+  // whether the blob ALSO keeps a redundant copy until that happens.
+  db.markUserColumnsMigrated(id);
   await save(DB);
   res.json({ token: signToken(id), user: { ...publicUser(id), defaultGym: '', profileVisibility: 'public' } });
 });
@@ -2723,6 +2731,66 @@ async function migrateUserFollowsIntoPostgres() {
   db.syncUserFollowsBaseline(DB.users);
   if (migrated || skippedMalformed) console.log(`user-follows migration: ${migrated} follow edge(s) flattened into user_follows${skippedMalformed ? `, skipped ${skippedMalformed} malformed/self/dangling entr${skippedMalformed === 1 ? 'y' : 'ies'}` : ''}`);
   return migrated;
+}
+
+// Oct 16 2026 (users slice, decision #2 -- scalar profile/settings column normalization, Jeff:
+// "yes" to doing this now rather than later): backfills the new users.username/display_name/
+// bio/avatar/default_gym/profile_visibility/units/created_at/created_at_estimated/pin_hash/
+// pin_salt/deleted/deleted_at/tokens_valid_from/seen_rir_explainer/training_phase/
+// notify_streak_reminders/notify_workout_reminders/last_streak_reminder_at/
+// last_workout_reminder_at columns (db.js) for any user row not yet migrated
+// (db.pgListUsersNeedingColumnBackfill() checks `username IS NULL`). Runs every boot, right after
+// migrateUserFollowsIntoPostgres() above -- same boot-sequence slot every other one-time
+// Postgres-column backfill in this file uses -- and is a true no-op (one empty SELECT) once
+// every row has been migrated. No forcing bug behind this one (unlike decision #1) -- pure
+// storage-shape/scale-readiness, disclosed to Jeff as such before starting.
+//
+// Deliberately different from migrateCrewRowColumnsIntoPostgres() above in one important way:
+// that function sanitizes and backfills from `row.data` (the raw blob text its own SELECT just
+// read). This one backfills from DB.users[row.id] -- the LIVE, already-booted in-memory object --
+// instead. Several earlier boot migrations in this same sequence (migratePasswords,
+// migrateCreatedAt, migrateMergeDuplicateBrian, ...) mutate a user's scalar fields in memory
+// before this ever runs (a stored plaintext `pin` becomes pinHash/pinSalt; a missing createdAt
+// gets estimated), so `row.data` -- read fresh from Postgres by
+// pgListUsersNeedingColumnBackfill(), reflecting the pre-boot-migrations blob -- would be STALE
+// by the time this runs, in a way the crew-row backfill never has to worry about (nothing
+// upstream of migrateCrewRowColumnsIntoPostgres mutates a crew's name/ownerId/createdAt in
+// memory before it runs). Backfilling from the live object instead means this always writes
+// exactly what this boot's trailing save(DB) would otherwise have written to the blob anyway --
+// never a stale pre-migration snapshot.
+//
+// No sanitization step here either, unlike crews -- there's no "stale vs sanitized" divergence
+// risk to guard against (see this slice's own pre-mortem): the values written are exactly what's
+// already sitting on the live object, untransformed, so there's nothing for DB.users[row.id] to
+// disagree with Postgres about afterward the way DB.crews[row.id] used to need a fix-up for. A
+// row whose in-memory user no longer exists (the one real case in this codebase:
+// migrateMergeDuplicateBrian's account merge, which runs earlier in this same boot sequence and
+// deletes the losing account from memory before Postgres has caught up) is skipped outright --
+// that row still gets cleanly removed from Postgres by this boot's own trailing save(DB)
+// regardless of its column-backfill state, so there's no data to backfill for a user that's
+// already gone.
+//
+// A real write failure (not missing data -- a genuine Postgres error) is logged and left for the
+// NEXT boot to retry, same reasoning as crews: this does NOT mark that row done, because doLoad()
+// uses this exact same `username IS NULL` gate to decide whether a row is safe to read from the
+// new columns -- silently giving up here would leave it stuck reading the pre-migration blob
+// shape forever with no way to self-heal.
+async function migrateUserScalarColumnsIntoPostgres() {
+  const pending = await db.pgListUsersNeedingColumnBackfill();
+  let migrated = 0, failed = 0, skipped = 0;
+  for (const row of pending) {
+    const u = DB.users[row.id];
+    if (!u) { skipped++; continue; }
+    try {
+      await db.pgBackfillUserColumns(row.id, u);
+      db.markUserColumnsMigrated(row.id);
+      migrated++;
+    } catch (e) {
+      failed++;
+      console.error('migrateUserScalarColumnsIntoPostgres: failed to backfill user (will retry next boot):', row.id, e && e.message);
+    }
+  }
+  if (migrated || failed || skipped) console.log(`user scalar-column backfill: ${migrated} user(s) migrated to real columns${failed ? `, ${failed} failed and will retry next boot` : ''}${skipped ? `, ${skipped} skipped (no longer in memory)` : ''}`);
 }
 
 app.get('/api/crews', auth, async (req, res) => {
@@ -10188,6 +10256,7 @@ app.use((err, req, res, next) => {
   await migrateCrewMessagesAndChallengesIntoPostgres();   // Oct 16 2026 (crews deep-dive, decision #1) -- flattens c.messages/c.challenges into their own Postgres tables; see its own comment and db.js's comment on crew_messages/crew_challenges
   await migrateCrewRowColumnsIntoPostgres();   // Oct 16 2026 (crews deep-dive, decision #2) -- backfills crews.name/owner_id/created_at + crew_members from the old data blob; see its own comment and db.js's comment on the crews table
   await migrateUserFollowsIntoPostgres();   // Oct 16 2026 (users slice, decision #1) -- flattens followers/following/followReqs into user_follows; see its own comment and db.js's comment on the user_follows table
+  await migrateUserScalarColumnsIntoPostgres();   // Oct 16 2026 (users slice, decision #2) -- backfills users.username/display_name/bio/... real columns from the old data blob; see its own comment and db.js's comment on the users table
   await save(DB);
   server = app.listen(PORT, () => console.log('CrewFit on', PORT));
   module.exports.server = server;

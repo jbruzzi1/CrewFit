@@ -37,12 +37,25 @@ function boot(port, dir, databaseUrl) {
     setTimeout(() => res({ srv, out, adminToken }), 8000);
   });
 }
+// Oct 16 2026 (users decision #2 -- scalar column normalization): deleted/displayName/username
+// (and the rest of that migration's ~20 fields) live on real columns once a row is migrated, not
+// in `data` any more. Only overlay a column when it's actually non-null, same reasoning as
+// db.js's own applyUserColumnsRow -- a not-yet-migrated row (every column null) is unaffected.
 async function readUsers(url) {
   const pg = new PgConnection(parseConnString(url));
-  const r = await pg.query('SELECT id, data FROM users');
+  const r = await pg.query(
+    `SELECT id, data, username, display_name, deleted, deleted_at, created_at FROM users`);
   pg.close();
   const users = {};
-  for (const row of r.rows) users[row.id] = JSON.parse(row.data);
+  for (const row of r.rows) {
+    const u = JSON.parse(row.data);
+    if (row.username !== null) u.username = row.username;
+    if (row.display_name !== null) u.displayName = row.display_name;
+    if (row.deleted !== null) u.deleted = row.deleted === 't';
+    if (row.deleted_at !== null) u.deletedAt = row.deleted_at;
+    if (row.created_at !== null) u.createdAt = row.created_at;
+    users[row.id] = u;
+  }
   return users;
 }
 async function readSessions(url) {

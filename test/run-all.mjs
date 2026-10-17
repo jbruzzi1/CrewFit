@@ -174,6 +174,14 @@ const files = [
   // rather than the trivial friends-only shape, which is what exposes the save-wipes-the-
   // migration hazard. Added to this list the same run it was written.
   'test/user-follows-migration-differential.mjs',
+  // Oct 16 2026 (users slice, decision #2 -- scalar profile/settings column normalization).
+  // Ground-truth differential check for migrateUserScalarColumnsIntoPostgres/the new
+  // users.username/display_name/bio/... columns -- lossless backfill (including explicit
+  // false/true booleans, not just missing-vs-present), the raw-Postgres-boolean-is-text-'t'/'f'
+  // gotcha proven both at the SQL layer and through real login/self-view behavior, idempotency,
+  // a real post-migration edit surviving a restart, and a brand-new user needing no backfill at
+  // all. Added to this list the same run it was written.
+  'test/user-scalar-columns-migration-differential.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
