@@ -2465,6 +2465,27 @@ function withCrewLock(crewId, fn) {
   settled.then(() => { if (crewEditQueues.get(crewId) === settled) crewEditQueues.delete(crewId); });
   return run;
 }
+// Oct 17 2026 (sessions & logs slice, decision #1 -- the mutate-before-maybe-failing-save hazard,
+// found and fixed for crews/users, was never applied to sessions at all: withSessionLock did not
+// exist before this). Surveyed every one of the 46 session routes before writing this (see
+// CLAUDE.md's "Rearchitecture status" for the full pre-mortem) -- 22 of them have a genuine
+// cross-user race on a session-wide shared field (s.participants, s.exercises, s.suggestedEdits,
+// s.pendingRemovals, s.joinRequests, s.invited, s.creatorId, s.startedAt, reaction arrays, etc.),
+// the exact shape withCrewLock was built for, just at roughly 5x the number of call sites crews
+// ever had -- a group workout means several genuinely concurrent participants hitting the SAME
+// session, which crews (1 edit at a time, almost always) never had to the same degree. Identical
+// shape to withCrewLock on purpose (same enqueue()-style "a prior op's own failure never wedges
+// the queue" reasoning) -- keyed per session id so unrelated sessions' edits never wait on each
+// other, entries deleted once idle.
+const sessionEditQueues = new Map();
+function withSessionLock(sessionId, fn) {
+  const prevQueue = sessionEditQueues.get(sessionId) || Promise.resolve();
+  const run = prevQueue.then(fn);
+  const settled = run.then(() => {}, () => {});
+  sessionEditQueues.set(sessionId, settled);
+  settled.then(() => { if (sessionEditQueues.get(sessionId) === settled) sessionEditQueues.delete(sessionId); });
+  return run;
+}
 
 function ensureCrewShape(c) {
   if (!Array.isArray(c.memberIds)) c.memberIds = [];
@@ -3330,7 +3351,21 @@ function publicChallenge(c, ch, viewerId) {
 // else later (cold-review catch). Returns whether it just completed, so callers than don't already
 // unconditionally save() can decide to.
 async function checkChallengeCompletion(c) {
-  const ch = await runningChallenge(c);
+  // Oct 17 2026 (sessions & logs slice, decision #1 survey finding): the try/catch below used to
+  // start AFTER this function's own initial `await runningChallenge(c)` -- reachable only from
+  // POST /api/sessions/:id/lock and .../leave, both of which mutate the session `s` in memory
+  // (creditFinish) before calling this. A thrown Postgres error on just this one read (same class
+  // of failure already handled for the completion-write a few lines down) would propagate past
+  // this point uncaught, 500ing an otherwise-successful workout finish with that mutation already
+  // live in memory and unsaved. Moved the try up to cover this read too, same "not fatal to the
+  // caller" policy the rest of this function already states for itself.
+  let ch;
+  try {
+    ch = await runningChallenge(c);
+  } catch (e) {
+    console.error('checkChallengeCompletion: failed to read running challenge (continuing -- not fatal to the caller):', c.id, e && e.message);
+    return false;
+  }
   if (!ch) return false;
   // A custom goal's target is undefined, so `total < ch.target` (total is always 0 for one -- see
   // challengeProgress's own short-circuit) compares against undefined and is always false here --
@@ -3462,11 +3497,21 @@ async function emitFinishFeedEvents(s, userId, ranksBefore, localDate) {
   if (!ranksBefore) return;
   for (const c of Object.values(DB.crews || {})) {
     if (!isCrewMember(c, userId)) continue;
-    const before = ranksBefore[c.id];
-    const after = await crewChallengeRank(c, userId);
-    if (before == null || after == null || after >= before) continue;   // no challenge, or rank didn't improve
-    if (!(await runningChallenge(c))) continue;   // completed in this same update -- that event covers it
-    await emitFeedEvent('rank', userId, { crewId: c.id, crewName: c.name, rank: after, text: `moved to #${after}` });
+    // Oct 17 2026 (sessions & logs slice, decision #1 survey finding): same uncaught-Postgres-read
+    // gap as checkChallengeCompletion's own fix just above -- this is reached from the exact same
+    // two session routes, after the same in-memory session mutation has already happened. Neither
+    // of these awaited reads was ever wrapped; a thrown error on one crew's rank check used to 500
+    // the whole finish and skip every OTHER crew's rank event too. Caught per-crew instead, same
+    // best-effort policy as the rest of this function's own emitFeedEvent calls.
+    try {
+      const before = ranksBefore[c.id];
+      const after = await crewChallengeRank(c, userId);
+      if (before == null || after == null || after >= before) continue;   // no challenge, or rank didn't improve
+      if (!(await runningChallenge(c))) continue;   // completed in this same update -- that event covers it
+      await emitFeedEvent('rank', userId, { crewId: c.id, crewName: c.name, rank: after, text: `moved to #${after}` });
+    } catch (e) {
+      console.error('emitFinishFeedEvents: failed to check/emit crew rank event (continuing -- not fatal to the caller):', c.id, e && e.message);
+    }
   }
 }
 app.post('/api/crews/:id/challenge', auth, async (req, res) => {
@@ -4234,8 +4279,21 @@ app.post('/api/sessions/:id/comments', auth, async (req, res) => {
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
   const c = { id: 'c_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
   if (!s.comments) s.comments = [];
-  s.comments.push(c);
-  await save(DB);
+  // Oct 17 2026 (sessions & logs slice, decision #1 -- mutate-before-maybe-failing-save hazard,
+  // same shape as the follow-graph fix: reassign rather than push-in-place so snapshotMutableFields/
+  // revertFieldsIfUnchanged can tell "still my own untouched push" apart from "someone else already
+  // changed this since." A failed save here used to leave a phantom comment visible to every other
+  // participant in memory (and a notification already sent for it) with nothing persisted -- gone
+  // on restart, reappearing wrongly in the meantime.
+  const before = snapshotMutableFields([s], ['comments']);
+  s.comments = [...s.comments, c];
+  const after = snapshotMutableFields([s], ['comments']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['comments']);
+    throw e;
+  }
   // Sep 8 2026: same grouping treatment as crew chat above (see the long comment above
   // groupedHistoryWrite) -- was history:false, now aggregates into one durable "X commented on
   // {workout}" / "N new comments on {workout}" row per recipient instead of being dropped.
@@ -4286,9 +4344,20 @@ app.put('/api/sessions/:id/comments/:commentId', auth, async (req, res) => {
   if (c.userId !== req.userId) return res.status(403).json({ error: 'forbidden' });
   const text = capStr((req.body || {}).text, 2000);
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): same mutate-before-maybe-failing-save hazard
+  // as the comment-post route above, applied to an edit of an existing comment object instead of a
+  // new push -- snapshotMutableFields/revertFieldsIfUnchanged work on any object+field list, not
+  // just `s` itself, so this snapshots the comment object `c` directly.
+  const before = snapshotMutableFields([c], ['text', 'editedAt']);
   c.text = text;
   c.editedAt = new Date().toISOString();
-  await save(DB);
+  const after = snapshotMutableFields([c], ['text', 'editedAt']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['text', 'editedAt']);
+    throw e;
+  }
   res.json(c);
 });
 // Sep 8 2026 (Jeff: "I should be able to edit or delete any comment I have made anywhere also") --
@@ -4305,8 +4374,18 @@ app.delete('/api/sessions/:id/comments/:commentId', auth, async (req, res) => {
   const c = (s.comments || []).find(x => x.id === req.params.commentId);
   if (!c) return res.status(404).json({ error: 'not found' });
   if (c.userId !== req.userId) return res.status(403).json({ error: 'forbidden' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): same hazard as the two routes above --
+  // already reassignment-style (`.filter`), so this just needed the snapshot/revert wrapped
+  // around it like the follow-graph routes.
+  const before = snapshotMutableFields([s], ['comments']);
   s.comments = s.comments.filter(x => x.id !== req.params.commentId);
-  await save(DB);
+  const after = snapshotMutableFields([s], ['comments']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['comments']);
+    throw e;
+  }
   res.json({ ok: true });
 });
 
@@ -4341,8 +4420,24 @@ app.post('/api/sessions/:id/posts/:authorId/comments', auth, async (req, res) =>
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
   const c = { id: 'c_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
   p.comments = objArray(p.comments);
-  p.comments.push(c);
-  await save(DB);
+  // Oct 17 2026 (sessions & logs slice, decision #1): same reassign-then-snapshot/revert fix as
+  // the live-chat comment-post route above, applied to the posted-recap comment object `p`.
+  // Oct 17 2026, same day (review audit finding): this CAS-style revert on `p.comments` is itself
+  // fine, but needed locking anyway -- /remove-mine's own save-failure revert blind-clones and
+  // unconditionally restores the WHOLE `s.posts` map (not just one field), so a concurrent,
+  // unlocked write here could be silently wiped out by that route's revert even though THIS save
+  // already succeeded. Locked so the two can never interleave.
+  await withSessionLock(s.id, async () => {
+  const before = snapshotMutableFields([p], ['comments']);
+  p.comments = [...p.comments, c];
+  const after = snapshotMutableFields([p], ['comments']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['comments']);
+    throw e;
+  }
+  });
   if (req.params.authorId !== req.userId)
     notify(req.params.authorId, { title: 'New comment', body: `${DB.users[req.userId].displayName}: ${text.slice(0,40)}`, link: { type: 'post', sessionId: s.id, authorId: req.params.authorId } });
   res.json(sessionView(s, req.userId));
@@ -4391,9 +4486,23 @@ app.put('/api/sessions/:id/posts/:authorId/comments/:commentId', auth, async (re
   if (isBlocked(req.params.authorId, req.userId)) return res.status(403).json({ error: 'forbidden' });
   const text = capStr((req.body || {}).text, 2000);
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): same snapshot/revert fix as the live-chat
+  // comment-edit route above, applied to this nested comment object `c`.
+  // Oct 17 2026, same day (review audit finding): locked for the same reason as the POST route
+  // above -- /remove-mine's blind whole-`s.posts`-map restore on its own save failure can
+  // otherwise clobber this edit even after it successfully saved.
+  await withSessionLock(s.id, async () => {
+  const before = snapshotMutableFields([c], ['text', 'editedAt']);
   c.text = text;
   c.editedAt = new Date().toISOString();
-  await save(DB);
+  const after = snapshotMutableFields([c], ['text', 'editedAt']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['text', 'editedAt']);
+    throw e;
+  }
+  });
   res.json(c);
 });
 app.delete('/api/sessions/:id/posts/:authorId/comments/:commentId', auth, async (req, res) => {
@@ -4412,8 +4521,21 @@ app.delete('/api/sessions/:id/posts/:authorId/comments/:commentId', auth, async 
   // implies canSeePostAuthor trivially, since authorId===viewerId) must not survive losing the
   // ability to see the thread at all.
   if (!canSeePostAuthor(p, req.params.authorId, req.userId, s)) return res.status(403).json({ error: 'forbidden' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): same snapshot/revert fix as the routes
+  // above -- already reassignment-style, just needed the wrapper.
+  // Oct 17 2026, same day (review audit finding): locked, same reason as its POST/PUT siblings --
+  // /remove-mine's blind whole-`s.posts`-map restore can otherwise clobber this delete.
+  await withSessionLock(s.id, async () => {
+  const before = snapshotMutableFields([p], ['comments']);
   p.comments = p.comments.filter(x => x.id !== req.params.commentId);
-  await save(DB);
+  const after = snapshotMutableFields([p], ['comments']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['comments']);
+    throw e;
+  }
+  });
   res.json({ ok: true });
 });
 
@@ -4917,11 +5039,26 @@ app.post('/api/sessions/:id/start', auth, async (req, res) => {
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   if (!canFinishOrPost(s, req.userId)) return res.status(403).json({ error: 'not in this workout' });
-  if (!s.startedAt) {
-    markSessionStarted(s);
-    await save(DB);
-  }
-  res.json(sessionView(s, req.userId));
+  // Oct 17 2026 (sessions & logs slice, decision #1 -- see withSessionLock's own comment): s.startedAt/
+  // s.scheduledAt are session-wide shared fields any participant's concurrent /start or /lock (which
+  // also calls markSessionStarted) can race on, and a failed save used to leave the "started" flip
+  // live in memory for everyone until a restart silently undid it. Locked per session so the revert
+  // below can safely restore the exact prior values -- safe specifically because nothing else can be
+  // mutating this same session concurrently inside the lock.
+  await withSessionLock(s.id, async () => {
+    if (!s.startedAt) {
+      const prevStartedAt = s.startedAt, prevScheduledAt = s.scheduledAt;
+      markSessionStarted(s);
+      try {
+        await save(DB);
+      } catch (e) {
+        s.startedAt = prevStartedAt;
+        s.scheduledAt = prevScheduledAt;
+        throw e;
+      }
+    }
+    res.json(sessionView(s, req.userId));
+  });
 });
 
 // list sessions visible to me: mine, invited to, or friends-visibility from friends
@@ -5641,7 +5778,12 @@ function creditFinish(s, userId, localDate) {
   // streak purposes) exists so challengeProgress below can gate on a precise instant even for a
   // workout finished with zero logged sets -- see the comment on that fallback branch for why a
   // day-string-only comparison there was a real double-counting bug.
-  s.history.push({ userId, date, muscleGroups: [...mgs], exercises: exNames, at: new Date().toISOString() });
+  // Oct 17 2026 (sessions & logs slice, decision #1): reassigned rather than pushed in place --
+  // both callers (/lock and /leave) now revert s.history on a failed save, and a reassignment is
+  // what lets a plain "restore the old array reference" (or the CAS helpers) actually tell apart
+  // "still just my own untouched push" from "someone else's concurrent write" -- an in-place push
+  // leaves the array's identity unchanged, which would defeat either revert technique.
+  s.history = [...s.history, { userId, date, muscleGroups: [...mgs], exercises: exNames, at: new Date().toISOString() }];
   return true;
 }
 
@@ -5678,11 +5820,30 @@ app.delete('/api/sessions/:id', auth, async (req, res) => {
       : `${names.join(' and ')} ${verb} still in this workout. Deleting it would remove it for them too.`;
     return res.status(409).json({ error, othersLogged: creditOthers.length, canLeave: true });
   }
-  removeSessionFromAllIndexes(s);   // Oct 12 2026 (scaling fix round 2) -- see its own comment
-  delete DB.sessions[req.params.id];
-  rebuildAllPrs();     // the records were built from sets that no longer exist
-  await save(DB);
-  res.json({ ok: true });
+  // Oct 17 2026 (sessions & logs slice, decision #1 -- see withSessionLock's own comment): this
+  // used to delete the ENTIRE shared session object, rebuild the global DB.prs cache, and only
+  // THEN await save(DB) -- with nothing reverting any of that if the save failed. A failed save
+  // used to leave the session genuinely gone from DB.sessions (every other participant's GET/POST
+  // on this id 404s, same as if it had really been deleted) and DB.prs already rebuilt without its
+  // sets, for the rest of the process's life, then have it silently reappear on the next restart --
+  // the exact same hazard already found and fixed for DELETE /api/crews/:id, just unaddressed here
+  // until now. Locked per session (mirroring that fix) so the revert can safely restore the exact
+  // same object under its own id and put the index/PRs cache back in sync, rather than racing a
+  // concurrent request that could legitimately be touching this session at the same time.
+  await withSessionLock(s.id, async () => {
+    removeSessionFromAllIndexes(s);   // Oct 12 2026 (scaling fix round 2) -- see its own comment
+    delete DB.sessions[req.params.id];
+    rebuildAllPrs();     // the records were built from sets that no longer exist
+    try {
+      await save(DB);
+    } catch (e) {
+      DB.sessions[req.params.id] = s;
+      for (const userId of Object.keys(s.logs || {})) indexAddUserSession(userId, s.id);
+      rebuildAllPrs();   // put the derived cache back in sync with the restored session too
+      throw e;
+    }
+    res.json({ ok: true });
+  });
 });
 
 // Sep 29 2026 (audit finding, dedup): /leave and /remove-mine each carried an identical ~35-line
@@ -5769,6 +5930,23 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   if (!others.length && !otherCurrentParticipants.length && s.creatorId === me)
     return res.status(400).json({ error: 'Nobody else has logged in this workout — delete it instead.' });
 
+  // Oct 17 2026 (sessions & logs slice, decision #1 -- see withSessionLock's own comment): this
+  // is the single heaviest session route in the app -- a dozen-plus distinct fields on `s`
+  // (participants, invited, suggestedEdits, joinRequests, creatorId, logs, draftNotes,
+  // attendance, variations, pendingRemovals via dropRequiredApprover, exercises via
+  // autoApplyPendingEditsAtPivot) get mutated across several helper calls before the single
+  // `await save(DB)` at the end, with nothing reverting any of it on failure. Hand-reverting each
+  // field individually (the follow-graph/crew style) would mean re-deriving the exact right
+  // per-field undo for every one of those helpers -- itself a real source of new bugs. Since this
+  // whole sequence is now locked per session (and every other session route that touches these
+  // same fields is locked too, by the end of this slice), nothing else can be concurrently
+  // mutating this exact `s` object while this runs -- so a single deep snapshot of `s` taken right
+  // here, restored whole on any failure, is both simpler and more trustworthy than trying to
+  // enumerate every nested mutation by hand. rebuildAllPrs() (called before the save, since it
+  // derives DB.prs from session logs) is re-run after a restore too, so the derived cache ends up
+  // back in sync with the session it was actually computed from.
+  await withSessionLock(s.id, async () => {
+  const sSnapshot = JSON.parse(JSON.stringify(s));
   // v187 (Leave Workout redesign), Jeff Aug 19-20: "the leave button... simply just logs the
   // current sets you have" — keep credits you exactly like tapping Log & Finish would have,
   // right before you go. creditFinish is idempotent, so this is always safe to call even if you
@@ -5875,7 +6053,14 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // departed person as a permanent, unresolvable required approver on a pending exercise removal.
   const resolvedRemovals = dropRequiredApprover(s, me);
   rebuildAllPrs();
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, sSnapshot);
+    rebuildAllPrs();   // put the derived cache back in sync with the restored session
+    throw e;
+  }
   // Sep 23 2026: resolvedRemovals notified s.creatorId specifically -- with ownership never
   // handed off anymore, an ownerless session has no creatorId to notify, so this now only ever
   // fires for a still-owned session (unchanged for that case).
@@ -5885,6 +6070,7 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // here is always someone other than whoever's leaving.
   notifyDeparturePivots(s, me, { resolvedRemovals, autoApplied, wasOwner, alreadyOwnerless });
   res.json({ ok: true, left: true });
+  });
 });
 
 // Sep 23 2026 (Jeff, follow-up to the removal-approval fix above): the creator's way to resolve a
@@ -5906,6 +6092,12 @@ app.post('/api/sessions/:id/participants/:pid/remove', auth, async (req, res) =>
   const target = req.params.pid;
   if (target === req.userId) return res.status(400).json({ error: 'use Leave or Delete for yourself' });
   if (!(s.participants || []).includes(target)) return res.status(400).json({ error: 'not a current participant' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): same shape and same shared fields as /leave
+  // and /remove-mine (participants, invited, suggestedEdits, joinRequests, attendance,
+  // pendingRemovals via dropRequiredApprover) -- see /leave's own comment on why a whole-object
+  // snapshot/restore is the safer fix here than hand-reverting each field.
+  const result = await withSessionLock(s.id, async () => {
+  const sSnapshot = JSON.parse(JSON.stringify(s));
   s.participants = s.participants.filter(x => x !== target);
   s.invited = (s.invited || []).filter(x => x !== target);
   // Same "only your own stuff, only while pending" cleanup Leave already does for these two --
@@ -5920,7 +6112,16 @@ app.post('/api/sessions/:id/participants/:pid/remove', auth, async (req, res) =>
   // (Sep 23 2026: this logic is now shared with every OTHER departure route -- see
   // dropRequiredApprover's own comment above othersWithCredit.)
   const resolvedNow = dropRequiredApprover(s, target);
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, sSnapshot);
+    throw e;
+  }
+  return { resolvedNow };
+  });
+  const resolvedNow = result.resolvedNow;
   const hostName = DB.users[s.creatorId] ? DB.users[s.creatorId].displayName : 'The organizer';
   // Sep 29 2026 (audit finding): a kicked person with no logged sets on this workout resolves to
   // sessionTier() === 'stranger' the instant they're removed (no participant/creator/logs left to
@@ -5961,8 +6162,28 @@ app.post('/api/sessions/:id/exercises/:exId/hide-for-me', auth, async (req, res)
     return res.status(403).json({ error: 'not in this workout' });
   if (!s.exercises.find(e => e.id === req.params.exId)) return res.status(404).json({ error: 'exercise not found' });
   if (!Array.isArray(s.hiddenFor[req.params.exId])) s.hiddenFor[req.params.exId] = [];
-  if (!s.hiddenFor[req.params.exId].includes(req.userId)) s.hiddenFor[req.params.exId].push(req.userId);
-  await save(DB);
+  // Oct 17 2026 (sessions & logs slice, decision #1): own-id-only field (each user only ever
+  // pushes/removes their own id) -- reassigned instead of pushed in place so
+  // snapshotMutableFields/revertFieldsIfUnchanged can tell a failed save's own push apart from
+  // anything else touching this same per-exercise array in between.
+  // Oct 17 2026, same day (review audit finding): this still needs the session lock even though
+  // its own revert is a precise single-key CAS -- /accept, suggestOwnerless, voteOwnerless, and
+  // suggest/:editId/cancel's ownerless branch all blind-clone-and-restore the WHOLE `s.hiddenFor`
+  // object on their own save failure, which would blow away this key's change wholesale (even a
+  // successfully-saved one) if it lands mid-flight during one of those routes' lock window.
+  await withSessionLock(s.id, async () => {
+  if (!s.hiddenFor[req.params.exId].includes(req.userId)) {
+    const before = snapshotMutableFields([s.hiddenFor], [req.params.exId]);
+    s.hiddenFor[req.params.exId] = [...s.hiddenFor[req.params.exId], req.userId];
+    const after = snapshotMutableFields([s.hiddenFor], [req.params.exId]);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, [req.params.exId]);
+      throw e;
+    }
+  }
+  });
   res.json(sessionView(s, req.userId));
 });
 app.post('/api/sessions/:id/exercises/:exId/unhide-for-me', auth, async (req, res) => {
@@ -5976,8 +6197,22 @@ app.post('/api/sessions/:id/exercises/:exId/unhide-for-me', auth, async (req, re
   // 403 hide-for-me would give them, which is a real inconsistency for anyone auditing this route.
   if (!(s.participants || []).includes(req.userId) && s.creatorId !== req.userId)
     return res.status(403).json({ error: 'not in this workout' });
-  if (Array.isArray(s.hiddenFor[req.params.exId])) s.hiddenFor[req.params.exId] = s.hiddenFor[req.params.exId].filter(x => x !== req.userId);
-  await save(DB);
+  // Oct 17 2026 (sessions & logs slice, decision #1): same revert-only treatment as hide-for-me
+  // just above -- already reassignment-style.
+  // Oct 17 2026, same day (review audit finding): locked, same reason as hide-for-me above.
+  await withSessionLock(s.id, async () => {
+  if (Array.isArray(s.hiddenFor[req.params.exId])) {
+    const before = snapshotMutableFields([s.hiddenFor], [req.params.exId]);
+    s.hiddenFor[req.params.exId] = s.hiddenFor[req.params.exId].filter(x => x !== req.userId);
+    const after = snapshotMutableFields([s.hiddenFor], [req.params.exId]);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, [req.params.exId]);
+      throw e;
+    }
+  }
+  });
   res.json(sessionView(s, req.userId));
 });
 
@@ -6005,8 +6240,19 @@ app.post('/api/sessions/:id/hide-joinable', auth, async (req, res) => {
     return res.status(403).json({ error: 'not a joinable workout for you' });
   ensureSessionShape(s);
   s.joinableHiddenBy = s.joinableHiddenBy || [];
-  if (!s.joinableHiddenBy.includes(req.userId)) s.joinableHiddenBy.push(req.userId);
-  await save(DB);
+  // Oct 17 2026 (sessions & logs slice, decision #1): own-id-only field, same revert-only
+  // treatment as hide-for-me above.
+  if (!s.joinableHiddenBy.includes(req.userId)) {
+    const before = snapshotMutableFields([s], ['joinableHiddenBy']);
+    s.joinableHiddenBy = [...s.joinableHiddenBy, req.userId];
+    const after = snapshotMutableFields([s], ['joinableHiddenBy']);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, ['joinableHiddenBy']);
+      throw e;
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -6027,6 +6273,10 @@ app.post('/api/sessions/:id/remove-mine', auth, async (req, res) => {
   const hasConnection = (s.participants || []).includes(me) || s.creatorId === me
     || (s.posts && s.posts[me]) || (s.history || []).some(h => h.userId === me) || (s.logs && s.logs[me]);
   if (!hasConnection) return res.status(403).json({ error: 'not yours' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): same shape as /leave -- see its own comment
+  // for why a whole-object snapshot/restore under withSessionLock is the fix here too.
+  await withSessionLock(s.id, async () => {
+  const sSnapshot = JSON.parse(JSON.stringify(s));
   if (s.posts) delete s.posts[me];
   if (s.logs) delete s.logs[me];
   indexRemoveUserSession(me, s.id);   // Oct 12 2026 (scaling fix round 2) -- see rebuildSessionsByUserIndex's comment
@@ -6070,12 +6320,20 @@ app.post('/api/sessions/:id/remove-mine', auth, async (req, res) => {
   // comment above othersWithCredit.
   const resolvedRemovals = dropRequiredApprover(s, me);
   rebuildAllPrs();
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, sSnapshot);
+    rebuildAllPrs();
+    throw e;
+  }
   // Sep 29 2026: same push-consistency fix as /leave's identical block, same reasoning --
   // s.creatorId is already nulled out above when the departing person IS the owner, so this
   // never self-notifies either.
   notifyDeparturePivots(s, me, { resolvedRemovals, autoApplied, wasOwner, alreadyOwnerless });
   res.json({ ok: true, removed: true });
+  });
 });
 
 // update a session (creator only): name/time/location/note/visibility/exercises/invites
@@ -6096,6 +6354,14 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   ensureSessionShape(s);
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not yours' });
   const b = req.body || {};
+  // Oct 17 2026 (sessions & logs slice, decision #1): this route rewrites more session-wide shared
+  // fields than any other (name/scheduledAt/location/lengthMin/creatorNote/visibility, plus
+  // pendingRemovals/exercises/suggestedEdits/invited/invitedBy/invitedAt) across a long,
+  // branching body, all before one `await save(DB)` at the end -- see /leave's own comment for why
+  // a whole-object snapshot/restore under withSessionLock is the fix here too, same as every other
+  // genuinely multi-field session route in this slice.
+  await withSessionLock(s.id, async () => {
+  const sSnapshot = JSON.parse(JSON.stringify(s));
   // Sep 10 2026: same default as creation (POST /api/sessions, see its own comment) -- clearing
   // the name on an edit and saving should not be able to drop the session out of Home's filters
   // the same way a blank name at creation did.
@@ -6259,8 +6525,15 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   for (const fid of newlyInvited) notify(fid, { title: 'Workout invite', body: `${DB.users[req.userId].displayName} invited you to a workout`, link: { type: 'session', sessionId: s.id } }, { history: false });
   }
   s.updatedAt = new Date().toISOString();
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, sSnapshot);
+    throw e;
+  }
   res.json(sessionView(s, req.userId));
+  });
 });
 
 // Sep 23 2026: the sign-off side of the exercise-removal gate set up in PUT /api/sessions/:id
@@ -6276,6 +6549,15 @@ app.post('/api/sessions/:id/removal/:reqId/approve', auth, async (req, res) => {
   if (!pr) return res.status(404).json({ error: 'not found' });
   if (!(pr.requiredApprovals || []).includes(req.userId)) return res.status(403).json({ error: 'not yours to approve' });
   if (pr.status !== 'pending') return res.status(400).json({ error: 'already decided' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): multiple required approvers vote on the
+  // SAME pr/s.exercises concurrently -- the whole point of this feature -- with no lock at all
+  // until now. Re-checking pr.status again right after acquiring the lock matters: another
+  // approve/decline/cancel for this same pr could have already resolved it while this request was
+  // waiting its turn in the queue, after the first (unlocked) check above already passed.
+  await withSessionLock(s.id, async () => {
+  if (pr.status !== 'pending') return;
+  const prSnapshot = { status: pr.status, approvals: [...pr.approvals] };
+  const exercisesSnapshot = s.exercises;
   if (!pr.approvals.includes(req.userId)) pr.approvals.push(req.userId);
   const allIn = pr.requiredApprovals.every(uid_ => pr.approvals.includes(uid_));
   if (allIn) {
@@ -6288,7 +6570,15 @@ app.post('/api/sessions/:id/removal/:reqId/approve', auth, async (req, res) => {
     // notify(null, ...).
     if (s.creatorId && !isBlocked(req.userId, s.creatorId)) notify(s.creatorId, { title: 'Removal approved', body: `Everyone signed off — ${pr.exerciseName} was removed from ${s.name}`, link: { type: 'session', sessionId: s.id } });
   }
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    pr.status = prSnapshot.status;
+    pr.approvals = prSnapshot.approvals;
+    s.exercises = exercisesSnapshot;
+    throw e;
+  }
+  });
   res.json(sessionView(s, req.userId));
 });
 
@@ -6303,8 +6593,20 @@ app.post('/api/sessions/:id/removal/:reqId/decline', auth, async (req, res) => {
   if (!pr) return res.status(404).json({ error: 'not found' });
   if (!(pr.requiredApprovals || []).includes(req.userId)) return res.status(403).json({ error: 'not yours to decide' });
   if (pr.status !== 'pending') return res.status(400).json({ error: 'already decided' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): a concurrent approve from another required
+  // approver (or a cancel from the creator) races this exact same pr.status flip -- same lock and
+  // same re-check-after-acquiring pattern as the approve route above.
+  await withSessionLock(s.id, async () => {
+  if (pr.status !== 'pending') return;
+  const prevStatus = pr.status;
   pr.status = 'declined';
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    pr.status = prevStatus;
+    throw e;
+  }
+  });
   const who = DB.users[req.userId] ? DB.users[req.userId].displayName : 'Someone';
   // Sep 24 2026 audit round 4: same missing block check as the removal-request notify above.
   // Sep 27 2026 (ownerless redesign): same reasoning as the approve route just above -- a still-
@@ -6324,8 +6626,19 @@ app.post('/api/sessions/:id/removal/:reqId/cancel', auth, async (req, res) => {
   if (!pr) return res.status(404).json({ error: 'not found' });
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'only creator can cancel' });
   if (pr.status !== 'pending') return res.status(400).json({ error: 'already decided' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): same lock/re-check pattern as approve/
+  // decline above -- a required approver could be approving/declining the same pr right now.
+  await withSessionLock(s.id, async () => {
+  if (pr.status !== 'pending') return;
+  const prevStatus = pr.status;
   pr.status = 'cancelled';
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    pr.status = prevStatus;
+    throw e;
+  }
+  });
   res.json(sessionView(s, req.userId));
 });
 
@@ -6350,6 +6663,11 @@ app.post('/api/sessions/:id/accept', auth, async (req, res) => {
   // Resolved the same way sessionTier/the notifications list do.
   const inviterId = (s.invitedBy && s.invitedBy[req.userId]) || s.creatorId;
   if (isBlocked(inviterId, req.userId)) return res.status(400).json({ error: 'blocked' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): s.participants/s.invited are the same shared
+  // fields /leave, kick, and /join/approve all touch concurrently -- see /leave's own comment for
+  // why a whole-object snapshot/restore under withSessionLock is the fix.
+  await withSessionLock(s.id, async () => {
+  const sSnapshot = JSON.parse(JSON.stringify(s));
   s.invited = s.invited.filter(x => x !== req.userId);
   if (!s.participants.includes(req.userId)) s.participants.push(req.userId);
   // Sep 27 2026 (ownerless redesign, doc tab 04): a still-invited person can stash one private
@@ -6379,11 +6697,18 @@ app.post('/api/sessions/:id/accept', auth, async (req, res) => {
       if (!s.hiddenFor[edit.exerciseId].includes(req.userId)) s.hiddenFor[edit.exerciseId].push(req.userId);
     }
   }
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, sSnapshot);
+    throw e;
+  }
   // An ownerless workout has no creator to tell "someone joined" -- there's no notify(null, ...)
   // call to make (that would silently write a orphaned userId:null history row nobody ever reads).
   if (s.creatorId) notify(s.creatorId, { title: 'Invite accepted', body: `${DB.users[req.userId].displayName} joined your workout`, link: { type: 'session', sessionId: s.id } });
   res.json(sessionView(s, req.userId));
+  });
 });
 
 // decline an invite (remove from invited[], do not join)
@@ -6401,6 +6726,11 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   // inviter too, not just a live s.creatorId.
   const inviterId = (s.invitedBy && s.invitedBy[req.userId]) || s.creatorId;
   const declinerBlocked = isBlocked(inviterId, req.userId);
+  // Oct 17 2026 (sessions & logs slice, decision #1): same shared s.invited/s.suggestedEdits/
+  // s.joinRequests fields as /leave, /remove-mine, and /accept -- same whole-object snapshot/
+  // restore fix under withSessionLock.
+  await withSessionLock(s.id, async () => {
+  const sSnapshot = JSON.parse(JSON.stringify(s));
   s.invited = s.invited.filter(x => x !== req.userId);
   // Sep 24 2026 (audit finding): this left the decliner's s.invitedBy entry behind. PUT
   // /api/sessions/:id's invite-rewrite only ever SETS invitedBy for an id that doesn't already
@@ -6442,7 +6772,13 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   // notification body (this is a quick reason, not a chat message -- the reinvite-request flow
   // below is where an actual back-and-forth belongs).
   const reason = typeof (req.body && req.body.reason) === 'string' ? sanitizePgText(sanitizePgText(req.body.reason.trim()).slice(0, 300)) : '';
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, sSnapshot);
+    throw e;
+  }
   // Same reasoning as /accept just above: an ownerless workout has no creator to tell. Also skip
   // entirely when blocked either direction (see declinerBlocked above) -- same privacy rule as
   // every other notify() in this file, so a blocked relationship never receives this message or
@@ -6457,6 +6793,7 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   // "later thought he could go", not just flash by.
   notify(req.userId, { title: 'You declined', body: `You declined ${s.name || 'the workout'}. Changed your mind?`, link: { type: 'reinvite-ask', sessionId: s.id } }, { push: false });
   res.json(sessionView(s, req.userId));
+  });
 });
 
 // Sep 27 2026 (Jeff, part 1 continued): the other half of "message the chat for a re-invitation" --
@@ -6483,16 +6820,40 @@ app.post('/api/sessions/:id/reinvite-request', auth, async (req, res) => {
   // or just asks again days later) spammed the creator with a separate notification + Notifications
   // row per tap. Reuse the same pending row (refreshing message/timestamp) instead of pushing a new
   // one, and skip the duplicate notify -- the creator already has a live request to act on.
-  const existing = s.reinviteRequests.find(r => r.userId === req.userId);
-  if (existing) {
-    existing.message = message;
-    existing.at = new Date().toISOString();
-    await save(DB);
-    return res.json({ ok: true });
+  // Oct 17 2026 (sessions & logs slice, decision #1): each user owns at most one row here (found
+  // by r.userId === req.userId), so revert-only -- no genuine cross-user collision on the same
+  // row, just the usual mutate-before-maybe-failing-save hazard on this user's own row/push.
+  // Oct 17 2026, same day (review audit finding): still locked -- reinvite-approve blind-clones
+  // and restores the WHOLE `s.reinviteRequests` array on its own save failure, which would wipe
+  // out a concurrent add/refresh here even after it successfully saved.
+  const existing = await withSessionLock(s.id, async () => {
+  const existing_ = s.reinviteRequests.find(r => r.userId === req.userId);
+  if (existing_) {
+    const before = snapshotMutableFields([existing_], ['message', 'at']);
+    existing_.message = message;
+    existing_.at = new Date().toISOString();
+    const after = snapshotMutableFields([existing_], ['message', 'at']);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, ['message', 'at']);
+      throw e;
+    }
+    return existing_;
   }
   const rr = { id: 'rr_' + uid(), userId: req.userId, message, at: new Date().toISOString() };
-  s.reinviteRequests.push(rr);
-  await save(DB);
+  const before = snapshotMutableFields([s], ['reinviteRequests']);
+  s.reinviteRequests = [...s.reinviteRequests, rr];
+  const after = snapshotMutableFields([s], ['reinviteRequests']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['reinviteRequests']);
+    throw e;
+  }
+  return null;
+  });
+  if (existing) return res.json({ ok: true });
   notify(s.creatorId, { title: 'Wants back in', body: `${DB.users[req.userId].displayName} would like to be re-invited to ${s.name || 'your workout'}${message ? `: "${message}"` : ''}`, link: { type: 'session', sessionId: s.id } }, { history: false });
   res.json({ ok: true });
 });
@@ -6509,17 +6870,39 @@ app.post('/api/sessions/:id/reinvite-request/:reqId/approve', auth, async (req, 
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not your workout' });
   const rr = (s.reinviteRequests || []).find(r => r.id === req.params.reqId);
   if (!rr) return res.status(404).json({ error: 'not found' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): s.invited is shared with /leave, /decline,
+  // /accept -- same whole-object snapshot/restore under withSessionLock as those routes. This
+  // route also has two separate save(DB) calls (the early "no longer connected" return and the
+  // final one) -- both now go through the same lock and the same restore-on-failure.
+  await withSessionLock(s.id, async () => {
+  const sSnapshot = JSON.parse(JSON.stringify(s));
   s.reinviteRequests = s.reinviteRequests.filter(r => r.id !== rr.id);
   const stillConnected = connectionsOf(req.userId).includes(rr.userId);
-  if (!stillConnected) { await save(DB); return res.status(400).json({ error: 'no longer connected' }); }
+  if (!stillConnected) {
+    try {
+      await save(DB);
+    } catch (e) {
+      for (const k of Object.keys(s)) delete s[k];
+      Object.assign(s, sSnapshot);
+      throw e;
+    }
+    return res.status(400).json({ error: 'no longer connected' });
+  }
   if (!s.invited.includes(rr.userId) && !s.participants.includes(rr.userId)) {
     s.invited.push(rr.userId);
     s.invitedBy[rr.userId] = req.userId;
     s.invitedAt[rr.userId] = new Date().toISOString(); // Oct 9 2026 (audit finding) -- see invitedAt's own comment in ensureSessionShape
     notify(rr.userId, { title: 'Workout invite', body: `${DB.users[req.userId].displayName} invited you back to a workout`, link: { type: 'session', sessionId: s.id } }, { history: false });
   }
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, sSnapshot);
+    throw e;
+  }
   res.json(sessionView(s, req.userId));
+  });
 });
 
 // Dismiss without re-inviting -- e.g. the creator has moved on and the workout is long over.
@@ -6528,8 +6911,23 @@ app.post('/api/sessions/:id/reinvite-request/:reqId/dismiss', auth, async (req, 
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not your workout' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): revert-only -- already reassignment-style,
+  // lower collision risk (creator-only actor on a request keyed by a specific requester) but still
+  // a shared array another request could be concurrently pushing to.
+  // Oct 17 2026, same day (review audit finding): locked, same reason as reinvite-request above --
+  // reinvite-approve's blind restore of the whole `s.reinviteRequests` array can otherwise clobber
+  // this dismiss.
+  await withSessionLock(s.id, async () => {
+  const before = snapshotMutableFields([s], ['reinviteRequests']);
   s.reinviteRequests = (s.reinviteRequests || []).filter(r => r.id !== req.params.reqId);
-  await save(DB);
+  const after = snapshotMutableFields([s], ['reinviteRequests']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['reinviteRequests']);
+    throw e;
+  }
+  });
   res.json({ ok: true });
 });
 
@@ -6577,10 +6975,17 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
   // join -- nobody else in an ownerless workout is left to ask, and unlike the owned case, there's
   // no creator for it to go to in the meantime either.
   if (s.creatorId === null) return suggestOwnerless(req, res, s, type, isParticipant, approvedJoin, invited);
+  // Oct 17 2026 (sessions & logs slice, decision #1): s.suggestedEdits is the same shared field
+  // /leave, /remove-mine, PUT /:id, and the approve/reject/cancel routes all touch concurrently --
+  // locked, and the "already pending?" dedup check below is now re-verified INSIDE the lock too,
+  // closing a real TOCTOU window the check used to have on its own (two concurrent proposals on
+  // the same exerciseId could otherwise both pass the .some() check before either one pushed).
+  const result = await withSessionLock(s.id, async () => {
+  const sSnapshot = JSON.parse(JSON.stringify(s));
   let edit;
   if (type === 'add') {
     const name = currentExerciseName(capStr((req.body || {}).name, 80).trim());   // stale client -- see EXERCISE_RENAMES
-    if (!name) return res.status(400).json({ error: 'needs a name' });
+    if (!name) return { status: 400, body: { error: 'needs a name' } };
     // Oct 9 2026 (audit finding, Jeff's pick among options): `at` lets GET /api/notifications sort
     // its "Suggested changes" section newest-first -- see joinRequests' own `at` above.
     edit = { id: 'se_' + uid(), type: 'add', exerciseId: null, proposedBy: req.userId, swapTo: name, status: 'pending', at: new Date().toISOString() };
@@ -6589,9 +6994,9 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
     const swapTo = currentExerciseName(capStr((req.body || {}).swapTo, 80).trim());   // stale client -- see EXERCISE_RENAMES
     // Sep 6 (cold-review catch): approving now renames the shared exercise to swapTo, so a blank
     // one -- which used to yield a harmless empty variation -- would blank the exercise for everyone.
-    if (!swapTo) return res.status(400).json({ error: 'needs a name' });
+    if (!swapTo) return { status: 400, body: { error: 'needs a name' } };
     const fromEx = s.exercises.find(e => e.id === exerciseId);
-    if (!fromEx) return res.status(404).json({ error: 'exercise not found' });
+    if (!fromEx) return { status: 404, body: { error: 'exercise not found' } };
     // Sep 24 2026 (audit finding): no dedup at all -- two participants proposing different swaps
     // on the same exerciseId in close succession both landed as separate pending rows, and if the
     // creator approved both (each independently valid against its own status), the exercise got
@@ -6603,7 +7008,7 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
     // there's no shared rename to collide over, see suggestOwnerless -- so this stays scoped to the
     // owned path, which is the only one reachable past the branch above.)
     if (s.suggestedEdits.some(e => e.type === 'swap' && e.exerciseId === exerciseId && e.status === 'pending'))
-      return res.status(409).json({ error: 'a swap is already pending for this exercise' });
+      return { status: 409, body: { error: 'a swap is already pending for this exercise' } };
     // Sep 24 2026 (audit finding): remembering the pre-swap name lets a later stale Edit-session
     // save recognize "this submitted name is exactly what this exercise used to be called before
     // an approved swap" and keep the live, swapped name instead of silently reverting it -- see
@@ -6611,7 +7016,17 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
     edit = { id: 'se_' + uid(), type: 'swap', exerciseId, proposedBy: req.userId, swapTo, fromName: fromEx.name, status: 'pending', at: new Date().toISOString() };
   }
   s.suggestedEdits.push(edit);
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, sSnapshot);
+    throw e;
+  }
+  return { edit };
+  });
+  if (result.status) return res.status(result.status).json(result.body);
+  const edit = result.edit;
   // Sep 6 (Jeff: "everyone in the workout gets a notification that a swap has been requested"):
   // a swap proposal is a change to the shared plan now (see approve below), so everyone it would
   // affect hears about it -- the host as the one who decides, everyone else as an FYI naming who
@@ -6656,6 +7071,13 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
 //     never-expiring approve/reject via the *same* /suggest/:id/approve|reject routes used for the
 //     owned case (those routes branch on s.creatorId === null the same way this one does).
 async function suggestOwnerless(req, res, s, type, isParticipant, approvedJoin, invited) {
+  // Oct 17 2026 (sessions & logs slice, decision #1): this function is a separate dispatch target
+  // reached directly from POST /api/sessions/:id/suggest BEFORE that route's own withSessionLock
+  // wrapper (see the branch right above the call to this function) -- so it needs its own lock,
+  // covering both branches below, same whole-object snapshot/restore as every other
+  // multi-field session route in this slice.
+  return withSessionLock(s.id, async () => {
+  const sSnapshot = JSON.parse(JSON.stringify(s));
   if (!isParticipant && !approvedJoin) {
     // Still invited, ownerless: the private pre-join carve-out. Type is always 'swap' here --
     // 'add' already refused a still-invited caller above, before this function is ever reached.
@@ -6673,7 +7095,13 @@ async function suggestOwnerless(req, res, s, type, isParticipant, approvedJoin, 
       edit = { id: 'se_' + uid(), type: 'swap', exerciseId, proposedBy: req.userId, swapTo, fromName: fromEx.name, status: 'pending', privatePreJoin: true };
       s.suggestedEdits.push(edit);
     }
-    await save(DB);
+    try {
+      await save(DB);
+    } catch (e) {
+      for (const k of Object.keys(s)) delete s[k];
+      Object.assign(s, sSnapshot);
+      throw e;
+    }
     // Nobody else is asked or told -- doc tab 04: "Brian and Carla never see it, never vote on it,
     // and are never notified."
     return res.json(sessionView(s, req.userId));
@@ -6730,7 +7158,13 @@ async function suggestOwnerless(req, res, s, type, isParticipant, approvedJoin, 
   }
   if (type === 'add') s.suggestedEdits.push(edit);
   applyOwnerlessVote(s, edit, proposerId, 'approved');   // "proposing counts as his own yes"
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, sSnapshot);
+    throw e;
+  }
   // Doc tab 07: "Every other current participant -- not the proposer, not anyone still just
   // invited" -- s.participants is exactly that population once proposerId is excluded.
   const who = DB.users[proposerId].displayName;
@@ -6740,6 +7174,7 @@ async function suggestOwnerless(req, res, s, type, isParticipant, approvedJoin, 
     notify(uid_, { title: type === 'add' ? 'New exercise to review' : 'Swap to review', body: `${who} ${label}. Your call — approve or reject anytime.`, link: { type: 'session', sessionId: s.id } });
   }
   res.json(sessionView(s, proposerId));
+  });
 }
 
 // Sep 6 (Jeff, on the swap flow: "if there is more than 2 people in the workout they can do 'swap
@@ -6762,18 +7197,44 @@ app.post('/api/sessions/:id/variation', auth, async (req, res) => {
   const e = s.exercises.find(x => x.id === exerciseId);
   if (!e) return res.status(404).json({ error: 'exercise not found' });
   const swapTo = currentExerciseName(capStr((req.body || {}).swapTo, 80).trim());
+  // Oct 17 2026 (sessions & logs slice, decision #1 -- standalone finding, review audit): this
+  // route had NO save-failure protection at all -- a bare `await save(DB)` with no try/catch, let
+  // alone a revert. A failed save used to leave this swap (and any renamed logs below) visible to
+  // everyone in memory, unpersisted, until the next restart silently undid it. It also was never
+  // locked, even though both suggestOwnerless/voteOwnerless and the swap-branch of
+  // suggest/:editId/approve blind-snapshot-and-restore THIS SAME SESSION's `variations` and `logs`
+  // fields on their own save failure -- without this lock, this route's own successful save could
+  // be clobbered in memory by one of those routes' unrelated revert, mid-flight. Locked, and given
+  // the same per-object/per-field CAS revert style as PUT /log/:logId (own log entries, own
+  // variations key) rather than a blind whole-session clone, since both mutations here are
+  // precisely enumerable.
+  await withSessionLock(s.id, async () => {
   s.variations[exerciseId] = s.variations[exerciseId] || {};
   const target = swapTo && swapTo !== e.name ? swapTo : null;
-  if (target) s.variations[exerciseId][me] = { swapTo: target, reason: 'self' };
-  else delete s.variations[exerciseId][me];
+  const variationsBefore = snapshotMutableFields([s.variations], [exerciseId]);
+  const nextForEx = { ...s.variations[exerciseId] };
+  if (target) nextForEx[me] = { swapTo: target, reason: 'self' };
+  else delete nextForEx[me];
+  s.variations[exerciseId] = nextForEx;
+  const variationsAfter = snapshotMutableFields([s.variations], [exerciseId]);
   const fileUnder = target || e.name;
-  let renamed = 0;
+  const renamedLogs = [];
   for (const l of ((s.logs && s.logs[me]) || [])) {
     if (l.exerciseId !== exerciseId || l.exerciseName === fileUnder) continue;
-    l.exerciseName = fileUnder; renamed++;
+    renamedLogs.push(l);
   }
-  if (renamed) rebuildAllPrs();
-  await save(DB);
+  const logsBefore = renamedLogs.length ? snapshotMutableFields(renamedLogs, ['exerciseName']) : null;
+  for (const l of renamedLogs) l.exerciseName = fileUnder;
+  const logsAfter = logsBefore ? snapshotMutableFields(renamedLogs, ['exerciseName']) : null;
+  if (renamedLogs.length) rebuildAllPrs();
+  try {
+    await save(DB);
+  } catch (err) {
+    revertFieldsIfUnchanged(variationsBefore, variationsAfter, [exerciseId]);
+    if (logsBefore) { revertFieldsIfUnchanged(logsBefore, logsAfter, ['exerciseName']); rebuildAllPrs(); }
+    throw err;
+  }
+  });
   res.json(sessionView(s, me));
 });
 
@@ -6809,8 +7270,21 @@ async function voteOwnerless(req, res, s, edit, decision) {
   if (edit.type === 'add' && edit.status !== 'pending') return res.status(400).json({ error: 'already settled' });
   const prev = (edit.votes || {})[req.userId];
   if (prev === decision) return res.json(sessionView(s, req.userId)); // already their vote -- no-op, nobody re-notified
+  // Oct 17 2026 (sessions & logs slice, decision #1): this is a separate dispatch target reached
+  // directly from the approve/reject routes, with no shared lock wrapper -- every current
+  // participant casting their own independent vote on the same edit is exactly the concurrent-
+  // write shape this slice's lock exists for, same as suggestOwnerless above.
+  await withSessionLock(s.id, async () => {
+  const sSnapshot = JSON.parse(JSON.stringify(s));
   applyOwnerlessVote(s, edit, req.userId, decision);
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, sSnapshot);
+    throw e;
+  }
+  });
   // Only the proposer is told, and only when someone ELSE'S vote actually changed -- their own
   // vote changing is something they just did themselves, not news.
   if (req.userId !== edit.proposedBy && DB.users[edit.proposedBy] && !isBlocked(req.userId, edit.proposedBy)) {
@@ -6853,6 +7327,15 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
   // live and the proposer had already been told (wrongly) it was approved. Once it's no longer
   // pending, neither route touches it again.
   if (edit.status !== 'pending') return res.status(400).json({ error: 'already decided' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): approve is creator-only, but the proposer
+  // can CANCEL this same edit concurrently (a different account) -- real cross-user race on
+  // edit.status/s.exercises/s.suggestedEdits/s.pendingRemovals/s.variations/s.logs. Locked, with a
+  // re-check right after acquiring it in case cancel (or a double-tapped approve from another tab)
+  // already resolved this edit while this request was waiting its turn. Everything through the
+  // final save stays inside one lock -- both the 'add' branch and the swap branch below it.
+  const approveResult = await withSessionLock(s.id, async () => {
+  if (edit.status !== 'pending') return { status: 400, body: { error: 'already decided' } };
+  const sSnapshot = JSON.parse(JSON.stringify(s));
   edit.status = 'approved';
   if (edit.type === 'add') {
     // A brand-new exercise, not a rename of an existing one -- there's no s.variations entry or
@@ -6861,10 +7344,16 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
     // already give a new exercise.
     const newEx = Object.assign({ id: 'e_' + uid(), order: s.exercises.length }, withDefaults({ name: edit.swapTo }));
     s.exercises.push(newEx);
-    await save(DB);
+    try {
+      await save(DB);
+    } catch (e) {
+      for (const k of Object.keys(s)) delete s[k];
+      Object.assign(s, sSnapshot);
+      throw e;
+    }
     // Sep 24 2026 audit round 4: same missing block check as the propose-side notifies above.
     if (!isBlocked(req.userId, edit.proposedBy)) notify(edit.proposedBy, { title: 'Exercise added', body: `${DB.users[s.creatorId].displayName} added ${edit.swapTo} to the workout`, link: { type: 'session', sessionId: s.id } });
-    return res.json(sessionView(s, req.userId));
+    return { done: true };
   }
   // Sep 6 (Jeff: "if brian suggests a swap and I approve it - that swaps the exercise for us both,
   // correct?"). It does now. This used to record the swap only as the PROPOSER's own variation,
@@ -6876,7 +7365,7 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
   // stays. "For just me" lives at POST /variation above and never comes through here.
   const ex = s.exercises.find(x => x.id === edit.exerciseId);
   const fromName = ex ? ex.name : null;
-  if (!edit.swapTo || !edit.swapTo.trim()) return res.status(400).json({ error: 'needs a name' });   // a pre-Sep-6 blank proposal
+  if (!edit.swapTo || !edit.swapTo.trim()) return { status: 400, body: { error: 'needs a name' } };   // a pre-Sep-6 blank proposal
   if (ex) ex.name = edit.swapTo;
   // Sep 24 2026 (audit finding, minor): a pendingRemovals row snapshots exerciseName ONCE, when
   // the removal request first opens (see PUT /api/sessions/:id) -- if this same exerciseId gets
@@ -6910,7 +7399,19 @@ app.post('/api/sessions/:id/suggest/:editId/approve', auth, async (req, res) => 
     l.exerciseName = edit.swapTo; renamed++;
   }
   if (renamed) rebuildAllPrs();            // the records are grouped by that name
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, sSnapshot);
+    if (renamed) rebuildAllPrs();
+    throw e;
+  }
+  return { fromName };
+  });
+  if (approveResult.status) return res.status(approveResult.status).json(approveResult.body);
+  if (approveResult.done) return res.json(sessionView(s, req.userId));
+  const fromName = approveResult.fromName;
   const hostName = DB.users[s.creatorId].displayName;
   const proposerName = DB.users[edit.proposedBy] ? DB.users[edit.proposedBy].displayName : 'Someone';
   // edit.proposedBy is added explicitly: /suggest lets someone still holding an invite propose
@@ -6941,8 +7442,21 @@ app.post('/api/sessions/:id/suggest/:editId/reject', auth, async (req, res) => {
   // v252: same guard as approve above -- a stale reject after it's already been approved (or
   // already rejected) must not silently flip a decided edit back and forth.
   if (edit.status !== 'pending') return res.status(400).json({ error: 'already decided' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): same cross-user race as approve above (the
+  // proposer's concurrent cancel) -- single-field flip, so a direct revert is enough, no whole-
+  // object snapshot needed.
+  const rejectOk = await withSessionLock(s.id, async () => {
+  if (edit.status !== 'pending') return false;
   edit.status = 'rejected';
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    edit.status = 'pending';
+    throw e;
+  }
+  return true;
+  });
+  if (!rejectOk) return res.status(400).json({ error: 'already decided' });
   // Sep 24 2026 audit round 4: same missing block check as the propose/approve-side notifies
   // above.
   // Sep 29 2026 (audit finding, Tier 4e): this used to skip the notify entirely for edit.type
@@ -6986,11 +7500,31 @@ app.post('/api/sessions/:id/suggest/:editId/cancel', auth, async (req, res) => {
   // branch) -- never shown to anyone else, never voted on, so there's nothing it could be
   // retracting out from under anyone. Just drop it.
   if (edit.privatePreJoin) {
+    // Oct 17 2026 (sessions & logs slice, decision #1): own row only, nobody else can see or
+    // touch a privatePreJoin edit -- revert-only.
+    // Oct 17 2026, same day (review audit finding): still locked -- /leave, remove-mine, PUT
+    // /api/sessions/:id, /accept, and /decline all blind-clone-and-restore the WHOLE
+    // `s.suggestedEdits` array on their own save failure, which would wipe out this cancel even
+    // after it successfully saved.
+    await withSessionLock(s.id, async () => {
+    const before = snapshotMutableFields([s], ['suggestedEdits']);
     s.suggestedEdits = s.suggestedEdits.filter(e => e !== edit);
-    await save(DB);
+    const after = snapshotMutableFields([s], ['suggestedEdits']);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, ['suggestedEdits']);
+      throw e;
+    }
+    });
     return res.json(sessionView(s, req.userId));
   }
   if (s.creatorId === null) {
+    // Oct 17 2026 (sessions & logs slice, decision #1): races voteOwnerless's own concurrent
+    // votes/applyOwnerlessVote and /log's concurrent set-logging on this same exercise -- whole-
+    // object snapshot/restore under withSessionLock, same as suggestOwnerless/voteOwnerless.
+    return withSessionLock(s.id, async () => {
+    const sSnapshot = JSON.parse(JSON.stringify(s));
     // Ownerless group proposal: proposing one casts the proposer's own automatic "yes"
     // (applyOwnerlessVote(...,'approved') in suggestOwnerless) -- safe to fully withdraw only
     // while that's still the ONLY vote on it. Once another current participant has cast their
@@ -7028,15 +7562,36 @@ app.post('/api/sessions/:id/suggest/:editId/cancel', auth, async (req, res) => {
       applyOwnerlessVote(s, edit, req.userId, 'rejected');
     }
     s.suggestedEdits = s.suggestedEdits.filter(e => e !== edit);
-    await save(DB);
+    try {
+      await save(DB);
+    } catch (e) {
+      for (const k of Object.keys(s)) delete s[k];
+      Object.assign(s, sSnapshot);
+      throw e;
+    }
     // Nobody but the proposer has ever seen or acted on this (othersVoted just ruled that out),
     // so there's no one to tell -- same "nobody is told" shape as the privatePreJoin branch above.
     return res.json(sessionView(s, req.userId));
+    });
   }
   // Owned session: a single, straightforward pending proposal the creator hasn't decided on yet.
-  if (edit.status !== 'pending') return res.status(400).json({ error: 'already decided' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): races approve's concurrent decision on this
+  // same edit (a different account, the creator) -- lock + re-check, single-array reassignment so
+  // revert is just the snapshot/compare helper, no need for a whole-object clone here.
+  const cancelOk = await withSessionLock(s.id, async () => {
+  if (edit.status !== 'pending') return false;
+  const before = snapshotMutableFields([s], ['suggestedEdits']);
   s.suggestedEdits = s.suggestedEdits.filter(e => e !== edit);
-  await save(DB);
+  const after = snapshotMutableFields([s], ['suggestedEdits']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['suggestedEdits']);
+    throw e;
+  }
+  return true;
+  });
+  if (!cancelOk) return res.status(400).json({ error: 'already decided' });
   // Mirrors the propose-side notify in POST /suggest above -- everyone who was told "X wants to
   // swap/add..." gets told it's off the table again, instead of being left to wonder why a
   // suggestion they saw never resolved. Same isBlocked guard as every other notify on this route.
@@ -7088,12 +7643,39 @@ app.post('/api/sessions/:id/join', auth, async (req, res) => {
   let jr = s.joinRequests.find(j => j.userId === req.userId);
   if (jr && jr.status === 'pending') return res.status(400).json({ error: 'already requested' });
   const note = capStr((req.body||{}).note, 500);
+  // Oct 17 2026 (sessions & logs slice, decision #1): own row only (found by jr.userId ===
+  // req.userId), so revert-only -- no genuine cross-user collision on this particular row, just
+  // the usual mutate-before-maybe-failing-save hazard on it/its push.
   // Oct 9 2026 (audit finding, Jeff's pick among options): stamps/refreshes `at` so GET
   // /api/notifications can sort its "Join requests" section newest-first -- same reasoning as
   // reinviteRequests' own `at`, which this reuse-the-row shape was already modeled on.
-  if (jr) { jr.status = 'pending'; jr.note = note; jr.at = new Date().toISOString(); }
-  else { jr = { id: 'jr_' + uid(), userId: req.userId, note, status: 'pending', at: new Date().toISOString() }; s.joinRequests.push(jr); }
-  await save(DB);
+  // Oct 17 2026, same day (review audit finding): still locked -- /leave, kick, remove-mine, and
+  // /decline all blind-clone-and-restore the WHOLE `s.joinRequests` array on their own save
+  // failure, which would wipe out a concurrent request here even after it successfully saved.
+  await withSessionLock(s.id, async () => {
+  if (jr) {
+    const before = snapshotMutableFields([jr], ['status', 'note', 'at']);
+    jr.status = 'pending'; jr.note = note; jr.at = new Date().toISOString();
+    const after = snapshotMutableFields([jr], ['status', 'note', 'at']);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, ['status', 'note', 'at']);
+      throw e;
+    }
+  } else {
+    jr = { id: 'jr_' + uid(), userId: req.userId, note, status: 'pending', at: new Date().toISOString() };
+    const before = snapshotMutableFields([s], ['joinRequests']);
+    s.joinRequests = [...s.joinRequests, jr];
+    const after = snapshotMutableFields([s], ['joinRequests']);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, ['joinRequests']);
+      throw e;
+    }
+  }
+  });
   // history:false -- already shown live as an actionable "Join requests" row in GET
   // /api/notifications while it's pending; the approved/declined outcome (below) notifies too.
   notify(s.creatorId, { title: 'Join request', body: `${DB.users[req.userId].displayName} wants to join your workout`, link: { type: 'session', sessionId: s.id } }, { history: false });
@@ -7116,6 +7698,12 @@ app.post('/api/sessions/:id/join/:reqId/approve', auth, async (req, res) => {
   // them a full member (chat, shared log sheet, everything). Re-check right here, since this is
   // the actual moment membership is granted.
   if (isBlocked(jr.userId, req.userId)) return res.status(400).json({ error: 'blocked' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): s.participants/s.invited are the same
+  // shared fields /leave, /accept, kick all touch concurrently -- whole-object snapshot/restore
+  // under withSessionLock, with a re-check of jr.status in case reject already decided it.
+  const approveJoinOk = await withSessionLock(s.id, async () => {
+  if (jr.status !== 'pending') return false;
+  const sSnapshot = JSON.parse(JSON.stringify(s));
   jr.status = 'approved';
   if (!s.participants.includes(jr.userId)) s.participants.push(jr.userId);
   // Sep 23 2026 (Jeff, real bug report): someone directly invited AND approved through a separate
@@ -7127,7 +7715,16 @@ app.post('/api/sessions/:id/join/:reqId/approve', auth, async (req, res) => {
   // /accept's own invited-array cleanup so "became a participant" always implies "no longer
   // invited," regardless of which door they came in through.
   if (Array.isArray(s.invited) && s.invited.includes(jr.userId)) s.invited = s.invited.filter(x => x !== jr.userId);
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, sSnapshot);
+    throw e;
+  }
+  return true;
+  });
+  if (!approveJoinOk) return res.status(400).json({ error: 'already decided' });
   notify(jr.userId, { title: 'Join approved', body: `${DB.users[s.creatorId].displayName} approved your join request`, link: { type: 'session', sessionId: s.id } });
   // Sep 8 2026 (Jeff: a "test workout" where Brian requested to join and Jeff approved him left
   // NOTHING in Jeff's own notification history for "Brian joined" -- only the invite-and-accept
@@ -7148,8 +7745,20 @@ app.post('/api/sessions/:id/join/:reqId/reject', auth, async (req, res) => {
   if (!jr || s.creatorId !== req.userId) return res.status(403).json({ error: 'forbidden' });
   // v252: same guard as approve above.
   if (jr.status !== 'pending') return res.status(400).json({ error: 'already decided' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): same cross-user race as approve above --
+  // lock + re-check, single-field flip so a direct revert is enough.
+  const rejectJoinOk = await withSessionLock(s.id, async () => {
+  if (jr.status !== 'pending') return false;
   jr.status = 'rejected';
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    jr.status = 'pending';
+    throw e;
+  }
+  return true;
+  });
+  if (!rejectJoinOk) return res.status(400).json({ error: 'already decided' });
   // Oct 2 2026 (deep audit finding): /approve right above re-checks isBlocked at the moment of
   // decision since a block can form between request-filed and decision -- reject never had the
   // same re-check before notifying. Reject grants nothing, so this doesn't need to refuse the
@@ -7166,8 +7775,22 @@ app.post('/api/sessions/:id/attendance', auth, async (req, res) => {
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
   if (!s.participants.includes(req.userId)) return res.status(403).json({ error: 'forbidden' });
+  // Oct 17 2026 (sessions & logs slice, decision #1): own key only (different users write
+  // different keys), so revert-only -- no genuine cross-user collision.
+  // Oct 17 2026, same day (review audit finding): still locked -- /leave, kick, and remove-mine
+  // all blind-clone-and-restore the WHOLE `s.attendance` object on their own save failure, which
+  // would wipe out a concurrent write here even after it successfully saved.
+  await withSessionLock(s.id, async () => {
+  const before = snapshotMutableFields([s.attendance], [req.userId]);
   s.attendance[req.userId] = capStr((req.body||{}).status, 20) || 'in';
-  await save(DB);
+  const after = snapshotMutableFields([s.attendance], [req.userId]);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, [req.userId]);
+    throw e;
+  }
+  });
   res.json(sessionView(s, req.userId));
 });
 
@@ -7318,78 +7941,180 @@ function stripUserFromSession(s, userId) {
 // hand-off/hard-delete rule, every ownerless-vote/pending-edit edge case this loop already
 // accounts for), and reimplementing any of that a second time for delete-account would be exactly
 // the kind of drift blockUser's own comment warns about ("share exactly one implementation rather
-// than two copies... drifting apart"). Pure function: no req/res, callers own save(DB) + notifying
-// from the returned pivots/autoApprovals (see reset-workouts below for the reference shape).
-function wipeUserFromAllSessions(me) {
+// than two copies... drifting apart"). Callers await it directly now (see below) and notify from
+// the returned pivots/autoApprovals (see reset-workouts below for the reference shape).
+//
+// Oct 17 2026 (sessions & logs slice, decision #1 -- independent review finding, CRITICAL +
+// SEVERE, found during this slice's own mandatory review pass): this function sits entirely
+// outside /api/sessions/* (it's reachable from /api/me/reset-workouts and account
+// deletion/admin-delete), so it was missed by this slice's own route-by-route audit even though
+// it mutates the exact same DB.sessions fields every locked route above now protects --
+// participants, invited, history, logs, posts, draftNotes, variations, joinRequests,
+// suggestedEdits, creatorId, pendingRemovals (via dropRequiredApprover/stripUserFromSession).
+// This directly falsified the invariant several of those routes' own comments assert ("every
+// other session route that touches these same fields is locked too... nothing else can be
+// concurrently mutating this exact `s` object while this runs") -- a concurrent, UNLOCKED call
+// here could have its own mutation silently clobbered by one of those routes' blind revert, or
+// could itself clobber theirs, exactly the hazard this whole slice exists to close. It also had
+// no save-failure protection of its own at all: the original version mutated every touched
+// session in one pass, then left a single bare `await save(DB)` to the CALLER with nothing
+// reverting a failure -- a rigged/transient Postgres error could leave every session touched in
+// this pass (potentially dozens, for an active account) phantom-mutated or phantom-deleted in
+// memory, visible to every other request, until a restart silently undid it.
+//
+// Fixed by locking and saving EACH touched session individually (withSessionLock + its own
+// save(DB) + its own revert-on-failure, same shape as every other route in this slice) instead of
+// one unlocked mutate-everything-then-one-combined-save pass. This is a strictly stronger
+// guarantee than the original design, not just a patched version of it: a save failure partway
+// through now only affects the ONE session whose save actually failed (correctly reverted, not
+// phantom) -- every session already successfully processed earlier in the loop stays correctly
+// persisted, and the function's own async iteration (not a synchronous loop any more) means it is
+// now safe to interleave with any other locked route for a DIFFERENT session, and fully
+// serialized against one for the SAME session. A thrown error from one session's failed save
+// propagates out of this function (same as any other route's revert-then-throw), so the caller's
+// own request still 500s -- and since stripUserFromSession's own mutations are themselves
+// idempotent (filtering an id that's already absent, deleting a key that's already gone are all
+// no-ops), simply retrying the whole call after a transient failure safely re-processes whatever
+// already succeeded as a no-op and picks up wherever it actually stopped.
+async function wipeUserFromAllSessions(me) {
   let sessionsDeleted = 0, sessionsHandedOff = 0, sessionsCleared = 0;
   // Sep 27 2026 (ownerless redesign): collected here instead of notifying inline, so every
   // notify() call happens after the caller's own await save(DB) -- a crash partway through this
   // loop can never leave someone notified about a pivot that didn't actually get persisted.
   const pivots = [];       // { sessionId, sessionName, stillHere: [ids] } -- "host left" broadcast
   const autoApprovals = [];  // { proposedBy, swapTo, sessionId } -- from auto-applying pending edits
-  for (const s of Object.values(DB.sessions)) {
-    ensureSessionShape(s);
-    const isCreator = s.creatorId === me;
-    // v249 (audit finding): this used to miss s.posts[me]/s.logs[me] — unlike remove-mine's own
-    // hasConnection check just above, which already covers both. A discard-leave (keep:false)
-    // deletes s.logs[me] and removes participants/invited, but a recap posted BEFORE that leave
-    // (s.posts[me]) is untouched by it (see the comment above /leave: discard only ever erases
-    // logs/variations, never a recap), and discard skips creditFinish so no history row exists
-    // either. That combination — no participants, no invited, no history, but a real recap still
-    // sitting on the session — read as "not touched" and reset-workouts skipped it entirely,
-    // leaving that stale recap fully visible after a user asked to erase everything they'd logged.
-    const isTouched = isCreator
-      || (s.participants || []).includes(me)
-      || (s.invited || []).includes(me)
-      || (s.history || []).some(h => h.userId === me)
-      || (s.posts && s.posts[me])
-      || (s.logs && s.logs[me])
-      || (s.draftNotes && s.draftNotes[me]);
-    if (!isTouched) continue;
-    if (isCreator) {
-      const others = othersWithCredit(s, me);
-      // Sep 18 2026: same gap DELETE /api/sessions/:id and POST /:id/leave were just fixed for
-      // (see their own comments) — othersWithCredit alone misses a participant who's genuinely
-      // still in this workout but hasn't logged or finished anything yet. Without also checking
-      // current participants, "reset my workouts" would hard-delete a session out from under a
-      // friend who'd merely accepted the invite, the exact silent data loss the other two routes
-      // now refuse to do.
-      const othersStillHere = (s.participants || []).filter(id => id !== me);
-      if (!others.length && !othersStillHere.length) {
-        removeSessionFromAllIndexes(s);   // Oct 12 2026 (scaling fix round 2) -- see its own comment
-        delete DB.sessions[s.id];
-        sessionsDeleted++;
-        continue;
-      }
-      // Sep 27 2026 (ownerless redesign): ownership no longer hands off to othersWhoLogged -- it
-      // just clears, same as /leave and /remove-mine. Anything still waiting on this now-departed
-      // owner's OK auto-applies right now (doc step 5a), same helper those two routes use.
-      //
-      // Cold-review catch (finding #3): this used to call autoApplyPendingEditsAtPivot(s) BEFORE
-      // stripUserFromSession(s, me), the opposite order from /leave and /remove-mine (both of which
-      // withdraw the departing creator's own still-pending, non-voted self-proposal -- see
-      // stripUserFromSession's own suggestedEdits filter, identical to the one duplicated inline in
-      // those two routes -- before ever calling autoApplyPendingEditsAtPivot). With the old order
-      // here, a creator who reset their workouts while their OWN pending suggestion was still
-      // outstanding got it auto-approved (nobody left to reject it -- vacuously "no one voted no"),
-      // while the identical scenario via a single Leave or Remove-mine discarded it instead. Calling
-      // stripUserFromSession first withdraws that self-proposal before autoApply ever sees it, so all
-      // three routes now treat a departing creator's own pending self-proposal the same way.
-      stripUserFromSession(s, me);
-      const autoApplied = autoApplyPendingEditsAtPivot(s);
-      s.creatorId = null;
-      sessionsHandedOff++;   // field name kept for API-shape compatibility; it now counts pivots, not handoffs
-      pivots.push({ sessionId: s.id, sessionName: s.name || 'Workout', stillHere: othersStillHere, wasOwner: true });
-      for (const edit of autoApplied) autoApprovals.push({ sessionId: s.id, proposedBy: edit.proposedBy, swapTo: edit.swapTo });
-    } else {
-      const alreadyOwnerless = s.creatorId === null;
-      const othersStillHere = (s.participants || []).filter(id => id !== me);
-      stripUserFromSession(s, me);
-      sessionsCleared++;
-      if (alreadyOwnerless) pivots.push({ sessionId: s.id, sessionName: s.name || 'Workout', stillHere: othersStillHere, wasOwner: false });
+  // v249 (audit finding): this used to miss s.posts[me]/s.logs[me] — unlike remove-mine's own
+  // hasConnection check just above, which already covers both. A discard-leave (keep:false)
+  // deletes s.logs[me] and removes participants/invited, but a recap posted BEFORE that leave
+  // (s.posts[me]) is untouched by it (see the comment above /leave: discard only ever erases
+  // logs/variations, never a recap), and discard skips creditFinish so no history row exists
+  // either. That combination — no participants, no invited, no history, but a real recap still
+  // sitting on the session — read as "not touched" and reset-workouts skipped it entirely,
+  // leaving that stale recap fully visible after a user asked to erase everything they'd logged.
+  const isSessionTouchedByMe = (s) => s.creatorId === me
+    || (s.participants || []).includes(me)
+    || (s.invited || []).includes(me)
+    || (s.history || []).some(h => h.userId === me)
+    || (s.posts && s.posts[me])
+    || (s.logs && s.logs[me])
+    || (s.draftNotes && s.draftNotes[me]);
+  // Oct 17 2026 (review finding #2): this loop used to be a single `for (const s of
+  // Object.values(DB.sessions))` enumeration taken once up front. Each session is now its own
+  // `await withSessionLock(...)` + its own `await save(DB)` (a real Postgres round trip) rather
+  // than one synchronous pass ending in one final save, which means the event loop genuinely
+  // yields between sessions -- something else can run in that gap. A session created for `me`
+  // during that gap (a friend invites them to a brand-new session, or a creator approves their
+  // pending join request on a session created moments earlier) has an id the up-front
+  // enumeration never saw, so it would silently escape the wipe entirely -- a real, if narrow,
+  // regression in thoroughness versus the old fully-synchronous version, and one that matters
+  // for the irreversible anonymizeAndDeleteAccount path specifically. Fixed by re-scanning
+  // DB.sessions in passes until a pass finds nothing new to touch, rather than trusting one
+  // snapshot of Object.values. `handled` guarantees each session is only ever wiped once;
+  // the pass cap is just a safety backstop against a pathological unbounded stream of brand-new
+  // touches (each real pass only continues the loop because of mid-wipe activity involving `me`,
+  // which is not something a normal account deletion should encounter dozens of times over).
+  const handled = new Set();
+  const PASS_CAP = 50;
+  for (let pass = 0; pass < PASS_CAP; pass++) {
+    const toProcess = Object.values(DB.sessions).filter(s => !handled.has(s.id) && isSessionTouchedByMe(s));
+    if (!toProcess.length) break;
+    // Oct 17 2026 (review pass #3 follow-up): the cap above is a safety backstop, not expected to
+    // ever actually bind -- but if it somehow does, fail loudly instead of silently returning a
+    // partial wipe. This matters most for anonymizeAndDeleteAccount, where a silently-incomplete
+    // wipe would be undetectable after the fact.
+    if (pass === PASS_CAP - 1) {
+      console.error(`wipeUserFromAllSessions(${me}): hit the ${PASS_CAP}-pass cap with ${toProcess.length} session(s) still pending -- wipe is INCOMPLETE for this user`);
+    }
+    for (const s of toProcess) {
+      handled.add(s.id);
+      ensureSessionShape(s);
+      const isCreator = s.creatorId === me;
+      await withSessionLock(s.id, async () => {
+        if (isCreator) {
+          const others = othersWithCredit(s, me);
+          // Sep 18 2026: same gap DELETE /api/sessions/:id and POST /:id/leave were just fixed for
+          // (see their own comments) — othersWithCredit alone misses a participant who's genuinely
+          // still in this workout but hasn't logged or finished anything yet. Without also checking
+          // current participants, "reset my workouts" would hard-delete a session out from under a
+          // friend who'd merely accepted the invite, the exact silent data loss the other two routes
+          // now refuse to do.
+          const othersStillHere = (s.participants || []).filter(id => id !== me);
+          if (!others.length && !othersStillHere.length) {
+            removeSessionFromAllIndexes(s);   // Oct 12 2026 (scaling fix round 2) -- see its own comment
+            delete DB.sessions[s.id];
+            rebuildPrsFor([me]);   // every record of theirs was built from logs this session held
+            try {
+              await save(DB);
+            } catch (e) {
+              DB.sessions[s.id] = s;
+              for (const userId of Object.keys(s.logs || {})) indexAddUserSession(userId, s.id);
+              rebuildPrsFor([me]);
+              throw e;
+            }
+            sessionsDeleted++;
+            return;
+          }
+          // Sep 27 2026 (ownerless redesign): ownership no longer hands off to othersWhoLogged -- it
+          // just clears, same as /leave and /remove-mine. Anything still waiting on this now-departed
+          // owner's OK auto-applies right now (doc step 5a), same helper those two routes use.
+          //
+          // Cold-review catch (finding #3): this used to call autoApplyPendingEditsAtPivot(s) BEFORE
+          // stripUserFromSession(s, me), the opposite order from /leave and /remove-mine (both of which
+          // withdraw the departing creator's own still-pending, non-voted self-proposal -- see
+          // stripUserFromSession's own suggestedEdits filter, identical to the one duplicated inline in
+          // those two routes -- before ever calling autoApplyPendingEditsAtPivot). With the old order
+          // here, a creator who reset their workouts while their OWN pending suggestion was still
+          // outstanding got it auto-approved (nobody left to reject it -- vacuously "no one voted no"),
+          // while the identical scenario via a single Leave or Remove-mine discarded it instead. Calling
+          // stripUserFromSession first withdraws that self-proposal before autoApply ever sees it, so all
+          // three routes now treat a departing creator's own pending self-proposal the same way.
+          const sSnapshot = JSON.parse(JSON.stringify(s));
+          stripUserFromSession(s, me);
+          const autoApplied = autoApplyPendingEditsAtPivot(s);
+          s.creatorId = null;
+          // Oct 17 2026 (review finding #1): autoApplyPendingEditsAtPivot can rename an OTHER user's
+          // (edit.proposedBy's) already-logged sets via applyOwnedSuggestedEdit -- stripUserFromSession
+          // just above already withdrew any pending self-proposal of me's own, so any edit still pending
+          // here necessarily belongs to someone else. rebuildPrsFor must cover every such proposedBy too,
+          // not just me, in BOTH the pre-save line and the catch -- otherwise a failed save here reverts
+          // that other user's s.logs rename but leaves their DB.prs entry describing a PR under the
+          // now-undone name. /leave's own catch covers this identical hazard with an unscoped
+          // rebuildAllPrs(); scoping to exactly the affected ids instead, since this runs in a per-session
+          // loop (reset-workouts/delete-account) where a full-table rebuild per touched session would be
+          // needlessly expensive.
+          const affected = [me, ...autoApplied.map(e => e.proposedBy)];
+          rebuildPrsFor(affected);
+          try {
+            await save(DB);
+          } catch (e) {
+            for (const k of Object.keys(s)) delete s[k];
+            Object.assign(s, sSnapshot);
+            rebuildPrsFor(affected);
+            throw e;
+          }
+          sessionsHandedOff++;   // field name kept for API-shape compatibility; it now counts pivots, not handoffs
+          pivots.push({ sessionId: s.id, sessionName: s.name || 'Workout', stillHere: othersStillHere, wasOwner: true });
+          for (const edit of autoApplied) autoApprovals.push({ sessionId: s.id, proposedBy: edit.proposedBy, swapTo: edit.swapTo });
+        } else {
+          const alreadyOwnerless = s.creatorId === null;
+          const othersStillHere = (s.participants || []).filter(id => id !== me);
+          const sSnapshot = JSON.parse(JSON.stringify(s));
+          stripUserFromSession(s, me);
+          rebuildPrsFor([me]);
+          try {
+            await save(DB);
+          } catch (e) {
+            for (const k of Object.keys(s)) delete s[k];
+            Object.assign(s, sSnapshot);
+            rebuildPrsFor([me]);
+            throw e;
+          }
+          sessionsCleared++;
+          if (alreadyOwnerless) pivots.push({ sessionId: s.id, sessionName: s.name || 'Workout', stillHere: othersStillHere, wasOwner: false });
+        }
+      });
     }
   }
-  rebuildAllPrs();     // every record was built from logs that may no longer be theirs
   return { sessionsDeleted, sessionsHandedOff, sessionsCleared, pivots, autoApprovals };
 }
 // Notifies every pivot/auto-approval wipeUserFromAllSessions collected, in the one shared shape
@@ -7434,8 +8159,11 @@ app.post('/api/me/reset-workouts', auth, async (req, res) => {
     return res.status(400).json({ error: 'Password is incorrect' });
   }
   clearFail('pw-confirm:' + me);
-  const { sessionsDeleted, sessionsHandedOff, sessionsCleared, pivots, autoApprovals } = wipeUserFromAllSessions(me);
-  await save(DB);
+  // Oct 17 2026 (sessions & logs slice, decision #1 -- review finding fix): wipeUserFromAllSessions
+  // is now async and saves each touched session itself, locked, with its own revert-on-failure
+  // (see its own comment) -- the extra blanket `await save(DB)` that used to sit here is gone,
+  // since there is nothing left for it to persist that wasn't already persisted per-session.
+  const { sessionsDeleted, sessionsHandedOff, sessionsCleared, pivots, autoApprovals } = await wipeUserFromAllSessions(me);
   notifyWipePivots(me, pivots, autoApprovals);
   res.json({ ok: true, sessionsDeleted, sessionsHandedOff, sessionsCleared });
 });
@@ -7494,20 +8222,19 @@ app.post('/api/me/reset-workouts', auth, async (req, res) => {
 async function anonymizeAndDeleteAccount(targetId) {
   const me = targetId;
   const u = DB.users[me];
-  const { pivots, autoApprovals } = wipeUserFromAllSessions(me);
-  // Persist + notify about the session wipe FIRST, same order reset-workouts uses (save, then
-  // notify only what's actually saved -- see notifyWipePivots' own comment on why) and, just as
-  // important here, BEFORE any of the follow-severance/anonymization below runs. Cold-review catch
-  // (Sep 29 2026): notifyWipePivots reads DB.users[me].displayName (the "X left the workout" body)
-  // and calls isBlocked(me, ...) to decide who to skip -- both need REAL data. Anonymizing first
-  // would have every one of those notifications read "Deleted user left the workout" instead of
-  // the actual name, and would silently defeat every "don't notify someone you're blocked with"
-  // check (isBlocked reads the very following/followers/blocked arrays the step below empties, so
-  // it would return false for everyone -- not "no one is blocked", just "the data being asked is
-  // already gone"). Doing this phase first, and the anonymization as its own second phase with its
-  // own save, keeps both halves correct without changing wipeUserFromAllSessions/notifyWipePivots
-  // themselves (still exactly what reset-workouts calls, unmodified).
-  await save(DB);
+  // Oct 17 2026 (sessions & logs slice, decision #1 -- review finding fix): wipeUserFromAllSessions
+  // is now async and saves/locks/reverts each touched session itself (see its own comment) -- the
+  // blanket `await save(DB)` that used to sit right after this call is gone, same as reset-workouts.
+  const { pivots, autoApprovals } = await wipeUserFromAllSessions(me);
+  // Notify about the session wipe FIRST, before any of the follow-severance/anonymization below
+  // runs. Cold-review catch (Sep 29 2026): notifyWipePivots reads DB.users[me].displayName (the "X
+  // left the workout" body) and calls isBlocked(me, ...) to decide who to skip -- both need REAL
+  // data. Anonymizing first would have every one of those notifications read "Deleted user left
+  // the workout" instead of the actual name, and would silently defeat every "don't notify someone
+  // you're blocked with" check (isBlocked reads the very following/followers/blocked arrays the
+  // step below empties, so it would return false for everyone -- not "no one is blocked", just
+  // "the data being asked is already gone"). Doing this phase first, and the anonymization as its
+  // own second phase with its own save, keeps both halves correct.
   notifyWipePivots(me, pivots, autoApprovals);
 
   // Sever the follow graph in every direction, app-wide -- blockUser (above) only ever does this
@@ -9041,6 +9768,16 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
   if (!s.participants.includes(req.userId) && !s.joinRequests.find(j=>j.userId===req.userId&&j.status==='approved'))
     return res.status(403).json({ error: 'forbidden' });
   const { exerciseId, weight, reps, set, setType, rir } = req.body || {};
+  // Oct 17 2026, same day (review audit finding): this route's own revert was already a precise
+  // own-key CAS (see the comment on logsBefore/logsAfter below) -- but it still needed the lock,
+  // because /leave, kick, remove-mine, suggestOwnerless/voteOwnerless, and the swap-branch of
+  // suggest/:editId/approve all blind-clone-and-restore the WHOLE `s.logs` object (and, for
+  // dropRequiredApprover's pendingRemovals work, PR objects too) on their own save failure --
+  // without this lock, one logged set here could be silently wiped out by one of those routes'
+  // unrelated revert, mid-flight, even after this save already succeeded. Wraps the ENTIRE rest
+  // of this handler (through the final save/revert) since res.json/notify needs the computed
+  // `entry`/`openPr` state either way and nothing after the lock point is safe to run outside it.
+  return withSessionLock(s.id, async () => {
   // Sep 24 2026 (audit finding): exerciseId was never checked against the live exercise list at
   // all before this point -- so a stale client (its card still showing an exercise that's since
   // been removed, e.g. via an approved pendingRemoval) could log a "set" that attaches to nothing
@@ -9084,7 +9821,17 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
   // Captured BEFORE the rebuild below wipes and re-derives DB.prs from scratch -- the only way to
   // know what the record was a moment ago, for the Activity feed's "+10 lb over last max" delta.
   const prevPr = DB.prs[req.userId] && DB.prs[req.userId][entry.exerciseName];
-  s.logs[req.userId].push(entry);
+  // Oct 17 2026 (sessions & logs slice, decision #1 -- the single hottest route in the app, fired
+  // on every logged set): own-key-scoped (s.logs[req.userId], and openPr.requiredApprovals only
+  // ever gets the CALLER's own id pushed, guarded by includes() first) so revert-only, no lock
+  // needed. Reassigned instead of pushed in place so snapshotMutableFields/revertFieldsIfUnchanged
+  // can tell a failed save's own push apart from a concurrent change to the same array. A failed
+  // save here used to leave the logged set (and the PR it triggered) visible in memory to every
+  // other request for the rest of the process's life, with nothing persisted -- the exact bug Jeff
+  // found by hand and asked to have fixed.
+  const logsBefore = snapshotMutableFields([s.logs], [req.userId]);
+  s.logs[req.userId] = [...s.logs[req.userId], entry];
+  const logsAfter = snapshotMutableFields([s.logs], [req.userId]);
   indexAddUserSession(req.userId, s.id);   // Oct 12 2026 (scaling fix round 2) -- see its own comment above rebuildSessionsByUserIndex
   // Sep 23 2026 (cold-review catch): requiredApprovals is captured once, when a removal request
   // first opens (PUT /api/sessions/:id) -- someone who logs a set on the SAME exercise afterward,
@@ -9094,8 +9841,11 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
   // making sure their vote is actually asked for). Widen the still-open request the moment they
   // log, the same way it would have been sized if they'd already had this set in when it opened.
   const openPr = s.pendingRemovals.find(p => p.status === 'pending' && p.exerciseId === exerciseId);
+  let approversBefore = null, approversAfter = null;
   if (openPr && openPr.proposedBy !== req.userId && !openPr.requiredApprovals.includes(req.userId)) {
-    openPr.requiredApprovals.push(req.userId);
+    approversBefore = snapshotMutableFields([openPr], ['requiredApprovals']);
+    openPr.requiredApprovals = [...openPr.requiredApprovals, req.userId];
+    approversAfter = snapshotMutableFields([openPr], ['requiredApprovals']);
   }
   // Oct 12 2026 (scaling fix): this route only ever pushes ONE new entry into
   // s.logs[req.userId] -- it never reads or writes any OTHER user's logs, so no other user's
@@ -9135,8 +9885,16 @@ app.post('/api/sessions/:id/log', auth, async (req, res) => {
         at: entry._performedAt || entry.at });
     }
   }
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(logsBefore, logsAfter, [req.userId]);
+    if (approversBefore) revertFieldsIfUnchanged(approversBefore, approversAfter, ['requiredApprovals']);
+    rebuildPrsFor([req.userId]);   // put the derived cache back in sync with the reverted logs
+    throw e;
+  }
   res.json(sessionView(s, req.userId));
+  });
 });
 
 // v148: PRs are tracked per exercise NAME across a user's entire history, not per exercise-instance-id
@@ -9845,6 +10603,14 @@ app.put('/api/sessions/:id/log/:logId', auth, async (req, res) => {
   const log = arr.find(l => l.id === req.params.logId);
   if (!log) return res.status(404).json({ error:'log not found' });
   const { weight, reps, setType, set, rir } = req.body || {};
+  // Oct 17 2026 (sessions & logs slice, decision #1): own-key-scoped, same revert-only treatment
+  // as POST /log -- snapshots the specific log object's own fields rather than the whole array,
+  // since this mutates fields in place on one entry rather than reassigning the array.
+  // Oct 17 2026, same day (review audit finding): still locked, same reason as POST /log --
+  // /leave, kick, remove-mine, suggestOwnerless/voteOwnerless, and suggest/:editId/approve's swap
+  // branch all blind-restore the WHOLE `s.logs` object on their own save failure.
+  await withSessionLock(s.id, async () => {
+  const logBefore = snapshotMutableFields([log], ['weight', 'reps', 'setType', 'set', 'rir']);
   if (weight!==undefined) log.weight = numIn(weight, 1e6);
   if (reps!==undefined) log.reps = numIn(reps, 1e6);
   if (setType!==undefined) log.setType = setType || 'normal';
@@ -9852,10 +10618,18 @@ app.put('/api/sessions/:id/log/:logId', auth, async (req, res) => {
   // Same optional-field handling as POST /log above - clearing the box removes rir entirely
   // rather than writing a 0 ("went to failure"), which is a different, real answer.
   if (rir!==undefined) { if (rir===null || String(rir).trim()==='') delete log.rir; else log.rir = numIn(rir, 20); }
+  const logAfter = snapshotMutableFields([log], ['weight', 'reps', 'setType', 'set', 'rir']);
   // Oct 12 2026 (scaling fix): only ever edits a log inside s.logs[req.userId] -- same
   // single-user reasoning as POST /log above.
   rebuildPrsFor([req.userId]);
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(logBefore, logAfter, ['weight', 'reps', 'setType', 'set', 'rir']);
+    rebuildPrsFor([req.userId]);
+    throw e;
+  }
+  });
   res.json(sessionView(s, req.userId));
 });
 
@@ -9866,11 +10640,28 @@ app.delete('/api/sessions/:id/log/:logId', auth, async (req, res) => {
   const arr = s.logs[req.userId] || [];
   const idx = arr.findIndex(l => l.id === req.params.logId);
   if (idx<0) return res.status(404).json({ error:'log not found' });
-  arr.splice(idx,1);
+  // Oct 17 2026 (sessions & logs slice, decision #1): own-key-scoped, same revert-only treatment.
+  // arr.splice mutates the array IN PLACE (same reference before/after), so the snapshot/compare
+  // helper can't tell this apart from a concurrent change the way a reassignment would -- revert
+  // by re-inserting the exact removed entry at the same index instead, which is safe here because
+  // nothing else in this route (or any other revert-only route touching this same per-user array)
+  // removes entries except by this same route, on this same user's own key.
+  // Oct 17 2026, same day (review audit finding): still locked, same reason as POST/PUT /log --
+  // and doubly necessary here since the in-place splice technique has no CAS protection of its
+  // own against a concurrent blind whole-`s.logs`-object restore.
+  await withSessionLock(s.id, async () => {
+  const [removed] = arr.splice(idx, 1);
   // Oct 12 2026 (scaling fix): only ever removes a log from s.logs[req.userId] -- same
   // single-user reasoning as POST /log above.
   rebuildPrsFor([req.userId]);
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    arr.splice(idx, 0, removed);
+    rebuildPrsFor([req.userId]);
+    throw e;
+  }
+  });
   res.json(sessionView(s, req.userId));
 });
 
@@ -9895,44 +10686,63 @@ app.post('/api/sessions/:id/lock', auth, async (req, res) => {
   // repeat /lock ping, same reasoning as the save() just below. ranksBefore (Activity page) is
   // captured before creditFinish runs -- see emitFinishFeedEvents' own comment on why it must be.
   const ranksBefore = await crewRanksSnapshot(req.userId);
-  if (creditFinish(s, req.userId, req.body && req.body.localDate)) {
-    await checkCrewChallenges(req.userId);
-    await emitFinishFeedEvents(s, req.userId, ranksBefore, req.body && req.body.localDate);
-    // Oct 9 2026 (audit finding, see markSessionStarted's own comment above): if nobody ever
-    // tapped Start/Join now, this finish is the first unambiguous proof the workout really
-    // happened -- back-date startedAt/scheduledAt to the EARLIEST real log across every
-    // participant (closer to the truth than "now"), so the recap no longer permanently shows
-    // whatever time this was originally scheduled for. Computed BEFORE rebuildAllPrs() just below,
-    // same reasoning as that fix's own PR-snapshot-ordering note.
-    if (!s.startedAt) {
-      let earliest = null;
-      for (const uid_ of Object.keys(s.logs || {})) {
-        for (const l of (s.logs[uid_] || [])) {
-          if (!earliest || new Date(l.at) < new Date(earliest)) earliest = l.at;
+  // Oct 17 2026 (sessions & logs slice, decision #1): locked + scoped field-level revert.
+  // creditFinish (reassigns s.history) and markSessionStarted (reassigns the scalars
+  // s.startedAt/s.scheduledAt) are the only two things this route mutates on `s` -- a small,
+  // precisely enumerable set, so this snapshots just those three fields rather than the whole
+  // session. checkCrewChallenges/emitFinishFeedEvents below are each already self-contained (own
+  // Postgres writes, own try/catch -- see their own comments), so they need no revert here and
+  // can't propagate a throw into this route's own mutated-but-unsaved state. Locked for the same
+  // reason /start already is: s.startedAt/s.scheduledAt are shared fields /start can also touch,
+  // and s.history is shared with /leave and /unlock -- both already go through this same lock.
+  await withSessionLock(s.id, async () => {
+    const prevHistory = s.history, prevStartedAt = s.startedAt, prevScheduledAt = s.scheduledAt;
+    if (creditFinish(s, req.userId, req.body && req.body.localDate)) {
+      await checkCrewChallenges(req.userId);
+      await emitFinishFeedEvents(s, req.userId, ranksBefore, req.body && req.body.localDate);
+      // Oct 9 2026 (audit finding, see markSessionStarted's own comment above): if nobody ever
+      // tapped Start/Join now, this finish is the first unambiguous proof the workout really
+      // happened -- back-date startedAt/scheduledAt to the EARLIEST real log across every
+      // participant (closer to the truth than "now"), so the recap no longer permanently shows
+      // whatever time this was originally scheduled for. Computed BEFORE rebuildAllPrs() just below,
+      // same reasoning as that fix's own PR-snapshot-ordering note.
+      if (!s.startedAt) {
+        let earliest = null;
+        for (const uid_ of Object.keys(s.logs || {})) {
+          for (const l of (s.logs[uid_] || [])) {
+            if (!earliest || new Date(l.at) < new Date(earliest)) earliest = l.at;
+          }
         }
+        markSessionStarted(s, earliest);
       }
-      markSessionStarted(s, earliest);
+      // Sep 28 2026 (audit finding, Jeff: "Workout timestamps drift by a minute: Profile lists the
+      // finish time, Records and Activity say the start time"): rebuildAllPrs' _performedAt now
+      // prefers this user's s.history finish timestamp (stamped by creditFinish just above) over
+      // scheduledAt -- but every PR/record in DB.prs was still only a SNAPSHOT taken back at log
+      // time, before this history row existed, so it kept the old scheduledAt-based value forever
+      // unless something logged again afterward. /lock is exactly the moment that history row is
+      // created, so it's also exactly the moment the snapshot needs to be retaken.
+      //
+      // Oct 12 2026 (scaling fix): NOT scoped to just [req.userId] like the other routes below --
+      // markSessionStarted() just above can rewrite s.scheduledAt (a field shared by the WHOLE
+      // session), and _performedAt's fallback chain (see rebuildPrsFor's grouping loop) reads
+      // s.scheduledAt for any OTHER participant in this same session who doesn't yet have their own
+      // s.posts/s.history entry -- so finishing can shift another participant's PR snapshot even
+      // though their own logs never changed. Scoped to every user who has ANY log in THIS session
+      // (never more than a handful of people) rather than the whole app, which is what actually
+      // matters at scale -- a popular session shared by 5 friends costs the same either way; this
+      // just stops it from scanning every OTHER session of every OTHER user in the app too.
+      const logKeys = Object.keys(s.logs || {});
+      rebuildPrsFor(logKeys);
+      try {
+        await save(DB);
+      } catch (e) {
+        s.history = prevHistory; s.startedAt = prevStartedAt; s.scheduledAt = prevScheduledAt;
+        rebuildPrsFor(logKeys);   // put the derived cache back in sync with the reverted history
+        throw e;
+      }
     }
-    // Sep 28 2026 (audit finding, Jeff: "Workout timestamps drift by a minute: Profile lists the
-    // finish time, Records and Activity say the start time"): rebuildAllPrs' _performedAt now
-    // prefers this user's s.history finish timestamp (stamped by creditFinish just above) over
-    // scheduledAt -- but every PR/record in DB.prs was still only a SNAPSHOT taken back at log
-    // time, before this history row existed, so it kept the old scheduledAt-based value forever
-    // unless something logged again afterward. /lock is exactly the moment that history row is
-    // created, so it's also exactly the moment the snapshot needs to be retaken.
-    //
-    // Oct 12 2026 (scaling fix): NOT scoped to just [req.userId] like the other routes below --
-    // markSessionStarted() just above can rewrite s.scheduledAt (a field shared by the WHOLE
-    // session), and _performedAt's fallback chain (see rebuildPrsFor's grouping loop) reads
-    // s.scheduledAt for any OTHER participant in this same session who doesn't yet have their own
-    // s.posts/s.history entry -- so finishing can shift another participant's PR snapshot even
-    // though their own logs never changed. Scoped to every user who has ANY log in THIS session
-    // (never more than a handful of people) rather than the whole app, which is what actually
-    // matters at scale -- a popular session shared by 5 friends costs the same either way; this
-    // just stops it from scanning every OTHER session of every OTHER user in the app too.
-    rebuildPrsFor(Object.keys(s.logs || {}));
-    await save(DB);
-  }
+  });
   res.json(sessionView(s, req.userId));
 });
 
@@ -9956,13 +10766,30 @@ app.post('/api/sessions/:id/unlock', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
   if (!s) return res.status(404).json({ error: 'not found' });
   ensureSessionShape(s);
-  const before = s.history.length;
-  s.history = s.history.filter(h => h.userId !== req.userId);
-  // Oct 12 2026 (scaling fix): only ever removes req.userId's OWN s.history row (per this route's
-  // own comment above -- "it can never touch another participant's credit"), and doesn't touch
-  // s.scheduledAt/s.startedAt the way /lock's markSessionStarted can, so unlike /lock this is safe
-  // scoped to just the caller.
-  if (s.history.length !== before) { rebuildPrsFor([req.userId]); await save(DB); }
+  // Oct 17 2026 (sessions & logs slice, decision #1): own-row-only (only ever removes req.userId's
+  // OWN s.history row, per this route's own comment above -- "it can never touch another
+  // participant's credit"), and doesn't touch s.scheduledAt/s.startedAt the way /lock's
+  // markSessionStarted can -- so a precise CAS revert on just `history` is enough, no whole-object
+  // clone needed. Still locked: `history` is shared with /lock (creditFinish) and /leave (also
+  // creditFinish), both of which mutate this same field for other users on this same session, and
+  // /leave's own revert blind-clones/restores the WHOLE session on save failure -- without this
+  // lock, an unlocked unlock here could be clobbered by that, or vice versa, mid-flight.
+  await withSessionLock(s.id, async () => {
+    const before = snapshotMutableFields([s], ['history']);
+    const beforeLen = s.history.length;
+    s.history = s.history.filter(h => h.userId !== req.userId);
+    const after = snapshotMutableFields([s], ['history']);
+    if (s.history.length !== beforeLen) {
+      rebuildPrsFor([req.userId]);
+      try {
+        await save(DB);
+      } catch (e) {
+        revertFieldsIfUnchanged(before, after, ['history']);
+        rebuildPrsFor([req.userId]);
+        throw e;
+      }
+    }
+  });
   res.json(sessionView(s, req.userId));
 });
 
@@ -10055,6 +10882,16 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   // it only ever moves it from "recomputed live, always" to "fixed as of now," never worse.
   const existingTrainedWith = (s.posts[req.userId] && Array.isArray(s.posts[req.userId].trainedWith))
     ? s.posts[req.userId].trainedWith : null;
+  // Oct 17 2026 (sessions & logs slice, decision #1): the two fields this route mutates
+  // (s.posts[req.userId], s.draftNotes[req.userId]) are precisely enumerable, own-key-scoped --
+  // CAS revert via snapshotMutableFields/revertFieldsIfUnchanged, no whole-session clone needed.
+  // Still locked: both fields are shared with /leave and /remove-mine, whose own save-failure
+  // revert blind-clones/restores the WHOLE `s.posts`/`s.draftNotes` objects -- without this lock,
+  // this route's own successful save could be wiped out by one of those routes' unrelated revert,
+  // mid-flight.
+  await withSessionLock(s.id, async () => {
+  const postsBefore = snapshotMutableFields([s.posts], [req.userId]);
+  const draftBefore = snapshotMutableFields([s.draftNotes], [req.userId]);
   s.posts[req.userId] = {
     at: existingAt || new Date().toISOString(),
     notes: sanitizePgText(sanitizePgText(String(notes || '')).slice(0, 2000)),
@@ -10078,6 +10915,8 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   // unrelated save. The draft did its job (getting notes typed during the workout to this point);
   // once posted, s.posts[req.userId].notes is the one source of truth.
   if (s.draftNotes) delete s.draftNotes[req.userId];
+  const postsAfter = snapshotMutableFields([s.posts], [req.userId]);
+  const draftAfter = snapshotMutableFields([s.draftNotes], [req.userId]);
   // Sep 28 2026 (audit finding, timestamp drift -- see the matching comment in /lock above):
   // _performedAt/DB.prs' own `at` prefer this user's posted-recap timestamp (s.posts[userId].at,
   // just set above) over the finish/scheduledAt fallbacks -- posting is exactly the moment that
@@ -10088,7 +10927,15 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   // (only s.posts[req.userId] and s.draftNotes[req.userId]), so it's safe scoped to just the
   // caller -- no other participant's PR snapshot can depend on anything this route changes.
   rebuildPrsFor([req.userId]);
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(postsBefore, postsAfter, [req.userId]);
+    revertFieldsIfUnchanged(draftBefore, draftAfter, [req.userId]);
+    rebuildPrsFor([req.userId]);
+    throw e;
+  }
+  });
   res.json(sessionView(s, req.userId));
 });
 // ---- Draft notes on an ACTIVE (not yet posted) session ----
@@ -10107,8 +10954,20 @@ app.post('/api/sessions/:id/draft-notes', auth, async (req, res) => {
   ensureSessionShape(s);
   if (!canFinishOrPost(s, req.userId)) return res.status(403).json({ error: 'not in this workout' });
   const { notes } = req.body || {};
+  // Oct 17 2026 (sessions & logs slice, decision #1): own-key-scoped, zero prior save-failure
+  // protection at all. Still locked, same reason as /post just above -- /leave and /remove-mine
+  // both blind-clone/restore the WHOLE `s.draftNotes` object on their own save failure.
+  await withSessionLock(s.id, async () => {
+  const before = snapshotMutableFields([s.draftNotes], [req.userId]);
   s.draftNotes[req.userId] = sanitizePgText(sanitizePgText(String(notes || '')).slice(0, 2000));
-  await save(DB);
+  const after = snapshotMutableFields([s.draftNotes], [req.userId]);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, [req.userId]);
+    throw e;
+  }
+  });
   res.json(sessionView(s, req.userId));
 });
 // ---- Reactions on a POSTED recap (Task #157) ----
@@ -10125,13 +10984,30 @@ app.post('/api/sessions/:id/posts/:authorId/react', auth, async (req, res) => {
   if (!s) return res.status(404).json({ error: 'not found' });
   const p = s.posts && s.posts[req.params.authorId];
   if (!canSeePostAuthor(p, req.params.authorId, req.userId, s)) return res.status(403).json({ error: 'forbidden' });
-  // Plain array of userIds, same defensive coerce-at-point-of-use as p.comments above (objArray
-  // doesn't fit here — it keeps only object entries, and these are bare id strings).
-  p.reactions = Array.isArray(p.reactions) ? p.reactions.filter(x => typeof x === 'string') : [];
-  const i = p.reactions.indexOf(req.userId);
-  const reacted = i === -1;
-  if (reacted) p.reactions.push(req.userId); else p.reactions.splice(i, 1);
-  await save(DB);
+  // Oct 17 2026 (sessions & logs slice, decision #1): a genuine cross-user race -- every viewer
+  // who can see this post toggles their own entry in this SAME shared p.reactions array -- and
+  // this route had zero save-failure protection at all (a bare push/splice then `await save(DB)`
+  // with nothing reverting it). Locked (also needed because /remove-mine blind-clones/restores
+  // the WHOLE `s.posts` map, this post included, on its own save failure) and reassigned rather
+  // than pushed/spliced in place so snapshotMutableFields/revertFieldsIfUnchanged can tell a
+  // failed save's own toggle apart from anything else touching this same array in between.
+  const reacted = await withSessionLock(s.id, async () => {
+    // Plain array of userIds, same defensive coerce-at-point-of-use as p.comments above (objArray
+    // doesn't fit here — it keeps only object entries, and these are bare id strings).
+    const current = Array.isArray(p.reactions) ? p.reactions.filter(x => typeof x === 'string') : [];
+    const i = current.indexOf(req.userId);
+    const reacted_ = i === -1;
+    const before = snapshotMutableFields([p], ['reactions']);
+    p.reactions = reacted_ ? [...current, req.userId] : current.filter(x => x !== req.userId);
+    const after = snapshotMutableFields([p], ['reactions']);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, ['reactions']);
+      throw e;
+    }
+    return reacted_;
+  });
   if (reacted && req.params.authorId !== req.userId)
     notify(req.params.authorId, { title: 'New reaction', body: `${DB.users[req.userId].displayName} reacted to your workout`, link: { type: 'post', sessionId: s.id, authorId: req.params.authorId } });
   res.json({ reacted, count: p.reactions.length });
@@ -10198,11 +11074,25 @@ app.post('/api/sessions/:id/posts/:authorId/comments/:commentId/react', auth, as
   // another through a shared, unrelated third party's comment thread -- a direct interaction the
   // block was supposed to prevent, even though neither of them is the post's own author.
   if (isBlocked(c.userId, req.userId)) return res.status(403).json({ error: 'forbidden' });
-  c.reactions = Array.isArray(c.reactions) ? c.reactions.filter(x => typeof x === 'string') : [];
-  const i = c.reactions.indexOf(req.userId);
-  const reacted = i === -1;
-  if (reacted) c.reactions.push(req.userId); else c.reactions.splice(i, 1);
-  await save(DB);
+  // Oct 17 2026 (sessions & logs slice, decision #1): same fix as the post-level /react route
+  // above, one level deeper -- genuine cross-user race on this SAME comment's c.reactions array,
+  // zero save-failure protection before this. Locked (also needed because /remove-mine's blind
+  // `s.posts` restore reaches this nested comment object too) and reassigned for CAS revert.
+  const reacted = await withSessionLock(s.id, async () => {
+    const current = Array.isArray(c.reactions) ? c.reactions.filter(x => typeof x === 'string') : [];
+    const i = current.indexOf(req.userId);
+    const reacted_ = i === -1;
+    const before = snapshotMutableFields([c], ['reactions']);
+    c.reactions = reacted_ ? [...current, req.userId] : current.filter(x => x !== req.userId);
+    const after = snapshotMutableFields([c], ['reactions']);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, ['reactions']);
+      throw e;
+    }
+    return reacted_;
+  });
   if (reacted && c.userId !== req.userId)
     notify(c.userId, { title: 'New reaction', body: `${DB.users[req.userId].displayName} reacted to your comment`, link: { type: 'post', sessionId: s.id, authorId: req.params.authorId } });
   res.json({ reacted, count: c.reactions.length });
