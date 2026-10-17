@@ -133,6 +133,7 @@ if (process.env.ADMIN_TOKEN) {
 // commits or fully rolls back, and a SELECT can't return "corrupted," only real rows or a loud
 // connection/query error.
 const db = require('./db');
+const { sanitizePgText } = require('./pgmini');
 // notify-helpers.js's firstExerciseStartNotification() is no longer called from this file (see the
 // comment above POST /api/sessions, Sep 5: the creator no longer gets self-notified on their own
 // workout) -- left required nowhere here on purpose, the function/its test still live in
@@ -542,7 +543,18 @@ const ALLOWED_MEDIA = /^data:(image\/(?:png|jpeg|jpg|webp|gif)|video\/(?:mp4|web
 // permanently. capStr also coerces — a non-string reaching .trim()/.slice() would 500 the route.
 // numIn blocks NaN and Infinity (Infinity serialises to null and became a permanent all-time PR)
 // and clamps to a sane, non-negative magnitude.
-const capStr = (v, max) => String(v == null ? '' : v).slice(0, max);
+// Oct 17 2026: also runs every value through pgmini's sanitizePgText — see its own comment for
+// why (a NUL byte or lone surrogate in ANY text field jams save(DB) for every user until restart).
+// pgmini.js already strips these at the Postgres wire boundary regardless, as the guaranteed
+// backstop for every write path including the handful that don't go through capStr at all (e.g.
+// POST /api/me/bio) — doing it here too just means the in-memory value matches what's persisted
+// immediately, instead of only looking clean after the next restart re-loads it from Postgres.
+// Sanitize BEFORE AND after the slice, not just before: .slice() cuts by UTF-16 code unit, so a
+// real surrogate pair (emoji) sitting exactly on the `max` boundary can be cut in half by the
+// slice itself, manufacturing a brand-new lone surrogate that the first sanitize pass never saw
+// (caught by review — reproduced live with a 280-char bio ending in an emoji at the cap). The
+// second pass is a cheap no-op unless that exact boundary coincidence happens.
+const capStr = (v, max) => sanitizePgText(sanitizePgText(String(v == null ? '' : v)).slice(0, max));
 const numIn = (v, max) => { const n = Number(v); return Number.isFinite(n) ? Math.min(Math.max(0, n), max) : 0; };
 
 // ---- Starter routines (Sep 21 2026, Jeff: "I want to update the routines page with default
@@ -1740,7 +1752,12 @@ app.post('/api/me/avatar', auth, async (req, res) => {
 });
 app.post('/api/me/bio', auth, async (req, res) => {
   const { bio } = req.body || {};
-  DB.users[req.userId].bio = String(bio || '').slice(0, 280);
+  // Oct 17 2026: sanitizePgText() here too (not just inside capStr/pgmini's own wire-boundary
+  // backstop) -- this route never went through capStr, so without this the in-memory value (and
+  // this response's own echo of it) would still show a NUL byte/lone surrogate even though
+  // pgmini.js already strips it before it reaches Postgres, a visible mismatch between "what you
+  // just got told was saved" and "what's actually in the row" until the next restart reloads it.
+  DB.users[req.userId].bio = sanitizePgText(sanitizePgText(String(bio || '')).slice(0, 280));
   await save(DB);
   res.json({ bio: DB.users[req.userId].bio });
 });
@@ -6424,7 +6441,7 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   // owner will get this message." Optional, capped well short of anything that'd blow up a
   // notification body (this is a quick reason, not a chat message -- the reinvite-request flow
   // below is where an actual back-and-forth belongs).
-  const reason = typeof (req.body && req.body.reason) === 'string' ? req.body.reason.trim().slice(0, 300) : '';
+  const reason = typeof (req.body && req.body.reason) === 'string' ? sanitizePgText(sanitizePgText(req.body.reason.trim()).slice(0, 300)) : '';
   await save(DB);
   // Same reasoning as /accept just above: an ownerless workout has no creator to tell. Also skip
   // entirely when blocked either direction (see declinerBlocked above) -- same privacy rule as
@@ -6458,7 +6475,7 @@ app.post('/api/sessions/:id/reinvite-request', auth, async (req, res) => {
     return res.status(400).json({ error: 'already part of this workout' });
   }
   if (isBlocked(req.userId, s.creatorId)) return res.status(403).json({ error: 'not found' });
-  const message = typeof (req.body && req.body.message) === 'string' ? req.body.message.trim().slice(0, 300) : '';
+  const message = typeof (req.body && req.body.message) === 'string' ? sanitizePgText(sanitizePgText(req.body.message.trim()).slice(0, 300)) : '';
   // Oct 2 2026 (deep audit finding): every other "ask again" flow in this app (join requests
   // re-flipping an existing row to pending instead of duplicating, ownerless swap re-proposals,
   // template-share) reuses one row per requester instead of piling up duplicates -- this route was
@@ -10040,7 +10057,7 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
     ? s.posts[req.userId].trainedWith : null;
   s.posts[req.userId] = {
     at: existingAt || new Date().toISOString(),
-    notes: String(notes || '').slice(0, 2000),
+    notes: sanitizePgText(sanitizePgText(String(notes || '')).slice(0, 2000)),
     media: cleanMedia,
     visibility: vis,
     comments: existingComments,
@@ -10090,7 +10107,7 @@ app.post('/api/sessions/:id/draft-notes', auth, async (req, res) => {
   ensureSessionShape(s);
   if (!canFinishOrPost(s, req.userId)) return res.status(403).json({ error: 'not in this workout' });
   const { notes } = req.body || {};
-  s.draftNotes[req.userId] = String(notes || '').slice(0, 2000);
+  s.draftNotes[req.userId] = sanitizePgText(sanitizePgText(String(notes || '')).slice(0, 2000));
   await save(DB);
   res.json(sessionView(s, req.userId));
 });
