@@ -26,12 +26,24 @@ const put  = (p, b, t) => fetch(B + p, { method: 'PUT', headers: H(t), body: JSO
 // (one row per exercise, keyed by its own id) now, not the old array-per-owner custom_exercises
 // table -- so it comes back as a plain {id: exercise} map here, same per-row shape as every other
 // collection this helper already reads, instead of the old array-per-owner shape.
+// Oct 16 2026 (users decision #2 -- scalar column normalization): users.displayName (and the
+// rest of that migration's ~20 fields) live on real columns once a row is migrated, not in
+// `data` any more -- a freshly-registered user's blob no longer carries it at all. Only the one
+// field this file actually reads (displayName) is pulled off the extra columns here; see db.js's
+// own usersToParams/applyUserColumnsRow comments for the full field list and why "only overlay
+// when non-null" is the right merge.
 async function db() {
   const pg = new PgConnection(parseConnString(testDb.url));
   const out = { users: {}, sessions: {}, pushSubs: {}, templates: {}, customExerciseRows: {} };
-  for (const [table, key, col] of [['users','id','users'], ['sessions','id','sessions'], ['push_subs','user_id','pushSubs'], ['templates','id','templates'], ['custom_exercise_rows','id','customExerciseRows']]) {
+  for (const [table, key, col] of [['sessions','id','sessions'], ['push_subs','user_id','pushSubs'], ['templates','id','templates'], ['custom_exercise_rows','id','customExerciseRows']]) {
     const r = await pg.query(`SELECT ${key}, data FROM ${table}`);
     for (const row of r.rows) out[col][row[key]] = JSON.parse(row.data);
+  }
+  const users = await pg.query('SELECT id, data, display_name FROM users');
+  for (const row of users.rows) {
+    const u = JSON.parse(row.data);
+    if (row.display_name !== null) u.displayName = row.display_name;
+    out.users[row.id] = u;
   }
   pg.close();
   return out;

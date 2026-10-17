@@ -23,11 +23,48 @@ const J = { 'Content-Type': 'application/json' };
 
 // normUser() from server.js, kept in sync deliberately — see db.js's own comment on this.
 const normUser = v => String(v == null ? '' : v).trim().toLowerCase();
+// Oct 16 2026 (users decision #2 -- scalar column normalization): once a row is migrated,
+// username/pinHash/pinSalt/createdAt/... live on real columns, not the `data` blob this function
+// used to read alone -- a migrated row's blob no longer carries them at all (see db.js's
+// usersToParams comment). Mirrors db.js's own applyUserColumnsRow: only overlay a column when
+// it's actually non-null, so this stays correct for a not-yet-migrated row too (every column
+// null, blob is still the only source). Found live: findUser() started returning `undefined` for
+// a freshly-registered user the moment registration itself started marking new accounts migrated
+// before their first save.
+function overlayUserColumns(u, row) {
+  const pgBool = v => (v === null ? null : v === 't');
+  if (row.username !== null) u.username = row.username;
+  if (row.display_name !== null) u.displayName = row.display_name;
+  if (row.bio !== null) u.bio = row.bio;
+  if (row.avatar !== null) u.avatar = row.avatar;
+  if (row.default_gym !== null) u.defaultGym = row.default_gym;
+  if (row.profile_visibility !== null) u.profileVisibility = row.profile_visibility;
+  if (row.units !== null) u.units = row.units;
+  if (row.created_at !== null) u.createdAt = row.created_at;
+  if (row.created_at_estimated !== null) u.createdAtEstimated = pgBool(row.created_at_estimated);
+  if (row.pin_hash !== null) u.pinHash = row.pin_hash;
+  if (row.pin_salt !== null) u.pinSalt = row.pin_salt;
+  if (row.deleted !== null) u.deleted = pgBool(row.deleted);
+  if (row.deleted_at !== null) u.deletedAt = row.deleted_at;
+  if (row.tokens_valid_from !== null) u.tokensValidFrom = row.tokens_valid_from;
+  if (row.seen_rir_explainer !== null) u.seenRirExplainer = pgBool(row.seen_rir_explainer);
+  if (row.training_phase !== null) u.trainingPhase = row.training_phase;
+  if (row.notify_streak_reminders !== null) u.notifyStreakReminders = pgBool(row.notify_streak_reminders);
+  if (row.notify_workout_reminders !== null) u.notifyWorkoutReminders = pgBool(row.notify_workout_reminders);
+  if (row.last_streak_reminder_at !== null) u.lastStreakReminderAt = row.last_streak_reminder_at;
+  if (row.last_workout_reminder_at !== null) u.lastWorkoutReminderAt = row.last_workout_reminder_at;
+  return u;
+}
 async function readUsers() {
   const pg = new PgConnection(parseConnString(testDb.url));
-  const r = await pg.query('SELECT id, data FROM users');
+  const r = await pg.query(
+    `SELECT id, data, username, display_name, bio, avatar, default_gym, profile_visibility, units,
+            created_at, created_at_estimated, pin_hash, pin_salt, deleted, deleted_at, tokens_valid_from,
+            seen_rir_explainer, training_phase, notify_streak_reminders, notify_workout_reminders,
+            last_streak_reminder_at, last_workout_reminder_at
+     FROM users`);
   pg.close();
-  return r.rows.map(row => JSON.parse(row.data));
+  return r.rows.map(row => overlayUserColumns(JSON.parse(row.data), row));
 }
 async function readUserRaw() {
   // The raw, un-parsed jsonb text for every user row — used for "the password appears nowhere,"
