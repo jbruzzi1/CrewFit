@@ -731,11 +731,18 @@ function parseToken(token) {
 // failed userIdFromToken's expiry check on its own anyway, so there's no reason to keep tracking
 // it forever. Pruned on every revoke (logout), which is the only time this list is written, so it
 // never grows past "however many devices logged out in the last 90 days."
+// Returns a NEW revokedJtis object rather than mutating u.revokedJtis in place -- the caller
+// reassigns it, which is what lets the mutate-before-maybe-failing-save revert check (see
+// snapshotMutableFields/revertFieldsIfUnchanged) detect the change at all: an in-place mutation
+// would leave the object reference unchanged and defeat that check, same reasoning as the
+// follow-graph fields above.
 function revokeToken(u, jti, issuedAt) {
-  if (!u.revokedJtis) u.revokedJtis = {};
+  const current = u.revokedJtis || {};
   const cutoff = Date.now() - TOKEN_TTL_DAYS * 864e5;
-  for (const j of Object.keys(u.revokedJtis)) if (u.revokedJtis[j] < cutoff) delete u.revokedJtis[j];
-  u.revokedJtis[jti] = issuedAt;
+  const next = {};
+  for (const j of Object.keys(current)) if (current[j] >= cutoff) next[j] = current[j];
+  next[jti] = issuedAt;
+  return next;
 }
 // Sep 24 2026 (audit finding): recap media was served from /uploads with no auth at all and no
 // link back to canSeePostAuthor -- once a viewer had a photo's URL (from normal viewing, browser
@@ -876,7 +883,19 @@ app.post('/api/register', async (req, res) => {
   // usersToParams derives them fresh from this object unconditionally -- this only controls
   // whether the blob ALSO keeps a redundant copy until that happens.
   db.markUserColumnsMigrated(id);
-  await save(DB);
+  // Oct 18 2026 (Phase 1 hazard sweep): a failed save() here used to leave the brand-new
+  // DB.users[id] row live in memory -- visible to findUserByName, so it still blocked anyone
+  // else from registering that same username -- while the client was told registration failed
+  // and holds no token for it. Unlike the field-CAS routes elsewhere, there's no pre-existing
+  // state to snapshot/restore; the fix is simpler: this id didn't exist a moment ago, so a
+  // failed save just deletes the row outright, same as it would have been had register() never
+  // run at all.
+  try {
+    await save(DB);
+  } catch (e) {
+    delete DB.users[id];
+    throw e;
+  }
   res.json({ token: signToken(id), user: { ...publicUser(id), defaultGym: '', profileVisibility: 'public' } });
 });
 // Live username availability check (used by the register popup as the user types)
@@ -971,8 +990,15 @@ app.post('/api/logout', auth, async (req, res) => {
   const payload = parseToken((req.headers['authorization'] || '').replace(/^Bearer\s/, ''));
   const u = DB.users[req.userId];
   if (u && payload && payload.j) {
-    revokeToken(u, payload.j, payload.t);
-    await save(DB);
+    const before = snapshotMutableFields([u], ['revokedJtis']);
+    u.revokedJtis = revokeToken(u, payload.j, payload.t);
+    const after = snapshotMutableFields([u], ['revokedJtis']);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, ['revokedJtis']);
+      throw e;
+    }
   }
   res.json({ ok: true });
 });
@@ -1300,11 +1326,21 @@ app.post('/api/favorites/toggle', auth, async (req, res) => {
   if (!name) return res.status(400).json({ error: 'name required' });
   const u = DB.users[req.userId];
   u.favoriteExercises = u.favoriteExercises || [];
+  const before = snapshotMutableFields([u], ['favoriteExercises']);
   const i = u.favoriteExercises.indexOf(name);
   const favorited = i === -1;
-  if (favorited) u.favoriteExercises.push(name);
-  else u.favoriteExercises.splice(i, 1);
-  await save(DB);
+  // Reassign rather than push/splice in place -- in-place mutation leaves the array reference
+  // unchanged and would defeat the before/after reference check below (same reasoning as the
+  // follow-graph fields above).
+  if (favorited) u.favoriteExercises = [...u.favoriteExercises, name];
+  else u.favoriteExercises = u.favoriteExercises.filter((_, idx) => idx !== i);
+  const after = snapshotMutableFields([u], ['favoriteExercises']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['favoriteExercises']);
+    throw e;
+  }
   res.json({ favorited });
 });
 
@@ -1746,8 +1782,20 @@ app.post('/api/me/avatar', auth, async (req, res) => {
   if (prevPath && path.basename(prevPath) !== fname) {
     try { fs.unlinkSync(prevPath); } catch (e) {}
   }
+  // Oct 18 2026 (full-app hazard sweep): field-level CAS revert, same pattern as FOLLOW_FIELDS --
+  // on a failed save, u.avatar reverts to what it was before this request ONLY if nothing else
+  // has changed it since (another concurrent request to this same route, say). The orphaned
+  // uploaded file on disk is left as-is either way -- already an accepted, disclosed tradeoff
+  // per the "best-effort unlink" comment above, not something a field-level revert can fix.
+  const avatarBefore = snapshotMutableFields([u], ['avatar']);
   u.avatar = `/uploads/${fname}`;
-  await save(DB);
+  const avatarAfter = snapshotMutableFields([u], ['avatar']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(avatarBefore, avatarAfter, ['avatar']);
+    throw e;
+  }
   res.json({ avatar: u.avatar });
 });
 app.post('/api/me/bio', auth, async (req, res) => {
@@ -1757,9 +1805,18 @@ app.post('/api/me/bio', auth, async (req, res) => {
   // this response's own echo of it) would still show a NUL byte/lone surrogate even though
   // pgmini.js already strips it before it reaches Postgres, a visible mismatch between "what you
   // just got told was saved" and "what's actually in the row" until the next restart reloads it.
-  DB.users[req.userId].bio = sanitizePgText(sanitizePgText(String(bio || '')).slice(0, 280));
-  await save(DB);
-  res.json({ bio: DB.users[req.userId].bio });
+  const bioUser = DB.users[req.userId];
+  // Oct 18 2026 (full-app hazard sweep): field-level CAS revert, same shape as /api/me/avatar above.
+  const bioBefore = snapshotMutableFields([bioUser], ['bio']);
+  bioUser.bio = sanitizePgText(sanitizePgText(String(bio || '')).slice(0, 280));
+  const bioAfter = snapshotMutableFields([bioUser], ['bio']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(bioBefore, bioAfter, ['bio']);
+    throw e;
+  }
+  res.json({ bio: bioUser.bio });
 });
 // Jeff, Sep 2026: "make profiles private or public in settings" -- then "let's do public as
 // default, and private if toggled." Public (default) = anyone sees profile detail, workouts
@@ -1806,9 +1863,17 @@ app.post('/api/me/profile-visibility', auth, async (req, res) => {
 // prefilled into that same field, so the two limits have to agree.
 app.post('/api/me/default-gym', auth, async (req, res) => {
   const { defaultGym } = req.body || {};
-  DB.users[req.userId].defaultGym = capStr(defaultGym, 120).trim();
-  await save(DB);
-  res.json({ defaultGym: DB.users[req.userId].defaultGym });
+  const u = DB.users[req.userId];
+  const before = snapshotMutableFields([u], ['defaultGym']);
+  u.defaultGym = capStr(defaultGym, 120).trim();
+  const after = snapshotMutableFields([u], ['defaultGym']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['defaultGym']);
+    throw e;
+  }
+  res.json({ defaultGym: u.defaultGym });
 });
 // Sep 29 2026 (Jeff: "add an edit display name or username"). displayName has no uniqueness rule
 // (never has — see registration, where duplicate display names are already allowed and disambiguated
@@ -1819,8 +1884,16 @@ app.post('/api/me/display-name', auth, async (req, res) => {
   const { displayName } = req.body || {};
   const v = capStr(displayName, 80).trim();
   if (!v) return res.status(400).json({ error: 'Display name cannot be empty' });
-  DB.users[req.userId].displayName = v;
-  await save(DB);
+  const u = DB.users[req.userId];
+  const before = snapshotMutableFields([u], ['displayName']);
+  u.displayName = v;
+  const after = snapshotMutableFields([u], ['displayName']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['displayName']);
+    throw e;
+  }
   res.json({ displayName: v });
 });
 // Same usernameProblem + case-insensitive uniqueness rule registration already enforces (see
@@ -1856,8 +1929,15 @@ app.post('/api/me/username', auth, async (req, res) => {
   if (uProblem) return res.status(400).json({ error: uProblem });
   const existing = findUserByName(username);
   if (existing && existing.id !== req.userId) return res.status(409).json({ error: 'username taken' });
+  const before = snapshotMutableFields([u], ['username']);
   u.username = String(username).trim();
-  await save(DB);
+  const after = snapshotMutableFields([u], ['username']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['username']);
+    throw e;
+  }
   res.json({ username: u.username });
 });
 // Distinct from the disabled /api/forgot + /api/reset above (which took no proof of identity at
@@ -1896,6 +1976,8 @@ app.post('/api/me/password', auth, async (req, res) => {
   clearFail('pw-confirm:' + req.userId);
   const pProblem = pinProblem(newPassword);
   if (pProblem) return res.status(400).json({ error: pProblem });
+  const PW_FIELDS = ['pinSalt', 'pinHash', 'tokensValidFrom'];
+  const before = snapshotMutableFields([u], PW_FIELDS);
   Object.assign(u, await hashPin(newPassword));
   // Sep 29 2026 (audit finding, Tier 1 #3): userIdFromToken's own comment above already says this
   // field "lets a single account be signed out everywhere, e.g. after a password change" -- it was
@@ -1909,7 +1991,13 @@ app.post('/api/me/password', auth, async (req, res) => {
   // (signToken uses Date.now(), which is monotonic and therefore never earlier than the
   // tokensValidFrom timestamp just written) and hand it back so app.js can swap it in silently.
   u.tokensValidFrom = new Date().toISOString();
-  await save(DB);
+  const after = snapshotMutableFields([u], PW_FIELDS);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, PW_FIELDS);
+    throw e;
+  }
   res.json({ ok: true, token: signToken(u.id) });
 });
 // Oct 16 2026 (users slice, decision #1 -- follow-graph redesign): the exact same mutate-before-
@@ -2486,6 +2574,21 @@ function withSessionLock(sessionId, fn) {
   settled.then(() => { if (sessionEditQueues.get(sessionId) === settled) sessionEditQueues.delete(sessionId); });
   return run;
 }
+// Oct 18 2026 (Phase 1 hazard sweep): identical shape to withCrewLock/withSessionLock, for the
+// exact same reason -- DB.templates had zero lock mechanism before this, so the same
+// mutate-before-maybe-failing-save hazard (and the same cross-user races on a shared template's
+// own fields, e.g. two owners of a shared routine editing it at once) existed there unguarded.
+// Keyed per template id so unrelated templates' edits never wait on each other, entries deleted
+// once idle.
+const templateEditQueues = new Map();
+function withTemplateLock(templateId, fn) {
+  const prevQueue = templateEditQueues.get(templateId) || Promise.resolve();
+  const run = prevQueue.then(fn);
+  const settled = run.then(() => {}, () => {});
+  templateEditQueues.set(templateId, settled);
+  settled.then(() => { if (templateEditQueues.get(templateId) === settled) templateEditQueues.delete(templateId); });
+  return run;
+}
 
 function ensureCrewShape(c) {
   if (!Array.isArray(c.memberIds)) c.memberIds = [];
@@ -2848,7 +2951,17 @@ app.post('/api/crews', auth, async (req, res) => {
   // real action (being put in a crew) produced a different, inconsistent result depending on which
   // endpoint happened to add you. Same event, same shape, just for memberIds instead of `before`.
   for (const mid of memberIds) await emitFeedEvent('joined_crew', mid, { crewId: c.id, crewName: c.name, text: `joined ${c.name}` });
-  await save(DB);
+  // Oct 18 2026 (Phase 1 hazard sweep): a failed save() here used to leave the brand-new
+  // DB.crews[c.id] live in memory -- visible to everyone (other members' crew lists, GET
+  // /api/crews/:id, etc.) -- while the creator was told the request failed and got no crew id
+  // back. This id didn't exist a moment ago, so a failed save just deletes the row outright,
+  // same as entity creation elsewhere in this sweep (see POST /api/register's identical fix).
+  try {
+    await save(DB);
+  } catch (e) {
+    delete DB.crews[c.id];
+    throw e;
+  }
   // Every other "you were just put into something" flow in this app notifies (workout invite,
   // follow accepted, new follower) -- being silently dropped into a standing group chat with no
   // signal until you happen to open the Friends tab would be the odd one out (cold-review catch).
@@ -2885,6 +2998,16 @@ async function crewPutCritical(c, req, res) {
   // anything is touched.
   if (body.memberIds !== undefined && validCrewMemberIds(req.userId, body.memberIds, c.memberIds).length > CREW_MAX_MEMBERS - 1)
     return res.status(400).json({ error: `a crew is limited to ${CREW_MAX_MEMBERS} members` });
+  // Oct 18 2026 (Phase 1 hazard sweep): snapshot BEFORE either branch below mutates anything, so
+  // a failed save() at the end of this function can put both c.name and c.memberIds back exactly
+  // as they were -- the same mutate-before-maybe-failing-save hazard already fixed on every other
+  // crew route (see /leave's and DELETE's own comments further down). withCrewLock already
+  // serializes every PUT/DELETE/leave call for this same crew id across its ENTIRE critical
+  // section, not just the mutation itself, so there's no concurrent edit to this same crew's
+  // name/memberIds that a blind restore here could clobber -- unlike the per-field CAS helper
+  // used on DB.users (where no such lock exists), a straight restore is safe for this route.
+  const originalName = c.name;
+  const originalMemberIds = c.memberIds;
   if (body.name !== undefined) {
     const name = capStr(body.name, CREW_NAME_MAX).trim();
     if (!name) return res.status(400).json({ error: 'name required' });
@@ -2940,7 +3063,13 @@ async function crewPutCritical(c, req, res) {
     // workout finish, so the crew isn't left staring at a stalled 100%+ bar with no celebration.
     await checkChallengeCompletion(c);
   }
-  await save(DB);
+  try {
+    await save(DB);
+  } catch (e) {
+    c.name = originalName;
+    c.memberIds = originalMemberIds;
+    throw e;
+  }
   res.json(await publicCrew(c, req.userId));
 }
 // The owner can't "leave" -- a crew with no owner has nobody who can rename it or edit who's in
@@ -3770,8 +3899,16 @@ app.get('/api/notifications', auth, async (req, res) => {
 // (Home fetches that just to size the bell badge, on every Home load; if reading it cleared the
 // badge, a push notification would go stale before anyone had a chance to see the badge at all).
 app.post('/api/notifications/seen', auth, async (req, res) => {
-  DB.users[req.userId].notificationsSeenAt = new Date().toISOString();
-  await save(DB);
+  const u = DB.users[req.userId];
+  const before = snapshotMutableFields([u], ['notificationsSeenAt']);
+  u.notificationsSeenAt = new Date().toISOString();
+  const after = snapshotMutableFields([u], ['notificationsSeenAt']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['notificationsSeenAt']);
+    throw e;
+  }
   res.json({ ok: true });
 });
 // Sep 9 (Jeff): "slide notifications away... to remove them from the list if I don't want to
@@ -4098,10 +4235,23 @@ app.post('/api/templates/:id/hide', auth, async (req, res) => {
   const t = DB.templates && DB.templates[req.params.id];
   if (!t) return res.status(404).json({ error: 'not found' });
   if (t.ownerId === req.userId) return res.status(400).json({ error: 'this is your own routine — delete it instead' });
-  t.hiddenBy = t.hiddenBy || [];
-  if (!t.hiddenBy.includes(req.userId)) t.hiddenBy.push(req.userId);
-  await save(DB);
-  res.json({ ok: true });
+  // Oct 18 2026 (Phase 1 hazard sweep): DB.templates had zero lock mechanism before this --
+  // withTemplateLock (mirroring withCrewLock) now serializes every hide/unhide/share/accept/
+  // decline/edit/delete call against this same template id, so the save-failure revert below
+  // can't be clobbered by a concurrent mutation of the same shared hiddenBy/sharedTo list from a
+  // different caller (same reasoning as withCrewLock's own comment).
+  await withTemplateLock(t.id, async () => {
+    t.hiddenBy = t.hiddenBy || [];
+    const wasHidden = t.hiddenBy.includes(req.userId);
+    if (!wasHidden) t.hiddenBy.push(req.userId);
+    try {
+      await save(DB);
+    } catch (e) {
+      if (!wasHidden) t.hiddenBy = t.hiddenBy.filter(id => id !== req.userId);
+      throw e;
+    }
+    res.json({ ok: true });
+  });
 });
 // v240: the undo half of Remove (Jeff asked for an undo moment after removing a shared routine —
 // hide used to be permanent). Only ever removes YOUR OWN id from hiddenBy, so, like hide, it can
@@ -4111,9 +4261,20 @@ app.post('/api/templates/:id/hide', auth, async (req, res) => {
 app.post('/api/templates/:id/unhide', auth, async (req, res) => {
   const t = DB.templates && DB.templates[req.params.id];
   if (!t) return res.status(404).json({ error: 'not found' });
-  if (t.hiddenBy) t.hiddenBy = t.hiddenBy.filter(id => id !== req.userId);
-  await save(DB);
-  res.json({ ok: true });
+  await withTemplateLock(t.id, async () => {
+    const hadIt = Array.isArray(t.hiddenBy) && t.hiddenBy.includes(req.userId);
+    if (t.hiddenBy) t.hiddenBy = t.hiddenBy.filter(id => id !== req.userId);
+    try {
+      await save(DB);
+    } catch (e) {
+      if (hadIt) {
+        t.hiddenBy = t.hiddenBy || [];
+        if (!t.hiddenBy.includes(req.userId)) t.hiddenBy.push(req.userId);
+      }
+      throw e;
+    }
+    res.json({ ok: true });
+  });
 });
 // Resolves invite usernames to user ids, scoped to the CALLER's own connections -- identical
 // logic to POST/PUT /api/sessions' own invite resolution. A username that isn't one of the
@@ -4158,7 +4319,15 @@ app.post('/api/templates', auth, async (req, res) => {
   const t = { id, ownerId: req.userId, name: capStr(name, 80), exercises: exercises.map(withDefaults) };
   if (!DB.templates) DB.templates = {};
   DB.templates[id] = t;
-  await save(DB);
+  // Oct 18 2026 (Phase 1 hazard sweep): brand-new id, so a failed save() just deletes the row
+  // outright -- same create-then-revert shape as POST /api/sessions, /api/crews, /api/register.
+  // No lock needed here: nothing else can reference an id nobody else has learned yet.
+  try {
+    await save(DB);
+  } catch (e) {
+    delete DB.templates[id];
+    throw e;
+  }
   res.json(stripHidden(t));
 });
 app.put('/api/templates/:id', auth, async (req, res) => {
@@ -4166,26 +4335,50 @@ app.put('/api/templates/:id', auth, async (req, res) => {
   if (!t) return res.status(404).json({ error: 'not found' });
   if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
   const { name, exercises } = req.body || {};
-  if (name) t.name = capStr(name, 80);
-  if (Array.isArray(exercises) && exercises.length) {
-    // v253 (audit finding, see isPlainExercise above) -- same generic-500 risk as POST /api/templates.
-    if (!exercises.every(isPlainExercise)) return res.status(400).json({ error: 'invalid exercise' });
-    t.exercises = exercises.map(withDefaults);
-  }
-  await save(DB);
-  // stripHidden matters here specifically: once a friend has hidden this routine, t.hiddenBy is
-  // populated, and this is the response an owner gets back on every completely ordinary edit
-  // (finishTemplate/tplQuickSaveConfirm in app.js) -- without stripping it, editing your own
-  // routine would silently hand you the exact list of friends who quietly removed it.
-  res.json(stripHidden(t));
+  // Oct 18 2026 (Phase 1 hazard sweep, cold-review catch found while adding the lock/revert
+  // below): validated FIRST, before either field is touched. The original order let an invalid
+  // `exercises` array 400 out AFTER t.name had already been mutated in memory -- no save() had
+  // run yet so nothing was actually persisted, but the in-memory row was left half-edited (new
+  // name, old exercises) for every other request to read until the next successful save
+  // overwrote it. Same "fail closed, before anything is touched" reasoning as crewPutCritical's
+  // own memberIds-cap check above.
+  if (Array.isArray(exercises) && exercises.length && !exercises.every(isPlainExercise))
+    return res.status(400).json({ error: 'invalid exercise' });
+  await withTemplateLock(t.id, async () => {
+    const originalName = t.name;
+    const originalExercises = t.exercises;
+    if (name) t.name = capStr(name, 80);
+    if (Array.isArray(exercises) && exercises.length) t.exercises = exercises.map(withDefaults);
+    try {
+      await save(DB);
+    } catch (e) {
+      t.name = originalName;
+      t.exercises = originalExercises;
+      throw e;
+    }
+    // stripHidden matters here specifically: once a friend has hidden this routine, t.hiddenBy is
+    // populated, and this is the response an owner gets back on every completely ordinary edit
+    // (finishTemplate/tplQuickSaveConfirm in app.js) -- without stripping it, editing your own
+    // routine would silently hand you the exact list of friends who quietly removed it.
+    res.json(stripHidden(t));
+  });
 });
 app.delete('/api/templates/:id', auth, async (req, res) => {
   const t = DB.templates && DB.templates[req.params.id];
   if (!t) return res.status(404).json({ error: 'not found' });
   if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
-  delete DB.templates[req.params.id];
-  await save(DB);
-  res.json({ ok: true });
+  // Oct 18 2026 (Phase 1 hazard sweep): reverted by putting the SAME template object back under
+  // its own id on a failed save -- identical shape to DELETE /api/crews/:id's own fix above.
+  await withTemplateLock(t.id, async () => {
+    delete DB.templates[req.params.id];
+    try {
+      await save(DB);
+    } catch (e) {
+      DB.templates[req.params.id] = t;
+      throw e;
+    }
+    res.json({ ok: true });
+  });
 });
 // ---- Routine sharing (Oct 2 2026 redesign) ----
 // The owner's explicit "share this with specific people" action -- the only thing that ever adds
@@ -4199,20 +4392,45 @@ app.post('/api/templates/:id/share', auth, async (req, res) => {
   if (t.ownerId !== req.userId) return res.status(403).json({ error: 'not yours' });
   const targets = resolveInvites(req.userId, (req.body || {}).usernames);
   if (!targets.length) return res.status(400).json({ error: 'pick at least one person to share with' });
-  t.sharedTo = t.sharedTo || [];
-  // Oct 9 2026 (audit finding, Jeff's pick among options): { recipientId: ISO timestamp }, same
-  // shape and reasoning as a session's own invitedAt (see ensureSessionShape's comment) -- lets GET
-  // /api/notifications sort its "Routine shared" section by when the share actually happened,
-  // rather than by which template happens to have been CREATED more recently.
-  t.sharedAt = t.sharedAt || {};
-  const newlyShared = targets.filter(id => !t.sharedTo.includes(id));
-  for (const id of newlyShared) { t.sharedTo.push(id); t.sharedAt[id] = new Date().toISOString(); }
-  await save(DB);
-  // history:false -- already shown live as an actionable "Routine shared" row in GET
-  // /api/notifications while it's unanswered, same pattern as a workout invite's own notify()
-  // call just above in this file; accept/decline (below) get their own notify().
-  for (const id of newlyShared) notify(id, { title: 'Routine shared', body: `${DB.users[req.userId].displayName} shared "${t.name}" with you`, link: { type: 'routine', routineId: t.id } }, { history: false });
-  res.json(stripHidden(t));
+  // Oct 18 2026 (Phase 1 hazard sweep): locked + reverted the same way the follow-graph fields
+  // are -- only the entries THIS call actually added are rolled back on a failed save, so a
+  // concurrent share/accept/decline touching other entries in the same sharedTo/sharedAt lists
+  // is never clobbered.
+  // Oct 18 2026, same day (independent-review finding): sharedTo/sharedAt are now always
+  // REASSIGNED here, never mutated in place (push / direct key set) -- anonymizeAndDeleteAccount
+  // reverts a failed save on these SAME two fields with a lock-free reference-equality CAS check
+  // (it isn't holding withTemplateLock while it does), which only works if EVERY mutator of the
+  // field reassigns rather than mutates in place; an in-place write here would leave the
+  // reference unchanged and could fool that check into reverting (and silently discarding) an
+  // already-real write made by this very route, mid-flight, during someone else's failed account
+  // deletion. withTemplateLock still makes this route's own revert-on-failure correct regardless
+  // (nothing else can run inside this template's lock at the same time), but the reassign
+  // discipline is what keeps it safe against that one lock-free caller too.
+  await withTemplateLock(t.id, async () => {
+    t.sharedTo = t.sharedTo || [];
+    // Oct 9 2026 (audit finding, Jeff's pick among options): { recipientId: ISO timestamp }, same
+    // shape and reasoning as a session's own invitedAt (see ensureSessionShape's comment) -- lets GET
+    // /api/notifications sort its "Routine shared" section by when the share actually happened,
+    // rather than by which template happens to have been CREATED more recently.
+    t.sharedAt = t.sharedAt || {};
+    const newlyShared = targets.filter(id => !t.sharedTo.includes(id));
+    t.sharedTo = [...t.sharedTo, ...newlyShared];
+    t.sharedAt = { ...t.sharedAt, ...Object.fromEntries(newlyShared.map(id => [id, new Date().toISOString()])) };
+    try {
+      await save(DB);
+    } catch (e) {
+      t.sharedTo = t.sharedTo.filter(x => !newlyShared.includes(x));
+      const nextSharedAt = { ...t.sharedAt };
+      for (const id of newlyShared) delete nextSharedAt[id];
+      t.sharedAt = nextSharedAt;
+      throw e;
+    }
+    // history:false -- already shown live as an actionable "Routine shared" row in GET
+    // /api/notifications while it's unanswered, same pattern as a workout invite's own notify()
+    // call just above in this file; accept/decline (below) get their own notify().
+    for (const id of newlyShared) notify(id, { title: 'Routine shared', body: `${DB.users[req.userId].displayName} shared "${t.name}" with you`, link: { type: 'routine', routineId: t.id } }, { history: false });
+    res.json(stripHidden(t));
+  });
 });
 // Accept: makes you the owner of a brand-new, fully independent COPY of the routine -- same
 // "copy, not a live shared object" semantics tplEditCopy() already uses for a friend's old
@@ -4232,14 +4450,51 @@ app.post('/api/templates/:id/accept-share', auth, async (req, res) => {
   // invisible in GET /api/templates' `shared` list and GET /api/notifications' routineShares once
   // blocked, so there's nothing left for either side to even see or act on).
   if (isBlocked(t.ownerId, req.userId)) return res.status(400).json({ error: 'blocked' });
-  const id = 't_' + uid();
-  const copy = { id, ownerId: req.userId, name: t.name, exercises: t.exercises.map(withDefaults) };
   if (!DB.templates) DB.templates = {};
-  DB.templates[id] = copy;
-  t.sharedTo = t.sharedTo.filter(x => x !== req.userId);
-  if (isObj(t.sharedAt)) delete t.sharedAt[req.userId];
-  await save(DB);
-  res.json({ ok: true, id });
+  // Oct 18 2026 (Phase 1 hazard sweep): this route both CREATES a new row (the copy) and mutates
+  // the original's shared sharedTo/sharedAt lists in one call -- a failed save() used to leave
+  // both changes live in memory (a usable copy with no owner-visible record of it, and the
+  // recipient silently dropped from the original's pending list) while telling the caller it
+  // failed. Locked on the ORIGINAL template's id (sharedTo/sharedAt live there, and that's what a
+  // concurrent share/decline-share could also be touching) and reverted by deleting the new copy
+  // and putting the original's entry back exactly as it was.
+  // Oct 18 2026, same day (independent-review finding): the "still pending" check above, and the
+  // `id`/`copy` construction, used to happen BEFORE this lock was acquired -- withTemplateLock
+  // only serializes the MUTATION, it never re-validates "is this still actually pending" once a
+  // caller gets its turn, so two concurrent accept-share calls from the same recipient (a
+  // double-tap, a client retry on a slow response) could both pass the outer check, then both
+  // run their own locked body in turn, each creating its OWN independent copy of the routine --
+  // the recipient ending up owning two copies of the same routine instead of one. Re-checked
+  // fresh here, inside the lock, right before anything is created; a second call that loses the
+  // race now gets a clean, idempotent-feeling "already decided" instead of a duplicate.
+  // sharedTo/sharedAt are reassigned, never mutated in place -- see POST .../share's own comment
+  // just above for why that matters here (anonymizeAndDeleteAccount's lock-free CAS revert on
+  // these same two fields).
+  await withTemplateLock(t.id, async () => {
+    if (!Array.isArray(t.sharedTo) || !t.sharedTo.includes(req.userId)) {
+      return res.status(409).json({ error: 'already decided' });
+    }
+    const id = 't_' + uid();
+    const copy = { id, ownerId: req.userId, name: t.name, exercises: t.exercises.map(withDefaults) };
+    DB.templates[id] = copy;
+    const hadSharedAt = isObj(t.sharedAt) && Object.prototype.hasOwnProperty.call(t.sharedAt, req.userId);
+    const prevSharedAtVal = hadSharedAt ? t.sharedAt[req.userId] : undefined;
+    t.sharedTo = t.sharedTo.filter(x => x !== req.userId);
+    if (isObj(t.sharedAt) && hadSharedAt) {
+      const nextSharedAt = { ...t.sharedAt };
+      delete nextSharedAt[req.userId];
+      t.sharedAt = nextSharedAt;
+    }
+    try {
+      await save(DB);
+    } catch (e) {
+      delete DB.templates[id];
+      if (!t.sharedTo.includes(req.userId)) t.sharedTo = [...t.sharedTo, req.userId];
+      if (hadSharedAt) t.sharedAt = { ...(t.sharedAt || {}), [req.userId]: prevSharedAtVal };
+      throw e;
+    }
+    res.json({ ok: true, id });
+  });
 });
 // Decline: just removes you from the pending list, no copy made. Always safe regardless of
 // block state (removing your own pending entry can never hand anyone anything), so no isBlocked
@@ -4248,10 +4503,31 @@ app.post('/api/templates/:id/decline-share', auth, async (req, res) => {
   const t = DB.templates && DB.templates[req.params.id];
   if (!t) return res.status(404).json({ error: 'not found' });
   if (!Array.isArray(t.sharedTo) || !t.sharedTo.includes(req.userId)) return res.status(403).json({ error: 'not shared with you' });
-  t.sharedTo = t.sharedTo.filter(x => x !== req.userId);
-  if (isObj(t.sharedAt)) delete t.sharedAt[req.userId];
-  await save(DB);
-  res.json({ ok: true });
+  // Oct 18 2026 (Phase 1 hazard sweep): same lock + revert shape as accept-share just above --
+  // this touches the same shared sharedTo/sharedAt lists, so it has to serialize against them too.
+  // Same reassign-not-mutate-in-place discipline on sharedTo/sharedAt as share/accept-share just
+  // above, for the same reason (anonymizeAndDeleteAccount's lock-free CAS revert on these fields).
+  await withTemplateLock(t.id, async () => {
+    if (!Array.isArray(t.sharedTo) || !t.sharedTo.includes(req.userId)) {
+      return res.status(409).json({ error: 'already decided' });
+    }
+    const hadSharedAt = isObj(t.sharedAt) && Object.prototype.hasOwnProperty.call(t.sharedAt, req.userId);
+    const prevSharedAtVal = hadSharedAt ? t.sharedAt[req.userId] : undefined;
+    t.sharedTo = t.sharedTo.filter(x => x !== req.userId);
+    if (isObj(t.sharedAt) && hadSharedAt) {
+      const nextSharedAt = { ...t.sharedAt };
+      delete nextSharedAt[req.userId];
+      t.sharedAt = nextSharedAt;
+    }
+    try {
+      await save(DB);
+    } catch (e) {
+      if (!t.sharedTo.includes(req.userId)) t.sharedTo = [...t.sharedTo, req.userId];
+      if (hadSharedAt) t.sharedAt = { ...(t.sharedAt || {}), [req.userId]: prevSharedAtVal };
+      throw e;
+    }
+    res.json({ ok: true });
+  });
 });
 
 // ---- Session comments (Message Host / chat) ----
@@ -4941,7 +5217,17 @@ app.post('/api/sessions', auth, async (req, res) => {
     startedAt: null
   };
   DB.sessions[id] = session;
-  await save(DB);
+  // Oct 18 2026 (Phase 1 hazard sweep): a failed save() here used to leave the brand-new
+  // DB.sessions[id] live in memory -- visible to the creator's own Home/sessions list and to
+  // anyone invited -- while the creator was told creation failed and got no session id back.
+  // This id didn't exist a moment ago, so a failed save just deletes the row outright, same as
+  // entity creation elsewhere in this sweep (see POST /api/register and POST /api/crews).
+  try {
+    await save(DB);
+  } catch (e) {
+    delete DB.sessions[id];
+    throw e;
+  }
   // notify invited friends
   // history:false -- already shown live as an actionable "Workout invites" row in GET
   // /api/notifications while it's unanswered; accept/decline (elsewhere) gets its own notify().
@@ -7812,11 +8098,19 @@ function inUnit(weight, from, to) {
 function sameLoad(a, b) { return Math.abs(toLb(a.weight, a.unit) - toLb(b.weight, b.unit)) < 0.6; }
 
 app.post('/api/me/units', auth, async (req, res) => {
-  const u = (req.body || {}).units;
-  if (u !== 'lb' && u !== 'kg') return res.status(400).json({ error: 'units must be lb or kg' });
-  DB.users[req.userId].units = u;
-  await save(DB);
-  res.json({ units: u });
+  const unitsVal = (req.body || {}).units;
+  if (unitsVal !== 'lb' && unitsVal !== 'kg') return res.status(400).json({ error: 'units must be lb or kg' });
+  const u = DB.users[req.userId];
+  const before = snapshotMutableFields([u], ['units']);
+  u.units = unitsVal;
+  const after = snapshotMutableFields([u], ['units']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['units']);
+    throw e;
+  }
+  res.json({ units: unitsVal });
 });
 
 // Oct 9 2026 (audit finding, Jeff's pick among options): one-way, idempotent -- there is no path
@@ -7826,8 +8120,16 @@ app.post('/api/me/units', auth, async (req, res) => {
 // EXPLAINER itself, only this bookkeeping call -- worst case it shows once more than strictly
 // necessary, never zero times.
 app.post('/api/me/rir-explainer-seen', auth, async (req, res) => {
-  DB.users[req.userId].seenRirExplainer = true;
-  await save(DB);
+  const u = DB.users[req.userId];
+  const before = snapshotMutableFields([u], ['seenRirExplainer']);
+  u.seenRirExplainer = true;
+  const after = snapshotMutableFields([u], ['seenRirExplainer']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['seenRirExplainer']);
+    throw e;
+  }
   res.json({ seenRirExplainer: true });
 });
 
@@ -7842,14 +8144,29 @@ app.post('/api/me/rir-explainer-seen', auth, async (req, res) => {
 // garbage/misspelled key, which is still rejected below exactly as before.
 app.post('/api/me/training-phase', auth, async (req, res) => {
   const phase = (req.body || {}).phase;
+  const u = DB.users[req.userId];
   if (phase === null) {
-    DB.users[req.userId].trainingPhase = null;
-    await save(DB);
+    const before = snapshotMutableFields([u], ['trainingPhase']);
+    u.trainingPhase = null;
+    const after = snapshotMutableFields([u], ['trainingPhase']);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, ['trainingPhase']);
+      throw e;
+    }
     return res.json({ trainingPhase: null });
   }
   if (!TRAINING_PHASE_KEYS.has(phase)) return res.status(400).json({ error: 'phase must be one of: ' + [...TRAINING_PHASE_KEYS].join(', ') });
-  DB.users[req.userId].trainingPhase = phase;
-  await save(DB);
+  const before = snapshotMutableFields([u], ['trainingPhase']);
+  u.trainingPhase = phase;
+  const after = snapshotMutableFields([u], ['trainingPhase']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['trainingPhase']);
+    throw e;
+  }
   res.json({ trainingPhase: phase });
 });
 
@@ -7870,9 +8187,18 @@ app.post('/api/me/notify-prefs', auth, async (req, res) => {
   if (hasStreak && typeof body.streakReminders !== 'boolean') return res.status(400).json({ error: 'streakReminders must be true or false' });
   if (hasWorkout && typeof body.workoutReminders !== 'boolean') return res.status(400).json({ error: 'workoutReminders must be true or false' });
   const out = {};
-  if (hasStreak) { DB.users[req.userId].notifyStreakReminders = body.streakReminders; out.streakReminders = body.streakReminders; }
-  if (hasWorkout) { DB.users[req.userId].notifyWorkoutReminders = body.workoutReminders; out.workoutReminders = body.workoutReminders; }
-  await save(DB);
+  const u = DB.users[req.userId];
+  const NOTIFY_PREF_FIELDS = ['notifyStreakReminders', 'notifyWorkoutReminders'];
+  const before = snapshotMutableFields([u], NOTIFY_PREF_FIELDS);
+  if (hasStreak) { u.notifyStreakReminders = body.streakReminders; out.streakReminders = body.streakReminders; }
+  if (hasWorkout) { u.notifyWorkoutReminders = body.workoutReminders; out.workoutReminders = body.workoutReminders; }
+  const after = snapshotMutableFields([u], NOTIFY_PREF_FIELDS);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, NOTIFY_PREF_FIELDS);
+    throw e;
+  }
   res.json(out);
 });
 
@@ -8222,6 +8548,14 @@ app.post('/api/me/reset-workouts', auth, async (req, res) => {
 async function anonymizeAndDeleteAccount(targetId) {
   const me = targetId;
   const u = DB.users[me];
+  // Oct 18 2026 (Phase 1 hazard sweep, independent-review finding): hoisted to the very top,
+  // before any mutation batch below starts -- this used to sit in the MIDDLE of the user's own
+  // field-mutation sequence (right where it still is commented out below), which put a real
+  // await between that batch's "before" snapshot and the one try/catch around the final save()
+  // that's supposed to revert it. hashPin() doesn't depend on anything mutated below, so there's
+  // no reason it needs to run there: computed once, up front, it's just a plain synchronous
+  // Object.assign later, with nothing left to throw past the revert boundary.
+  const scrambledCreds = await hashPin(crypto.randomBytes(32).toString('hex'));   // unusable, unguessable -- see /login's own check, this is belt-and-suspenders
   // Oct 17 2026 (sessions & logs slice, decision #1 -- review finding fix): wipeUserFromAllSessions
   // is now async and saves/locks/reverts each touched session itself (see its own comment) -- the
   // blanket `await save(DB)` that used to sit right after this call is gone, same as reset-workouts.
@@ -8236,6 +8570,18 @@ async function anonymizeAndDeleteAccount(targetId) {
   // "the data being asked is already gone"). Doing this phase first, and the anonymization as its
   // own second phase with its own save, keeps both halves correct.
   notifyWipePivots(me, pivots, autoApprovals);
+
+  // Oct 18 2026 (Phase 1 hazard sweep -- pre-mortem shared with and approved by Jeff before this
+  // landed): everything from here through the single save() at the end used to have NOTHING
+  // reverting it on a failed save -- by far the biggest blast radius found in this sweep, since a
+  // failed save used to leave every OTHER affected user's follow/block arrays, every touched
+  // template's sharedTo/sharedAt (plus any template this account owned, hard-deleted outright),
+  // every touched crew's ownerId (plus any solo crew, hard-deleted outright), AND the target
+  // account's own anonymized fields all mutated in memory with nothing persisted to back any of
+  // it up. Each batch below is snapshotted BEFORE its own mutation runs -- the same field-level
+  // CAS idiom (snapshotMutableFields/revertFieldsIfUnchanged) every other route in this sweep
+  // already uses -- and every batch is reverted together in the one catch block around the final
+  // save() if it throws.
 
   // Sever the follow graph in every direction, app-wide -- blockUser (above) only ever does this
   // for ONE other account at a time (the two people on either side of a single block); deletion
@@ -8252,18 +8598,37 @@ async function anonymizeAndDeleteAccount(targetId) {
   // mutate-before-failed-save hazard this slice exists to close, just triggered by an unrelated
   // account deletion rather than a real conflicting edit. Same "check before mutate" idiom
   // blockUser() and every route above already use to preserve identity when nothing changes.
-  for (const other of Object.values(DB.users)) {
-    if (other.id === me) continue;
+  const ACCOUNT_DELETE_FOLLOW_FIELDS = ['blocked', ...FOLLOW_FIELDS];
+  const affectedUsers = Object.values(DB.users).filter(other => other.id !== me && (
+    (Array.isArray(other.following) && other.following.includes(me)) ||
+    (Array.isArray(other.followers) && other.followers.includes(me)) ||
+    (Array.isArray(other.followReqs) && other.followReqs.includes(me)) ||
+    (Array.isArray(other.blocked) && other.blocked.includes(me))
+  ));
+  const otherUsersBefore = snapshotMutableFields(affectedUsers, ACCOUNT_DELETE_FOLLOW_FIELDS);
+  for (const other of affectedUsers) {
     if (Array.isArray(other.following) && other.following.includes(me)) other.following = other.following.filter(x => x !== me);
     if (Array.isArray(other.followers) && other.followers.includes(me)) other.followers = other.followers.filter(x => x !== me);
     if (Array.isArray(other.followReqs) && other.followReqs.includes(me)) other.followReqs = other.followReqs.filter(x => x !== me);
     if (Array.isArray(other.blocked) && other.blocked.includes(me)) other.blocked = other.blocked.filter(x => x !== me);
   }
+  const otherUsersAfter = snapshotMutableFields(affectedUsers, ACCOUNT_DELETE_FOLLOW_FIELDS);
+
   // Oct 14 2026 (push subs slice): push_subs is no longer on DB at all (see db.js's
   // EMPTY_DB/load() and the comment on POST /api/push/subscribe) -- deleting it is now its own
   // direct Postgres call rather than an in-memory mutation this route's own save(DB) further
-  // down used to pick up.
-  await db.pgDeletePushSub(me);   // stop push delivery dead rather than let it 404/410 itself out later
+  // down used to pick up. Not reverted below: it's a separate, already best-effort/idempotent
+  // write outside save(DB)'s own transaction, same accepted shape as emitFeedEvent elsewhere in
+  // this file -- re-running this same delete (or the admin version of it) harmlessly no-ops it.
+  // Oct 18 2026 (Phase 1 hazard sweep, independent-review finding): that "best-effort" claim
+  // wasn't actually true -- this sat between the follow-severance batch's own before/after
+  // snapshots above and the one try/catch around the final save() below, so an uncaught throw
+  // HERE (this call had no try/catch of its own) would propagate straight out of the whole
+  // function and skip every revert below entirely, leaving the follow-severance mutation live in
+  // memory with nothing to put it back. Caught and logged here instead, the same way the
+  // crew-messages/crew-challenges best-effort cleanup calls on DELETE /api/crews/:id already do,
+  // so a hiccup on this one call can never reopen the hazard this whole sweep exists to close.
+  try { await db.pgDeletePushSub(me); } catch (e) { console.error('anonymizeAndDeleteAccount: pgDeletePushSub failed (continuing -- not fatal):', e && e.message); }
 
   // Oct 2 2026 (deep audit finding): wipeUserFromAllSessions above cleans up every pending-action
   // type that lives on DB.sessions (invites, join requests, removals, suggestions, reinvite-asks),
@@ -8277,12 +8642,29 @@ async function anonymizeAndDeleteAccount(targetId) {
   // severance loop just above: strip `me` from every other routine's sharedTo, then remove every
   // routine `me` owned outright (a routine has no collaborative-editing concept -- see /accept's own
   // comment -- so there is no "hand off ownership" equivalent to build here, unlike sessions/crews).
-  for (const t of Object.values(DB.templates || {})) {
+  const TEMPLATE_SHARE_FIELDS = ['sharedTo', 'sharedAt'];
+  const editedTemplates = Object.values(DB.templates || {}).filter(t =>
+    (Array.isArray(t.sharedTo) && t.sharedTo.includes(me)) ||
+    (isObj(t.sharedAt) && Object.prototype.hasOwnProperty.call(t.sharedAt, me)));
+  const templatesBefore = snapshotMutableFields(editedTemplates, TEMPLATE_SHARE_FIELDS);
+  for (const t of editedTemplates) {
     if (Array.isArray(t.sharedTo) && t.sharedTo.includes(me)) t.sharedTo = t.sharedTo.filter(x => x !== me);
-    if (isObj(t.sharedAt)) delete t.sharedAt[me];
+    // Reassign sharedAt to a new object rather than deleting the key in place -- an in-place
+    // delete leaves the object reference unchanged and would defeat the before/after reference
+    // check below, same reasoning as every other reassign-not-mutate fix in this sweep.
+    if (isObj(t.sharedAt) && Object.prototype.hasOwnProperty.call(t.sharedAt, me)) {
+      const nextSharedAt = { ...t.sharedAt };
+      delete nextSharedAt[me];
+      t.sharedAt = nextSharedAt;
+    }
   }
+  const templatesAfter = snapshotMutableFields(editedTemplates, TEMPLATE_SHARE_FIELDS);
+  // Whole-row deletes are restored by putting the SAME object back under its own id on a failed
+  // save -- identical shape to DELETE /api/templates/:id's own fix above; ids are never reused,
+  // so there's no risk of a revert here colliding with something new created under the same id.
+  const deletedTemplates = [];
   for (const tid of Object.keys(DB.templates || {})) {
-    if (DB.templates[tid].ownerId === me) delete DB.templates[tid];
+    if (DB.templates[tid].ownerId === me) { deletedTemplates.push([tid, DB.templates[tid]]); delete DB.templates[tid]; }
   }
 
   // Oct 2 2026 (#178, deep audit finding): a crew the deleted account OWNED was never touched by
@@ -8310,28 +8692,35 @@ async function anonymizeAndDeleteAccount(targetId) {
   // CREW_MAX_MEMBERS checks everywhere else, so this is the one place that can safely assume it's
   // accurate) has no one left to leave it ownerless FOR, so it's deleted outright instead, same
   // as the ownerless-but-empty edge case sessions already collapse to a hard delete for.
+  const editedCrews = [];
+  const deletedCrews = [];
+  const pendingCrewNotifications = [];   // fired only after save() actually succeeds, see below
   for (const cid of Object.keys(DB.crews || {})) {
     const c = DB.crews[cid];
     if (c.ownerId !== me) continue;
     ensureCrewShape(c);
     const others = c.memberIds.filter(id => id !== me);
-    if (!others.length) { delete DB.crews[cid]; continue; }
+    if (!others.length) { deletedCrews.push([cid, c]); delete DB.crews[cid]; continue; }
+    editedCrews.push(c);
     c.ownerId = null;
     for (const mid of others) {
       if (!DB.users[mid] || isBlocked(me, mid)) continue;
-      notify(mid, { title: c.name, body: 'The crew owner\'s account was deleted — this crew has no owner now.', link: { type: 'crew', crewId: c.id } });
+      pendingCrewNotifications.push({ mid, c });
     }
   }
 
-  // Cold-review catch (Sep 29 2026): u.avatar='' below only clears the REFERENCE -- same gap
-  // POST /api/me/avatar's own comment already documents for a re-upload landing under a different
-  // extension. Left unlinked, avatar_<id>.<ext> keeps sitting in UPLOAD_DIR and keeps being served
-  // by the unauthenticated `/uploads` static mount at its same old, already-known URL forever --
-  // directly contradicting this route's own point ("no longer identifies this person"). Same
-  // best-effort unlink POST /api/me/avatar already uses for exactly this reason.
-  if (u.avatar) {
-    try { fs.unlinkSync(path.join(UPLOAD_DIR, path.basename(u.avatar))); } catch (e) {}
-  }
+  // The target account's own anonymized fields -- scalars + the three follow arrays + blocked,
+  // all reassigned (never mutated in place) so this one CAS check covers the whole batch. No
+  // await in the middle of this block any more (see scrambledCreds, hoisted to the top) -- every
+  // line from here to userAfter below is now plain, synchronous assignment.
+  const USER_SELF_DELETE_FIELDS = ['username', 'displayName', 'bio', 'avatar', 'defaultGym',
+    'profileVisibility', 'pinSalt', 'pinHash', 'following', 'followers', 'followReqs', 'blocked',
+    'deleted', 'deletedAt', 'tokensValidFrom'];
+  const userBefore = snapshotMutableFields([u], USER_SELF_DELETE_FIELDS);
+  // Captured before u.avatar is cleared below -- the unlink itself only runs after save()
+  // succeeds (see its own comment further down), but it needs the ORIGINAL path, not whatever
+  // u.avatar reads as by then.
+  const avatarToUnlink = u.avatar;
 
   const tag = 'deleted_' + me;   // uid() is already exactly 8 lowercase alnum chars -- see its own comment
   u.username = tag;
@@ -8340,7 +8729,7 @@ async function anonymizeAndDeleteAccount(targetId) {
   u.avatar = '';
   u.defaultGym = '';
   u.profileVisibility = 'private';
-  Object.assign(u, await hashPin(crypto.randomBytes(32).toString('hex')));   // unusable, unguessable -- see /login's own check, this is belt-and-suspenders
+  Object.assign(u, scrambledCreds);
   u.following = []; u.followers = []; u.followReqs = [];
   ensureBlockArray(u); u.blocked = [];
   u.deleted = true;
@@ -8355,8 +8744,43 @@ async function anonymizeAndDeleteAccount(targetId) {
   // which is fine, since the client calls logout() right after this response either way -- fail
   // immediately on its next use.
   u.tokensValidFrom = u.deletedAt;
+  const userAfter = snapshotMutableFields([u], USER_SELF_DELETE_FIELDS);
 
-  await save(DB);   // second save: the follow-severance + anonymization phase above, its own step
+  // second save: the follow-severance + template/crew cleanup + anonymization phase above, its
+  // own step. Reverted as one unit if it throws -- every batch snapshotted above gets put back.
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(otherUsersBefore, otherUsersAfter, ACCOUNT_DELETE_FOLLOW_FIELDS);
+    revertFieldsIfUnchanged(templatesBefore, templatesAfter, TEMPLATE_SHARE_FIELDS);
+    for (const [tid, t] of deletedTemplates) DB.templates[tid] = t;
+    for (const [cid, c] of deletedCrews) DB.crews[cid] = c;
+    // No other route ever sets a crew's ownerId at all (there is no ownership-transfer feature),
+    // so unlike the CAS-checked fields above, a plain "only if it's still the null I just set"
+    // guard is enough here -- nothing else could have legitimately changed it in the meantime.
+    for (const c of editedCrews) if (c.ownerId === null) c.ownerId = me;
+    revertFieldsIfUnchanged(userBefore, userAfter, USER_SELF_DELETE_FIELDS);
+    throw e;
+  }
+
+  // Oct 18 2026: avatar unlink deliberately moved to AFTER save() succeeds -- unlinking first
+  // (the original order) meant a failed save left u.avatar reverted back to pointing at a file
+  // that had already been deleted from disk, a dead reference that would resurface. Same
+  // "persist before taking an irreversible real-world action" ordering as the background
+  // reminder timers' own reorder above (Task #11) -- and the crew-ownerless notifications just
+  // below, for the same reason.
+  // Cold-review catch (Sep 29 2026): u.avatar='' above only clears the REFERENCE -- same gap
+  // POST /api/me/avatar's own comment already documents for a re-upload landing under a different
+  // extension. Left unlinked, avatar_<id>.<ext> keeps sitting in UPLOAD_DIR and keeps being served
+  // by the unauthenticated `/uploads` static mount at its same old, already-known URL forever --
+  // directly contradicting this route's own point ("no longer identifies this person"). Same
+  // best-effort unlink POST /api/me/avatar already uses for exactly this reason.
+  if (avatarToUnlink) {
+    try { fs.unlinkSync(path.join(UPLOAD_DIR, path.basename(avatarToUnlink))); } catch (e) {}
+  }
+  for (const { mid, c } of pendingCrewNotifications) {
+    notify(mid, { title: c.name, body: 'The crew owner\'s account was deleted — this crew has no owner now.', link: { type: 'crew', crewId: c.id } });
+  }
 }
 
 // Sep 29 2026 (Jeff: "add... account deletion"; app-store readiness -- Apple guideline 5.1.1(v)
@@ -9511,22 +9935,58 @@ app.put('/api/me/seeds', auth, async (req, res) => {
   const u = DB.users[req.userId];
   u.seeded = u.seeded || {};
   const w = numIn(weight, 1e6), r = numIn(reps, 1e6), g = numIn(goal, 1e6);
-  if (!w && !g) { delete u.seeded[exercise]; await save(DB); return res.json({ seeds: u.seeded }); }
-  u.seeded[exercise] = {
-    exercise,
-    weight: w, reps: r || 1,
-    goal: g || null,
-    unit: u.units || 'lb',
-    at: new Date().toISOString()
+  // Reassign u.seeded to a new object on every branch, rather than mutating the existing object
+  // in place -- an in-place key set/delete leaves the `seeded` reference unchanged and would
+  // defeat the before/after reference check below (same reasoning as the follow-graph fields).
+  const before = snapshotMutableFields([u], ['seeded']);
+  if (!w && !g) {
+    const next = { ...u.seeded };
+    delete next[exercise];
+    u.seeded = next;
+    const after = snapshotMutableFields([u], ['seeded']);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, ['seeded']);
+      throw e;
+    }
+    return res.json({ seeds: u.seeded });
+  }
+  u.seeded = {
+    ...u.seeded,
+    [exercise]: {
+      exercise,
+      weight: w, reps: r || 1,
+      goal: g || null,
+      unit: u.units || 'lb',
+      at: new Date().toISOString()
+    }
   };
-  await save(DB);
+  const after = snapshotMutableFields([u], ['seeded']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['seeded']);
+    throw e;
+  }
   res.json({ seeds: u.seeded });
 });
 
 app.delete('/api/me/seeds/:exercise', auth, async (req, res) => {
   const u = DB.users[req.userId];
-  if (u.seeded) delete u.seeded[decodeURIComponent(req.params.exercise)];
-  await save(DB);
+  const before = snapshotMutableFields([u], ['seeded']);
+  if (u.seeded) {
+    const next = { ...u.seeded };
+    delete next[decodeURIComponent(req.params.exercise)];
+    u.seeded = next;
+  }
+  const after = snapshotMutableFields([u], ['seeded']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['seeded']);
+    throw e;
+  }
   res.json({ seeds: u.seeded || {} });
 });
 
@@ -9550,8 +10010,16 @@ app.post('/api/me/trend-picks', auth, async (req, res) => {
     clean.push(name);
     if (clean.length >= 5) break;
   }
-  DB.users[req.userId].trendPicks = clean;
-  await save(DB);
+  const u = DB.users[req.userId];
+  const before = snapshotMutableFields([u], ['trendPicks']);
+  u.trendPicks = clean;
+  const after = snapshotMutableFields([u], ['trendPicks']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['trendPicks']);
+    throw e;
+  }
   res.json({ picks: clean });
 });
 
@@ -9569,8 +10037,16 @@ app.post('/api/me/top-lift-picks', auth, async (req, res) => {
     clean.push(name);
     if (clean.length >= 3) break;
   }
-  DB.users[req.userId].topLiftPicks = clean;
-  await save(DB);
+  const u = DB.users[req.userId];
+  const before = snapshotMutableFields([u], ['topLiftPicks']);
+  u.topLiftPicks = clean;
+  const after = snapshotMutableFields([u], ['topLiftPicks']);
+  try {
+    await save(DB);
+  } catch (e) {
+    revertFieldsIfUnchanged(before, after, ['topLiftPicks']);
+    throw e;
+  }
   res.json({ picks: clean });
 });
 
@@ -11182,17 +11658,31 @@ app.use((err, req, res, next) => {
       if (new Date().getUTCHours() !== STREAK_REMINDER_HOUR_UTC) return;
       const today = new Date().toISOString().slice(0, 10);
       const atRiskIds = usersAtRiskOfLosingStreak();
-      let sent = 0;
+      const toNotify = [];
       for (const uid of atRiskIds) {
         const u = DB.users[uid];
         if (!u || u.notifyStreakReminders === false) continue;   // respects the in-app toggle
         if (u.lastStreakReminderAt === today) continue;          // already sent today
         u.lastStreakReminderAt = today;
-        const streak = currentStreak(uid);
-        notify(uid, { title: 'Keep your streak alive', body: `You're on a ${streak}-day streak - train today to keep it going.` });
-        sent++;
+        toNotify.push(uid);
       }
-      if (sent) await save(DB);
+      // Oct 18 2026 (Phase 1 hazard sweep, Jeff: "why would we leave the two background timers
+      // left as a documented tradeoff?"): save() used to run AFTER notify() -- a failed save
+      // here still left every one of these users stamped lastStreakReminderAt=today in memory
+      // (so none would be re-notified again today) while the push that justified that stamp had
+      // already gone out, with nothing persisted to back it up; a restart before the next
+      // successful save would then drop the in-memory stamp and let the SAME push fire again the
+      // next time this poll lands inside the hour. Bounded impact (a possible duplicate push, not
+      // data corruption), but there was no real reason to leave it as an accepted tradeoff -- the
+      // actual fix is just this reorder, no lock/revert machinery needed: persist first, and only
+      // notify for users whose stamp actually made it to disk.
+      if (toNotify.length) {
+        await save(DB);
+        for (const uid of toNotify) {
+          const streak = currentStreak(uid);
+          notify(uid, { title: 'Keep your streak alive', body: `You're on a ${streak}-day streak - train today to keep it going.` });
+        }
+      }
     } catch (e) { console.error('streak reminder check failed:', e && e.message); }
   }, 30 * 60 * 1000);
 
@@ -11207,16 +11697,22 @@ app.use((err, req, res, next) => {
       if (new Date().getUTCHours() !== WORKOUT_REMINDER_HOUR_UTC) return;
       const today = new Date().toISOString().slice(0, 10);
       const pending = usersWithWorkoutToday();
-      let sent = 0;
+      const toNotify = [];
       for (const [uid, sessionName] of pending) {
         const u = DB.users[uid];
         if (!u || u.notifyWorkoutReminders === false) continue;   // respects the in-app toggle
         if (u.lastWorkoutReminderAt === today) continue;          // already sent today
         u.lastWorkoutReminderAt = today;
-        notify(uid, { title: 'Workout today', body: sessionName ? `"${sessionName}" is on your schedule for today.` : 'You have a workout scheduled for today.' });
-        sent++;
+        toNotify.push([uid, sessionName]);
       }
-      if (sent) await save(DB);
+      // Oct 18 2026 (Phase 1 hazard sweep): same reorder as the streak-reminder timer above, same
+      // reasoning -- persist first, only notify for users whose stamp actually made it to disk.
+      if (toNotify.length) {
+        await save(DB);
+        for (const [uid, sessionName] of toNotify) {
+          notify(uid, { title: 'Workout today', body: sessionName ? `"${sessionName}" is on your schedule for today.` : 'You have a workout scheduled for today.' });
+        }
+      }
     } catch (e) { console.error('workout reminder check failed:', e && e.message); }
   }, 30 * 60 * 1000);
 

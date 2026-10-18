@@ -194,6 +194,13 @@ const files = [
   // file's own header comment for exactly what each assertion proves and what it deliberately
   // does not attempt.
   'test/sessions-logs-mutate-before-save-regression.mjs',
+  // Oct 18 2026: proves the Phase 1 full-app hazard sweep -- every DB.users route, session/crew/
+  // template creation, PUT /api/crews/:id, the brand-new withTemplateLock primitive across all 8
+  // DB.templates routes, and anonymizeAndDeleteAccount (account deletion), the single biggest
+  // blast-radius fix in this engagement. See the file's own header comment for exactly what it
+  // covers (representative patterns, not every route individually) and the one documented thing
+  // it deliberately does not attempt (the background reminder timers' reorder).
+  'test/phase1-mutate-before-save-regression.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
