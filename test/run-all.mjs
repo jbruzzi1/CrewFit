@@ -188,6 +188,12 @@ const files = [
   // DIFFERENT user's very next save the way the pre-fix code did. Added the same run it was
   // written.
   'test/nul-byte-save-sanitization-regression.mjs',
+  // Oct 17 2026: proves the sessions & logs rearchitecture slice (decision #1) -- the 46-route
+  // mutate-before-maybe-failing-save sweep, the cross-route lock-overlap retrofit it uncovered
+  // mid-build, and POST /api/sessions/:id/variation's brand-new save-failure protection. See the
+  // file's own header comment for exactly what each assertion proves and what it deliberately
+  // does not attempt.
+  'test/sessions-logs-mutate-before-save-regression.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
