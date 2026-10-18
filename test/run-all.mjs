@@ -201,6 +201,13 @@ const files = [
   // covers (representative patterns, not every route individually) and the one documented thing
   // it deliberately does not attempt (the background reminder timers' reorder).
   'test/phase1-mutate-before-save-regression.mjs',
+  // Oct 18 2026: Phase 2 (Sentry activation + structuring the scattered console.error calls).
+  // Proves booting with a real SENTRY_DSN still boots clean and behaves identically to every
+  // other test file's SENTRY_DSN-less boot (same status codes, same revert behavior, server
+  // stays responsive) now that every non-fatal catch site also calls reportNonFatal(), and
+  // separately proves the one real bug this slice found and fixed: a boot-time crash used to
+  // bypass fatalCrash() (and therefore Sentry) entirely.
+  'test/phase2-sentry-nonfatal-reporting.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
