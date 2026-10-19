@@ -58,6 +58,23 @@ ok(true, 'server boots');
 const BASE = `http://localhost:${PORT}`;
 
 const browser = await chromium.launch(LAUNCH_OPTS);
+// Oct 19 2026 (Jeff, real bug found while chasing an unrelated CI flake -- see
+// test/back-after-start-now.mjs's own Oct 19 2026 comment for the full mechanism): this file had
+// no crash-safe cleanup -- srv.kill()/browser.close()/testDb.drop() only ran on the happy path,
+// so a genuinely failing assertion anywhere above left the server process (and this file's
+// hardcoded PORT) orphaned for whatever test runs next in run-all.mjs's sequence. Same
+// uncaughtException/unhandledRejection-triggered cleanup() idiom several sibling Playwright files
+// already used (audit10-avatar-photo-everywhere.mjs, crew-sheet-empty-state.mjs) -- not new, just
+// missing here.
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { await browser.close(); } catch {}
+  try { srv && srv.kill(); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
 const errors = [];
 const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
 page.on('pageerror', e => errors.push(String(e)));
@@ -135,8 +152,7 @@ const stillOnMuscleScreen = await page.evaluate(() => document.getElementById('l
 ok(stillOnMuscleScreen, 'the muscle-group screen re-rendered cleanly after the edit (silent refresh actually completed)');
 
 await page.close();
-await browser.close();
-srv.kill();
+await cleanup();
 
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
 process.exit(fails ? 1 : 0);

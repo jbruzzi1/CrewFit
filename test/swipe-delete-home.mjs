@@ -55,6 +55,23 @@ const api = async (path, body, tok) => (await fetch(BASE + path, { method: 'POST
 const apiGet = async (path, tok) => (await fetch(BASE + path, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} })).json();
 
 const browser = await chromium.launch(LAUNCH_OPTS);
+// Oct 19 2026 (Jeff, real bug found while chasing an unrelated CI flake -- see
+// test/back-after-start-now.mjs's own Oct 19 2026 comment for the full mechanism): this file had
+// no crash-safe cleanup -- srv.kill()/browser.close()/testDb.drop() only ran on the happy path,
+// so a genuinely failing assertion anywhere above left the server process (and this file's
+// hardcoded PORT) orphaned for whatever test runs next in run-all.mjs's sequence. Same
+// uncaughtException/unhandledRejection-triggered cleanup() idiom several sibling Playwright files
+// already used (audit10-avatar-photo-everywhere.mjs, crew-sheet-empty-state.mjs) -- not new, just
+// missing here.
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { await browser.close(); } catch {}
+  try { srv && srv.kill(); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
 
 async function registerAndLogin(page, uname) {
   const reg = await page.evaluate(async ({ BASE, uname }) => {
@@ -459,8 +476,6 @@ console.log('\nJeff, real bug report + "Smarter routing" follow-up (Sep 18/20 20
   ok(!meAfterShared.some(s => s.id === ownSharedS.id && (s.participants || []).includes(me.user.id)), 'and it no longer shows as mine to keep managing');
 }
 
-await browser.close();
-srv.kill();
-await testDb.drop();
+await cleanup();
 console.log(fails === 0 ? '\nall assertions passed' : `\n${fails} FAILURE(S)`);
 process.exit(fails === 0 ? 0 : 1);
