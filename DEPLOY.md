@@ -42,8 +42,10 @@ failed, etc.) — that's almost always a Postgres/networking problem to fix (e.g
 attach` again if the secret got cleared), not a data problem.
 
 **The live data itself looks wrong** (missing users, a workout disappeared) rather than the app
-failing to start — restore the newest JSON snapshot. A fresh one is written to the volume before
-every boot, and the last 10 are kept:
+failing to start — restore the newest JSON snapshot. A fresh one is written before every boot, and
+the last 10 are kept. **If `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_STORAGE_BUCKET`
+are NOT set (true until Phase 3 Slice 1c's env vars are set — check `fly secrets list`), it's
+still on the volume, same as always:**
 ```
 fly ssh console --app spotmeapp
   ls -la /data/backups           # newest last
@@ -51,9 +53,20 @@ fly ssh console --app spotmeapp
 fly ssh sftp get /data/backups/data-<newest>.json ./restore.json --app spotmeapp
 DATABASE_URL="postgres://<user>:<password>@localhost:15432/<dbname>" node scripts/migrate-to-postgres.mjs ./restore.json
 ```
+**Once those three env vars ARE set**, new backups land in the Supabase Storage bucket instead
+(same bucket photos/avatars use, see Slice 1b/1c in `CLAUDE.md`) — pull the newest one from the
+Supabase dashboard (Storage → that bucket → sort by name, newest `data-<timestamp>.json` last) or
+the `supabase` CLI, save it locally as `restore.json`, then run the same
+`migrate-to-postgres.mjs` command above against it. A backup written BEFORE those secrets were
+set is still only on the volume — check there too if the newest Storage-side backup looks too
+recent for what you're trying to recover from.
+
 (Same tunnel-and-swap-host trick as step 4 above — `fly proxy 15432:5432 -a spotmeapp-db` in a
 separate tab first.) This is tested — `npm test`'s `data-safety.mjs` asserts the restore actually
-brings the data back, including a drill that simulates the live database being wiped first.
+brings the data back, including a drill that simulates the live database being wiped first (that
+test covers the unconfigured/volume path; see `test/phase3-backup-storage-slice1c.mjs` for what's
+proven about the Storage-configured path, disclosed there as not restore-drillable without a real
+Supabase project).
 
 **Reset a password by hand** while self-service reset is off (see the comment above
 `migratePasswords()` in `server.js`):

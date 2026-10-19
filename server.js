@@ -165,20 +165,39 @@ async function save(d) { return db.save(d); }
 // net data.json's file-copy backup used to provide, now a JSON dump of what load() just returned
 // (there is no single file to copy anymore). Restore path: scripts/migrate-to-postgres.mjs
 // against the newest one of these, documented in DEPLOY.md.
+//
+// Oct 19 2026 (Phase 3 Slice 1c): worth being honest about what this actually protects, since it
+// is NOT the app's only (or even primary) real disaster-recovery backup -- DEPLOY.md's "Off-
+// platform backup" section already ships a nightly encrypted pg_dump to Cloudflare R2 (a
+// different company/infra entirely from Fly), on top of Fly's own default volume snapshots. Both
+// of those already make "the volume is destroyed" survivable independent of anything here. What
+// THIS snapshot narrowly buys is fast, no-restore-drill access to "the state right before this
+// specific boot's migrations ran" (DEPLOY.md's "the live data itself looks wrong" runbook) -- and,
+// now that it goes through storage.js same as photos/avatars, one less thing a volume-less Slice
+// 2 machine would need local disk for at all. Moving it off-disk is volume-independence and
+// convenience, not a new safety net that didn't already exist.
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const BACKUPS_KEPT = 10;
+const BACKUP_PREFIX = 'data-';
 async function backupOnBoot() {
   try {
+    // storage.putObject's local-disk fallback branch assumes the directory already exists (same
+    // as UPLOAD_DIR's own module-load-time mkdirSync just below) -- kept here rather than hoisted
+    // module-wide since BACKUP_DIR has no other writer that would need it created earlier.
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const dest = path.join(BACKUP_DIR, `data-${stamp}.json`);
-    fs.writeFileSync(dest, JSON.stringify(DB, null, 2));
-    const kept = fs.readdirSync(BACKUP_DIR).filter(f => /^data-.*\.json$/.test(f)).sort();
-    for (const f of kept.slice(0, Math.max(0, kept.length - BACKUPS_KEPT))) {
-      try { fs.unlinkSync(path.join(BACKUP_DIR, f)); } catch (e) {}
-    }
-    console.log(`BACKUP ${dest} (${fs.statSync(dest).size} bytes, keeping ${BACKUPS_KEPT})`);
-    return dest;
+    const fname = `${BACKUP_PREFIX}${stamp}.json`;
+    const buf = Buffer.from(JSON.stringify(DB, null, 2));
+    await storage.putObject(BACKUP_DIR, fname, buf);
+    // Unlike put/get/delete, pruning needs to see EVERY backup that exists, on EITHER side of a
+    // Storage cutover, together -- see storage.js's listObjects comment for why this is a real
+    // union, not a fallback. Without that, a pre-cutover backup sitting only on local disk would
+    // never age out once new backups started landing in Storage instead.
+    const all = await storage.listObjects(BACKUP_DIR, BACKUP_PREFIX);
+    const toPrune = all.slice(0, Math.max(0, all.length - BACKUPS_KEPT));
+    for (const f of toPrune) await storage.deleteObject(BACKUP_DIR, f);
+    console.log(`BACKUP ${fname} (${buf.length} bytes, keeping ${BACKUPS_KEPT}${storage.STORAGE_ON ? ', object storage' : ', local disk'})`);
+    return fname;
   } catch (e) {
     // Deliberately not fatal: a failed backup should not take the app down, but it must be loud.
     console.error('BACKUP FAILED — starting anyway:', e.message);
