@@ -220,6 +220,13 @@ const files = [
   // network endpoint, that the actual @supabase/supabase-js client is really wired in and drives
   // the documented write/read/delete asymmetry once Jeff sets the three env vars.
   'test/phase3-photo-storage-slice1b.mjs',
+  // Phase 3 Slice 1c (off-single-machine prep): backupOnBoot() now goes through storage.js too.
+  // test/data-safety.mjs already covers the unconfigured path unmodified (one backup per boot,
+  // pruned to 10, documented restore works) -- this file covers what's new: a Storage-configured
+  // boot survives a failed backup instead of crashing, a failed write never silently falls back
+  // to the local disk it was configured to stop using, and storage.listObjects()'s prune-across-
+  // both-locations union degrades gracefully to local-only when the Storage side errors.
+  'test/phase3-backup-storage-slice1c.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

@@ -94,4 +94,41 @@ async function deleteObject(uploadDir, fname) {
   try { fs.unlinkSync(path.join(uploadDir, fname)); } catch (e) {}
 }
 
-module.exports = { STORAGE_ON, STORAGE_BUCKET, putObject, getObject, deleteObject, contentTypeFor };
+// Oct 19 2026 (Phase 3 Slice 1c -- boot backups off the volume too). Unlike put/get/delete above,
+// which each act on ONE known filename, backupOnBoot() needs to know every backup that currently
+// exists (wherever it lives) in order to decide which ones are old enough to prune. This is
+// deliberately a UNION of both locations, not an either/or fallback like getObject -- a backup
+// written before Jeff sets the three env vars lives only on local disk, one written after lives
+// only in Storage, and the retention count (BACKUPS_KEPT in server.js) has to be enforced across
+// both, together, or old pre-cutover backups would simply never age out once Storage took over
+// all new writes.
+//
+// Backups share the SAME bucket as photos/avatars (no separate env vars, one less thing for Jeff
+// to set up) -- safe because every filename this module ever writes is already namespace-safe by
+// construction: photos are `avatar_<id>.<ext>`/`post_<sessionId>_...`, backups are
+// `data-<iso-timestamp>.json` (prefix filtered below). Nothing here could collide.
+//
+// Returns filenames only (sorted ascending -- ISO-8601 timestamps embedded in the name sort
+// chronologically as plain strings), not full metadata; callers that want "the N oldest" just
+// slice from the front.
+async function listObjects(uploadDir, prefix) {
+  const names = new Set();
+  if (STORAGE_ON) {
+    // limit:1000 rather than paginating -- this bucket realistically holds low hundreds of
+    // objects for an app this size (10 kept backups + photos), nowhere near needing real
+    // pagination; revisit if that ever stops being true.
+    try {
+      const { data, error } = await bucket.list('', { limit: 1000 });
+      if (data) for (const f of data) if (f.name.startsWith(prefix)) names.add(f.name);
+      else if (error) console.error('OBJECT_STORAGE_LIST_ERR', error.message || error);
+    } catch (e) {
+      console.error('OBJECT_STORAGE_LIST_ERR', e && e.message);
+    }
+  }
+  try {
+    for (const f of fs.readdirSync(uploadDir)) if (f.startsWith(prefix)) names.add(f);
+  } catch (e) { /* directory doesn't exist locally yet -- fine, nothing to add */ }
+  return Array.from(names).sort();
+}
+
+module.exports = { STORAGE_ON, STORAGE_BUCKET, putObject, getObject, deleteObject, listObjects, contentTypeFor };
