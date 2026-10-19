@@ -701,7 +701,14 @@ const SECRET_FILE = path.join(DATA_DIR, 'auth-secret.json');
 let AUTH_SECRET = null;
 // Kept on the volume beside the data, never in the repo. Losing it logs everyone out once and
 // costs nothing else; rotating it deliberately is how you sign everybody out on purpose.
+// Oct 19 2026 (Phase 3 Slice 1a, off-single-machine prep): unlike VAPID/ADMIN_TOKEN just above,
+// this never checked an env var at all -- it was the one secret genuinely stuck to the volume,
+// with no way to hand it to a brand-new machine that doesn't have /data yet. Same pattern as the
+// other two now: an AUTH_SECRET env var (a Fly secret) wins if set; the file-based generate-and-
+// persist path stays exactly as-is for local dev and as the fallback until Jeff actually sets the
+// secret. Purely additive -- nothing changes for today's single-machine deploy until he does.
 function loadOrCreateSecret() {
+  if (process.env.AUTH_SECRET && process.env.AUTH_SECRET.length >= 32) return (AUTH_SECRET = process.env.AUTH_SECRET);
   try {
     if (fs.existsSync(SECRET_FILE)) {
       const v = JSON.parse(fs.readFileSync(SECRET_FILE, 'utf8'));
