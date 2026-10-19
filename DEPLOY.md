@@ -156,6 +156,16 @@ bash scripts/backup-db.sh restore ./backup.dump.gpg "<BACKUP_ENCRYPTION_KEY valu
 This replaces whatever is currently in the database with the backup's contents — confirm you
 actually want that before running it.
 
+**Oct 19 2026 (Phase 3 Slice 3) — this restore path is now actually proven, not just documented.**
+A real backup was downloaded, decrypted, and restored into a scratch Postgres 18 cluster (never
+`spotmeapp-db` itself), and the row counts matched live production. Full story in CLAUDE.md's
+Slice 3 section, but the one thing worth repeating here: the backups existing at the time (Oct
+11–19) turned out to be **permanently undecryptable** because the saved copy of
+`BACKUP_ENCRYPTION_KEY` had been lost — exactly the failure mode the "write it down somewhere
+outside GitHub" warning above exists to prevent. A new key was generated and this time actually
+saved before being set anywhere. If you're ever doing a real restore and the passphrase you have
+doesn't decrypt the backup, that's the first thing to suspect — not a corrupted file.
+
 ## Deploying by hand (should not be needed)
 ```
 export PATH="$HOME/.fly/bin:$PATH"; fly deploy --app spotmeapp
