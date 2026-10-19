@@ -1,7 +1,22 @@
 # Fly.io config for CrewFit (brand working-name; deploy handle below is 'spotmeapp' placeholder)
-# Always-on (Launch plan) + 1 GB persistent volume at /data so data.json survives
-# restarts. The volume "spotmeapp_data" is created via:
-#   fly volumes create spotmeapp_data --region iad --size 1 --app spotmeapp
+#
+# Oct 19 2026 (Phase 3 Slice 2, "doomsday" infra): the persistent volume this comment used to
+# describe ("1 GB persistent volume at /data so data.json survives restarts") is GONE as of this
+# change -- see CLAUDE.md's Phase 3 Slice 2 section for the full story. Everything that volume
+# used to hold is now either a Fly secret (AUTH_SECRET, VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY,
+# ADMIN_TOKEN) or lives in Supabase Storage (SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY/
+# SUPABASE_STORAGE_BUCKET -- photos/avatars and boot-time backups, via storage.js). DATA_DIR=/data
+# stays set below (and the Dockerfile still creates that directory in the image) purely as the
+# fallback path those same features use if any of those env vars were ever unset again -- it's
+# just a normal, non-persistent directory in the container's own writable layer now, not a
+# mounted volume. A machine with no volume dependency is what makes it actually replaceable on a
+# host failure, which was the whole point of this slice.
+#
+# Removing [mounts] and redeploying replaces the running Machine with one that has no volume
+# attached (confirmed against Fly's own docs before this change shipped). The volume itself
+# ("spotmeapp_data") is NOT destroyed by this -- it sits around, detached, as a safety net for a
+# while before anyone runs `fly volumes destroy` on it. See CLAUDE.md for the exact commands and
+# the reasoning for the grace period.
 
 app = 'spotmeapp'
 primary_region = 'iad'
@@ -12,10 +27,6 @@ primary_region = 'iad'
 [env]
   DATA_DIR = "/data"
   NODE_ENV = "production"
-
-[mounts]
-  source = "spotmeapp_data"
-  destination = "/data"
 
 [http_service]
   internal_port = 3000
