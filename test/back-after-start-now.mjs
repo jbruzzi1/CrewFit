@@ -54,6 +54,29 @@ if (!srv) { console.log('FAIL server did not boot'); process.exit(1); }
 const BASE = `http://localhost:${PORT}`;
 
 const browser = await chromium.launch(LAUNCH_OPTS);
+// Oct 19 2026 (Jeff, real bug found while chasing an unrelated CI flake: "fix ALL issues... bug
+// also means issue... leave no bug unturned"). This file used to have NO crash-safe cleanup at
+// all -- srv.kill()/rmSync/browser.close()/testDb.drop() only ran on the happy path, after every
+// assertion below. Any genuinely failing `page.click`/`page.evaluate` (Playwright's own
+// actionability timeout, 30s) throws, which was an UNHANDLED rejection here -- Node prints it and
+// exits, skipping every line of cleanup. The real-world consequence: this file hardcodes PORT
+// 4999, which test/posted-workout-set-reorder.mjs ALSO hardcodes and runs later in the same
+// run-all.mjs sequence -- a single flaky timeout in THIS file left its server process orphaned on
+// 4999, so the NEXT file's own boot() could never bind that port and failed with "server did not
+// boot" -- turning one real (if rare) flake into the exact two-file "2 FAILED" CI run Jeff saw.
+// Same uncaughtException/unhandledRejection-triggered cleanup() idiom audit10-avatar-photo-
+// everywhere.mjs and crew-sheet-empty-state.mjs already use -- not a new pattern, just missing
+// here (and in several sibling Playwright files, each fixed the same way this same pass).
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { await browser.close(); } catch {}
+  try { srv && srv.kill(); } catch {}
+  try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
 const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
 const errors = [];
 page.on('pageerror', e => errors.push(String(e)));
@@ -91,20 +114,38 @@ console.log('the exact repro: + New workout, add an exercise via the real librar
   const nameVal = await page.$eval('#wname', el => el.value);
   ok(nameVal === '', `the name field is genuinely blank going into submit (got ${JSON.stringify(nameVal)})`);
   await page.click('button:has-text("Create workout")');
-  await page.waitForTimeout(500);
-
+  // Oct 19 2026 (Jeff: "2" -- properly fix this, not just a longer guessed sleep): home() is
+  // async and does its ENTIRE render in one shot only after four awaited fetches resolve
+  // (/api/sessions, /api/friends, /api/progress, /api/notifications -- see home() in app.js), so
+  // nothing from Home is in the DOM at all until that round-trip finishes. A flat
+  // waitForTimeout(500) is a guess at how long that takes; under real load (a shared CI runner,
+  // the suite's own postgres container) it can legitimately take longer than 500ms, and a guessed
+  // sleep is either wastefully long or, on a slow run, still too short. waitForSelector polls for
+  // the actual thing this assertion is about, succeeds the instant it's true, and still has a
+  // generous ceiling (10s) rather than page.click's full 30s default, so a genuinely broken
+  // render fails fast and clearly here instead of masquerading as a "Start now" problem two lines
+  // down.
+  await page.waitForSelector('.btn-new', { timeout: 10000 });
   const onHomeAfterCreate = await page.evaluate(() => !!document.querySelector('.btn-new'));
   ok(onHomeAfterCreate, 'landed on Home after creating (the "+ New workout" button is on screen)');
 
-  // "Start now" on the Next Up card for the workout just created.
+  // "Start now" on the Next Up card for the workout just created. page.click() already polls for
+  // up to 30s on its own, so this alone isn't what used to time out -- but it only polls for the
+  // LOCATOR, not for "Home has actually finished its post-create render pass" (the same async
+  // home() from the comment above), so a slow render plus a slow page.click() retry cadence could
+  // still eat into that budget before the button exists. Waiting for the Next Up card's own
+  // container first makes the two steps independent: by the time this test clicks, "Start now" is
+  // either genuinely there or genuinely never coming (nextUp null/mis-scheduled), rather than
+  // leaving that ambiguous.
+  await page.waitForSelector('.next-card', { timeout: 10000 });
   await page.click('button:has-text("Start now")');
-  await page.waitForTimeout(500);
+  await page.waitForSelector('#chatbox', { timeout: 10000 });
   const onSessionPage = await page.evaluate(() => !!document.querySelector('#chatbox'));
   ok(onSessionPage, 'Start now landed on the live workout/session page');
 
   // The actual bug: a REAL browser Back (not a scripted shortcut) after Start Now.
   await page.goBack();
-  await page.waitForTimeout(500);
+  await page.waitForSelector('.mg-tile, .btn-new', { timeout: 10000 }).catch(() => {});
 
   const html = await page.evaluate(() => document.getElementById('app').innerHTML);
   const onLibraryAfterBack = html.includes('mg-tile');
@@ -114,10 +155,7 @@ console.log('the exact repro: + New workout, add an exercise via the real librar
   ok(errors.length === 0, `no console pageerrors along the way (got ${JSON.stringify(errors)})`);
 }
 
-try { srv.kill(); } catch {}
-rmSync(dir, { recursive: true, force: true });
-await browser.close();
-await testDb.drop();
+await cleanup();
 
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
 process.exit(fails ? 1 : 0);

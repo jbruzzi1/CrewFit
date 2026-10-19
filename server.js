@@ -30,9 +30,8 @@ process.on('unhandledRejection', err => fatalCrash('unhandledRejection', err));
 // Sentry off, rather than crashing boot (before the handlers above even existed, pre-review).
 // SENTRY_ON (not process.env.SENTRY_DSN) is what fatalCrash checks, so a failed init can never
 // make fatalCrash call into a Sentry that didn't actually initialize.
-// Jeff still needs to create a (free) Sentry account and hand over the DSN as a Fly secret --
-// nothing here sends anything anywhere until he does; until then this only changes the LOG LINE
-// an uncaught error gets (loud and prefixed, instead of Node's bare default).
+// Oct 18 2026 (Phase 2): Jeff already has the Sentry account/DSN, set as the SENTRY_DSN Fly
+// secret -- nothing here sends anything anywhere unless that secret is actually set.
 let Sentry, SENTRY_ON = false;
 try {
   Sentry = require('@sentry/node');
@@ -45,6 +44,26 @@ try {
   }
 } catch (e) {
   console.error('Sentry failed to load/initialize -- continuing WITHOUT it:', e.message);
+}
+// Oct 18 2026 (Phase 2, Jeff: "also send non-fatal errors" -- every one of this file's existing
+// "caught it, logged it, kept going" error sites only ever reached fly logs, which nobody
+// actually watches until something's already visibly broken). Called ALONGSIDE each site's
+// existing console.error, never in place of it and never in place of whatever that site already
+// does to keep going -- this only adds visibility, it changes no control flow. Can never itself
+// throw or block, same swallow-everything shape as fatalCrash's own Sentry call just below.
+// Reports at Sentry's 'warning' level (SENTRY_ON only) so these stay visually distinct from real
+// crashes, which still report at Sentry's own default 'error' level via fatalCrash.
+// Pass an Error (or anything with a .message) as `err` for a real exception with a stack trace;
+// omit it for a pure "this happened" condition with no caught error object (captureMessage).
+function reportNonFatal(context, err) {
+  try {
+    if (!SENTRY_ON) return;
+    if (err) {
+      Sentry.captureException(err instanceof Error ? err : new Error(String(err.message || err)), { level: 'warning', tags: { context } });
+    } else {
+      Sentry.captureMessage(context, 'warning');
+    }
+  } catch (_e) {}
 }
 // Both uncaughtException and unhandledRejection are genuinely fatal -- the process is in an
 // unknown state after either, and Node's own default (since Node 15) is already to exit on an
@@ -162,6 +181,7 @@ async function backupOnBoot() {
   } catch (e) {
     // Deliberately not fatal: a failed backup should not take the app down, but it must be loud.
     console.error('BACKUP FAILED — starting anyway:', e.message);
+    reportNonFatal('boot backup', e);
     return null;
   }
 }
@@ -687,7 +707,7 @@ function loadOrCreateSecret() {
       const v = JSON.parse(fs.readFileSync(SECRET_FILE, 'utf8'));
       if (v && typeof v.secret === 'string' && v.secret.length >= 32) return (AUTH_SECRET = v.secret);
     }
-  } catch (e) { console.error('auth secret unreadable, generating a new one:', e.message); }
+  } catch (e) { console.error('auth secret unreadable, generating a new one:', e.message); reportNonFatal('boot auth secret unreadable', e); }
   AUTH_SECRET = crypto.randomBytes(48).toString('hex');
   const tmp = SECRET_FILE + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify({ secret: AUTH_SECRET, at: new Date().toISOString() }, null, 2));
@@ -2813,6 +2833,7 @@ async function migrateCrewRowColumnsIntoPostgres() {
     } catch (e) {
       failed++;
       console.error('migrateCrewRowColumnsIntoPostgres: failed to backfill crew (will retry next boot):', row.id, e && e.message);
+      reportNonFatal('migrateCrewRowColumnsIntoPostgres backfill', e);
     }
   }
   if (migrated || failed) console.log(`crew-row column backfill: ${migrated} crew(s) migrated to real columns/crew_members${failed ? `, ${failed} failed and will retry next boot` : ''}`);
@@ -2929,6 +2950,7 @@ async function migrateUserScalarColumnsIntoPostgres() {
     } catch (e) {
       failed++;
       console.error('migrateUserScalarColumnsIntoPostgres: failed to backfill user (will retry next boot):', row.id, e && e.message);
+      reportNonFatal('migrateUserScalarColumnsIntoPostgres backfill', e);
     }
   }
   if (migrated || failed || skipped) console.log(`user scalar-column backfill: ${migrated} user(s) migrated to real columns${failed ? `, ${failed} failed and will retry next boot` : ''}${skipped ? `, ${skipped} skipped (no longer in memory)` : ''}`);
@@ -3160,6 +3182,7 @@ app.delete('/api/crews/:id', auth, async (req, res) => {
       await db.pgDeleteCrewChallengesByCrew(c.id);
     } catch (e) {
       console.error('crew delete: failed to clean up crew_messages/crew_challenges for', c.id, e);
+      reportNonFatal('crew delete cleanup', e);
     }
     res.json({ ok: true });
   });
@@ -3493,6 +3516,7 @@ async function checkChallengeCompletion(c) {
     ch = await runningChallenge(c);
   } catch (e) {
     console.error('checkChallengeCompletion: failed to read running challenge (continuing -- not fatal to the caller):', c.id, e && e.message);
+    reportNonFatal('checkChallengeCompletion read', e);
     return false;
   }
   if (!ch) return false;
@@ -3551,6 +3575,7 @@ async function checkChallengeCompletion(c) {
     return true;
   } catch (e) {
     console.error('checkChallengeCompletion: failed to mark challenge complete / celebrate (continuing -- not fatal to the caller):', c.id, ch.id, e && e.message);
+    reportNonFatal('checkChallengeCompletion complete', e);
     return false;
   }
 }
@@ -3640,6 +3665,7 @@ async function emitFinishFeedEvents(s, userId, ranksBefore, localDate) {
       await emitFeedEvent('rank', userId, { crewId: c.id, crewName: c.name, rank: after, text: `moved to #${after}` });
     } catch (e) {
       console.error('emitFinishFeedEvents: failed to check/emit crew rank event (continuing -- not fatal to the caller):', c.id, e && e.message);
+      reportNonFatal('emitFinishFeedEvents crew rank', e);
     }
   }
 }
@@ -3744,7 +3770,7 @@ app.delete('/api/crews/:id/challenge/:challengeId', auth, async (req, res) => {
   // no-op if the row doesn't exist, so no existence check is needed first.
   if (ch.feedEventId) {
     try { await db.pgDeleteFeedEvent(ch.feedEventId); }
-    catch (e) { console.error('crew challenge cancel: feed-event cleanup failed', ch.feedEventId, e); }
+    catch (e) { console.error('crew challenge cancel: feed-event cleanup failed', ch.feedEventId, e); reportNonFatal('crew challenge cancel feed-event cleanup', e); }
   }
   res.json(await publicCrew(c, req.userId));
 });
@@ -4958,6 +4984,7 @@ async function emitFeedEvent(type, by, fields) {
     await db.pgInsertFeedEvent(row);
   } catch (e) {
     console.error('emitFeedEvent: pgInsertFeedEvent failed (continuing -- not fatal to the caller):', e && e.message);
+    reportNonFatal('emitFeedEvent insert', e);
   }
   return row;
 }
@@ -5031,7 +5058,7 @@ function groupedHistoryWrite(userId, payload, group) {
     pluralBody: (n) => capStr(group.pluralBody(n), 300),
     link: isObj(payload.link) ? payload.link : null,
     seenAtIso: new Date(seenAt).toISOString(),
-  }).catch(e => console.error('groupedHistoryWrite: pgMergedNotificationWrite failed:', e && e.message));
+  }).catch(e => { console.error('groupedHistoryWrite: pgMergedNotificationWrite failed:', e && e.message); reportNonFatal('groupedHistoryWrite', e); });
 }
 // `payload.link` (optional) -- Sep 8 2026 (Jeff, lock-screen screenshot: "when I click on a push
 // notification it should open to where the notification happened... currently it just opens to
@@ -5055,7 +5082,7 @@ async function notify(userId, payload, opts) {
       // pgInsertNotification is the only write now, and it persists itself directly. Fire-and-
       // forget, same as groupedHistoryWrite above -- a push failure here must never block the
       // actual push send just below.
-      db.pgInsertNotification(row).catch(e => console.error('notify: pgInsertNotification failed:', e && e.message));
+      db.pgInsertNotification(row).catch(e => { console.error('notify: pgInsertNotification failed:', e && e.message); reportNonFatal('notify pgInsertNotification', e); });
     }
     // Oct 13 2026 (read cutover): the save(DB) that used to live here existed only to persist the
     // DB.notifications write above (see this comment's prior text, still visible in git history) --
@@ -5094,6 +5121,7 @@ async function notify(userId, payload, opts) {
     sub = await db.pgGetPushSub(userId);
   } catch (e) {
     console.error('notify: pgGetPushSub failed (skipping this push, not fatal):', e && e.message);
+    reportNonFatal('notify pgGetPushSub', e);
     return;
   }
   if (!sub) return;
@@ -5113,7 +5141,7 @@ async function notify(userId, payload, opts) {
     // across requests/processes too, not only within the one process holding that exact object.
     if (err && (err.statusCode === 404 || err.statusCode === 410)) {
       db.pgDeletePushSubIfEndpointMatches(userId, sub.endpoint)
-        .catch(e => console.error('notify: failed to persist dead-subscription cleanup:', e && e.message));
+        .catch(e => { console.error('notify: failed to persist dead-subscription cleanup:', e && e.message); reportNonFatal('notify dead-subscription cleanup', e); });
     }
   });
 }
@@ -5490,6 +5518,7 @@ function migrateSessionShapes() {
       if (shapeFingerprint(s) !== before) healed++;
     } catch (e) {
       console.error('migrateSessionShapes: could not heal session ' + id + ' — ' + (e && e.message));
+      reportNonFatal('migrateSessionShapes heal', e);
     }
   }
   if (healed || dropped) console.log('migrateSessionShapes: healed ' + healed + ' malformed session(s)'
@@ -8350,6 +8379,7 @@ async function wipeUserFromAllSessions(me) {
     // wipe would be undetectable after the fact.
     if (pass === PASS_CAP - 1) {
       console.error(`wipeUserFromAllSessions(${me}): hit the ${PASS_CAP}-pass cap with ${toProcess.length} session(s) still pending -- wipe is INCOMPLETE for this user`);
+      reportNonFatal(`wipeUserFromAllSessions hit the ${PASS_CAP}-pass cap, incomplete wipe for ${me}`);
     }
     for (const s of toProcess) {
       handled.add(s.id);
@@ -8628,7 +8658,7 @@ async function anonymizeAndDeleteAccount(targetId) {
   // memory with nothing to put it back. Caught and logged here instead, the same way the
   // crew-messages/crew-challenges best-effort cleanup calls on DELETE /api/crews/:id already do,
   // so a hiccup on this one call can never reopen the hazard this whole sweep exists to close.
-  try { await db.pgDeletePushSub(me); } catch (e) { console.error('anonymizeAndDeleteAccount: pgDeletePushSub failed (continuing -- not fatal):', e && e.message); }
+  try { await db.pgDeletePushSub(me); } catch (e) { console.error('anonymizeAndDeleteAccount: pgDeletePushSub failed (continuing -- not fatal):', e && e.message); reportNonFatal('anonymizeAndDeleteAccount pgDeletePushSub', e); }
 
   // Oct 2 2026 (deep audit finding): wipeUserFromAllSessions above cleans up every pending-action
   // type that lives on DB.sessions (invites, join requests, removals, suggestions, reinvite-asks),
@@ -11324,6 +11354,7 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
         // discarding it here silently lost a real one. Fail the whole request so the person still
         // has the photo and can try again.
         console.error('MEDIA_WRITE_ERR', e && e.message);
+        reportNonFatal('posted-recap media write', e);
         writeFailed = e && e.message;
       }
     }
@@ -11585,6 +11616,12 @@ app.use((err, req, res, next) => {
   const status = (err && (err.status || err.statusCode)) || 500;
   const message = status === 413 ? 'Request body too large.' : 'Something went wrong. Please try again.';
   console.error(err && err.stack || err);
+  // Oct 18 2026 (Phase 2): this is the single highest-value reportNonFatal call in the file --
+  // every thrown error or rejected promise from ANY route handler ends up here (see the comment
+  // just above this middleware), and until now none of them ever reached Sentry at all, only
+  // fly logs. A 413 (body too large) is routine client misbehavior, not worth Sentry noise --
+  // everything else is a real route-level failure worth seeing.
+  if (status !== 413) reportNonFatal('route error: ' + (req.method + ' ' + req.path), err);
   res.status(status).json({ error: message });
 });
 
@@ -11683,7 +11720,7 @@ app.use((err, req, res, next) => {
           notify(uid, { title: 'Keep your streak alive', body: `You're on a ${streak}-day streak - train today to keep it going.` });
         }
       }
-    } catch (e) { console.error('streak reminder check failed:', e && e.message); }
+    } catch (e) { console.error('streak reminder check failed:', e && e.message); reportNonFatal('streak reminder check', e); }
   }, 30 * 60 * 1000);
 
   // Aug 31: "you have a workout scheduled today" push reminders — same polling shape as the
@@ -11713,7 +11750,7 @@ app.use((err, req, res, next) => {
           notify(uid, { title: 'Workout today', body: sessionName ? `"${sessionName}" is on your schedule for today.` : 'You have a workout scheduled for today.' });
         }
       }
-    } catch (e) { console.error('workout reminder check failed:', e && e.message); }
+    } catch (e) { console.error('workout reminder check failed:', e && e.message); reportNonFatal('workout reminder check', e); }
   }, 30 * 60 * 1000);
 
   // Sep 5 2026: notification-history storage hygiene (see pruneOldNotifications, and the boot-
@@ -11726,7 +11763,7 @@ app.use((err, req, res, next) => {
   // old `if (pruneOldNotifications()) await save(DB)` pattern is gone; just await and log.
   setInterval(async () => {
     try { await pruneOldNotifications(); }
-    catch (e) { console.error('notification history prune failed:', e && e.message); }
+    catch (e) { console.error('notification history prune failed:', e && e.message); reportNonFatal('notification history prune', e); }
   }, 6 * 60 * 60 * 1000);
 
   // Sep 11 2026: same storage-hygiene sweep as notifications above, for the Activity page's
@@ -11734,9 +11771,14 @@ app.use((err, req, res, next) => {
   // Oct 13 2026 (read cutover): same fix as the notifications timer just above.
   setInterval(async () => {
     try { await pruneOldFeedEvents(); }
-    catch (e) { console.error('feed event prune failed:', e && e.message); }
+    catch (e) { console.error('feed event prune failed:', e && e.message); reportNonFatal('feed event prune', e); }
   }, 6 * 60 * 60 * 1000);
 })().catch(e => {
-  console.error('FATAL during boot:', e && e.stack || e);
-  process.exit(1);
+  // Oct 18 2026 (Phase 2 finding, disclosed to Jeff): this boot-sequence rejection used to log and
+  // exit directly, bypassing fatalCrash entirely -- meaning a boot-time crash (a bad migration, a
+  // DB connection failure) was the ONE kind of fatal failure this app's Sentry wiring never
+  // actually reported, despite the Oct 10 work's whole point being "capture a crash during boot
+  // too, not just one during a request" (see this file's very first comment). Routed through the
+  // same fatalCrash() every other fatal path already uses, so boot crashes are now covered too.
+  fatalCrash('boot', e);
 });

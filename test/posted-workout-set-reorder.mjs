@@ -70,6 +70,23 @@ await api(`/api/sessions/${sess.id}/lock`, 'POST', jordan.token, {});
 await api(`/api/sessions/${sess.id}/post`, 'POST', jordan.token, { notes: '', media: [], visibility: 'public' });
 
 const browser = await chromium.launch(LAUNCH_OPTS);
+// Oct 19 2026 (Jeff, real bug found while chasing an unrelated CI flake in
+// test/back-after-start-now.mjs -- see that file's own Oct 19 2026 comment for the full
+// mechanism): this file had no crash-safe cleanup either, AND hardcodes the exact same PORT 4999
+// as that file, which runs earlier in run-all.mjs's sequence -- the two-file "2 FAILED" CI run
+// Jeff saw was that file's leaked server process orphaning THIS port, not two independent bugs.
+// Fixed the same way there: an uncaughtException/unhandledRejection-triggered cleanup() so a
+// genuinely failing assertion here still frees 4999 for whatever runs next, instead of silently
+// handing the next test file the same failure for a completely unrelated reason.
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { await browser.close(); } catch {}
+  try { srv && srv.kill(); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
 const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
 const errors = [];
 page.on('pageerror', e => errors.push(String(e)));
@@ -222,8 +239,6 @@ console.log('geometry: the new handle does not crowd the badge or get clipped, a
 
 console.log(errors.length ? '\nPAGE ERRORS:\n' + errors.join('\n') : '\nno page errors');
 await page.close();
-await browser.close();
-srv.kill();
-await testDb.drop();
+await cleanup();
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
 process.exit(fails || errors.length ? 1 : 0);
