@@ -208,6 +208,11 @@ const files = [
   // separately proves the one real bug this slice found and fixed: a boot-time crash used to
   // bypass fatalCrash() (and therefore Sentry) entirely.
   'test/phase2-sentry-nonfatal-reporting.mjs',
+  // Phase 3 Slice 1a (off-single-machine prep): proves AUTH_SECRET env var support on
+  // loadOrCreateSecret() -- unchanged behavior when unset, the file genuinely untouched when
+  // set, and the actual payoff: two independent "machines" (separate DATA_DIRs, no shared disk)
+  // booted with the same AUTH_SECRET trust each other's tokens.
+  'test/phase3-auth-secret-env.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
