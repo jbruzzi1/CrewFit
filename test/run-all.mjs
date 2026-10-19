@@ -213,6 +213,13 @@ const files = [
   // set, and the actual payoff: two independent "machines" (separate DATA_DIRs, no shared disk)
   // booted with the same AUTH_SECRET trust each other's tokens.
   'test/phase3-auth-secret-env.mjs',
+  // Phase 3 Slice 1b (off-single-machine prep): proves storage.js's local-disk fallback is
+  // byte-identical to the old fs.* calls for all five call sites (avatar upload/replace, recap
+  // photo upload+serving via a media token, account-deletion cleanup) and the new hand-rolled
+  // /uploads/:fname route's path-traversal rejection -- plus, against a real (unreachable)
+  // network endpoint, that the actual @supabase/supabase-js client is really wired in and drives
+  // the documented write/read/delete asymmetry once Jeff sets the three env vars.
+  'test/phase3-photo-storage-slice1b.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

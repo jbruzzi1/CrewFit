@@ -153,6 +153,7 @@ if (process.env.ADMIN_TOKEN) {
 // connection/query error.
 const db = require('./db');
 const { sanitizePgText } = require('./pgmini');
+const storage = require('./storage');
 // notify-helpers.js's firstExerciseStartNotification() is no longer called from this file (see the
 // comment above POST /api/sessions, Sep 5: the creator no longer gets self-notified on their own
 // workout) -- left required nowhere here on purpose, the function/its test still live in
@@ -205,7 +206,7 @@ async function migrateMedia() {
           const b64 = src.slice(comma + 1);
           const ext = ({ 'image/png':'png','image/jpeg':'jpg','image/jpg':'jpg','image/webp':'webp','image/gif':'gif','video/mp4':'mp4','video/webm':'webm','video/quicktime':'mov' })[mime] || (mime.startsWith('video') ? 'mp4' : 'jpg');
           const fname = `post_mig_${s.id}_${Date.now()}_${uid()}.${ext}`;
-          fs.writeFileSync(path.join(UPLOAD_DIR, fname), Buffer.from(b64, 'base64'));
+          await storage.putObject(UPLOAD_DIR, fname, Buffer.from(b64, 'base64'));
           keep.push({ type: m.type === 'video' ? 'video' : 'image', src: `/uploads/${fname}` });
           recovered++; touched = true;
         } catch (e) { dropped++; touched = true; }
@@ -689,7 +690,72 @@ app.get('/uploads/:fname', (req, res, next) => {
   // media isn't servable to anyone, full stop.
   return res.status(404).end();
 });
-app.use('/uploads', express.static(UPLOAD_DIR));
+// Oct 19 2026 (Phase 3 Slice 1b): used to be a plain `express.static(UPLOAD_DIR)` mount --
+// correct only as long as every uploaded file genuinely lives on this machine's local volume.
+// Now that a file can live in object storage instead (storage.js, once Jeff sets its three env
+// vars), serving has to go through the same abstraction every upload/delete call site already
+// does, rather than assuming local disk. The auth-gating middleware just above is UNCHANGED --
+// this only replaces what happens once that middleware has already allowed the request through
+// (an avatar, or a post photo its own canSeePostAuthor check already approved).
+//
+// Range requests, added after cold review flagged their absence: express.static gave this for
+// free, and dropping it silently would have been a real regression specifically for recap
+// VIDEOS (mp4/webm/mov are valid uploads -- see ALLOWED_MEDIA/MEDIA_MAX_VIDEO) -- iOS Safari's
+// <video> element relies on HTTP Range to seek/scrub, and sometimes even to start playback of
+// anything non-trivially sized. Hand-rolled here (not `send`/`res.sendFile`, which only work
+// against a real local path) because storage.getObject returns a Buffer in memory either way --
+// from Supabase Storage once configured, or from local disk today -- so Range support has to work
+// the same for both, not just the local-disk case.
+app.get('/uploads/:fname', async (req, res) => {
+  const fname = req.params.fname;
+  // express.static refused path traversal/invalid names for free; this hand-rolled route has to
+  // do that itself now. Every filename this app has ever generated (avatar_<id>.<ext>,
+  // post_<sessionId>_<ts>_<uid>.<ext>, post_mig_...) matches this shape -- anything else is
+  // either a typo'd URL or an attempt to escape UPLOAD_DIR, and gets a flat 404 either way.
+  if (!/^[\w.-]+$/.test(fname) || fname.includes('..')) return res.status(404).end();
+  const buf = await storage.getObject(UPLOAD_DIR, fname);
+  if (!buf) return res.status(404).end();
+  const contentType = storage.contentTypeFor(fname);
+  res.set('Content-Type', contentType);
+  res.set('Accept-Ranges', 'bytes');
+  const range = req.headers.range;
+  const total = buf.length;
+  if (range) {
+    // Only the single-range form ("bytes=start-end", either side optional) -- the only shape any
+    // real browser's <video> element actually sends. A malformed/multi-range request falls back
+    // to a full 200 response rather than erroring, same as a client that sent no Range at all.
+    const m = /^bytes=(\d*)-(\d*)$/.exec(range);
+    if (m && (m[1] !== '' || m[2] !== '')) {
+      // Caught by this slice's own test (phase3-photo-storage-slice1b.mjs): the suffix form
+      // ("bytes=-500", meaning "the last 500 bytes") has NO start in the request at all -- end
+      // must be computed as total-1, never read from m[2] (m[2] is the suffix LENGTH here, 500,
+      // not an end offset; the first draft of this route used it as if it were one, which turned
+      // every suffix-range request into a bogus near-start-of-file range instead of the real tail).
+      let start, end;
+      if (m[1] === '') {
+        start = Math.max(0, total - Number(m[2]));
+        end = total - 1;
+      } else {
+        start = Number(m[1]);
+        end = m[2] === '' ? total - 1 : Number(m[2]);
+      }
+      if (end > total - 1) end = total - 1;
+      if (start <= end && start < total) {
+        res.status(206);
+        res.set('Content-Range', `bytes ${start}-${end}/${total}`);
+        res.set('Content-Length', String(end - start + 1));
+        return res.end(buf.subarray(start, end + 1));
+      }
+      // Unsatisfiable range (e.g. start beyond the end of the file) -- 416, not a silent 200 of
+      // the whole file, which would make a seek-to-the-end request play from the beginning instead.
+      res.status(416);
+      res.set('Content-Range', `bytes */${total}`);
+      return res.end();
+    }
+  }
+  res.set('Content-Length', String(total));
+  res.send(buf);
+});
 
 // Logins are SIGNED, not remembered. They used to be a random string held in a plain object in
 // memory, so every restart forgot every login — and this app deploys several times a day, which
@@ -1804,10 +1870,10 @@ app.post('/api/me/avatar', auth, async (req, res) => {
   // `avatar_<id>.jpg` would both sit in UPLOAD_DIR forever, only one of them ever referenced.
   // Same-extension re-uploads already self-cleaned by simply overwriting the one file. Best-effort
   // unlink: nothing here should fail the request over a leftover file that's merely unreferenced.
-  const prevPath = u.avatar ? path.join(UPLOAD_DIR, path.basename(u.avatar)) : null;
-  fs.writeFileSync(path.join(UPLOAD_DIR, fname), Buffer.from(b64, 'base64'));
-  if (prevPath && path.basename(prevPath) !== fname) {
-    try { fs.unlinkSync(prevPath); } catch (e) {}
+  const prevFname = u.avatar ? path.basename(u.avatar) : null;
+  await storage.putObject(UPLOAD_DIR, fname, Buffer.from(b64, 'base64'));
+  if (prevFname && prevFname !== fname) {
+    await storage.deleteObject(UPLOAD_DIR, prevFname);
   }
   // Oct 18 2026 (full-app hazard sweep): field-level CAS revert, same pattern as FOLLOW_FIELDS --
   // on a failed save, u.avatar reverts to what it was before this request ONLY if nothing else
@@ -8813,7 +8879,7 @@ async function anonymizeAndDeleteAccount(targetId) {
   // directly contradicting this route's own point ("no longer identifies this person"). Same
   // best-effort unlink POST /api/me/avatar already uses for exactly this reason.
   if (avatarToUnlink) {
-    try { fs.unlinkSync(path.join(UPLOAD_DIR, path.basename(avatarToUnlink))); } catch (e) {}
+    await storage.deleteObject(UPLOAD_DIR, path.basename(avatarToUnlink));
   }
   for (const { mid, c } of pendingCrewNotifications) {
     notify(mid, { title: c.name, body: 'The crew owner\'s account was deleted — this crew has no owner now.', link: { type: 'crew', crewId: c.id } });
@@ -11342,9 +11408,16 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   }
   if (total > MEDIA_MAX_TOTAL)
     return res.status(413).json({ error: `That is ${mb(total)} in one go. The limit is ${mb(MEDIA_MAX_TOTAL)}.` });
-  // Persist media to disk on the volume (avoids huge/truncated base64 blobs in data.json).
+  // Persist media to disk on the volume, or to object storage when Slice 1b's three env vars
+  // are set (see storage.js) -- avoids huge/truncated base64 blobs in data.json either way.
+  // Oct 19 2026 (Phase 3 Slice 1b): was a synchronous `.map()` with a synchronous
+  // fs.writeFileSync inside -- storage.putObject() is async (an HTTP call when object storage
+  // is on), so this is now a plain for-of loop built the same shape by hand. Same per-item
+  // try/catch, same writeFailed short-circuit flag, same "keep processing the rest of the items
+  // either way" behavior as before -- only the write call itself changed.
   let writeFailed = null;
-  const cleanMedia = incoming.map(m => {
+  const cleanMedia = [];
+  for (const m of incoming) {
     const type = m.type === 'video' ? 'video' : 'image';
     let src = String(m.src || '');
     const dm = src.match(ALLOWED_MEDIA);
@@ -11354,19 +11427,19 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
         const ext = sub.includes('png') ? 'png' : sub.includes('webp') ? 'webp' : sub.includes('gif') ? 'gif'
                   : sub.includes('mp4') ? 'mp4' : sub.includes('webm') ? 'webm' : sub.includes('quicktime') ? 'mov' : 'jpg';
         const fname = `post_${req.params.id}_${Date.now()}_${uid()}.${ext}`;
-        fs.writeFileSync(path.join(UPLOAD_DIR, fname), Buffer.from(dm[2], 'base64'));
+        await storage.putObject(UPLOAD_DIR, fname, Buffer.from(dm[2], 'base64'));
         src = `/uploads/${fname}`;
       } catch (e) {
-        // The write failed — disk full, permissions, a full volume. That is NOT a bad photo, and
-        // discarding it here silently lost a real one. Fail the whole request so the person still
-        // has the photo and can try again.
+        // The write failed — disk full, permissions, a full volume (or, now, object storage
+        // rejecting the upload). That is NOT a bad photo, and discarding it here silently lost
+        // a real one. Fail the whole request so the person still has the photo and can try again.
         console.error('MEDIA_WRITE_ERR', e && e.message);
         reportNonFatal('posted-recap media write', e);
         writeFailed = e && e.message;
       }
     }
-    return { type, src };
-  }).filter(m => m.src);
+    if (src) cleanMedia.push({ type, src });
+  }
   if (writeFailed) return res.status(507).json({
     error: 'Could not save that photo — the server is out of space. Your workout is not saved; please try again.' });
   // Editing notes/photos on an already-posted recap (the inline-edit "Save" path) hits this same
