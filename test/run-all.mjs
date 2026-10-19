@@ -227,6 +227,15 @@ const files = [
   // to the local disk it was configured to stop using, and storage.listObjects()'s prune-across-
   // both-locations union degrades gracefully to local-only when the Storage side errors.
   'test/phase3-backup-storage-slice1c.mjs',
+  // Phase 3 Slice 2 (disposable machine): fatalCrash() (server.js -- the one function
+  // uncaughtException/unhandledRejection/the boot IIFE's rejection all funnel through) used to
+  // call Sentry.captureException(err) then process.exit(1) immediately, with zero grace period for
+  // the actual async HTTP POST to Sentry's ingestion endpoint -- meaning every crash alert since
+  // Phase 2 shipped had silently never actually been delivered. Proves, against the real
+  // @sentry/node client and a real local HTTP receiver, that the event now genuinely arrives
+  // before the process exits, and that an unreachable Sentry endpoint still lets the process exit
+  // within a bounded window rather than hanging.
+  'test/phase3-sentry-flush-before-exit-slice2.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

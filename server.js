@@ -12,18 +12,70 @@
 // first; Sentry's own require/init is exactly the kind of "conditional failure invisible in
 // testing, crashes boot in prod" hard rule #7 already exists for (a broken install, or a malformed
 // SENTRY_DSN secret, could throw) -- if that ran first and threw, there'd be no handler registered
-// yet to catch it. (2) Node's own guidance for an uncaughtException handler is synchronous cleanup
-// only, not resuming the event loop with async work -- an earlier draft did
-// `await Sentry.flush(2000)` before exiting, which means a hung flush() (network stall, SDK bug)
-// would silently wedge the process instead of crashing it, the exact opposite of this change's
-// purpose. captureException below is fire-and-forget; exit is immediate and unconditional.
-function fatalCrash(label, err) {
+// yet to catch it. (2) ORIGINALLY, this called `Sentry.captureException(err)` then
+// `process.exit(1)` immediately, with a comment claiming `await Sentry.flush(2000)` had been
+// tried and rejected because "a hung flush() would silently wedge the process."
+//
+// Oct 19 2026 (Phase 3 Slice 2, found while verifying the plan's "wire a failed-boot signal into
+// Sentry" item -- Jeff's standing "leave no bug unturned... if it's on the way while we're doing
+// something, we hit it"): that original reasoning turned out to be BOTH the cause of a real,
+// serious bug AND factually wrong, verified empirically rather than just re-argued from memory.
+//   - `captureException()` only ENQUEUES an event; the actual HTTP POST to Sentry happens
+//     asynchronously, later. `process.exit(1)` terminates the process immediately, with no grace
+//     period for pending I/O. Verified directly: a local HTTP server standing in for Sentry's own
+//     ingestion endpoint NEVER received a single request under the old immediate-exit code, in
+//     every attempt -- meaning every crash alert this app's Sentry wiring was supposed to send,
+//     from the day Phase 2 shipped it, was silently never actually delivered. The "fire-and-forget"
+//     framing was really "fire and it never leaves the process."
+//   - The "hung flush() would wedge the process" fear is NOT what `Sentry.flush(timeoutMs)` (or
+//     `close(timeoutMs)`, the one to use right before a real shutdown per Sentry's own docs) does
+//     -- both take a bound and are GUARANTEED to resolve within it. Verified directly against a
+//     genuinely unreachable (non-routable) address: `Sentry.close(2000)` returned in ~2018ms,
+//     resolving `false` (didn't finish in time) rather than hanging. The bounded call cannot wedge
+//     the process; the original concern was never actually checked before being acted on.
+// Fixed: `fatalCrash` is now async and awaits a 2-second-bounded `Sentry.close()` before exiting,
+// giving the actual network call a real chance to complete (or to give up, within 2s, either way).
+// This DOES mean the process stays alive up to 2s longer after a crash than Node's own guidance
+// prefers (resume no normal operation, exit ASAP) -- accepted as the right trade for an app this
+// small, where "the crash alert never arrives" is a worse failure than "the process takes up to 2
+// extra seconds to exit." `server.close()` right away (before the wait) narrows that window's one
+// real risk -- no NEW request gets served against now-undefined process state -- without it, a
+// crash mid-request could otherwise let more traffic in during the delay before exit.
+//
+// Oct 19 2026, independent cold-review of the fix above caught one more real gap: `fatalCrash`
+// wasn't reentrant-safe against Sentry's own shared global client. If a SECOND, unrelated fatal
+// error fires while the first one's `Sentry.close(2000)` is still draining (realistic under a
+// cascading failure -- e.g. a DB outage triggering several independent rejections within the same
+// couple seconds), both calls would race the same client: whichever `close()` resolves first
+// disables it, so the second error's `captureException()` can be silently dropped with nothing to
+// catch -- not a crash risk (both paths still reach `process.exit(1)`), but it would quietly
+// undercut the exact delivery guarantee this fix exists to provide, for whichever error loses the
+// race. Fixed with a simple module-level latch: only the FIRST fatal error gets the full
+// report-then-wait treatment; any fatal error arriving after that just logs and exits immediately
+// (the process is already on its way down from the first one, and a 2nd report racing the first
+// one's close() wasn't going to land reliably anyway).
+let crashHandled = false;
+async function fatalCrash(label, err) {
   console.error(`\n=== FATAL: ${label} ===`, err && err.stack || err);
-  try { if (SENTRY_ON) Sentry.captureException(err); } catch (e) {}
+  if (crashHandled) {
+    process.exit(1);
+    return;
+  }
+  crashHandled = true;
+  // `server` isn't assigned until deep in the boot IIFE (`let server` below executes
+  // synchronously early, well before anything that could realistically throw first, but this is
+  // still wrapped defensively -- crash-reporting code must never itself be the thing that crashes).
+  try { server && server.close(); } catch (e) {}
+  try {
+    if (SENTRY_ON) {
+      Sentry.captureException(err);
+      await Sentry.close(2000);
+    }
+  } catch (e) {}
   process.exit(1);
 }
-process.on('uncaughtException', err => fatalCrash('uncaughtException', err));
-process.on('unhandledRejection', err => fatalCrash('unhandledRejection', err));
+process.on('uncaughtException', err => { fatalCrash('uncaughtException', err); });
+process.on('unhandledRejection', err => { fatalCrash('unhandledRejection', err); });
 
 // Sentry itself is OPTIONAL and must never be able to take the app down by failing to load or
 // init -- wrapped in try/catch so a broken install or a malformed SENTRY_DSN just logs and leaves
