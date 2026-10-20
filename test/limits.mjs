@@ -49,6 +49,18 @@ async function db() {
   return out;
 }
 process.on('exit', () => { try { srv && srv.kill(); } catch {} try { rmSync(DIR, { recursive: true, force: true }); } catch {} });
+// The 'exit' handler above already fires on a crash (Node emits 'exit' right before terminating,
+// even after an uncaught exception/unhandled rejection with no handler of its own), so it already
+// frees the hardcoded PORT -- the critical half of the Oct 19 2026 fix (see CLAUDE.md's "Addendum"
+// section). What it canNOT do is anything async, so a crash still leaves the throwaway test DB
+// undropped. These two handlers close that remaining gap.
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
 
 await new Promise(res => {
   srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: DIR, DATABASE_URL: testDb.url, PORT: String(PORT) }, cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'pipe'] });

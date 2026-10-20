@@ -46,6 +46,22 @@ const H = t => ({ ...J, Authorization: 'Bearer ' + t });
 const post = (p, b, t) => fetch(B + p, { method: 'POST', headers: t ? H(t) : J, body: JSON.stringify(b) });
 process.on('exit', () => { try { rmSync(DIR, { recursive: true, force: true }); } catch {} });
 
+// This file runs three independent blocks (A/B/C), each with its own freshTestDb() and A's own
+// alone also boots a real server -- all scoped with `let`/`const` inside each block's own `{ }`,
+// so none of it is reachable from a single top-level crash handler by name. These trackers are
+// updated at the start/end of each block (right after a boot or testDb is created, and cleared
+// once that block's own happy-path cleanup already ran) so a crash ANYWHERE always has a handle
+// on whichever server/testDb is currently actually alive.
+let currentSrv = null, currentTestDb = null;
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { currentSrv && currentSrv.kill(); } catch {}
+  try { currentTestDb && await currentTestDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
+
 function boot(port, dir, databaseUrl) {
   return new Promise(res => {
     const s = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: dir, DATABASE_URL: databaseUrl, PORT: String(port) }, cwd: CWD, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -61,11 +77,13 @@ const stop = srv => new Promise(r => { if (!srv) return r(); srv.on('exit', r); 
 console.log('A) a backup taken by the CURRENT app does not wipe push_subs/notifications/feed_events/reports/custom_exercise_rows on recovery');
 {
   const testDb = await freshTestDb('migraterecoveryA');
+  currentTestDb = testDb;
   process.env.DATABASE_URL = testDb.url;
   const db = await import('../db.js');
   await db.ensureSchema();
 
   let srv = await boot(PORT, DIR, testDb.url);
+  currentSrv = srv;
   ok(!!srv, 'server boots');
 
   const alice = await post('/api/register', { username: 'mrwa_alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
@@ -100,8 +118,10 @@ console.log('A) a backup taken by the CURRENT app does not wipe push_subs/notifi
   // of backup that will ever exist again now that all five collections are cut over.
   await stop(srv);
   srv = await boot(PORT, DIR, testDb.url);
+  currentSrv = srv;
   ok(!!srv, 'server re-boots (also takes the backup this test restores from)');
   await stop(srv);
+  currentSrv = null;
 
   const bdir = join(DIR, 'backups');
   const newest = readdirSync(bdir).filter(f => f.endsWith('.json')).sort().pop();
@@ -131,12 +151,14 @@ console.log('A) a backup taken by the CURRENT app does not wipe push_subs/notifi
 
   db.close();
   await testDb.drop();
+  currentTestDb = null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log('\nB) a hand-built OLD-STYLE backup (simulating a pre-cutover data.json) still fully restores, including deleting an orphan not in it');
 {
   const testDb = await freshTestDb('migraterecoveryB');
+  currentTestDb = testDb;
   process.env.DATABASE_URL = testDb.url;
   const db = await import('../db.js');
   await db.ensureSchema();
@@ -181,6 +203,7 @@ console.log('\nB) a hand-built OLD-STYLE backup (simulating a pre-cutover data.j
 
   db.close();
   await testDb.drop();
+  currentTestDb = null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -198,6 +221,7 @@ console.log('\nC) a backup with a MALFORMED value for one of these five keys (pr
   // (leave alone) -- a disaster-recovery tool specifically has to be trusted against abnormal
   // input, not guess at it.
   const testDb = await freshTestDb('migraterecoveryC');
+  currentTestDb = testDb;
   process.env.DATABASE_URL = testDb.url;
   const db = await import('../db.js');
   await db.ensureSchema();
@@ -222,6 +246,7 @@ console.log('\nC) a backup with a MALFORMED value for one of these five keys (pr
 
   db.close();
   await testDb.drop();
+  currentTestDb = null;
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');

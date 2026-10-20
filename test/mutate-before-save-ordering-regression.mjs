@@ -92,6 +92,19 @@ const raw = new PgConnection(parseConnString(testDb.url));
 async function breakTable(name) { await raw.query(`ALTER TABLE ${name} RENAME TO ${name}_broken_for_test`); }
 async function fixTable(name) { await raw.query(`ALTER TABLE ${name}_broken_for_test RENAME TO ${name}`); }
 
+// The existing process.on('exit', ...) above already kills srv and removes DIR on any exit path
+// (including an uncaught exception/rejection), closing the hardcoded-PORT orphan risk -- but it
+// has no async cleanup for the extra raw PgConnection or the throwaway test database, so add just
+// that here, scoped to the two resources the exit handler can't touch.
+let cleanedUp = false;
+async function cleanupAsync() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { raw.close(); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanupAsync(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanupAsync(); process.exit(1); });
+
 const alice = await post('/api/register', { username: 'mbs_alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
 const bob = await post('/api/register', { username: 'mbs_bob', pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
 

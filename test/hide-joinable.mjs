@@ -32,6 +32,19 @@ const PORT = 4996, B = `http://localhost:${PORT}`;
 const { srv } = await boot(PORT, DIR);
 ok(!!srv, 'server boots');
 
+// Crash-safe cleanup: without this, a genuinely-failing assertion/await anywhere below throws an
+// unhandled rejection, Node exits immediately, and every cleanup line at the bottom of this file is
+// skipped -- orphaning srv on its hardcoded PORT for whatever test runs next (same class of bug
+// fixed across the Playwright files Oct 19 2026; see CLAUDE.md's "Addendum" section).
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { srv && srv.kill(); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
+
 const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const get = (p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
 const reg = (username, pin, displayName) => post('/api/register', { username, pin, displayName });

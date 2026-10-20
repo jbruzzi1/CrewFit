@@ -48,6 +48,18 @@ async function patchUser(userId, patch) {
   pg.close();
 }
 process.on('exit', () => { try { srv && srv.kill(); } catch {} try { rmSync(DIR, { recursive: true, force: true }); } catch {} });
+// Oct 20 2026: the process.on('exit', ...) above already closes the port-orphan risk for `srv`/
+// `DIR` (Node fires 'exit' reliably even after an uncaught exception). What it can't do is the
+// ASYNC cleanup this file's own happy path relies on (testDb.drop() is a real await; `exit`
+// handlers can't await anything) -- without this, a crash mid-file leaves the throwaway Postgres
+// database behind even though the server itself gets killed.
+let asyncCleanedUp = false;
+async function asyncCleanup() {
+  if (asyncCleanedUp) return; asyncCleanedUp = true;
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await asyncCleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await asyncCleanup(); process.exit(1); });
 
 await boot();
 

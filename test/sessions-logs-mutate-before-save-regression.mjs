@@ -83,6 +83,19 @@ function boot(port, dir, databaseUrl) {
 ok(!!srv, 'server boots');
 
 const raw = new PgConnection(parseConnString(testDb.url));
+// Oct 20 2026: the process.on('exit', ...) above (registered before boot) already closes the
+// port-orphan risk for `srv`/`DIR` -- Node fires 'exit' reliably even after an uncaught exception.
+// What it can't do is the ASYNC cleanup (testDb.drop() is a real await; `exit` handlers can't await
+// anything) or close this `raw` connection -- without this, a crash mid-file leaves the throwaway
+// Postgres database (and this raw connection) behind even though the server itself gets killed.
+let asyncCleanedUp = false;
+async function asyncCleanup() {
+  if (asyncCleanedUp) return; asyncCleanedUp = true;
+  try { raw.close(); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await asyncCleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await asyncCleanup(); process.exit(1); });
 async function breakTable(name) { await raw.query(`ALTER TABLE ${name} RENAME TO ${name}_broken_for_test`); }
 async function fixTable(name) { await raw.query(`ALTER TABLE ${name}_broken_for_test RENAME TO ${name}`); }
 

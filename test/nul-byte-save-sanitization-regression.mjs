@@ -103,6 +103,17 @@ async function rawQuery(sql, params) {
 await boot();
 ok(!!srv, 'server boots');
 
+// The existing process.on('exit', ...) above already kills srv and removes DIR on any exit path
+// (including an uncaught exception/rejection), closing the hardcoded-PORT orphan risk -- but it
+// has no async cleanup for the throwaway test database, so add just that here.
+let cleanedUp = false;
+async function cleanupAsync() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanupAsync(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanupAsync(); process.exit(1); });
+
 const alice = await reg('alice_nulbyte');
 const bob = await reg('bob_nulbyte');
 

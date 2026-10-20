@@ -47,6 +47,20 @@ console.log('Part A: server-side default (POST/PUT /api/sessions), real server +
   const srv = await boot(PORT, DIR, testDb.url);
   if (!srv) { console.log('FAIL boot'); process.exit(1); }
 
+  // Crash-safe cleanup: without this, a genuinely-failing assertion/await anywhere below throws an
+  // unhandled rejection, Node exits immediately, and every cleanup line at the bottom of this block
+  // is skipped -- orphaning srv on its hardcoded PORT for whatever test runs next (same class of
+  // bug fixed across the Playwright files Oct 19 2026; see CLAUDE.md's "Addendum" section).
+  let cleanedUp = false;
+  async function cleanup() {
+    if (cleanedUp) return; cleanedUp = true;
+    try { srv && srv.kill(); } catch {}
+    try { rmSync(DIR, { recursive: true, force: true }); } catch {}
+    try { await testDb.drop(); } catch {}
+  }
+  process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+  process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
+
   const H = t => ({ ...J, Authorization: 'Bearer ' + t });
   const reg = n => fetch(B + '/api/register', { method: 'POST', headers: J, body: JSON.stringify({ username: n, pin: 'pass1234', displayName: n }) }).then(r => r.json());
   const P = (who, p, body) => fetch(B + p, { method: 'POST', headers: H(who.token), body: JSON.stringify(body || {}) }).then(r => r.json());

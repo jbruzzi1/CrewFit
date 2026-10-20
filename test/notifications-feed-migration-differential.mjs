@@ -66,6 +66,19 @@ ok(!!srv, 'server boots');
 process.env.DATABASE_URL = testDb.url;
 const db = await import('../db.js');
 
+// The existing process.on('exit', ...) above already kills srv and removes DIR on any exit path
+// (including an uncaught exception/rejection), closing the hardcoded-PORT orphan risk -- but it
+// has no async cleanup for this second db.js connection or the throwaway test database, so add
+// just that here, scoped to the two resources the exit handler can't touch.
+let cleanedUp = false;
+async function cleanupAsync() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { db.close(); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanupAsync(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanupAsync(); process.exit(1); });
+
 // Polls this second connection's own read until it agrees with what the HTTP route already
 // returned, or gives up after ~2s -- see this file's header comment: no real race is expected
 // post-cutover, this is just insurance against ordinary cross-connection timing jitter.

@@ -46,6 +46,21 @@ const PORT = 4993, B = `http://localhost:${PORT}`;
 const { srv } = await boot(PORT, DIR);
 ok(!!srv, 'server boots');
 
+// Oct 20 2026: this file used to have no crash-safe cleanup at all -- srv.kill()/rmSync/
+// testDb.drop() only ran on the happy path, at the bottom of the file. Any genuinely-failing
+// assertion/awaited call anywhere above throws an unhandled rejection, which exits Node
+// immediately and skips every line of cleanup below it -- orphaning this file's hardcoded PORT
+// for whatever test runs next. Same idiom as test/back-after-start-now.mjs.
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { srv && srv.kill(); } catch {}
+  try { rmSync(DIR, { recursive: true, force: true }); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
+
 const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const get = (p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
 const reg = (username, pin, displayName) => post('/api/register', { username, pin, displayName });
