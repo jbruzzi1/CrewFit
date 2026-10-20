@@ -46,6 +46,24 @@ const J = { 'Content-Type': 'application/json' };
 let fails = 0, srv = null;
 const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fails++; };
 process.on('exit', () => { try { srv && srv.kill(); } catch {} try { rmSync(DIR, { recursive: true, force: true }); } catch {} });
+// Oct 20 2026 (found during the broader crash-safety audit, flagged and deferred rather than
+// folded into that mechanical pass, then fixed here on Jeff's "we will want to fix those after"):
+// this file already had the 'exit' handler above, which correctly frees PORT 5905 and removes
+// DIR even on a crash -- the real gap was that `testDb` (a real throwaway Postgres database
+// created via freshTestDb()) was NEVER dropped anywhere in this file, not on a crash AND NOT on
+// its own happy path (including across this file's own reboot()/stop() calls, which only ever
+// touch `srv`, never `testDb`). Every run -- pass or fail -- permanently leaked one more
+// crewfit_t_userfollowsmigratediff_* database. `drop()` is async and 'exit' handlers must be
+// synchronous (Node will not wait on a Promise returned from one), so this can't just be added to
+// the handler above -- same reasoning CLAUDE.md's crash-safety idiom write-up already documents
+// for every other file in this suite.
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
 
 function boot() {
   return new Promise((res, rej) => {
@@ -162,5 +180,6 @@ console.log('\na real post-migration follow action, and a brand-new user, both g
     'and the edge is actually gone from the table, not just hidden');
 }
 
+await cleanup();
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
 process.exit(fails ? 1 : 0);

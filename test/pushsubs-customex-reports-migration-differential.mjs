@@ -54,6 +54,23 @@ const AH = t => ({ ...J, 'x-admin-token': t });
 const postAdmin = (p, b, t) => fetch(B + p, { method: 'POST', headers: AH(t), body: JSON.stringify(b || {}) });
 const getAdmin = (p, t) => fetch(B + p, { headers: AH(t) });
 process.on('exit', () => { try { srv && srv.kill(); } catch {} try { rmSync(DIR, { recursive: true, force: true }); } catch {} });
+// Oct 20 2026 (found during the broader crash-safety audit, flagged and deferred rather than
+// folded into that mechanical pass, then fixed here on Jeff's "we will want to fix those after"):
+// this file already had the 'exit' handler above, which correctly frees PORT 5000 and removes
+// DIR even on a crash -- the real gap was that `testDb` (a real throwaway Postgres database
+// created via freshTestDb()) was NEVER dropped anywhere in this file, not on a crash AND NOT on
+// its own happy path. Every run -- pass or fail -- permanently leaked one more
+// crewfit_t_pushexrepdiff_* database. `drop()` is async and 'exit' handlers must be synchronous
+// (Node will not wait on a Promise returned from one), so this can't just be added to the
+// handler above -- same reasoning CLAUDE.md's crash-safety idiom write-up already documents for
+// every other file in this suite.
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
 
 function boot(port, dir, databaseUrl) {
   return new Promise(res => {
@@ -237,5 +254,6 @@ console.log('\ncustom exercises: the 500-per-owner cap holds exactly under real 
   ok(after === 500, `the real row count never exceeds the documented cap of 500, got ${after}`);
 }
 
+await cleanup();
 console.log(fails === 0 ? '\nall assertions passed' : `\n${fails} assertion(s) FAILED`);
 process.exit(fails === 0 ? 0 : 1);
