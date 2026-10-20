@@ -553,18 +553,22 @@ function overLimit(key, max, windowMs) {
 function failCount(key) { const e = RL.get(key); return (e && Date.now() < e.reset) ? e.count : 0; }
 function bumpFail(key, windowMs) { overLimit(key, Infinity, windowMs); }   // increment within window; bounded; never self-trips
 function clearFail(key) { RL.delete(key); }
-// Oct 20 2026 (cold-review catch on the global signup breaker below): releases a speculatively-
-// claimed slot from a reservation-style cap (overLimit called to CLAIM, this called to give it back
-// on a failure that happens after the claim). Guarded so it can never go negative and never touches
-// an entry from a window that's already rolled over -- a slow request that straddles the window
-// boundary before calling this just does nothing, rather than wrongly decrementing an unrelated
-// later window's real count. That's a known, accepted, bounded edge case (same shape as every other
-// "narrow window around a boundary" tradeoff already documented elsewhere in this file), not
-// something worth a token/generation-id scheme to close completely for a security backstop whose
-// whole budget is already a generous multiple of real usage.
-function releaseReservation(key) {
+// Oct 20 2026 (cold-review catch on the global signup breaker below, fixed on a SECOND cold-review
+// pass after the first version shipped a real correctness gap): releases a speculatively-claimed
+// slot from a reservation-style cap (overLimit called to CLAIM, this called to give it back on a
+// failure that happens after the claim). Takes the exact `reset` timestamp the claim itself got back
+// (read from RL immediately after claiming, same synchronous tick -- see the call sites) and only
+// ever decrements an entry whose `reset` matches that exactly. This is the fix for a real gap the
+// first version had: checking only `Date.now() < e.reset` looks at whatever entry happens to be
+// live RIGHT NOW, not the specific window the original claim was made in -- a request stuck across
+// almost the entire window (hashPin + Turnstile + a slow save, all real awaits) could, after the
+// window rolled over and a fresh entry had already started counting real NEW traffic, wrongly
+// decrement that NEW window's count by one instead of safely doing nothing. Pinning to the exact
+// `reset` value closes that: a mismatched (or missing/expired) entry means "not my window anymore,"
+// and this is a no-op, exactly as the first version's comment incorrectly claimed it already was.
+function releaseReservation(key, expectedReset) {
   const e = RL.get(key);
-  if (e && Date.now() < e.reset && e.count > 0) e.count--;
+  if (e && e.reset === expectedReset && e.count > 0) e.count--;
 }
 
 const app = express();
@@ -1036,6 +1040,15 @@ app.post('/api/register', async (req, res) => {
   // created in a sustained flood. A cheap, non-authoritative pre-check here just skips the Cloudflare
   // round trip when the budget is already visibly gone -- the real admission decision is the atomic
   // reservation claimed right before hashPin below, not this.
+  //
+  // Disclosed tradeoff, not silently accepted: because this is a GLOBAL cap (Jeff's explicit choice
+  // over a per-IP/scoped one), once it trips it blocks every sign-up app-wide, including someone who
+  // has never touched this app before, for up to the rest of the 10-minute window. An attacker who
+  // can genuinely pass Turnstile ~150 times (a paid solving service, say) can lock out all real
+  // signups and repeat that every window indefinitely. Weighed against the alternative -- and judged
+  // the right tradeoff given what this is actually for: it's a backstop for the Turnstile-down
+  // scenario specifically, not the primary defense (Turnstile is), so the realistic cost of tripping
+  // it is rare and the realistic benefit (a hard ceiling when the primary gate is down) is worth it.
   if (failCount('reg:global') >= 150)
     return res.status(429).json({ error: "We're experiencing high sign-up volume right now. Please try again in a few minutes." });
   const { username, pin, displayName, ageConfirmed, turnstileToken } = req.body || {};
@@ -1095,9 +1108,25 @@ app.post('/api/register', async (req, res) => {
   // rather than before it: hashPin is the one remaining step here that can itself throw on a genuine
   // (rare) error, and claiming the slot only once hashPin has already succeeded means there's no path
   // left where a thrown exception could leak a claimed-but-never-released slot.
+  //
+  // Second cold-review pass raised a real tradeoff worth naming explicitly, not silently picking a
+  // side on: every concurrent contender right at the boundary now pays for a full scrypt hash before
+  // learning whether it actually won a slot, which under a deliberate burst means real wasted CPU on
+  // the losers (same scrypt path login's own brute-force defense relies on being expensive). Weighed
+  // against moving the claim earlier (before hashPin) and accepting the hashPin-throws exception-leak
+  // risk instead: kept it here, because hashPin already runs unconditionally for EVERY attempt that
+  // reaches this point regardless of this cap's existence (the pre-existing username-uniqueness check
+  // right below already pays this same cost on every losing username collision) -- this placement
+  // extends an already-accepted cost category by one more reason a hash can be "wasted," rather than
+  // introducing a new one, and that reads as the smaller risk than reopening an exception-leak path
+  // this exact design was built to close.
   if (overLimit('reg:global', 150, 10 * 60 * 1000))
     return res.status(429).json({ error: "We're experiencing high sign-up volume right now. Please try again in a few minutes." });
-  if (findUserByName(username)) { releaseReservation('reg:global'); return res.status(409).json({ error: 'username taken' }); }
+  // Captured in the same synchronous tick as the claim above (nothing else can touch RL between these
+  // two lines) so releaseReservation can be pinned to exactly THIS window -- see its own comment for
+  // why that matters.
+  const regGlobalReset = RL.get('reg:global').reset;
+  if (findUserByName(username)) { releaseReservation('reg:global', regGlobalReset); return res.status(409).json({ error: 'username taken' }); }
   const id = uid();
   DB.users[id] = Object.assign({ id, username: String(username).trim(),
     displayName: capStr(displayName || username, 80).trim(), units: 'lb',
@@ -1132,7 +1161,7 @@ app.post('/api/register', async (req, res) => {
     // The global-breaker slot claimed above was never actually used by a real account -- release it
     // alongside the in-memory row, same "this never really happened" treatment as the delete right
     // above (the request still 500s via the rethrow below; the caller can legitimately retry).
-    releaseReservation('reg:global');
+    releaseReservation('reg:global', regGlobalReset);
     throw e;
   }
   // The global circuit-breaker slot was already claimed atomically, right before hashPin above --

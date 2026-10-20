@@ -616,6 +616,110 @@ per hard rule #8, re-verify this specific piece if/when a native wrapper ships.
   Cloudflare Turnstile widget and set `TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY` as Fly secrets --
   until then this ships as a no-op, same as every other Phase-3-style slice before its secrets are
   set.**
+- **Jeff set both real Cloudflare secrets and deployed Oct 20 2026 -- confirmed live in production**:
+  `/api/config` returns the real `turnstileSiteKey`, the deployed `app.js` version matches, and a real
+  registration POST with no Turnstile token sent straight to production was correctly rejected
+  ("We could not verify you are not a bot. Please try again."). Turnstile bot-defense is fully live,
+  not just shipped.
+
+### Addendum (Oct 20 2026) — a global signup circuit breaker, and a CRITICAL race a second cold-review pass caught
+
+Closes the other half of the rate-limiting readiness-review item ("re-evaluate whether IP-based rate
+limiting alone holds up against a rotating-IP adversary"). Audited every rate-limit call site in
+`server.js` first: login already has a non-IP defense (a per-account cap across ALL IPs, 40
+fails/hour, closing exactly this gap for credential-stuffing), and every account-scoped action
+(password change, export, delete, reports) is keyed on the account, not the IP, already immune to IP
+rotation. The one real gap left was registration: a 20/hour PER-IP cap with no aggregate ceiling at
+all -- a rotating-IP adversary could still rack up unlimited accounts in parallel, bounded only by
+Turnstile (now live, a real and much stronger defense than the old IP-only limiter, but not literally
+unlimited-proof given Turnstile's own disclosed fail-open-on-transport-error design). Put to Jeff as
+two explicit choices rather than built silently: **(1) add a global (app-wide, not per-IP) circuit
+breaker on registration — Jeff: yes.** **(2) also add Turnstile to login, on top of its existing
+per-account defense — Jeff: skip it** (an 8+ char scrypt-hashed password isn't crackable at 40
+guesses/hour; the existing per-account cap already closes the realistic gap there without the added
+friction on every login).
+
+- **What shipped**: once 150 real accounts have been created globally within a rolling 10-minute
+  window, every further registration attempt -- from ANY ip, even a brand-new one -- gets a 429,
+  until the window rolls forward. Deliberately counts real, successfully-created accounts only, not
+  raw attempts, so a flood of rejected/bot attempts (bad Turnstile, taken usernames) can't itself burn
+  down real users' budget. 150/10min (up to 900/hour sustained) was picked generously against this
+  app's real growth (54 total users over ~2.5 months) while still being a real, finite ceiling in the
+  Turnstile-down scenario where today there is none.
+- **Independent cold-review (fresh agent, adversarial brief) found ONE real CRITICAL bug in the first
+  version, before it shipped — not a nitpick, reproduced and fixed, not just reasoned about:** the
+  admission check (`failCount('reg:global') >= 150`) and the budget-claim (`bumpFail`, called only
+  after a real account was persisted) were separated by three real `await`s (Turnstile, the
+  deliberately-slow `scrypt` hashPin, and the Postgres save) -- the exact same bug class this same
+  route already found and fixed once before, for `username` uniqueness (see the Oct 12 2026 comment
+  right next to it). Any burst of concurrent registrations arriving while the counter sat just under
+  150 could all read the same stale count and all get admitted, blowing through the cap by an amount
+  bounded only by how many requests an attacker could get in flight at once -- defeating the entire
+  point of a "hard ceiling." **Fixed** with a reservation pattern: the admission decision moved to
+  immediately adjacent to the username-uniqueness check and the write (same spot, same reasoning,
+  mirroring that exact precedent) -- `overLimit()` checks-and-increments in one synchronous call with
+  no `await` inside, so two concurrent requests genuinely cannot both pass it once the cap is reached
+  -- with a new `releaseReservation()` giving the slot back on every failure path after the claim
+  (username taken, a failed save) so a rejected attempt doesn't permanently burn a slot a real account
+  never used.
+- **Verified the fix actually closes the gap, not just that the code reads correctly**: manually
+  reverted ONLY the atomicity fix (restored the original check-then-await-then-claim shape) and reran
+  the new concurrency test -- it failed exactly as predicted, 20 genuinely concurrent requests all
+  succeeding against only 10 real remaining budget slots. Restored the fix, reran -- exactly 10/10
+  succeeded, 10/10 correctly rejected. A second independent pass (the same reviewer agent, asked to
+  re-verify specifically) reran this same before/after check itself rather than trusting the report,
+  and confirmed the same result independently.
+- **That same second review pass found two more real, smaller issues, both fixed before shipping:**
+  1. *(the release-on-failure guard had a real correctness gap)* The first version of
+     `releaseReservation()` only checked that *some* live entry existed and hadn't expired -- not that
+     it was the SAME window the original claim was made in. A request stuck across almost the entire
+     10-minute window (real awaits: Turnstile + hashPin + a slow save) could, after the window rolled
+     over and a fresh entry had already started counting genuinely new traffic, wrongly decrement that
+     NEW window's real count by one instead of safely doing nothing, as the comment incorrectly
+     claimed. **Fixed** by capturing the exact `reset` timestamp the claim itself produced (read in
+     the same synchronous tick, nothing else can touch the counter in between) and pinning the release
+     to match it exactly -- a mismatched or already-rolled-over window is now a true no-op.
+  2. *(a real, disclosed tradeoff, not a bug, decided rather than silently picked)* placing the claim
+     after `hashPin` means every concurrent contender right at the boundary now pays for a full
+     `scrypt` hash before learning whether it won a slot -- real wasted CPU on the losers under a
+     deliberate burst. Weighed against moving the claim earlier and wrapping `hashPin` in its own
+     try/catch to handle the (already near-impossible) case it throws: kept the current placement,
+     because `hashPin` already runs unconditionally for every attempt that reaches this point
+     regardless of this cap (the pre-existing username-uniqueness check already pays this same cost on
+     every losing collision) -- this extends an already-accepted cost category by one more reason a
+     hash can be "wasted" rather than introducing a new one, which reads as the smaller risk than
+     reopening the exact exception-leak path this design was built to close. Documented inline in
+     `server.js` rather than left as an undiscussed judgment call.
+  - **Disclosed, not fixed, flagged for Jeff's explicit read rather than assumed**: because this is a
+    GLOBAL cap (the choice Jeff made over a per-IP/scoped one), once tripped it blocks every sign-up
+    app-wide -- including someone who's never touched the app before -- for up to the rest of the
+    10-minute window. An attacker who can genuinely pass Turnstile ~150 times could lock out all real
+    signups and repeat that every window indefinitely. Judged the right tradeoff given this is a
+    backstop for the Turnstile-down scenario specifically, not the primary defense -- but worth
+    knowing this is the actual shape of what shipped, not just "a cap was added."
+  - **Accepted as-is, not a blocker**: the fixed-window (not sliding) boundary means a sustained
+    attacker straddling the 10-minute reset could get up to ~300 accounts in a short span (150 right
+    before reset, 150 right after) -- same characteristic as the pre-existing per-IP cap elsewhere in
+    this file; whether the window actually rolls forward and signups resume isn't covered by an
+    automated test (would need a test-only override of the 10-minute window, same pattern
+    `TURNSTILE_VERIFY_URL` already uses for Turnstile -- judged not worth the added surface for a
+    low-severity, straightforward-to-verify-by-reading piece of logic); and this file's new test
+    reuses port 4998, already shared by three other test files in this suite -- a pre-existing pattern
+    across many files here (ports are heavily reused suite-wide, see the full port list), not a new
+    risk this PR introduces.
+- **New test**: `test/global-signup-circuit-breaker.mjs` (added to `run-all.mjs`) -- proves rejected
+  attempts don't count, 140 sequential real accounts succeed, the CRITICAL regression itself (20
+  genuinely concurrent requests via `Promise.all` with only 10 real slots left, asserting at most 10
+  win, cross-checked against the server's own `/api/register/check` rather than trusting the test's
+  own count), and the 151st/overflow case from completely fresh IPs (proving this is a true global
+  ceiling, not coincidentally still a per-IP effect).
+- Full suite: **157/157** test files green.
+- **Status: built, one real CRITICAL concurrency bug found by independent cold-review and fixed
+  before shipping (with a permanent regression test manually proven to fail pre-fix and pass
+  post-fix), one correctness gap in that same fix found and closed by a second review pass, one
+  tradeoff decided and documented rather than silently picked, full suite green (157/157). The
+  global-lockout characteristic is a disclosed, deliberate tradeoff of the "global, not per-IP" shape
+  Jeff chose -- not something this fix changes or should be read as having resolved. Shipping via PR.**
 
 ## Design constants
 
