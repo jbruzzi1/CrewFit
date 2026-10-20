@@ -260,6 +260,11 @@ const files = [
   // once the budget's spent, proving it's a true global ceiling a rotating-IP adversary can't
   // sidestep the way the pre-existing per-IP cap alone could be.
   'test/global-signup-circuit-breaker.mjs',
+  // Oct 20 2026: content-filter expansion (readiness-review item: "Expand content filtering beyond
+  // custom exercise names to display names, captions, crew/session names, and other free text").
+  // Covers every free-text field across the app plus the two deliberate exclusions (draftNotes,
+  // report "details"), and the leo-profanity _/- separator gap found and fixed while building this.
+  'test/content-filter-expansion.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
