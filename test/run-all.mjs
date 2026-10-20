@@ -249,6 +249,11 @@ const files = [
   // server), per-user scoping (another user's sessions/crews never leak in), and the route's own
   // 5/hour rate limit.
   'test/data-export.mjs',
+  // Oct 20 2026: app-store readiness, bot-defense item. Unconfigured no-op (today's real deploy),
+  // the configured path against a real local server standing in for Cloudflare's siteverify
+  // (request shape, success, genuine failure, missing-token short-circuit, and the disclosed
+  // fail-OPEN behavior on a transport error), and /api/config's turnstileSiteKey exposure.
+  'test/turnstile-bot-defense.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

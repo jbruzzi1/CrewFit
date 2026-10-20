@@ -284,12 +284,84 @@ function authScreen(){
         <input id="rp" placeholder="password (8+ characters)" type="password" onkeydown="onEnterKey(event, doReg)">
         <input id="rn" placeholder="display name (optional)" onkeydown="onEnterKey(event, doReg)">
         <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-size:13px"><input type="checkbox" id="rage" style="width:auto"> I am 13 years of age or older</label>
+        <div id="turnstileBox"></div>
         <button id="regBtn" onclick="doReg()">Create account</button>
       </div>
     </div></div>`;
   pageScrollTop();
 }
-function showReg(){ const b=document.getElementById('regbox'); if(b) b.style.display = b.style.display==='none'?'block':'none'; }
+function showReg(){ const b=document.getElementById('regbox'); if(b){ const opening = b.style.display==='none'; b.style.display = opening?'block':'none'; if(opening) ensureTurnstileWidget(); } }
+// Oct 20 2026 (app-store readiness, bot-defense item -- see turnstile.js's header comment on the
+// server side for the full reasoning, and CLAUDE.md's addendum for the "why now, not later"
+// decision). Gated entirely on /api/config returning a real turnstileSiteKey -- empty/missing
+// means unconfigured (every dev/test environment today), and this whole block becomes a no-op:
+// the widget is never rendered, doReg() below sends no turnstileToken at all, exactly like before
+// this shipped.
+let _tsSiteKey = null, _tsWidgetId = null, _tsScriptPromise = null, _tsResolve = null, _tsEnsurePromise = null;
+function loadTurnstileScript(){
+  if(_tsScriptPromise) return _tsScriptPromise;
+  _tsScriptPromise = new Promise((resolve, reject)=>{
+    if(window.turnstile) return resolve();
+    const s = document.createElement('script');
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    s.async = true; s.defer = true;
+    s.onload = ()=>resolve();
+    s.onerror = ()=>reject(new Error('turnstile script failed to load'));
+    document.head.appendChild(s);
+  });
+  return _tsScriptPromise;
+}
+// Oct 20 2026 (cold-review catch, live-reproduced): the first version of this function had no
+// guard against being CALLED AGAIN while a previous call was still mid-flight (awaiting
+// /api/config or the script load) -- showReg() calls this when the register box opens, and
+// doReg() calls it again via getTurnstileToken() a moment later; on a fast tap, or any genuine
+// double-submit, both calls could race past the old `if(_tsWidgetId !== null) return` guard
+// (which only protects against calls AFTER rendering already finished, not during) and both call
+// turnstile.render() on the same container. Cloudflare rejects the second render(), leaving
+// _tsWidgetId holding a bad/rejected id that a later execute() can't find -- reproduced live as a
+// misleading "Network error" alert on a registration that had, underneath, already succeeded.
+// Fixed by making every caller await the SAME in-flight promise instead of each independently
+// racing through the body -- this is belt-and-suspenders with the doReg() button-disable fix
+// below (which closes the actual double-tap path), since showReg() and doReg() are two separate
+// call sites that could still overlap without this.
+function ensureTurnstileWidget(){
+  if(_tsEnsurePromise) return _tsEnsurePromise;
+  _tsEnsurePromise = (async () => {
+    if(_tsWidgetId !== null) return;
+    try {
+      if(_tsSiteKey === null){
+        const r = await (await fetch('/api/config')).json();
+        _tsSiteKey = (r && r.turnstileSiteKey) || '';
+      }
+      if(!_tsSiteKey) return; // unconfigured -- no-op, matches the server
+      await loadTurnstileScript();
+      const box = document.getElementById('turnstileBox');
+      if(!box || !window.turnstile) return;
+      _tsWidgetId = window.turnstile.render(box, {
+        sitekey: _tsSiteKey,
+        appearance: 'interaction-only',
+        execution: 'execute',
+        callback: (token)=>{ if(_tsResolve) _tsResolve(token); },
+        'error-callback': ()=>{ if(_tsResolve) _tsResolve(null); },
+      });
+    } catch(e) { /* unreachable/misconfigured -- getTurnstileToken() below falls through with no
+                    token either way; the server fails OPEN on its own verify-request errors (see
+                    turnstile.js), so this never blocks registration outright on its own. */ }
+  })();
+  return _tsEnsurePromise;
+}
+// Resolves with a fresh token, or null if unconfigured/unavailable/timed out -- doReg() decides
+// what to send either way (sending null/no token when unconfigured is the whole no-op point).
+function getTurnstileToken(){
+  return new Promise(async (resolve)=>{
+    await ensureTurnstileWidget();
+    if(_tsWidgetId === null){ resolve(null); return; }
+    _tsResolve = resolve;
+    try { window.turnstile.reset(_tsWidgetId); } catch(e){}
+    try { window.turnstile.execute(_tsWidgetId); } catch(e){ resolve(null); return; }
+    setTimeout(()=>resolve(null), 15000); // never hang registration forever on a stuck challenge
+  });
+}
 let _chkTimer;
 async function checkUsername(){
   const inp = document.getElementById('rx'); const hint = document.getElementById('rxHint'); const btn = document.getElementById('regBtn');
@@ -318,20 +390,35 @@ async function checkUsername(){
 // just above -- see its comment) so a future copy change to the server's message can't silently
 // break this mapping too.
 async function doLogin(){ try { const r=await H.post('/api/login',{username:$('lx').value,pin:$('lp').value}); if(r.token){ setToken(r.token,r.user); home(); } else alert(r.code==='bad_credentials' ? "That username or password isn't right." : (r.error||'login failed')); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
-async function doReg(){ try {
+async function doReg(){
   const btn = document.getElementById('regBtn');
   if(btn && btn.disabled) return;
-  const u=($('rx').value||'').trim().toLowerCase();
-  if(u){ try { const c=await H.get('/api/register/check?username='+encodeURIComponent(u)); if(c && c.available===false){ alert(c.reason||'username taken'); return; } } catch(e){} }
-  if(($('rp').value||'').length < 8){ alert('Password must be at least 8 characters.'); return; }
-  if(!$('rage').checked){ alert('Please confirm you are at least 13 years old to create an account.'); return; }
-  const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value,ageConfirmed:$('rage').checked}); if(r.token){ setToken(r.token,r.user); home();
-    // Cold-review catch: this call sits inside doReg's own try/catch, but the account is
-    // ALREADY registered and logged in by this point -- a throw here has no business
-    // surfacing as "Network error, is CrewFit reachable?" to someone who just successfully
-    // signed up. Own try/catch so a walkthrough hiccup can never look like a failed signup.
-    try { openWalkthrough(); } catch(e){}
-  } else alert(r.error||'register failed'); } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.'); } }
+  // Oct 20 2026 (cold-review catch, live-reproduced): this used to only CHECK btn.disabled, never
+  // SET it -- unlike every other async-submit handler in this file (see seedSaveAll() for the
+  // pattern this now matches). A real double-tap fired doReg() twice concurrently; both calls
+  // raced through getTurnstileToken()/ensureTurnstileWidget() on the same Turnstile widget, one
+  // registration actually succeeded, and the OTHER call surfaced a misleading "Network error" alert
+  // for an account that had, underneath, already been created. Disabling synchronously here, before
+  // any await, means a second doReg() call (double-tap, or Enter+click racing) returns immediately
+  // on the line above instead of re-entering any of this. try/finally guarantees re-enable on every
+  // exit path, not just the success path.
+  if(btn) btn.disabled = true;
+  try {
+    const u=($('rx').value||'').trim().toLowerCase();
+    if(u){ try { const c=await H.get('/api/register/check?username='+encodeURIComponent(u)); if(c && c.available===false){ alert(c.reason||'username taken'); return; } } catch(e){} }
+    if(($('rp').value||'').length < 8){ alert('Password must be at least 8 characters.'); return; }
+    if(!$('rage').checked){ alert('Please confirm you are at least 13 years old to create an account.'); return; }
+    const turnstileToken = await getTurnstileToken();
+    const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value,ageConfirmed:$('rage').checked,turnstileToken}); if(r.token){ setToken(r.token,r.user); home();
+      // Cold-review catch: this call sits inside doReg's own try/catch, but the account is
+      // ALREADY registered and logged in by this point -- a throw here has no business
+      // surfacing as "Network error, is CrewFit reachable?" to someone who just successfully
+      // signed up. Own try/catch so a walkthrough hiccup can never look like a failed signup.
+      try { openWalkthrough(); } catch(e){}
+    } else alert(r.error||'register failed');
+  } catch(e){ alert('Network error — is CrewFit reachable? Try reopening the app.');
+  } finally { if(btn) btn.disabled = false; }
+}
 
 // ---- Nav / browser Back ----
 // v254 (Jeff): "when I press back I want the page I was just on, not Home" -- nothing in this app
