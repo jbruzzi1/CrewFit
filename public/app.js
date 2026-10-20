@@ -283,6 +283,7 @@ function authScreen(){
         <div id="rxHint" class="muted" style="font-size:12px;margin:4px 0 0;min-height:14px"></div>
         <input id="rp" placeholder="password (8+ characters)" type="password" onkeydown="onEnterKey(event, doReg)">
         <input id="rn" placeholder="display name (optional)" onkeydown="onEnterKey(event, doReg)">
+        <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-size:13px"><input type="checkbox" id="rage" style="width:auto"> I am 13 years of age or older</label>
         <button id="regBtn" onclick="doReg()">Create account</button>
       </div>
     </div></div>`;
@@ -323,7 +324,8 @@ async function doReg(){ try {
   const u=($('rx').value||'').trim().toLowerCase();
   if(u){ try { const c=await H.get('/api/register/check?username='+encodeURIComponent(u)); if(c && c.available===false){ alert(c.reason||'username taken'); return; } } catch(e){} }
   if(($('rp').value||'').length < 8){ alert('Password must be at least 8 characters.'); return; }
-  const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value}); if(r.token){ setToken(r.token,r.user); home();
+  if(!$('rage').checked){ alert('Please confirm you are at least 13 years old to create an account.'); return; }
+  const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value,ageConfirmed:$('rage').checked}); if(r.token){ setToken(r.token,r.user); home();
     // Cold-review catch: this call sits inside doReg's own try/catch, but the account is
     // ALREADY registered and logged in by this point -- a throw here has no business
     // surfacing as "Network error, is CrewFit reachable?" to someone who just successfully
@@ -9945,6 +9947,16 @@ function openSettings(opts){
            comment) is currently a placeholder -- swap it before submitting. -->
       <button class="sheet-row" onclick="contactSupport()">Contact us</button>
     </div>
+    <h2>Your data</h2>
+    <div class="sheet-list">
+      <!-- Oct 20 2026 (app-store readiness review -- "a user can only delete their data, not
+           download it first"): deliberately its own section, above Danger zone and NOT styled
+           red -- unlike Reset workouts/Delete account this is non-destructive (a plain download),
+           so it shouldn't read with the same severity those two correctly do. Placed right before
+           Danger zone on purpose: "get a copy first, then optionally erase it" is the natural
+           order, same pairing the server route's own comment explains. -->
+      <button class="sheet-row" onclick="confirmExportData()">Export my data</button>
+    </div>
     <h2>Danger zone</h2>
     <div class="sheet-list">
       <button class="sheet-row red" onclick="confirmResetWorkouts()">Reset workouts</button>
@@ -10546,6 +10558,53 @@ async function doChangePassword(){
   if(r.token){ TOKEN = r.token; localStorage.setItem('crewfit_token', r.token); }
   closeSheet();
   alert('Password changed.');
+}
+// Oct 20 2026 (app-store readiness review -- "a user can only delete their data, not download it
+// first"; Jeff: "lets do the age gate logic and the data export"). Same shape as Reset
+// workouts/Delete account just below -- one sheet, password re-entry as the proof-of-intent step,
+// no separate "are you sure." Part of the same PWCONFIRM_EL-guarded family (see that variable's
+// own Oct 1 2026 comment) so a fast double-tap into this sheet can't stack a stale zombie copy
+// the way the other three used to before that fix.
+function confirmExportData(){
+  if(PWCONFIRM_EL){ PWCONFIRM_EL.remove(); PWCONFIRM_EL = null; }
+  const inner = `<div class="sheet"><div class="sheet-head"><h2>Export my data</h2><button class="sec sm" onclick="closeSheet()">✕</button></div>
+    <div class="muted" style="padding:0 2px 14px">Downloads a copy of your profile, workouts, templates, personal records, custom exercises, crew memberships, follows, notifications, and any reports you've filed, as one file. This doesn't change or remove anything.</div>
+    <label class="muted">Enter your password to confirm</label>
+    <input id="edPass" type="password" autocomplete="current-password" onkeydown="onEnterKey(event, doExportData)">
+    <div class="sheet-list" style="margin-top:14px">
+      <button class="sheet-row" id="edBtn" onclick="doExportData()">Download my data</button>
+      <button class="sheet-row" onclick="closeSheet()">Cancel</button>
+    </div>
+  </div>`;
+  PWCONFIRM_EL = openSheetHtml(inner);
+  setTimeout(()=>{ const i=$('edPass'); if(i) i.focus(); }, 60);
+}
+async function doExportData(){
+  const pass = $('edPass').value;
+  if(!pass){ alert('Enter your password to confirm.'); return; }
+  // Sep 11 2026-style double-tap guard (text-entry-double-tap.mjs's own pattern) -- this request is
+  // heavier than the other password-confirm routes (several real Postgres queries, no caching) and
+  // the server's own rate limit is generous (5/hour) specifically for genuine re-download use, not
+  // for a mashed button; disabling the button for the one in-flight request costs nothing real.
+  const btn = $('edBtn');
+  if(btn && btn.disabled) return;
+  if(btn) btn.disabled = true;
+  try {
+    const r = await H.post('/api/me/export-data', {password:pass});
+    if(r && r.error){ alert(r.error); return; }
+    const blob = new Blob([JSON.stringify(r, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `crewfit-export-${(ME.username||'me')}-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    closeSheet();
+  } catch(e) {
+    alert('Network error — is CrewFit reachable? Try reopening the app.');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
 }
 // Sep 29 2026 (Jeff: "add... account deletion"; app-store readiness -- Apple guideline 5.1.1(v)).
 // One sheet, not a separate confirm-then-confirm -- the password re-entry itself is already the

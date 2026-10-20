@@ -65,7 +65,7 @@ page.on('pageerror', e => errors.push(String(e)));
 await page.goto(BASE + '/');
 
 const reg = await page.evaluate(async (BASE) => {
-  const r = await fetch(BASE + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'exa' + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: 'Jeff' }) });
+  const r = await fetch(BASE + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ageConfirmed: true, username: 'exa' + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: 'Jeff' }) });
   return r.json();
 }, BASE);
 await page.evaluate((tok) => localStorage.setItem('crewfit_token', tok), reg.token);
@@ -228,7 +228,7 @@ console.log('Oct 7 2026 cold-review catch: tapping "Swap ->" on a non-creator pa
   const riley = await rileyCtx.newPage();
   await riley.goto(BASE + '/');
   const rileyReg = await riley.evaluate(async (BASE) => {
-    const r = await fetch(BASE + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'exariley' + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: 'Riley' }) });
+    const r = await fetch(BASE + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ageConfirmed: true, username: 'exariley' + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: 'Riley' }) });
     return r.json();
   }, BASE);
 

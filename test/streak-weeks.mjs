@@ -41,7 +41,7 @@ await boot();
 try {
 
 const reg = (username) => fetch(B + '/api/register', { method: 'POST', headers: J,
-  body: JSON.stringify({ username, pin: 'pass1234', displayName: username }) }).then(r => r.json());
+  body: JSON.stringify({ ageConfirmed: true, username, pin: 'pass1234', displayName: username }) }).then(r => r.json());
 const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: { ...J, Authorization: 'Bearer ' + tok }, body: JSON.stringify(b) }).then(r => r.json());
 const get = (p, tok) => fetch(B + p, { headers: { Authorization: 'Bearer ' + tok } }).then(r => r.json());
 

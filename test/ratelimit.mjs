@@ -43,16 +43,16 @@ await new Promise(res => {
 console.log('registration is capped per client IP');
 {
   let last;
-  for (let i = 0; i < 21; i++) last = await post('/api/register', { username: 'reg' + i, pin: 'pass1234', displayName: 'R' }, '9.9.9.1');
+  for (let i = 0; i < 21; i++) last = await post('/api/register', { ageConfirmed: true, username: 'reg' + i, pin: 'pass1234', displayName: 'R' }, '9.9.9.1');
   ok(last.status === 429, `the 21st sign-up from one IP is refused (got ${last.status})`);
 
   // a different IP is unaffected
-  const other = await post('/api/register', { username: 'otheruser', pin: 'pass1234', displayName: 'O' }, '9.9.9.2');
+  const other = await post('/api/register', { ageConfirmed: true, username: 'otheruser', pin: 'pass1234', displayName: 'O' }, '9.9.9.2');
   ok(other.status === 200, `a different IP can still sign up (got ${other.status})`);
 
   // NO proxy header (loopback / tests) is never limited
   let localLast;
-  for (let i = 0; i < 30; i++) localLast = await post('/api/register', { username: 'local' + i, pin: 'pass1234', displayName: 'L' }, null);
+  for (let i = 0; i < 30; i++) localLast = await post('/api/register', { ageConfirmed: true, username: 'local' + i, pin: 'pass1234', displayName: 'L' }, null);
   ok(localLast.status === 200, `30 local (no-proxy-header) sign-ups are all allowed (got ${localLast.status})`);
 }
 
@@ -66,7 +66,7 @@ console.log('\nlogin is throttled per client IP');
 
 console.log('\nthe account lockout no longer lets an attacker lock out the real user');
 {
-  await post('/api/register', { username: 'victim', pin: 'realpin12', displayName: 'V' }, null);
+  await post('/api/register', { ageConfirmed: true, username: 'victim', pin: 'realpin12', displayName: 'V' }, null);
   const ATT = '10.0.0.1', REAL = '10.0.0.2';
   let att;
   for (let i = 0; i < 8; i++) att = await post('/api/login', { username: 'victim', pin: 'wrong' + i }, ATT);
@@ -79,7 +79,7 @@ console.log('\nthe account lockout no longer lets an attacker lock out the real 
 
 console.log('\na distributed guesser is still capped per account, across many IPs');
 {
-  await post('/api/register', { username: 'victim2', pin: 'realpin12', displayName: 'V2' }, null);
+  await post('/api/register', { ageConfirmed: true, username: 'victim2', pin: 'realpin12', displayName: 'V2' }, null);
   // 5 IPs x 8 wrong guesses = 40 account-level failures (each IP hits its own per-IP lock at 8)
   for (let ipn = 1; ipn <= 5; ipn++)
     for (let i = 0; i < 8; i++)

@@ -91,7 +91,7 @@ async function api(path, method, token, body) {
 const post = (p, b, tok) => api(p, 'POST', tok, b).then(r => r.body);
 const postFull = (p, b, tok) => api(p, 'POST', tok, b);
 const getFull = (p, tok) => api(p, 'GET', tok);
-const reg = (u) => post('/api/register', { username: u, pin: 'pass1234', displayName: u });
+const reg = (u) => post('/api/register', { ageConfirmed: true, username: u, pin: 'pass1234', displayName: u });
 
 async function setupInvite(aName, bName) {
   const a = await reg(aName), b = await reg(bName);

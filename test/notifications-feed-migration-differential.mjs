@@ -93,8 +93,8 @@ async function pollUntil(fn, checkFn, timeoutMs = 2000) {
   return last;
 }
 
-const alice = await post('/api/register', { username: 'alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
-const bob   = await post('/api/register', { username: 'bob',   pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
+const alice = await post('/api/register', { ageConfirmed: true, username: 'alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
+const bob   = await post('/api/register', { ageConfirmed: true, username: 'bob',   pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
 
 console.log('\na simple notify() (follow) -- the new table gets the exact same row, same id, as the old one');
 {
@@ -140,10 +140,10 @@ console.log('\nreal concurrent HTTP requests -- the grouped-notification merge r
   // SINGLE grouped notification (groupKey `crew:<id>:chat`) -- the exact race the pre-mortem
   // flagged (see db.js's long comment on pgMergedNotificationWrite), now exercised through the
   // real route instead of an isolated script calling the SQL directly.
-  const carol = await post('/api/register', { username: 'carol', pin: 'pass1234', displayName: 'Carol' }).then(r => r.json());
-  const dave  = await post('/api/register', { username: 'dave',  pin: 'pass1234', displayName: 'Dave' }).then(r => r.json());
-  const erin  = await post('/api/register', { username: 'erin',  pin: 'pass1234', displayName: 'Erin' }).then(r => r.json());
-  const frank = await post('/api/register', { username: 'frank', pin: 'pass1234', displayName: 'Frank' }).then(r => r.json());
+  const carol = await post('/api/register', { ageConfirmed: true, username: 'carol', pin: 'pass1234', displayName: 'Carol' }).then(r => r.json());
+  const dave  = await post('/api/register', { ageConfirmed: true, username: 'dave',  pin: 'pass1234', displayName: 'Dave' }).then(r => r.json());
+  const erin  = await post('/api/register', { ageConfirmed: true, username: 'erin',  pin: 'pass1234', displayName: 'Erin' }).then(r => r.json());
+  const frank = await post('/api/register', { ageConfirmed: true, username: 'frank', pin: 'pass1234', displayName: 'Frank' }).then(r => r.json());
   // Crew membership requires being one of the owner's connections (validCrewMemberIds) -- all
   // profiles are public by default, so a one-directional follow from alice is enough.
   for (const u of [carol, dave, erin, frank]) await post('/api/follow/' + u.user.id, {}, alice.token);
@@ -180,7 +180,7 @@ console.log('\nreal concurrent HTTP requests -- the feed-event reaction toggle r
   // A fresh challenge_started feed event (public-crew-ish: everyone below is a member, so
   // everyone can react) reacted to by 10 different users at once.
   const reactors = [];
-  for (let i = 0; i < 10; i++) reactors.push(await post('/api/register', { username: 'react' + i, pin: 'pass1234', displayName: 'React' + i }).then(r => r.json()));
+  for (let i = 0; i < 10; i++) reactors.push(await post('/api/register', { ageConfirmed: true, username: 'react' + i, pin: 'pass1234', displayName: 'React' + i }).then(r => r.json()));
   // Crew membership requires being a connection of the owner's (validCrewMemberIds) -- and
   // reacting to an event attributed to alice requires the REACTOR to be connected to alice too
   // (see POST /api/feed-events/:id/react's own `allowed` check) -- a one-directional follow from

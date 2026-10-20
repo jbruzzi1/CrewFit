@@ -62,7 +62,7 @@ console.log('Part A: server-side default (POST/PUT /api/sessions), real server +
   process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
 
   const H = t => ({ ...J, Authorization: 'Bearer ' + t });
-  const reg = n => fetch(B + '/api/register', { method: 'POST', headers: J, body: JSON.stringify({ username: n, pin: 'pass1234', displayName: n }) }).then(r => r.json());
+  const reg = n => fetch(B + '/api/register', { method: 'POST', headers: J, body: JSON.stringify({ ageConfirmed: true, username: n, pin: 'pass1234', displayName: n }) }).then(r => r.json());
   const P = (who, p, body) => fetch(B + p, { method: 'POST', headers: H(who.token), body: JSON.stringify(body || {}) }).then(r => r.json());
   const PUT = (who, p, body) => fetch(B + p, { method: 'PUT', headers: H(who.token), body: JSON.stringify(body || {}) }).then(r => r.json());
   const G = (who, p) => fetch(B + p, { headers: H(who.token) }).then(r => r.json());

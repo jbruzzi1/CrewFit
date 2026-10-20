@@ -1010,8 +1010,16 @@ app.post('/api/register', async (req, res) => {
   const ip = clientIp(req);
   if (ip && overLimit('reg:' + ip, 20, 60 * 60 * 1000))
     return res.status(429).json({ error: 'Too many sign-ups from here. Please try again later.' });
-  const { username, pin, displayName } = req.body || {};
+  const { username, pin, displayName, ageConfirmed } = req.body || {};
   if (!username || !pin) return res.status(400).json({ error: 'username + pin required' });
+  // Oct 20 2026 (app-store readiness review, "13+ self-attestation" — Jeff's call: a checkbox, not
+  // a collected birthdate. Collecting a real date of birth is new PII on every account for no real
+  // gain here — someone willing to lie about their age lies just as easily on a typed birthdate as
+  // on a checkbox, so the extra field buys defensibility, not actual accuracy, at the cost of one
+  // more thing this app now has to protect and eventually let people export/delete). This is a hard
+  // gate, not a UI nicety: registration refuses outright without it, same enforcement level as the
+  // username/password checks right below.
+  if (!ageConfirmed) return res.status(400).json({ error: 'You must confirm you are at least 13 years old to create an account.' });
   const uProblem = usernameProblem(username); if (uProblem) return res.status(400).json({ error: uProblem });
   const pProblem = pinProblem(pin);           if (pProblem) return res.status(400).json({ error: pProblem });
   // Oct 12 2026 (cold-review catch, same day as the async-hashPin scaling fix): hashPin used to be
@@ -1038,6 +1046,9 @@ app.post('/api/register', async (req, res) => {
     // Settings. followers/following/followReqs are created lazily by ensureFollowArrays on first
     // use, same as ever; there is no separate "friends" concept to seed any more (see canSeeProfile).
     profileVisibility: 'public',
+    // Oct 20 2026: the fact of the attestation, nothing more — no birthdate, no re-confirmation
+    // later. Deliberately minimal, matching the checkbox itself (see the route's own comment above).
+    ageConfirmed: true,
     createdAt: new Date().toISOString() }, hashed);
   // Oct 16 2026 (users slice, decision #2): a brand-new account needs no backfill -- mark it
   // migrated before its first save() so that very first write already excludes these scalar
@@ -8475,6 +8486,31 @@ function stripUserFromSession(s, userId) {
 // idempotent (filtering an id that's already absent, deleting a key that's already gone are all
 // no-ops), simply retrying the whole call after a transient failure safely re-processes whatever
 // already succeeded as a no-op and picks up wherever it actually stopped.
+// v249 (audit finding): this used to miss s.posts[me]/s.logs[me] — unlike remove-mine's own
+// hasConnection check just above, which already covers both. A discard-leave (keep:false)
+// deletes s.logs[me] and removes participants/invited, but a recap posted BEFORE that leave
+// (s.posts[me]) is untouched by it (see the comment above /leave: discard only ever erases
+// logs/variations, never a recap), and discard skips creditFinish so no history row exists
+// either. That combination — no participants, no invited, no history, but a real recap still
+// sitting on the session — read as "not touched" and reset-workouts skipped it entirely,
+// leaving that stale recap fully visible after a user asked to erase everything they'd logged.
+//
+// Oct 20 2026 (data export): hoisted out of wipeUserFromAllSessions (below) into a standalone,
+// reusable predicate -- GET /api/me/export-data needs the exact same definition of "a session
+// that's mine" (same reasoning the export's "my workouts" list should match what account deletion
+// would have touched, not a narrower or looser notion invented separately), and the only way to
+// guarantee that without two copies silently drifting apart is to share the one function. Pure and
+// read-only, same as before; the wipe path's actual mutation still lives entirely in
+// wipeUserFromAllSessions itself.
+function sessionTouchesUser(s, me) {
+  return s.creatorId === me
+    || (s.participants || []).includes(me)
+    || (s.invited || []).includes(me)
+    || (s.history || []).some(h => h.userId === me)
+    || (s.posts && s.posts[me])
+    || (s.logs && s.logs[me])
+    || !!(s.draftNotes && s.draftNotes[me]);
+}
 async function wipeUserFromAllSessions(me) {
   let sessionsDeleted = 0, sessionsHandedOff = 0, sessionsCleared = 0;
   // Sep 27 2026 (ownerless redesign): collected here instead of notifying inline, so every
@@ -8482,21 +8518,7 @@ async function wipeUserFromAllSessions(me) {
   // loop can never leave someone notified about a pivot that didn't actually get persisted.
   const pivots = [];       // { sessionId, sessionName, stillHere: [ids] } -- "host left" broadcast
   const autoApprovals = [];  // { proposedBy, swapTo, sessionId } -- from auto-applying pending edits
-  // v249 (audit finding): this used to miss s.posts[me]/s.logs[me] — unlike remove-mine's own
-  // hasConnection check just above, which already covers both. A discard-leave (keep:false)
-  // deletes s.logs[me] and removes participants/invited, but a recap posted BEFORE that leave
-  // (s.posts[me]) is untouched by it (see the comment above /leave: discard only ever erases
-  // logs/variations, never a recap), and discard skips creditFinish so no history row exists
-  // either. That combination — no participants, no invited, no history, but a real recap still
-  // sitting on the session — read as "not touched" and reset-workouts skipped it entirely,
-  // leaving that stale recap fully visible after a user asked to erase everything they'd logged.
-  const isSessionTouchedByMe = (s) => s.creatorId === me
-    || (s.participants || []).includes(me)
-    || (s.invited || []).includes(me)
-    || (s.history || []).some(h => h.userId === me)
-    || (s.posts && s.posts[me])
-    || (s.logs && s.logs[me])
-    || (s.draftNotes && s.draftNotes[me]);
+  const isSessionTouchedByMe = (s) => sessionTouchesUser(s, me);
   // Oct 17 2026 (review finding #2): this loop used to be a single `for (const s of
   // Object.values(DB.sessions))` enumeration taken once up front. Each session is now its own
   // `await withSessionLock(...)` + its own `await save(DB)` (a real Postgres round trip) rather
@@ -8961,6 +8983,137 @@ async function anonymizeAndDeleteAccount(targetId) {
 // requires letting a user delete their own account from within an app that lets them create one).
 // Requires the CURRENT password re-entered, same proof-of-identity bar as /api/me/password above
 // -- an irreversible action needs at least that, not just "you're already logged in right now."
+//
+// Oct 20 2026 (app-store readiness review -- "a user can only delete their data, not download it
+// first"; Jeff: "lets do the age gate logic and the data export"). Deliberately placed right above
+// delete-account: the two are the natural pair ("get a copy, then optionally erase it") Apple's own
+// account-deletion guidance (5.1.1(v)) expects alongside a real export, and reusing the identical
+// password-confirmation bar below means there is no way to delete without ever having had the
+// chance to export first.
+//
+// Same re-auth bar as delete-account/reset-workouts/password-change -- current password required,
+// same shared 'pw-confirm:' failure counter (one 10/hour budget across all four of these routes
+// now, not a fresh one per route; see /api/me/password's own comment on why that's shared rather
+// than per-route). This is a READ, not a mutation, but it's a read of literally everything the app
+// knows about this person in one response -- the same bar as "I want a copy of my own data" GDPR
+// export flows typically use, and the bar this app already set for "change my password"/"erase my
+// workouts," both lower-stakes than "hand me (or whoever is holding this unlocked phone right now)
+// a single file with my whole account in it."
+//
+// A second, SEPARATE rate limit on top of the shared failure counter: that counter only throttles
+// WRONG password guesses, and this route is heavier than its siblings (several real queries against
+// Postgres, no caching) -- a correctly-authenticated caller requesting it over and over has nothing
+// else stopping them. 5/hour is generous for genuine use (nobody re-exports their whole account
+// five times in an hour) and cheap insurance against an accidentally-looping client.
+//
+// Scope, picked to match exactly what account deletion itself already treats as "this person's
+// data" (reuses sessionTouchesUser, the same predicate wipeUserFromAllSessions/
+// anonymizeAndDeleteAccount use, so "what you can export" and "what deleting your account erases"
+// can never silently drift apart from each other): profile (every field EXCEPT the credential/auth
+// internals no user should ever receive a copy of -- pinHash/pinSalt/tokensValidFrom, same denylist
+// POST /api/me/password's own PW_FIELDS uses), the follow graph in both directions plus pending
+// requests, who they've blocked, every workout session that touches them in any way (created,
+// participated, invited, logged, posted a recap, left draft notes), every template they own, their
+// full PR table, every custom exercise they created, every crew they belong to (name + their role,
+// not the full membership roster -- that's other people's data, not theirs), their notification
+// history, and every content report they've personally filed. Does NOT include crew_messages or
+// crew_challenges (shared group content co-authored with other crew members, not solely this
+// person's own data -- the same reasoning crew membership below exports the crew's name/role but
+// not its full roster) or other people's posts/comments this person merely appears in: those stay
+// out for the same "not solely theirs to export" reason, matching how anonymizeAndDeleteAccount
+// also leaves other people's own content alone and only ever touches this account's own trace in it.
+app.post('/api/me/export-data', auth, async (req, res) => {
+  const me = req.userId;
+  const u = DB.users[me];
+  if (!u) return res.status(404).json({ error: 'not found' });
+  if (failCount('pw-confirm:' + me) >= 10)
+    return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+  // POST, not GET, even though this is conceptually a read: this carries a password in its body,
+  // and the Fetch spec outright refuses a body on GET/HEAD ("Request with GET/HEAD method cannot
+  // have body" -- TypeError, thrown client-side before any request is even sent), so a GET route
+  // here would be uncallable from this app's own H helper (app.js's H.get takes no body at all;
+  // H.post is what every other password-confirm route already uses). Same reasoning rules out a
+  // query-string password too (Privacy: never place personal/sensitive data in a URL -- it lands
+  // in access logs). POST matches every one of this file's sibling password-confirm routes anyway.
+  const { password } = req.body || {};
+  if (!password || !(await verifyPin(u, password))) {
+    bumpFail('pw-confirm:' + me, 60 * 60 * 1000);
+    return res.status(400).json({ error: 'Password is incorrect' });
+  }
+  clearFail('pw-confirm:' + me);
+  if (overLimit('export:' + me, 5, 60 * 60 * 1000))
+    return res.status(429).json({ error: 'Too many export requests. Please try again later.' });
+
+  // Same denylist POST /api/me/password's PW_FIELDS already uses for "fields that must never leave
+  // this server" -- kept as its own local list rather than importing that route's const so this
+  // route doesn't silently start tracking a password-change route's own scope if that one's denylist
+  // ever grows for reasons specific to it.
+  // Oct 20 2026 (cold-review catch): revokedJtis added -- a map of this account's own already-
+  // revoked token ids -> timestamps (see revokeToken's own comment). Low practical risk on its own
+  // (random per-token ids, not reconstructible into a usable token) but it's internal server
+  // bookkeeping, not anything a person would recognize as "their data," so it belongs on the same
+  // denylist as the other internal-only fields for the same stated reason.
+  const EXPORT_DENYLIST = new Set(['pinSalt', 'pinHash', 'tokensValidFrom', 'revokedJtis']);
+  const profile = {};
+  for (const [k, v] of Object.entries(u)) {
+    if (EXPORT_DENYLIST.has(k)) continue;
+    // following/followers/followReqs/blocked get their own top-level sections below, named for what
+    // they are rather than left buried as raw arrays inside "profile."
+    if (k === 'following' || k === 'followers' || k === 'followReqs' || k === 'blocked') continue;
+    profile[k] = v;
+  }
+  ensureFollowArrays(u);
+  ensureBlockArray(u);
+
+  // Oct 20 2026 (cold-review catch, fixed before shipping): this used to return `mySessions`
+  // straight from the sessionTouchesUser filter below -- the RAW session objects, not run through
+  // sessionView's per-viewer redaction every other read route in this file always applies. That's
+  // a real privacy bug, not a nitpick: a raw session's posts/logs/draftNotes/joinRequests are
+  // keyed by EVERY participant's user id, not just the viewer's, so the export was handing back
+  // other people's private recaps (even ones they'd posted before blocking the exporting user --
+  // canSeePostAuthor's block check never ran), other people's own-eyes-only draft notes, a
+  // stranger's free-text join-request note, and (worst case) a merely-invited-but-never-joined
+  // person's export included a co-invitee's actual logged weights/reps, none of which that other
+  // person agreed to share with this exporter. sessionTouchesUser answers "is this session mine in
+  // SOME way" -- correct for deciding which sessions wipeUserFromAllSessions must mutate, wrong for
+  // deciding what whole objects to hand back verbatim. sessionView(s, me) is the exact same
+  // per-viewer projection GET /api/sessions/:id and every other session-reading route in this file
+  // already uses and that's been independently cold-reviewed and audit-fixed repeatedly (its own
+  // comments document each prior leak this exact function was built to close) -- reusing it here
+  // rather than inventing a second, parallel redaction keeps "what you're allowed to see of a
+  // session" defined in exactly one place. A session sessionView resolves to 'stranger' for this
+  // viewer (sessionTier returns null) is simply omitted -- the one real edge case is a leftover
+  // draftNotes entry with no other trace of membership (a rare discard-leave remnant; see
+  // sessionTouchesUser's own comment), which fails closed exactly the way every other tier boundary
+  // in this file already does, rather than exposing it unfiltered.
+  const mySessions = Object.values(DB.sessions)
+    .filter(s => sessionTouchesUser(s, me))
+    .map(s => sessionView(s, me))
+    .filter(Boolean);
+  const myTemplates = Object.values(DB.templates).filter(t => t.ownerId === me);
+  const myCrews = Object.values(DB.crews)
+    .filter(c => isCrewMember(c, me))
+    .map(c => ({ id: c.id, name: c.name, role: c.ownerId === me ? 'owner' : 'member', createdAt: c.createdAt }));
+  const [customExercises, notifications, reportsFiled] = await Promise.all([
+    db.pgListCustomExerciseRowsByOwner(me),
+    db.pgAllNotificationsForUser(me),
+    db.pgListReportsByReporter(me),
+  ]);
+
+  res.json({
+    exportedAt: new Date().toISOString(),
+    profile,
+    follows: { following: u.following, followers: u.followers, followRequestsReceived: u.followReqs },
+    blockedUsers: u.blocked,
+    sessions: mySessions,
+    templates: myTemplates,
+    personalRecords: (DB.prs && DB.prs[me]) || {},
+    customExercises,
+    crewMemberships: myCrews,
+    notifications,
+    reportsFiled,
+  });
+});
 // Oct 12 2026: the actual teardown this route runs is now the shared anonymizeAndDeleteAccount()
 // above (see its own comment for why) -- this route's whole job is proving the caller really is
 // the account holder, then handing off.

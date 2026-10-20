@@ -40,7 +40,7 @@ ok(noTok.error === 'unauthorized', 'no token at all is refused, same as every ot
 const wrongTok = await get('/api/admin/scaling', { 'x-admin-token': 'definitely-not-it' });
 ok(wrongTok.error === 'unauthorized', 'a wrong token is refused');
 
-const alice = await post('/api/register', { username: 'adminscale_alice', pin: 'pass1234', displayName: 'Alice' });
+const alice = await post('/api/register', { ageConfirmed: true, username: 'adminscale_alice', pin: 'pass1234', displayName: 'Alice' });
 ok(!!alice.token, 'setup: registered a real user');
 await get('/api/progress?weeks=4', { Authorization: 'Bearer ' + alice.token });
 await get('/api/progress?weeks=4', { Authorization: 'Bearer ' + alice.token });

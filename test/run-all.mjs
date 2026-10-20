@@ -236,6 +236,19 @@ const files = [
   // before the process exits, and that an unreachable Sentry endpoint still lets the process exit
   // within a bounded window rather than hanging.
   'test/phase3-sentry-flush-before-exit-slice2.mjs',
+  // Oct 20 2026 (app-store readiness review, "13+ self-attestation" age gate): the one file that
+  // actually exercises POST /api/register's new ageConfirmed requirement itself -- missing/falsy
+  // is refused with the real error and no account created, truthy succeeds and the attestation
+  // (not a birthdate) is what lands in the row. Every other file that registers a user was just
+  // updated to pass ageConfirmed as fixture setup; none of them test the gate.
+  'test/age-gate.mjs',
+  // Oct 20 2026 (same readiness review, second half: "lets do the age gate logic and the data
+  // export"). POST /api/me/export-data -- password-confirmed, rate-limited, scoped via the shared
+  // sessionTouchesUser predicate so export and account-deletion can never silently disagree about
+  // "what's mine." Covers denylist correctness (no pinHash/pinSalt/tokensValidFrom ever leaves the
+  // server), per-user scoping (another user's sessions/crews never leak in), and the route's own
+  // 5/hour rate limit.
+  'test/data-export.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

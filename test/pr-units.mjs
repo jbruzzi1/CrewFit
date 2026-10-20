@@ -57,7 +57,7 @@ process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); a
 
 const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const get = (p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
-const reg = (username, pin, displayName) => post('/api/register', { username, pin, displayName });
+const reg = (username, pin, displayName) => post('/api/register', { ageConfirmed: true, username, pin, displayName });
 
 console.log("the exact bug: a kg lifter's earned PR must beat a kg seed correctly — with the old missing-unit code, toLb(100, undefined) reads as 100 (treated as lb), which is LESS than the seed's own toLb(90,'kg')≈198.4, so a real 100kg improvement over a 90kg seed would have silently failed beatSeed");
 {

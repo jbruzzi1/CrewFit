@@ -70,7 +70,7 @@ const post = (p, b, tok) => api(p, 'POST', tok, b).then(r => r.body);
 const postFull = (p, b, tok) => api(p, 'POST', tok, b);
 const putFull = (p, b, tok) => api(p, 'PUT', tok, b);
 const get = (p, tok) => api(p, 'GET', tok).then(r => r.body);
-const reg = (u) => post('/api/register', { username: u, pin: 'pass1234', displayName: u });
+const reg = (u) => post('/api/register', { ageConfirmed: true, username: u, pin: 'pass1234', displayName: u });
 
 console.log('setup: a custom exercise with NO logged sets yet -- muscle group must still be freely editable (nothing to protect yet)');
 {

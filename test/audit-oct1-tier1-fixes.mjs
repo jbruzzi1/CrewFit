@@ -57,7 +57,7 @@ async function api(path, method, token, body) {
 }
 const post = (p, b, tok) => api(p, 'POST', tok, b).then(r => r.body);
 const postFull = (p, b, tok) => api(p, 'POST', tok, b);
-const reg = (u) => post('/api/register', { username: u, pin: 'pass1234', displayName: u });
+const reg = (u) => post('/api/register', { ageConfirmed: true, username: u, pin: 'pass1234', displayName: u });
 
 console.log('Tier 1 #2 (round-2 audit): creating a custom exercise named exactly like a built-in one is rejected up front, not silently accepted and then filtered out forever');
 {

@@ -62,7 +62,7 @@ process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); awa
 process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
 
 const post =(p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
-const reg = (username, pin, displayName) => post('/api/register', { username, pin, displayName });
+const reg = (username, pin, displayName) => post('/api/register', { ageConfirmed: true, username, pin, displayName });
 
 const creator = await reg('fer_creator', 'pass1234', 'Creator');
 const partner = await reg('fer_partner', 'pass1234', 'Partner');

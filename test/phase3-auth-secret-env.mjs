@@ -87,7 +87,7 @@ console.log('\nthe actual payoff: two independent "machines" (separate DATA_DIRs
   ok(!!srvA, '"machine A" boots');
   if (srvA) liveSrvs.add(srvA);
   const BASE_A = `http://localhost:${PORT_A}`;
-  const reg = await fetch(BASE_A + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'phase3auth_' + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: 'Jeff' }) }).then(r => r.json());
+  const reg = await fetch(BASE_A + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ageConfirmed: true, username: 'phase3auth_' + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: 'Jeff' }) }).then(r => r.json());
   ok(!!reg.token, `"machine A" issued a real token (got ${JSON.stringify(reg.token && reg.token.slice(0, 12))}...)`);
   if (srvA) { await killAndWait(srvA); liveSrvs.delete(srvA); }
 
@@ -123,7 +123,7 @@ console.log('\nnegative control: two "machines" with DIFFERENT AUTH_SECRET value
   const { srv: srvA } = await boot(PORT_A, dirA, { AUTH_SECRET: REAL_SECRET });
   ok(!!srvA, '"machine A" (secret #1) boots');
   if (srvA) liveSrvs.add(srvA);
-  const reg = await fetch(`http://localhost:${PORT_A}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'phase3authneg_' + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: 'Jeff' }) }).then(r => r.json());
+  const reg = await fetch(`http://localhost:${PORT_A}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ageConfirmed: true, username: 'phase3authneg_' + Math.random().toString(36).slice(2, 8), pin: '12345678', displayName: 'Jeff' }) }).then(r => r.json());
   ok(!!reg.token, '"machine A" issued a token under secret #1');
   if (srvA) { await killAndWait(srvA); liveSrvs.delete(srvA); }
 

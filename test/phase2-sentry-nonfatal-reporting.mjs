@@ -77,7 +77,7 @@ const raw = new PgConnection(parseConnString(testDb.url));
 async function breakTable(name) { await raw.query(`ALTER TABLE ${name} RENAME TO ${name}_broken_for_test`); }
 async function fixTable(name) { await raw.query(`ALTER TABLE ${name}_broken_for_test RENAME TO ${name}`); }
 
-const alice = await post('/api/register', { username: 'p2_alice', pin: 'pass1234', displayName: 'Alice' }).then(j);
+const alice = await post('/api/register', { ageConfirmed: true, username: 'p2_alice', pin: 'pass1234', displayName: 'Alice' }).then(j);
 
 console.log('\na real rigged route failure behaves EXACTLY the same with Sentry on -- same status, same body, server stays responsive after');
 {
@@ -97,7 +97,7 @@ console.log('\na real rigged route failure behaves EXACTLY the same with Sentry 
 
 console.log('\na brand-new, healthy registration still works cleanly right after everything above (same "no global jam" shape every other regression file in this suite checks)');
 {
-  const r = await post('/api/register', { username: 'p2_bob', pin: 'pass1234', displayName: 'Bob' });
+  const r = await post('/api/register', { ageConfirmed: true, username: 'p2_bob', pin: 'pass1234', displayName: 'Bob' });
   ok(r.status === 200, `registration succeeds with Sentry on, got ${r.status}`);
 }
 

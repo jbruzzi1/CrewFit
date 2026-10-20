@@ -75,7 +75,7 @@ async function api(path, method, token, body) {
   return { status: r.status, json };
 }
 async function reg(username) {
-  const { json } = await api('/api/register', 'POST', null, { username, pin: '12345678', displayName: username });
+  const { json } = await api('/api/register', 'POST', null, { ageConfirmed: true, username, pin: '12345678', displayName: username });
   return { token: json.token, id: json.user && json.user.id, username };
 }
 

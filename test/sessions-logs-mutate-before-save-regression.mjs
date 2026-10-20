@@ -99,8 +99,8 @@ process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); a
 async function breakTable(name) { await raw.query(`ALTER TABLE ${name} RENAME TO ${name}_broken_for_test`); }
 async function fixTable(name) { await raw.query(`ALTER TABLE ${name}_broken_for_test RENAME TO ${name}`); }
 
-const alice = await post('/api/register', { username: 'sl_alice', pin: 'pass1234', displayName: 'Alice' }).then(j);
-const bob = await post('/api/register', { username: 'sl_bob', pin: 'pass1234', displayName: 'Bob' }).then(j);
+const alice = await post('/api/register', { ageConfirmed: true, username: 'sl_alice', pin: 'pass1234', displayName: 'Alice' }).then(j);
+const bob = await post('/api/register', { ageConfirmed: true, username: 'sl_bob', pin: 'pass1234', displayName: 'Bob' }).then(j);
 // mutual follow -> connected, so alice can invite bob
 await post(`/api/follow/${bob.user.id}`, {}, alice.token);
 await post(`/api/follow-requests/${alice.user.id}/accept`, {}, bob.token);

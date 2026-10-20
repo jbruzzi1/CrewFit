@@ -53,7 +53,7 @@ process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); a
   const { srv } = await boot(PORT, DIR, testDb.url);
   activeSrv = srv; activeDir = DIR; activeTestDb = testDb;
   const H = t => ({ ...J, Authorization: 'Bearer ' + t });
-  const reg = n => fetch(B+'/api/register', { method:'POST', headers:J, body:JSON.stringify({ username:n, pin:'pass1234', displayName:n }) }).then(r=>r.json());
+  const reg = n => fetch(B+'/api/register', { method:'POST', headers:J, body:JSON.stringify({ ageConfirmed: true, username:n, pin:'pass1234', displayName:n }) }).then(r=>r.json());
   const prof = (who, id) => fetch(B+`/api/profile/${id}`, { headers:H(who.token) }).then(r=>r.json());
   const P = (who, p) => fetch(B+p, { method:'POST', headers:H(who.token) });
 

@@ -93,8 +93,8 @@ ok(!!adminToken, 'ADMIN_TOKEN captured from boot log');
 process.env.DATABASE_URL = testDb.url;
 const db = await import('../db.js');
 
-const alice = await post('/api/register', { username: 'pxalice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
-const bob   = await post('/api/register', { username: 'pxbob',   pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
+const alice = await post('/api/register', { ageConfirmed: true, username: 'pxalice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
+const bob   = await post('/api/register', { ageConfirmed: true, username: 'pxbob',   pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
 
 console.log('\npush subs: POST /api/push/subscribe lands directly in Postgres (no dual-write window -- see the route\'s own comment)');
 {

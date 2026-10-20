@@ -59,7 +59,7 @@ ok(!!srv, 'server boots');
 const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const put = (p, b, tok) => fetch(B + p, { method: 'PUT', headers: { ...J, Authorization: 'Bearer ' + tok }, body: JSON.stringify(b) }).then(r => r.json());
 const del = (p, tok) => fetch(B + p, { method: 'DELETE', headers: { Authorization: 'Bearer ' + tok } }).then(r => r.json());
-const reg = (username, pin, displayName) => post('/api/register', { username, pin, displayName });
+const reg = (username, pin, displayName) => post('/api/register', { ageConfirmed: true, username, pin, displayName });
 
 try {
 

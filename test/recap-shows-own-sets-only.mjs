@@ -59,7 +59,7 @@ process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); awa
 process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
 
 const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
-const reg = (username) => post('/api/register', { username, pin: 'pass1234', displayName: username });
+const reg = (username) => post('/api/register', { ageConfirmed: true, username, pin: 'pass1234', displayName: username });
 
 const SRC = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const sink = { html: '' };

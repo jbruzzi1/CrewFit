@@ -25,7 +25,7 @@ const srv = await new Promise((res, rej) => {
 });
 const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: { ...J, Authorization: 'Bearer ' + tok }, body: JSON.stringify(b || {}) });
 const get = (p, tok) => fetch(B + p, { headers: { Authorization: 'Bearer ' + tok } }).then(r => r.json());
-const reg = async n => { const r = await post('/api/register', { username: n, pin: 'pass1234', displayName: n }).then(x => x.json()); return { id: r.user.id, token: r.token }; };
+const reg = async n => { const r = await post('/api/register', { ageConfirmed: true, username: n, pin: 'pass1234', displayName: n }).then(x => x.json()); return { id: r.user.id, token: r.token }; };
 const follow = (a, b) => post('/api/follow/' + b.id, {}, a.token);
 const notifs = async u => (await get('/api/notifications', u.token));
 const bodies = n => JSON.stringify((n.history || []).map(x => x.body));

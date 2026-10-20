@@ -388,6 +388,149 @@ Both restore drills this phase (the pg_dump/R2 one and the Supabase JSON-snapsho
 - **Jeff's move**: add `SENTRY_DSN` as a GitHub repo secret (Settings → Secrets and variables → Actions) — same value already set as a Fly secret on `spotmeapp` from Phase 2. Nothing else new to set up; every other secret this workflow needs already exists from `backup.yml`'s own one-time setup.
 - **Status: built, verified (including a real pass/fail check of the verification script itself), cold-reviewed, one real bug fixed before shipping. Shipping via PR.**
 
+### Addendum (Oct 20 2026) — 13+ age gate (self-attestation), first item off the App Store readiness list
+
+Jeff, after the two rounds of honest "how do we feel about the app" feedback that produced the
+readiness-review doc: "lets do the age gate logic and the data export." This covers the first
+one. Design decisions confirmed with Jeff directly rather than assumed: **13+ minimum**, and
+**self-attestation checkbox, not a collected birthdate** — someone willing to lie about their age
+lies just as easily on a typed birthdate as on a checkbox, so a real date-of-birth field buys
+defensibility, not accuracy, at the cost of a new piece of PII every account now carries (and
+eventually has to be covered by export/delete too). Deliberately minimal: the only thing stored
+is the fact of the attestation (`ageConfirmed: true`), nothing more.
+
+- **`server.js`, `POST /api/register`** (~line 1009): destructures `ageConfirmed` from the body
+  and hard-refuses (400, "You must confirm you are at least 13 years old to create an account.")
+  if it's falsy — same enforcement level as the username/password checks right next to it, not a
+  client-only nicety. Runs after the cheap `!username||!pin` check but before the more expensive
+  `usernameProblem`/`pinProblem` validation and `hashPin()`, so a missing attestation fails fast.
+  On success the new user object stores `ageConfirmed: true` (normalized to the literal, not
+  whatever truthy value was sent) — this field has no dedicated Postgres column, it lives only in
+  the user row's jsonb `data` blob, same as several other low-traffic fields.
+- **`public/app.js`**: `authScreen()` gets a new `#rage` checkbox ("I am 13 years of age or
+  older") on the registration form, `style="width:auto"` because `index.html`'s global
+  `input,select{width:100%}` rule would otherwise stretch a checkbox full-width. `doReg()` gets a
+  client-side guard (alerts if unchecked, same pattern as the existing 8-char password check) and
+  sends the real `.checked` boolean as `ageConfirmed`.
+- **The breaking-change ripple, handled deliberately, not worked around**: making `ageConfirmed`
+  server-side-required broke all 117 existing test files that register a user purely as fixture
+  setup. Rejected a test-mode bypass as inconsistent with this codebase's own established "tests
+  drive the real server through real HTTP routes" philosophy (same precedent as the 6→8 char
+  password-floor change, which updated fixtures rather than adding a bypass). Instead, every one
+  of the 117 call sites was mechanically updated via a purpose-built script that finds the real
+  request-body object literal (the one with `username`/`pin` as its own top-level keys — not a
+  `fetch(...)` wrapper object, and not a nested nested nested substring match) and inserts
+  `ageConfirmed: true` into it. Went through two real bugs before landing clean: an early version
+  used substring matching across a whole candidate object's text, which wrongly targeted outer
+  `{ method, headers, body: JSON.stringify({...}) }` wrapper objects in several `fetch` call
+  sites — meaning the flag was computed as "sent" but never actually reached the server; fixed by
+  requiring top-level-only key extraction. A second bug: the URL-matching regex required a quote
+  immediately *before* `/api/register`, missing call sites built from a full URL or template
+  literal (`` `http://localhost:${PORT}/api/register` ``); fixed by only requiring the closing
+  quote/backtick immediately *after*. Full suite green after both fixes: **154/154** (153
+  pre-existing + the new dedicated test below).
+- **New `test/age-gate.mjs`**: the one file that actually tests the gate itself — every other
+  updated file just uses registration as fixture setup. Covers: missing `ageConfirmed` → 400 with
+  the exact error text, no token, and the account genuinely doesn't exist (a follow-up login
+  attempt also fails); every realistic falsy value (`false`, `0`, `''`, `null`) → same 400;
+  `ageConfirmed: true` → 200, real token, and the persisted row is read back by querying the jsonb
+  `data` blob directly via `pgmini.js`'s `PgConnection` (same convention as
+  `backup-roundtrip.mjs`/the migration-differential suite) to confirm `ageConfirmed === true` is
+  actually stored and that no birthdate-shaped field (`dateOfBirth`/`birthdate`/`dob`) was ever
+  introduced — a durable guard against future scope creep on this deliberately-minimal design; a
+  truthy-but-non-boolean value (`'on'`, the realistic shape some DOM APIs could hand back) still
+  succeeds, proving the gate checks truthiness, not strict `=== true`. Registered in
+  `test/run-all.mjs`'s explicit file list (not a glob — adding a new test file here always
+  requires this).
+- **Independent cold-review** (fresh agent, full diff + a sampled re-run of several of the 117
+  mechanically-updated files against a real Postgres) found the server-side logic, the mechanical
+  update, and the new test solid, and confirmed via grep that `/api/register` is the *only*
+  user-creation path anywhere in the app (no admin/seed/migration script creates a user directly,
+  so nothing else needed the gate). One real bug caught before shipping: **the `app.js?v=` cache-
+  bust in `public/index.html` wasn't bumped** despite `app.js` changing (hard rule #5) — a browser
+  with the old JS cached would keep running the old `doReg()` that never sends `ageConfirmed` at
+  all, so registration would silently start failing for anyone on a stale cache the moment the
+  server's new hard requirement shipped. **Fixed**: bumped `?v=491` → `?v=492`.
+- Rendered the new checkbox with Playwright at 390×844 before calling this done (this project's
+  own screenshot-before-shipping rule for any new visual element) — this app has no separate
+  light theme (dark background shows under both `prefers-color-scheme` settings), checkbox and
+  label render cleanly, correctly spaced, accessible (clicking the label text toggles the box).
+- **Status: built, verified (154/154), cold-reviewed, one real bug fixed before shipping.
+  Shipping via PR. Data export (the other half of Jeff's "lets do the age gate logic and the data
+  export") is the next item, not started yet.**
+
+### Addendum (Oct 20 2026) — self-service data export, and a real privacy bug cold-review caught before it shipped
+
+The second half of "lets do the age gate logic and the data export." Covers item #24 from the
+readiness-review doc: "account deletion is real and well-built, but a user can only delete their
+data, not download it first."
+
+- **New route**: `POST /api/me/export-data` (POST, not GET -- the Fetch spec refuses a body on
+  GET/HEAD outright, and this needs to carry a password, which a query string must never do). Same
+  re-auth bar as reset-workouts/delete-account/password-change: current password required, same
+  shared `pw-confirm:` 10/hour failure budget across all four routes. Plus its own separate
+  `export:`+id 5/hour cap on top, since a correctly-authenticated caller could otherwise re-trigger
+  several real Postgres queries on a loop with nothing else stopping them.
+- **Scope**: profile (every field except `pinSalt`/`pinHash`/`tokensValidFrom`/`revokedJtis` --
+  internal auth bookkeeping no user needs a copy of), the follow graph both directions + pending
+  requests, blocked list, every session that touches them (`sessionTouchesUser`, the exact same
+  predicate `wipeUserFromAllSessions`/account deletion use -- see below), owned templates, the full
+  PR table, owned custom exercises, crew memberships (name + role only, never the full roster --
+  other members aren't this person's data to export), notification history, and reports they've
+  personally filed.
+- **`sessionTouchesUser`**: hoisted out of `wipeUserFromAllSessions` (previously an inline closure
+  called `isSessionTouchedByMe`) into its own top-level function, specifically so export and
+  account-deletion share one definition of "a session that's mine" rather than risk two independently-
+  written copies drifting apart.
+- **Client**: Settings gets a new "Your data" section (between Help and Danger zone, deliberately
+  NOT styled red -- unlike Reset workouts/Delete account this isn't destructive), one "Export my
+  data" row opening the same `PWCONFIRM_EL`-guarded password-confirm sheet shape as the three
+  sibling routes. On success, builds a `Blob`/`URL.createObjectURL` and triggers a browser download
+  of the JSON.
+- **Hard rule #8 flag, not silently skipped**: the Blob/`createObjectURL`/`<a download>` technique
+  is browser-specific and is the first use of this exact pattern anywhere in `app.js`. A
+  WKWebView-based native wrapper has a real history of not reliably turning `<a download>` into an
+  actual file save (it can just navigate to or display the blob inline instead of saving one) --
+  this is disclosed here explicitly per hard rule #8, not validated as "done" for a future native
+  wrapper. Verified for real on the actual target today (a real desktop/mobile browser via
+  Playwright) -- unverified for a future app-wrapper context; re-check this specific route if/when
+  that wrapper is built.
+- **Independent cold-review (fresh agent) found ONE real, CONFIRMED-by-live-repro CRITICAL bug
+  before this shipped — not a nitpick, fixed before merging**: the first version of the `sessions`
+  field in the export returned raw, unfiltered session objects straight from the
+  `sessionTouchesUser` filter -- bypassing `sessionView`'s per-viewer redaction that every other
+  session-reading route in this file already applies (and that redaction's own comments document
+  several prior leaks it was built to close). Reproduced live, four distinct ways: (1) a co-
+  participant's private recap, posted BEFORE they blocked the exporting user, still came back in
+  full -- `canSeePostAuthor`'s block check never ran; (2) a fellow participant's own-eyes-only
+  draft note (never posted, explicitly "yourself and nobody else" per `sessionView`'s own comment)
+  came back verbatim; (3) a stranger's free-text join-request note came back to a non-creator
+  member, who per `sessionView`'s existing rule should only ever see their OWN join request, never
+  anyone else's; (4) worst case, someone merely INVITED to a session -- never accepted, never a
+  participant -- got a co-invitee's real logged weights/reps in their own export, someone they may
+  have no relationship with at all. **Fixed**: `sessions` now maps every matched session through
+  `sessionView(s, me)` (the same, already-audited per-viewer projection `GET /api/sessions/:id`
+  and every other read route use) and drops any that resolve to `null` (a genuine stranger tier --
+  the one accepted edge case is a stray `draftNotes` entry with no other trace of membership,
+  which simply fails closed, the same way every other tier boundary in this file already does,
+  rather than exposing it). All four leak scenarios above are now permanent regression coverage in
+  `test/data-export.mjs` (reusing fresh users per scenario after discovering the first draft
+  cross-contaminated a block-state test into an unrelated invite-tier test -- a block is
+  persistent/bidirectional, not scoped to the one session it happened in).
+  The review also caught `revokedJtis` missing from the profile denylist (added, low practical risk
+  on its own -- random per-token ids, not reconstructible into a token -- but it's internal
+  bookkeeping, not anything a person recognizes as "their data") and a dead-code test assertion
+  (`|| true` that always passed regardless of the actual value being checked -- fixed to actually
+  assert ownership).
+- `crewMemberships`' `{id, name, role, createdAt}`-only mapping (deliberately never the full
+  roster) was independently confirmed correct by the same review -- it's the one place in the
+  original draft that got this "solely this person's own data" scoping right from the start, which
+  is what made the sessions oversight stand out as a miss rather than a considered design choice.
+- Full suite green after the fix: **155/155** (153 pre-existing, `age-gate.mjs`, `data-export.mjs`).
+- **Status: built, one real critical privacy bug found by independent cold-review and fixed before
+  shipping (with permanent regression coverage for all four leak scenarios), full suite green,
+  app-wrapper caveat disclosed per hard rule #8. Shipping via PR.**
+
 ## Design constants
 
 (Rewritten Aug 28, 2026 after the whole-app visual pass, v221–v240. The old text here described the light-only v140 language.)

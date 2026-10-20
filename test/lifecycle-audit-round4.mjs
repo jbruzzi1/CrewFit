@@ -72,7 +72,7 @@ const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J
 const postRaw = (p, b, tok, extraHeaders) => fetch(B + p, { method: 'POST', headers: { ...(tok ? { ...J, Authorization: 'Bearer ' + tok } : J), ...(extraHeaders || {}) }, body: JSON.stringify(b) });
 const put = (p, b, tok) => fetch(B + p, { method: 'PUT', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const get = (p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
-const reg = async (username) => { const r = await post('/api/register', { username, pin: 'pass1234', displayName: username }); return { token: r.token, id: r.user.id, user: r.user }; };
+const reg = async (username) => { const r = await post('/api/register', { ageConfirmed: true, username, pin: 'pass1234', displayName: username }); return { token: r.token, id: r.user.id, user: r.user }; };
 const connect = async (a, b) => { await post(`/api/follow/${b.id}`, {}, a.token); };
 
 console.log('\n1. POST /accept re-checks block at the moment membership is granted');

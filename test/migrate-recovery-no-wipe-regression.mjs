@@ -86,8 +86,8 @@ console.log('A) a backup taken by the CURRENT app does not wipe push_subs/notifi
   currentSrv = srv;
   ok(!!srv, 'server boots');
 
-  const alice = await post('/api/register', { username: 'mrwa_alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
-  const bob = await post('/api/register', { username: 'mrwa_bob', pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
+  const alice = await post('/api/register', { ageConfirmed: true, username: 'mrwa_alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
+  const bob = await post('/api/register', { ageConfirmed: true, username: 'mrwa_bob', pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
 
   // One real row in each of the five cutover-only collections. Push sub, report, and custom
   // exercise go in through the real HTTP routes (the natural, simple path for each); notification

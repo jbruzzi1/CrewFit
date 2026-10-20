@@ -70,7 +70,7 @@ const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J
 const put = (p, b, tok) => fetch(B + p, { method: 'PUT', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const get = (p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
 const rawStatus = (method, p, b, tok) => fetch(B + p, { method, headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: b !== undefined ? JSON.stringify(b) : undefined }).then(r => r.status);
-const reg = (username, pin, displayName) => post('/api/register', { username, pin, displayName });
+const reg = (username, pin, displayName) => post('/api/register', { ageConfirmed: true, username, pin, displayName });
 // v190: "friends" retired -- mutual follow (both directions) reproduces the old symmetric
 // friendship this helper's name still describes.
 const befriend = async (aTok, aId, bTok, bId) => {
