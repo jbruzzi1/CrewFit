@@ -254,6 +254,12 @@ const files = [
   // (request shape, success, genuine failure, missing-token short-circuit, and the disclosed
   // fail-OPEN behavior on a transport error), and /api/config's turnstileSiteKey exposure.
   'test/turnstile-bot-defense.mjs',
+  // Oct 20 2026: rate-limiting re-evaluation. Proves the new app-wide registration circuit breaker
+  // (server.js, POST /api/register) counts only real created accounts (never rejected attempts),
+  // and -- the actual point -- blocks sign-ups from a brand-new IP that has never registered before
+  // once the budget's spent, proving it's a true global ceiling a rotating-IP adversary can't
+  // sidestep the way the pre-existing per-IP cap alone could be.
+  'test/global-signup-circuit-breaker.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.
