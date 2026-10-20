@@ -553,6 +553,19 @@ function overLimit(key, max, windowMs) {
 function failCount(key) { const e = RL.get(key); return (e && Date.now() < e.reset) ? e.count : 0; }
 function bumpFail(key, windowMs) { overLimit(key, Infinity, windowMs); }   // increment within window; bounded; never self-trips
 function clearFail(key) { RL.delete(key); }
+// Oct 20 2026 (cold-review catch on the global signup breaker below): releases a speculatively-
+// claimed slot from a reservation-style cap (overLimit called to CLAIM, this called to give it back
+// on a failure that happens after the claim). Guarded so it can never go negative and never touches
+// an entry from a window that's already rolled over -- a slow request that straddles the window
+// boundary before calling this just does nothing, rather than wrongly decrementing an unrelated
+// later window's real count. That's a known, accepted, bounded edge case (same shape as every other
+// "narrow window around a boundary" tradeoff already documented elsewhere in this file), not
+// something worth a token/generation-id scheme to close completely for a security backstop whose
+// whole budget is already a generous multiple of real usage.
+function releaseReservation(key) {
+  const e = RL.get(key);
+  if (e && Date.now() < e.reset && e.count > 0) e.count--;
+}
 
 const app = express();
 module.exports = { app, server: undefined };  // .server is filled in once the async boot IIFE below resolves
@@ -1013,6 +1026,18 @@ app.post('/api/register', async (req, res) => {
   const ip = clientIp(req);
   if (ip && overLimit('reg:' + ip, 20, 60 * 60 * 1000))
     return res.status(429).json({ error: 'Too many sign-ups from here. Please try again later.' });
+  // Oct 20 2026 (rate-limiting re-evaluation, readiness-review item "re-evaluate whether IP-based
+  // rate limiting alone holds up against a rotating-IP adversary"). The per-IP cap just above gives
+  // NO aggregate ceiling at all -- a flood spread across enough distinct IPs is bounded only by
+  // Turnstile now (see turnstile.js), which is the real gate here, not this. This is deliberately a
+  // backstop on top of that, not a replacement for it: it exists for the scenario where Turnstile is
+  // ever unset, misconfigured, or fails open (its own documented fail-open-on-transport-error
+  // design) -- without SOME app-wide ceiling, that scenario has literally no limit on total accounts
+  // created in a sustained flood. A cheap, non-authoritative pre-check here just skips the Cloudflare
+  // round trip when the budget is already visibly gone -- the real admission decision is the atomic
+  // reservation claimed right before hashPin below, not this.
+  if (failCount('reg:global') >= 150)
+    return res.status(429).json({ error: "We're experiencing high sign-up volume right now. Please try again in a few minutes." });
   const { username, pin, displayName, ageConfirmed, turnstileToken } = req.body || {};
   if (!username || !pin) return res.status(400).json({ error: 'username + pin required' });
   // Oct 20 2026 (app-store readiness, bot-defense item -- see turnstile.js's header comment for
@@ -1050,8 +1075,29 @@ app.post('/api/register', async (req, res) => {
   // Fix: do the slow hashing FIRST, then re-run the uniqueness check immediately adjacent to the
   // write with no await between them -- restores the original "check and write are one atomic
   // step" guarantee while keeping the hash itself off the blocking main thread.
+  //
   const hashed = await hashPin(pin);
-  if (findUserByName(username)) return res.status(409).json({ error: 'username taken' });
+  // Oct 20 2026 (CRITICAL, cold-review catch on the global signup breaker above): the global cap's
+  // admission decision has to live HERE, immediately adjacent to the username-uniqueness check and
+  // the write, for the exact same reason that check was moved to this exact spot -- it's the last
+  // point with no `await` between the check and the thing it's gating, so two concurrent requests
+  // genuinely cannot both pass it. The first version of this breaker checked `failCount('reg:global')`
+  // once, near the top of the route, then only called `bumpFail` after Turnstile + hashPin + save had
+  // all already run -- a large gap full of real awaits, during which an arbitrary number of concurrent
+  // requests could all read the same stale "under budget" count and all get admitted, blowing straight
+  // through the cap with no bound at all (reproduced by reasoning, not live, but it's the identical
+  // bug class the comment above already documents being found and fixed for `username` on Oct 12).
+  // Fixed by CLAIMING the slot atomically right here (`overLimit` checks-and-increments in one
+  // synchronous call, same shape as the per-IP cap above, so no two concurrent requests can ever both
+  // pass this exact line once 150 is reached) and RELEASING it on every failure path from here on
+  // (`username taken` just below, and the save-failure catch further down) so a rejected attempt
+  // doesn't permanently burn a slot a real account never used. Deliberately placed AFTER hashPin
+  // rather than before it: hashPin is the one remaining step here that can itself throw on a genuine
+  // (rare) error, and claiming the slot only once hashPin has already succeeded means there's no path
+  // left where a thrown exception could leak a claimed-but-never-released slot.
+  if (overLimit('reg:global', 150, 10 * 60 * 1000))
+    return res.status(429).json({ error: "We're experiencing high sign-up volume right now. Please try again in a few minutes." });
+  if (findUserByName(username)) { releaseReservation('reg:global'); return res.status(409).json({ error: 'username taken' }); }
   const id = uid();
   DB.users[id] = Object.assign({ id, username: String(username).trim(),
     displayName: capStr(displayName || username, 80).trim(), units: 'lb',
@@ -1083,8 +1129,15 @@ app.post('/api/register', async (req, res) => {
     await save(DB);
   } catch (e) {
     delete DB.users[id];
+    // The global-breaker slot claimed above was never actually used by a real account -- release it
+    // alongside the in-memory row, same "this never really happened" treatment as the delete right
+    // above (the request still 500s via the rethrow below; the caller can legitimately retry).
+    releaseReservation('reg:global');
     throw e;
   }
+  // The global circuit-breaker slot was already claimed atomically, right before hashPin above --
+  // nothing further to do here on success; it just stays spent for the rest of this window, same as
+  // the per-IP counter above it.
   res.json({ token: signToken(id), user: { ...publicUser(id), defaultGym: '', profileVisibility: 'public' } });
 });
 // Live username availability check (used by the register popup as the user types)
