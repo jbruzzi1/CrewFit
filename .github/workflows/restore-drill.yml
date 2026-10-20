@@ -1,0 +1,196 @@
+# Oct 20 2026 (Phase 3, recurring restore-drill schedule -- Jeff: "lets do these").
+#
+# Two restore drills were already run BY HAND this phase (CLAUDE.md's Phase 3 Slice 3, and the
+# Oct 20 Supabase-snapshot addendum) and both proved the backup pipeline works. A backup nobody
+# EVER restores from again is just a theory that happened to be true once -- this is what turns
+# "we proved it once" into "we keep proving it," automatically, without anyone having to
+# remember to do it by hand again.
+#
+# What this checks, on purpose, is narrower than the manual drills: it pulls the newest real
+# nightly pg_dump/R2 backup (backup.yml's own output -- NOT the separate Supabase JSON-snapshot
+# path, see below for why), restores it into a throwaway Postgres container that exists only for
+# this one CI job, and confirms every core table actually has real rows in it afterward. It does
+# NOT diff row-for-row against live production, or re-derive today's exact user/session counts --
+# that depth of checking is what the two manual drills already did with a human actually looking
+# at the data, and re-deriving "what should today's live count be" automatically, unattended,
+# every month would need its own way to safely read live counts from CI, which is new scope this
+# isn't trying to take on. "Does a real restore produce a real, non-empty database" is the
+# specific failure mode worth catching automatically -- a wrong bucket object, a pg_restore that
+# silently errored on every table but still exited 0, a backup taken mid-corruption -- and it's
+# exactly the check a human would forget to run on a schedule but a scheduled job won't.
+#
+# Scoped to the pg_dump/R2 path only, not the Supabase JSON-snapshot path (server.js's
+# backupOnBoot(), see DEPLOY.md and CLAUDE.md's Oct 20 addendum): that path is explicitly the
+# narrower, secondary one -- it was built as a volume-independence/convenience backup, not the
+# primary disaster-recovery mechanism, and it was ALREADY established in that addendum that it
+# structurally can't cover several tables this one does. Automating a drill of the narrower
+# backup on top of the primary one would be more CI surface for less real assurance; worth
+# revisiting only if that second path ever becomes load-bearing in its own right.
+#
+# One-time setup: this reuses every secret backup.yml already needs except FLY_BACKUP_TOKEN/
+# BACKUP_DB_URL (no tunnel to spotmeapp-db here at all -- this never touches production, only
+# the backup file already sitting in R2) and needs exactly one new one:
+#   - SENTRY_DSN   the SAME value already set as a Fly secret on spotmeapp (Phase 2) -- GitHub
+#                  Actions can't read Fly secrets, so it needs its own copy here too. A DSN is
+#                  not a write-capable credential (it can only submit events INTO this Sentry
+#                  project, same as the app itself already does), so this is a lower-stakes
+#                  secret than everything else this workflow touches, but it's still only used
+#                  via secrets.SENTRY_DSN, never printed.
+# Every other secret below (BACKUP_ENCRYPTION_KEY, R2_*) is already set from backup.yml's own
+# one-time setup (see DEPLOY.md) -- nothing else new to create.
+#
+# Until SENTRY_DSN exists, this job still runs and still restores/verifies -- the Sentry report
+# step only runs `if: failure()`, so a missing SENTRY_DSN only matters on an actual failed drill
+# (where it would itself fail to report, on top of the real failure already visible as the red X
+# in the Actions tab -- same "red until configured, loudly" posture backup.yml's own secret-check
+# step uses).
+
+name: monthly restore drill
+
+on:
+  schedule:
+    # 10:47 UTC on the 1st of each month -- off-hour and off the 1st-of-month-at-midnight crowd,
+    # same "don't compete for the scheduler's attention" reasoning backup.yml's own 9:21am uses.
+    - cron: '47 10 1 * *'
+  workflow_dispatch: {}   # lets Jeff (or anyone) run a drill on demand from the Actions tab
+
+jobs:
+  restore-drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      # A throwaway Postgres for THIS JOB ONLY -- torn down automatically when the job ends,
+      # never reused across runs, never anywhere near spotmeapp-db. Version-matched to
+      # spotmeapp-db's real Postgres 18 (see backup.yml's own "pg_dump refuses to run against a
+      # NEWER server" comment for why this match matters for the dump/restore tooling, even
+      # though this specific container is pg_restore's TARGET, not its source).
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: restoredrill
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check required secrets are set
+        run: |
+          missing=()
+          for v in BACKUP_ENCRYPTION_KEY R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
+            if [ -z "${!v:-}" ]; then missing+=("$v"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing required secret(s): ${missing[*]} -- see the setup comment at the top of this workflow file."
+            exit 1
+          fi
+          if [ -z "${SENTRY_DSN:-}" ]; then
+            echo "::warning::SENTRY_DSN is not set -- the drill will still run, but a failure won't be reported to Sentry, only visible as this workflow's own red X."
+          fi
+        env:
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install app dependencies (needed for the Sentry report step)
+        run: npm ci
+
+      - name: Install gpg + a pg_restore matching spotmeapp-db's Postgres version
+        run: |
+          # Same install sequence backup.yml already uses and already had to debug (see its own
+          # comment on why `postgresql-client-18` alone isn't enough -- the PATH fix below is
+          # required, not optional, or the Ubuntu-packaged pg_restore 16 silently wins instead).
+          command -v gpg >/dev/null || { sudo apt-get update && sudo apt-get install -y gnupg; }
+          sudo apt-get install -y curl ca-certificates
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-18
+          echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
+
+      - name: Download the newest backup from Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          # Same "ISO-8601 timestamp embedded in the filename sorts correctly as plain text"
+          # property this whole phase already relies on (storage.js's listObjects, the manual
+          # Supabase drill) -- crewfit-<timestamp>.dump.gpg sorts chronologically by plain name.
+          newest="$(aws s3 ls "s3://${{ secrets.R2_BUCKET }}/" \
+            --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com" \
+            | awk '{print $4}' | grep '\.dump\.gpg$' | sort | tail -1)"
+          if [ -z "$newest" ]; then
+            echo "::error::No backup objects found in the R2 bucket -- nothing to drill. Check backup.yml is actually running."
+            exit 1
+          fi
+          echo "newest backup: $newest"
+          aws s3 cp "s3://${{ secrets.R2_BUCKET }}/$newest" ./backup.dump.gpg \
+            --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+
+      - name: Decrypt and restore into the throwaway CI database
+        env:
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+        run: |
+          pass_file="$(mktemp)"; chmod 600 "$pass_file"
+          printf '%s' "$BACKUP_ENCRYPTION_KEY" > "$pass_file"
+          gpg --batch --yes --decrypt --passphrase-file "$pass_file" -o backup.dump backup.dump.gpg
+          rm -f "$pass_file" backup.dump.gpg
+          # --no-owner --no-privileges: this throwaway CI Postgres has no "spotmeapp" role, same
+          # friction point (and same fix) as the manual drill in CLAUDE.md's Phase 3 Slice 3 --
+          # ownership doesn't matter for a verification-only restore, only the data does.
+          # Deliberately NOT reusing scripts/backup-db.sh's own `restore` subcommand here: that
+          # script is the real disaster-recovery tool, restoring into a cluster that DOES have
+          # the real role, and adding these flags there would be a behavior change to a script
+          # this phase has already tested and shipped for the real incident case -- this workflow
+          # runs pg_restore directly instead, so the two stay cleanly separate.
+          pg_restore --clean --if-exists --no-owner --no-privileges --single-transaction \
+            -d "postgres://postgres:postgres@localhost:5432/restoredrill" backup.dump
+          rm -f backup.dump
+
+      - name: Verify the restore actually has real data in it
+        run: node scripts/verify-restore-drill.mjs "postgres://postgres:postgres@localhost:5432/restoredrill"
+
+      - name: Report failure to Sentry
+        if: failure()
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: |
+          if [ -z "${SENTRY_DSN:-}" ]; then
+            echo "::warning::SENTRY_DSN not set -- skipping Sentry report (see the warning earlier in this run)."
+            exit 0
+          fi
+          # Cold-review catch (Oct 20 2026): if the very first step ("Check required secrets are
+          # set") is itself what failed, every later step -- checkout, npm ci, all of it -- gets
+          # skipped by GitHub Actions' default fail-fast behavior, EXCEPT this one, because of its
+          # own `if: failure()`. Without this guard, `node -e` below would throw a confusing
+          # "Cannot find module '@sentry/node'" instead of the clean message this comment claims,
+          # since node_modules never got installed. A missing secret is already visible as this
+          # whole job's own red X either way -- this just keeps the failure-reporting step from
+          # failing in a misleading way on top of it.
+          if [ ! -d node_modules/@sentry/node ]; then
+            echo "::warning::A step before dependency install failed (most likely the secrets check) -- @sentry/node was never installed, so this failure can't be reported to Sentry. See this run's own red X above for the real failure."
+            exit 0
+          fi
+          node -e "
+            const Sentry = require('@sentry/node');
+            Sentry.init({ dsn: process.env.SENTRY_DSN });
+            Sentry.captureException(new Error('Monthly restore drill failed -- see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'));
+            Sentry.close(2000).then(() => process.exit(0));
+          "
