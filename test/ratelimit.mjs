@@ -21,6 +21,18 @@ const post = (p, b, ip) => fetch(B + p, { method: 'POST', headers: ip ? { ...J, 
 // is awaited explicitly at the bottom of this script instead — this handler only covers the
 // synchronous parts (killing the server, clearing DATA_DIR) on an early/unexpected exit.
 process.on('exit', () => { try { srv && srv.kill(); } catch {} try { rmSync(DIR, { recursive: true, force: true }); } catch {} });
+// Oct 20 2026: the 'exit' handler above already frees PORT and removes DIR on any exit, including
+// a crash -- but it can't await testDb.drop() (Node does not wait for promises inside an 'exit'
+// listener), so a genuinely unhandled rejection/exception anywhere above would skip dropping the
+// throwaway Postgres test database. Added here so that one async resource is cleaned up on a
+// crash too, same idiom as test/back-after-start-now.mjs.
+let cleanedUpAsync = false;
+async function cleanupAsync() {
+  if (cleanedUpAsync) return; cleanedUpAsync = true;
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanupAsync(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanupAsync(); process.exit(1); });
 
 await new Promise(res => {
   srv = spawn('node', ['server.js'], { env: { ...process.env, DATA_DIR: DIR, DATABASE_URL: testDb.url, PORT: String(PORT) }, cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'pipe'] });

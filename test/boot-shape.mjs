@@ -76,10 +76,28 @@ async function done(h) {
   try { await h.testDb.drop(); } catch {}
 }
 
+// Crash-safe cleanup: this file boots a fresh server+DB seven separate times in sequence, each
+// cleaned up by its own `await done(h)` right after its own block of assertions. Without this,
+// a genuinely-failing assertion/await anywhere in between throws an unhandled rejection, Node
+// exits immediately, and whichever iteration's `done(h)` hadn't run yet leaves its server
+// orphaned on its hardcoded PORT for whatever test runs next (same class of bug fixed across the
+// Playwright files Oct 19 2026; see CLAUDE.md's "Addendum" section). `currentHandle` always
+// points at the most recently booted (and not yet done()'d) handle; since `h` itself is `let`,
+// closing over the variable (not a snapshot of its value) means this always sees the live one.
+let cleanedUp = false;
+let currentHandle = null;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  if (currentHandle) { try { await done(currentHandle); } catch {} }
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
+
 console.log('a malformed session row heals at boot instead of crashing the server');
 
 // 1. logs[uid] as an object (not an array) — crashed the boot migration before app.listen
 let h = await seedAndBoot({ logs: { u1: { not: 'an array' } }, history: [] }, 4991);
+currentHandle = h;
 ok(h.booted, 'boots with logs[uid] as an object (was: crash before app.listen)');
 if (h.booted) ok(Array.isArray((await rd(h)).sessions.s1.logs.u1), 'and logs[uid] is healed to an array on disk');
 ok(/migrateSessionShapes: healed 1/.test(h.out), 'and the boot log reports it healed the row');
@@ -87,12 +105,14 @@ await done(h);
 
 // 2. a null slot inside logs[uid] — crashed on l.exerciseName
 h = await seedAndBoot({ logs: { u1: [null, { exerciseId: 'e1', exerciseName: 'Bench Press', weight: 100, reps: 8, set: 1, setType: 'normal', at: '2026-01-02T00:00:00.000Z' }] }, history: [] }, 4992);
+currentHandle = h;
 ok(h.booted, 'boots with a null slot in logs[uid]');
 if (h.booted) { const a = (await rd(h)).sessions.s1.logs.u1; ok(Array.isArray(a) && a.length === 1 && a[0].reps === 8, 'null slot dropped, real set kept'); }
 await done(h);
 
 // 3. history as a non-array object — 500'd /api/profile for everyone
 h = await seedAndBoot({ logs: {}, history: { bogus: true } }, 4993);
+currentHandle = h;
 ok(h.booted, 'boots with a non-array history');
 if (h.booted) {
   const reg = await fetch('http://localhost:4993/api/register', { method: 'POST', headers: J, body: JSON.stringify({ username: 'bob', pin: 'pass1234', displayName: 'Bob' }) }).then(r => r.json());
@@ -103,6 +123,7 @@ await done(h);
 
 // 4. a null row inside history — passes Array.isArray, but h.userId throws
 h = await seedAndBoot({ logs: {}, history: [null, { userId: 'u1', date: '2026-01-02' }] }, 4994);
+currentHandle = h;
 ok(h.booted, 'boots with a null slot in history');
 if (h.booted) {
   const reg = await fetch('http://localhost:4994/api/register', { method: 'POST', headers: J, body: JSON.stringify({ username: 'carol', pin: 'pass1234', displayName: 'Carol' }) }).then(r => r.json());
@@ -114,12 +135,14 @@ await done(h);
 
 // 5. a session that is itself null — must not crash the heal loop or the migrations after it
 h = await seedAndBoot({ logs: {}, history: [] }, 4995, { bad: null });
+currentHandle = h;
 ok(h.booted, 'boots with a null session entry alongside a good one');
 if (h.booted) { const ss = (await rd(h)).sessions; ok(!('bad' in ss) && 's1' in ss, 'null session dropped, good one kept'); }
 await done(h);
 
 // 6. NO-OP PROOF: a fully well-formed DB must heal nothing (the fix cannot rewrite healthy data)
 h = await seedAndBoot({ invited: [], logs: { u1: [{ exerciseId: 'e1', exerciseName: 'Bench Press', weight: 100, reps: 8, set: 1, setType: 'normal', at: '2026-01-02T00:00:00.000Z' }] }, history: [{ userId: 'u1', date: '2026-01-02' }], attendance: {}, comments: [], suggestedEdits: [], variations: {}, joinRequests: [] }, 4996);
+currentHandle = h;
 ok(h.booted, 'boots with a fully well-formed session');
 ok(!/migrateSessionShapes: healed/.test(h.out), 'and heals NOTHING — the boot log line never appears on clean data');
 if (h.booted) { const a = (await rd(h)).sessions.s1.logs.u1; ok(Array.isArray(a) && a.length === 1 && a[0].reps === 8, 'the well-formed set is untouched'); }
@@ -132,6 +155,7 @@ h = await seedAndBoot({ invited: { bogus: true }, logs: {}, history: [] }, 4997,
   [BRIAN_KEEP]: { id: BRIAN_KEEP, username: 'brian', displayName: 'Brian', friends: [], units: 'lb', createdAt: '2026-01-01T00:00:00.000Z', pinHash: 'x', pinSalt: 'y' },
   [BRIAN_DROP]: { id: BRIAN_DROP, username: 'brian2', displayName: 'Brian2', friends: [], units: 'lb', createdAt: '2026-01-01T00:00:00.000Z', pinHash: 'x', pinSalt: 'y' },
 });
+currentHandle = h;
 ok(h.booted, 'boots with a non-array invited while the Brian-merge migration is pending (was: crash before app.listen)');
 if (h.booted) ok(Array.isArray((await rd(h)).sessions.s1.invited), 'and invited is healed to an array on disk');
 await done(h);

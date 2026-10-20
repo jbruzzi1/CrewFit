@@ -58,6 +58,22 @@ const PORT = 4993, B = `http://localhost:${PORT}`;
 console.log('\nvapid.json is written into DATA_DIR (the persistent volume), not the app code directory');
 let { srv } = await boot(PORT, DIR);
 ok(!!srv, 'server boots');
+
+// Oct 20 2026: crash-safe cleanup, same idiom as test/back-after-start-now.mjs (see its own Oct 19
+// comment) -- without this, a genuinely failing assertion/await anywhere below is an unhandled
+// rejection, Node exits immediately skipping every cleanup line at the bottom, and the spawned
+// server stays orphaned on this file's hardcoded PORT for whatever test runs next. `srv` is
+// reassigned below (after the restart) -- this closure always reads the CURRENT module-level
+// `srv`, so it stays correct across the reboot in this file.
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { srv && srv.kill(); } catch {}
+  try { rmSync(DIR, { recursive: true, force: true }); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
 const key1 = (await fetch(B + '/api/vapid').then(r => r.json())).publicKey;
 ok(typeof key1 === 'string' && key1.length > 20, `GET /api/vapid returns a real public key (got ${JSON.stringify(key1)})`);
 ok(existsSync(join(DIR, 'vapid.json')), 'vapid.json was written inside DATA_DIR');

@@ -24,7 +24,7 @@
 //   - plateausFor's direction: a flat assist weight over the trailing window is a plateau; a
 //     genuinely DROPPING assist weight is real progress, not a plateau
 import { spawn } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { freshTestDb } from './_pgtestdb.mjs';
@@ -49,7 +49,17 @@ const PORT = 4988, B = `http://localhost:${PORT}`;
 const { srv } = await boot(PORT, DIR);
 ok(!!srv, 'server boots');
 
-const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { srv && srv.kill(); } catch {}
+  try { rmSync(DIR, { recursive: true, force: true }); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
+
+const post =(p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const put = (p, b, tok) => fetch(B + p, { method: 'PUT', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const get = (p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
 const reg = (username, pin, displayName) => post('/api/register', { username, pin, displayName });

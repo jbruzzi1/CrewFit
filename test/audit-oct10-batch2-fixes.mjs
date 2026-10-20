@@ -11,7 +11,7 @@
 //
 // Run:  npm test
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { freshTestDb } from './_pgtestdb.mjs';
@@ -38,7 +38,17 @@ function boot(dir) {
 const DIR = mkdtempSync(join(tmpdir(), 'oct10batch2-'));
 await boot(DIR);
 
-const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: { ...J, ...(tok ? { Authorization: 'Bearer ' + tok } : {}) }, body: JSON.stringify(b || {}) }).then(r => r.json());
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { srv && srv.kill(); } catch {}
+  try { rmSync(DIR, { recursive: true, force: true }); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
+
+const post =(p, b, tok) => fetch(B + p, { method: 'POST', headers: { ...J, ...(tok ? { Authorization: 'Bearer ' + tok } : {}) }, body: JSON.stringify(b || {}) }).then(r => r.json());
 const del = (p, tok) => fetch(B + p, { method: 'DELETE', headers: { ...(tok ? { Authorization: 'Bearer ' + tok } : {}) } }).then(r => r.json());
 const get = (p, tok) => fetch(B + p, { headers: { ...(tok ? { Authorization: 'Bearer ' + tok } : {}) } }).then(r => r.json());
 const reg = async (n, displayName) => { const r = await post('/api/register', { username: n, pin: 'pass1234', displayName: displayName || n }); return { id: r.user.id, token: r.token }; };

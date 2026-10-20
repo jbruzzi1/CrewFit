@@ -124,6 +124,23 @@ async function readAll() {
   return out;
 }
 
+// Crash-safe cleanup: this file boots the server twice against the SAME DIR/testDb (the second
+// boot proves the migration is idempotent). Without this, a genuinely-failing assertion/await
+// anywhere below throws an unhandled rejection, Node exits immediately, and every cleanup line at
+// the bottom of this file is skipped -- orphaning whichever server (h.srv, reassigned as `h` is
+// rebound) is currently alive on its hardcoded PORT for whatever test runs next (same class of bug
+// fixed across the Playwright files Oct 19 2026; see CLAUDE.md's "Addendum" section). `h` is `let`,
+// so closing over the variable itself (not a snapshot) means this always sees the live handle.
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { h && h.srv && h.srv.kill(); } catch {}
+  try { rmSync(DIR, { recursive: true, force: true }); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
+
 console.log('\nfirst boot on a database full of old names');
 let h = await boot();
 ok(!!h.srv && /CrewFit on/.test(h.out), `server booted (stderr: ${h.err.trim().slice(0, 300) || 'none'})`);

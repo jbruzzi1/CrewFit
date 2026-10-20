@@ -37,6 +37,18 @@ const post = (p, b, t) => fetch(B + p, { method: 'POST', headers: t ? H(t) : J, 
 const get = (p, t) => fetch(B + p, { headers: t ? H(t) : J });
 const j = r => r.json();
 process.on('exit', () => { try { srv && srv.kill(); } catch {} try { rmSync(DIR, { recursive: true, force: true }); } catch {} });
+// Oct 20 2026: the 'exit' handler above already frees the server's hardcoded PORT and removes DIR
+// on any exit, including a crash -- but it can't await testDb.drop() (Node does not wait for
+// promises inside an 'exit' listener), so a genuinely unhandled rejection/exception anywhere above
+// would skip dropping the throwaway Postgres test database. Added here so that one async resource
+// is cleaned up on a crash too, same idiom as test/back-after-start-now.mjs.
+let cleanedUpAsync = false;
+async function cleanupAsync() {
+  if (cleanedUpAsync) return; cleanedUpAsync = true;
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanupAsync(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanupAsync(); process.exit(1); });
 
 // A syntactically-valid but entirely fake Sentry DSN -- never actually reaches a real Sentry
 // project. Enough for Sentry.init() to set SENTRY_ON = true and for Sentry.captureException() to

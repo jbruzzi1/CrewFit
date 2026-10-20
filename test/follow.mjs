@@ -27,12 +27,31 @@ function boot(port, dir, databaseUrl) {
   });
 }
 
+// Crash-safe cleanup, shared across every block below: without this, a genuinely-failing
+// assertion/await anywhere throws an unhandled rejection, Node exits immediately, and whatever
+// server/DB this file most recently booted is orphaned (its hardcoded PORT left bound) for
+// whatever test runs next (same class of bug fixed across the Playwright files Oct 19 2026; see
+// CLAUDE.md's "Addendum" section). This file boots more than once (three separate blocks, one of
+// them rebooting a second time mid-block), so the "active" resources are tracked in these
+// module-level variables and updated as each block boots, rather than being fixed once.
+let cleanedUp = false;
+let activeSrv = null, activeDir = null, activeTestDb = null;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { activeSrv && activeSrv.kill(); } catch {}
+  try { activeDir && rmSync(activeDir, { recursive: true, force: true }); } catch {}
+  try { activeTestDb && await activeTestDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
+
 // ---------- live flow ----------
 {
   const DIR = mkdtempSync(join(tmpdir(), 'follow-'));
   const testDb = await freshTestDb('follow1');
   const PORT = 4990, B = `http://localhost:${PORT}`;
   const { srv } = await boot(PORT, DIR, testDb.url);
+  activeSrv = srv; activeDir = DIR; activeTestDb = testDb;
   const H = t => ({ ...J, Authorization: 'Bearer ' + t });
   const reg = n => fetch(B+'/api/register', { method:'POST', headers:J, body:JSON.stringify({ username:n, pin:'pass1234', displayName:n }) }).then(r=>r.json());
   const prof = (who, id) => fetch(B+`/api/profile/${id}`, { headers:H(who.token) }).then(r=>r.json());
@@ -117,6 +136,7 @@ function boot(port, dir, databaseUrl) {
   }
   seedPg.close();
   const { srv, out } = await boot(PORT, DIR, testDb.url);
+  activeSrv = srv; activeDir = DIR; activeTestDb = testDb;
   ok(!!srv, 'server boots on pre-migration data, including a row with a non-array friends field');
   const readPg = new PgConnection(parseConnString(testDb.url));
   // Oct 16 2026 (users decision #1): followers/following/followReqs no longer live in the users.data
@@ -159,6 +179,7 @@ function boot(port, dir, databaseUrl) {
     try { srv && srv.kill(); } catch {}
     await new Promise(r => setTimeout(r, 300));
     const { srv: srv2 } = await boot(PORT, DIR, testDb.url);
+    activeSrv = srv2;
     ok(!!srv2, 'reboots cleanly on the same already-migrated database');
     const finalPg = new PgConnection(parseConnString(testDb.url));
     const finalEdges = (await finalPg.query('SELECT follower_id, followee_id, status FROM user_follows')).rows;

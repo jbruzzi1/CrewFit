@@ -52,6 +52,16 @@ function boot(dir) {
 const DIR = mkdtempSync(join(tmpdir(), 'oct2blockprofile-'));
 await boot(DIR);
 
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { srv && srv.kill(); } catch {}
+  try { rmSync(DIR, { recursive: true, force: true }); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
+
 async function api(path, method, token, body) {
   const r = await fetch(B + path, { method, headers: { ...J, ...(token ? { Authorization: 'Bearer ' + token } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined });

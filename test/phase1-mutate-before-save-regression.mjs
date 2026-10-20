@@ -81,6 +81,19 @@ async function readTemplateHiddenBy(templateId) {
   return JSON.parse(r.rows[0].data).hiddenBy || [];
 }
 
+// The existing process.on('exit', ...) above already kills srv and removes DIR on any exit path
+// (including an uncaught exception/rejection), closing the hardcoded-PORT orphan risk -- but it
+// has no async cleanup for the extra raw PgConnection or the throwaway test database, so add just
+// that here, scoped to the two resources the exit handler can't touch.
+let cleanedUp = false;
+async function cleanupAsync() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { raw.close(); } catch {}
+  try { await testDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanupAsync(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanupAsync(); process.exit(1); });
+
 const TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
 const alice = await post('/api/register', { username: 'p1_alice', pin: 'pass1234', displayName: 'Alice' }).then(j);

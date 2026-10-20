@@ -27,6 +27,23 @@ function boot(port, dir, databaseUrl) {
     setTimeout(() => res({ srv, out }), 8000);
   });
 }
+// This file boots an independent server (and freshTestDb()) inside each of its two top-level
+// blocks, scoped with `const`/`let` inside each block's own `{ }` -- including a mid-block reboot
+// in the second block -- so none of it is reachable from a single top-level crash handler by
+// name. These trackers are set right after each boot/freshTestDb() call and cleared once a
+// block's own happy-path cleanup already ran, so a crash anywhere still has a handle on whichever
+// server/testDb/temp dir is currently actually alive.
+let currentSrv = null, currentTestDb = null, currentDir = null;
+let cleanedUp = false;
+async function cleanup() {
+  if (cleanedUp) return; cleanedUp = true;
+  try { currentSrv && currentSrv.kill(); } catch {}
+  try { currentDir && rmSync(currentDir, { recursive: true, force: true }); } catch {}
+  try { currentTestDb && await currentTestDb.drop(); } catch {}
+}
+process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanup(); process.exit(1); });
+process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
+
 const post = (B, p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const get = (B, p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
 async function sessionRow(dbUrl, id) {
@@ -39,9 +56,12 @@ async function sessionRow(dbUrl, id) {
 console.log('two participants each post their own recap on the SAME session — independently');
 {
   const DIR = mkdtempSync(join(tmpdir(), 'perpost-'));
+  currentDir = DIR;
   const testDb = await freshTestDb('perpost1');
+  currentTestDb = testDb;
   const PORT = 4993, B = `http://localhost:${PORT}`;
   const { srv } = await boot(PORT, DIR, testDb.url);
+  currentSrv = srv;
   ok(!!srv, 'server boots');
 
   const alice = await post(B, '/api/register', { username: 'recap_alice', pin: 'pass1234', displayName: 'Alice' });
@@ -176,12 +196,15 @@ console.log('two participants each post their own recap on the SAME session — 
   try { srv && srv.kill(); } catch {}
   rmSync(DIR, { recursive: true, force: true });
   await testDb.drop();
+  currentSrv = null; currentDir = null; currentTestDb = null;
 }
 
 console.log('\na session created under the OLD single-post schema migrates cleanly at boot');
 {
   const DIR = mkdtempSync(join(tmpdir(), 'migrate-posts-'));
+  currentDir = DIR;
   const testDb = await freshTestDb('migrateposts');
+  currentTestDb = testDb;
 
   const users = {
     u1: { id: 'u1', username: 'legacyhost', displayName: 'Host', friends: ['u2'], units: 'lb',
@@ -229,6 +252,7 @@ console.log('\na session created under the OLD single-post schema migrates clean
 
   const PORT = 4994, B = `http://localhost:${PORT}`;
   const { srv, out } = await boot(PORT, DIR, testDb.url);
+  currentSrv = srv;
   ok(!!srv, 'server boots on a legacy single-post session');
   ok(/MIGRATE posts: sessions=2/.test(out), 'and the boot log reports both sessions migrated');
 
@@ -250,14 +274,18 @@ console.log('\na session created under the OLD single-post schema migrates clean
      'a post with no .by at all falls back to s.creatorId, not dropped or orphaned');
 
   try { srv && srv.kill(); } catch {}
+  currentSrv = null;
 
   // and the migration is idempotent — booting again does not re-report or duplicate anything
   const { srv: srv2, out: out2 } = await boot(4995, DIR, testDb.url);
+  currentSrv = srv2;
   ok(!/MIGRATE posts:/.test(out2), 'a second boot on already-migrated data does nothing — idempotent');
   try { srv2 && srv2.kill(); } catch {}
+  currentSrv = null;
 
   rmSync(DIR, { recursive: true, force: true });
   await testDb.drop();
+  currentDir = null; currentTestDb = null;
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nall assertions passed');
