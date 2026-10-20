@@ -65,8 +65,17 @@ recent for what you're trying to recover from.
 separate tab first.) This is tested — `npm test`'s `data-safety.mjs` asserts the restore actually
 brings the data back, including a drill that simulates the live database being wiped first (that
 test covers the unconfigured/volume path; see `test/phase3-backup-storage-slice1c.mjs` for what's
-proven about the Storage-configured path, disclosed there as not restore-drillable without a real
-Supabase project).
+proven about the Storage-configured path against a stand-in server).
+
+**Oct 20 2026: the Storage-configured path above was also drilled for real**, not just
+stand-in-tested — a real backup was pulled from the live `FitnessApp-media` bucket, restored via
+`migrate-to-postgres.mjs` into a scratch database, and verified against live data (full story in
+CLAUDE.md). Worth knowing plainly: this JSON snapshot only ever covers `users`/`sessions`/
+`templates`/`prs`/`crews` — it does not include crew messages/challenges, follows, notifications,
+feed events, reports, push subs, or custom exercises, since those all live in their own
+direct-Postgres tables this snapshot never touches. That's not a gap in this restore path, it's
+what this specific backup was always built to cover — the full-coverage backup is the nightly
+`pg_dump`→R2 pipeline above, which includes every table and was drilled first.
 
 **Reset a password by hand** while self-service reset is off (see the comment above
 `migratePasswords()` in `server.js`):
