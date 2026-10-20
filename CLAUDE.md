@@ -546,6 +546,76 @@ anyway) but a second place that could silently start leaking if creation logic e
 admit a non-creator viewer before that response. Swapped to `sessionView(...)` for consistency.
 155/155 full suite still green after the change.
 
+### Addendum (Oct 20 2026) — Cloudflare Turnstile bot-defense on registration, and a real double-submit race a cold-review caught
+
+Closes the readiness-review item "no CAPTCHA or bot-detection layer at all." Jeff's own fair
+pushback before building this ("I feel like many fitness apps aren't using captcha") is true for
+native apps specifically -- they lean on Apple App Attest / Google Play Integrity instead, a
+separate, later piece of work once CrewFit is actually wrapped natively. CrewFit is tested and
+used today as a website (hard rule #8), so `POST /api/register` is a plain public HTTP endpoint
+with none of that app-store-distribution friction or device-attestation signal; rate limiting
+handles accidents and simple scripts, not someone with a handful of rotating IPs. Decided to build
+this now rather than wait for "native," since becoming native doesn't give bot-defense for free --
+App Attest/Play Integrity would be its own separate integration regardless of timing -- and
+Turnstile (confirmed via Cloudflare's own mobile-implementation docs) still works inside a
+WebView-wrapped app later, with some configuration to get right at that point (JS/storage enabled,
+`challenges.cloudflare.com` reachable, stable user agent, cookies/storage persisted) -- flagged
+per hard rule #8, re-verify this specific piece if/when a native wrapper ships.
+
+- **New `turnstile.js`**: same "env var wins, else byte-identical no-op" shape as `storage.js`
+  (Phase 3 Slice 1b). `TURNSTILE_SECRET_KEY` unset (today's real deploy, every test in this suite)
+  means `verifyTurnstile()` is a pure no-op -- zero test files needed to change, same as the
+  age-gate/export slices' own test-impact discipline. `verifyTurnstile(token, remoteip)` fails
+  **OPEN** on a transport/timeout error talking to Cloudflare (disclosed design choice, not an
+  oversight: this is one defense-in-depth layer on top of the existing per-IP rate limit, not the
+  only gate, and a Cloudflare-side hiccup taking down all new signups would be worse than this
+  layer being briefly unavailable) and fails **CLOSED** on a genuine Cloudflare-reported failure
+  (bad/expired/reused token). `TURNSTILE_VERIFY_URL` is overridable for tests only.
+- **`server.js`**: checked in `POST /api/register` right after the free `!username||!pin` check
+  and well before `hashPin` (scrypt, deliberately slow) -- a bot is rejected before the one
+  genuinely expensive step, and a malformed body never costs a Cloudflare round trip. New
+  `/api/config` field `turnstileSiteKey` (client-safe by design, same model as a reCAPTCHA
+  sitekey) -- empty string when unconfigured.
+- **`public/app.js`**: new `turnstileBox` div in the register sheet, rendered via Turnstile's
+  explicit JS API with `appearance:'interaction-only'` (invisible unless Cloudflare actually needs
+  a real challenge) and `execution:'execute'` (never pre-generates a token -- tokens are single-use
+  and expire 300s after issue, so `getTurnstileToken()` runs the challenge fresh, right before
+  each submit).
+- **Verification, not just claims**: `test/turnstile-bot-defense.mjs` covers the unconfigured
+  no-op, the real request shape sent to a local fake siteverify server (method/content-type/exact
+  fields), the missing-token short-circuit (never even calls the network), a genuine Cloudflare
+  failure (fails closed), an unreachable siteverify endpoint (fails open), `/api/config`'s
+  exposure rule, AND -- going further than guessing from docs -- real round trips to the ACTUAL
+  live Cloudflare endpoint using Cloudflare's own published test keys (both the "always passes"
+  and "always fails" ones), plus a real-browser Playwright run of the full widget-render ->
+  execute -> callback -> server-verify flow end to end against live Cloudflare. 156/156 full
+  suite green.
+- **Independent cold-review (fresh agent) found ONE real, live-reproduced MODERATE bug before
+  this shipped**: `doReg()` checked `btn.disabled` but never SET it (every other async-submit
+  handler in this file does, e.g. `seedSaveAll()`) -- a real double-tap fired `doReg()` twice
+  concurrently, both calls raced through `ensureTurnstileWidget()`/`getTurnstileToken()` on the
+  same widget, Cloudflare rejected the duplicate `render()`, and the losing call corrupted the
+  shared `_tsWidgetId` -- reproduced live by the reviewer as a misleading "Network error" alert on
+  a registration that had, underneath, already succeeded. **Fixed**: `doReg()` now disables the
+  button synchronously before any `await`, in a `try/finally` (re-enables on every exit path, not
+  just success); `ensureTurnstileWidget()` is now single-flight (`_tsEnsurePromise`), so even a
+  second, independent call site (`showReg()`'s own pre-warm) can't race it. Permanent regression
+  coverage added -- real-Cloudflare-timing attempts to reproduce this in a test weren't reliable in
+  this sandbox (passed 3/3 even pre-fix), so the final test stubs `window.turnstile` with a fake
+  that reproduces Cloudflare's actual observed "reject a duplicate render" behavior and opens the
+  register box without `showReg()`'s pre-warm, so both `doReg()` calls race from a true cold start
+  -- confirmed to actually fail pre-fix (~2 of every 3 runs: no account created, or a misleading
+  dialog) and pass clean post-fix (5/5), the same "prove the test actually catches it" discipline
+  used elsewhere in this engagement. Also fixed on the same pass: a comment overstating the
+  Turnstile check as running "as cheaply as possible" when it actually ran before the free
+  username/pin check -- reordered so the free check genuinely runs first.
+- **Status: built, one real double-submit race found by independent cold-review and fixed before
+  shipping (with permanent, verified-to-actually-catch-it regression coverage), full suite green
+  (156/156), app-wrapper caveat disclosed per hard rule #8. Still needs Jeff to create a real
+  Cloudflare Turnstile widget and set `TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY` as Fly secrets --
+  until then this ships as a no-op, same as every other Phase-3-style slice before its secrets are
+  set.**
+
 ## Design constants
 
 (Rewritten Aug 28, 2026 after the whole-app visual pass, v221–v240. The old text here described the light-only v140 language.)

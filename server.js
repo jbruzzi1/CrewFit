@@ -206,6 +206,7 @@ if (process.env.ADMIN_TOKEN) {
 const db = require('./db');
 const { sanitizePgText } = require('./pgmini');
 const storage = require('./storage');
+const turnstile = require('./turnstile');
 // notify-helpers.js's firstExerciseStartNotification() is no longer called from this file (see the
 // comment above POST /api/sessions, Sep 5: the creator no longer gets self-notified on their own
 // workout) -- left required nowhere here on purpose, the function/its test still live in
@@ -1005,13 +1006,26 @@ app.get('/api/vapid', (req, res) => res.json({ publicKey: vapid.publicKey }));
 // needed -- same publicly-fetchable shape as /api/vapid just above, and this specifically needs
 // to be reachable before login too (a locked-out or not-yet-registered person still needs a way
 // to reach support).
-app.get('/api/config', (req, res) => res.json({ supportEmail: SUPPORT_EMAIL }));
+// turnstileSiteKey is client-safe by design (see turnstile.js) -- empty string when unconfigured,
+// which the client reads as "don't render the widget," same no-op shape as the server side.
+app.get('/api/config', (req, res) => res.json({ supportEmail: SUPPORT_EMAIL, turnstileSiteKey: turnstile.SITE_KEY }));
 app.post('/api/register', async (req, res) => {
   const ip = clientIp(req);
   if (ip && overLimit('reg:' + ip, 20, 60 * 60 * 1000))
     return res.status(429).json({ error: 'Too many sign-ups from here. Please try again later.' });
-  const { username, pin, displayName, ageConfirmed } = req.body || {};
+  const { username, pin, displayName, ageConfirmed, turnstileToken } = req.body || {};
   if (!username || !pin) return res.status(400).json({ error: 'username + pin required' });
+  // Oct 20 2026 (app-store readiness, bot-defense item -- see turnstile.js's header comment for
+  // full reasoning). Checked right after the free, synchronous username/pin presence check (so a
+  // malformed/empty POST never costs a network round-trip to Cloudflare) and well before hashPin
+  // (scrypt, deliberately slow) -- a bot still gets rejected before the one genuinely expensive
+  // step. Comment fixed Oct 20 2026 (cold-review catch): this used to run BEFORE the username/pin
+  // check and claim "as cheaply as possible," which wasn't quite true -- a malformed body still
+  // paid for the Cloudflare round trip before failing on the free check. Gated entirely on
+  // TURNSTILE_SECRET_KEY being set -- a no-op in every test in this suite and in today's actual
+  // deploy, until Jeff sets the real secret.
+  const tv = await turnstile.verifyTurnstile(turnstileToken, ip);
+  if (!tv.ok) return res.status(400).json({ error: 'We could not verify you are not a bot. Please try again.' });
   // Oct 20 2026 (app-store readiness review, "13+ self-attestation" — Jeff's call: a checkbox, not
   // a collected birthdate. Collecting a real date of birth is new PII on every account for no real
   // gain here — someone willing to lie about their age lies just as easily on a typed birthdate as
