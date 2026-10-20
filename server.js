@@ -5426,7 +5426,13 @@ app.post('/api/sessions', auth, async (req, res) => {
   // calls it. public/sw.js's openLog push-click handling and tryBoot's ?openLog= deep-link branch
   // (app.js) exist only to serve this notification's tap target -- now unreachable via this path,
   // left as harmless passthrough rather than ripped out, since nothing else generates that link.
-  res.json(session);
+  // Oct 20 2026 (post-export-bug route audit): was `res.json(session)` -- the raw object, not run
+  // through sessionView. Harmless today (req.userId is always this session's own creatorId here,
+  // and a creator always gets sessionView's top "member" tier back, i.e. everything), but every
+  // OTHER route that returns a session runs it through sessionView, and this was the one
+  // exception. Swapped for consistency so there's no second place that could silently start
+  // leaking if creation logic ever changes to admit anyone but the creator before this response.
+  res.json(sessionView(session, req.userId));
 });
 
 // Sep 9 2026 (Jeff: "If I create a workout or quick workout they go to what's up next - but don't

@@ -531,6 +531,21 @@ data, not download it first."
   shipping (with permanent regression coverage for all four leak scenarios), full suite green,
   app-wrapper caveat disclosed per hard rule #8. Shipping via PR.**
 
+**Addendum (Oct 20 2026) — follow-up audit, prompted by Jeff's fair question "why wasn't this
+checked when it was made?"** Ran a full pass over every `app.get/post/put/delete/patch` route in
+`server.js` (~135 routes) checking specifically for the export bug's pattern: a route handing back
+raw session/profile/crew/template/etc. data instead of running it through the established
+per-viewer redaction (`sessionView`, `publicCrew`, `canSeePostAuthor`/`isBlocked`, etc.). Came back
+clean -- this file already has several prior dated audit rounds (Sep 24, Oct 2, Oct 9, Oct 16) that
+fixed this exact pattern elsewhere; the export bug happened because it was new code that hadn't
+been through that treatment yet, not because the discipline is missing from the rest of the app.
+One non-urgent consistency item found and fixed: `POST /api/sessions` returned the raw `session`
+object instead of `sessionView(session, req.userId)` -- harmless today (`req.userId` is always the
+session's own creator at that point, who always gets `sessionView`'s full "member" tier back
+anyway) but a second place that could silently start leaking if creation logic ever changes to
+admit a non-creator viewer before that response. Swapped to `sessionView(...)` for consistency.
+155/155 full suite still green after the change.
+
 ## Design constants
 
 (Rewritten Aug 28, 2026 after the whole-app visual pass, v221–v240. The old text here described the light-only v140 language.)
