@@ -1327,6 +1327,25 @@ async function pgNotificationHistoryForUser(userId, sinceIso) {
     return r.rows.map(row => JSON.parse(row.data));
   });
 }
+// Oct 20 2026 (app-store readiness review -- self-service data export): pgNotificationHistoryForUser
+// just above is purpose-built for the in-app feed (a 50-row cap, a sinceIso cutoff) and wrong for
+// this -- an export has to be complete, not "recent." A separate function rather than adding an
+// "unlimited" mode to the feed one, same reasoning pgListAllCustomExerciseRows stayed separate from
+// pgListCustomExerciseRowsByOwner below: different callers, different shapes, no reason to overload
+// one function's contract with a flag only one caller needs. 2000 is a sane safety cap (an active
+// account's full history realistically never approaches it), not a product-intended limit -- if a
+// real user ever hits it, that's a sign this needs pagination, not that the export is silently
+// truncating someone's data today.
+async function pgAllNotificationsForUser(userId) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(
+      `SELECT data FROM notifications WHERE data->>'userId' = $1 ORDER BY data->>'createdAt' DESC LIMIT 2000`,
+      [userId]
+    );
+    return r.rows.map(row => JSON.parse(row.data));
+  });
+}
 async function pgInsertNotification(row) {
   return enqueue(async () => {
     const c = getConn();
@@ -1526,6 +1545,17 @@ async function pgListReports() {
   return enqueue(async () => {
     const c = getConn();
     const r = await c.query(`SELECT data FROM reports ORDER BY data->>'at' DESC`);
+    return r.rows.map(row => JSON.parse(row.data));
+  });
+}
+// Oct 20 2026 (data export): pgListReports just above is the admin review queue -- every report,
+// regardless of who filed it, which is exactly right for that screen and exactly wrong for an
+// export scoped to one person's own data. Ownership check baked into the WHERE clause, same
+// reasoning as pgDeleteNotification's own comment on why that's better than a read-then-filter.
+async function pgListReportsByReporter(reporterId) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(`SELECT data FROM reports WHERE data->>'reporterId' = $1 ORDER BY data->>'at' DESC`, [reporterId]);
     return r.rows.map(row => JSON.parse(row.data));
   });
 }
@@ -1923,10 +1953,10 @@ async function pgBackfillUserColumns(id, u) {
 
 module.exports = {
   load, save, close, ensureSchema, EMPTY_DB, getConn,
-  pgNotificationHistoryForUser, pgInsertNotification, pgDeleteNotification, pgMergedNotificationWrite, pgPruneOldNotifications,
+  pgNotificationHistoryForUser, pgAllNotificationsForUser, pgInsertNotification, pgDeleteNotification, pgMergedNotificationWrite, pgPruneOldNotifications,
   pgInsertFeedEvent, pgDeleteFeedEvent, pgGetFeedEvent, pgFeedEventsSince, pgToggleFeedEventReaction, pgPruneOldFeedEvents,
   pgGetPushSub, pgSetPushSub, pgDeletePushSubIfEndpointMatches, pgDeletePushSub,
-  pgInsertReport, pgListReports, pgResolveReport,
+  pgInsertReport, pgListReports, pgListReportsByReporter, pgResolveReport,
   pgUpsertCustomExerciseRow, pgInsertCustomExerciseRowIfUnderCap, pgGetCustomExerciseRow, pgListCustomExerciseRowsByOwner, pgListAllCustomExerciseRows, pgDeleteCustomExerciseRow, pgFindCustomExerciseRowByName,
   pgInsertCrewMessage, pgListCrewMessagesByCrew, pgUpdateCrewMessageText, pgDeleteCrewMessage, pgInsertSystemCrewMessage, pgDeleteCrewMessagesByCrew,
   pgLastCrewChallenge, pgListCrewChallengesByCrew, pgUpsertCrewChallenge, pgInsertCrewChallengeIfNoneRunning, pgUpdateCrewChallengeFields, pgCompleteCrewChallengeIfNotAlready, pgDeleteCrewChallenge, pgDeleteCrewChallengesByCrew,

@@ -459,6 +459,78 @@ is the fact of the attestation (`ageConfirmed: true`), nothing more.
   Shipping via PR. Data export (the other half of Jeff's "lets do the age gate logic and the data
   export") is the next item, not started yet.**
 
+### Addendum (Oct 20 2026) — self-service data export, and a real privacy bug cold-review caught before it shipped
+
+The second half of "lets do the age gate logic and the data export." Covers item #24 from the
+readiness-review doc: "account deletion is real and well-built, but a user can only delete their
+data, not download it first."
+
+- **New route**: `POST /api/me/export-data` (POST, not GET -- the Fetch spec refuses a body on
+  GET/HEAD outright, and this needs to carry a password, which a query string must never do). Same
+  re-auth bar as reset-workouts/delete-account/password-change: current password required, same
+  shared `pw-confirm:` 10/hour failure budget across all four routes. Plus its own separate
+  `export:`+id 5/hour cap on top, since a correctly-authenticated caller could otherwise re-trigger
+  several real Postgres queries on a loop with nothing else stopping them.
+- **Scope**: profile (every field except `pinSalt`/`pinHash`/`tokensValidFrom`/`revokedJtis` --
+  internal auth bookkeeping no user needs a copy of), the follow graph both directions + pending
+  requests, blocked list, every session that touches them (`sessionTouchesUser`, the exact same
+  predicate `wipeUserFromAllSessions`/account deletion use -- see below), owned templates, the full
+  PR table, owned custom exercises, crew memberships (name + role only, never the full roster --
+  other members aren't this person's data to export), notification history, and reports they've
+  personally filed.
+- **`sessionTouchesUser`**: hoisted out of `wipeUserFromAllSessions` (previously an inline closure
+  called `isSessionTouchedByMe`) into its own top-level function, specifically so export and
+  account-deletion share one definition of "a session that's mine" rather than risk two independently-
+  written copies drifting apart.
+- **Client**: Settings gets a new "Your data" section (between Help and Danger zone, deliberately
+  NOT styled red -- unlike Reset workouts/Delete account this isn't destructive), one "Export my
+  data" row opening the same `PWCONFIRM_EL`-guarded password-confirm sheet shape as the three
+  sibling routes. On success, builds a `Blob`/`URL.createObjectURL` and triggers a browser download
+  of the JSON.
+- **Hard rule #8 flag, not silently skipped**: the Blob/`createObjectURL`/`<a download>` technique
+  is browser-specific and is the first use of this exact pattern anywhere in `app.js`. A
+  WKWebView-based native wrapper has a real history of not reliably turning `<a download>` into an
+  actual file save (it can just navigate to or display the blob inline instead of saving one) --
+  this is disclosed here explicitly per hard rule #8, not validated as "done" for a future native
+  wrapper. Verified for real on the actual target today (a real desktop/mobile browser via
+  Playwright) -- unverified for a future app-wrapper context; re-check this specific route if/when
+  that wrapper is built.
+- **Independent cold-review (fresh agent) found ONE real, CONFIRMED-by-live-repro CRITICAL bug
+  before this shipped — not a nitpick, fixed before merging**: the first version of the `sessions`
+  field in the export returned raw, unfiltered session objects straight from the
+  `sessionTouchesUser` filter -- bypassing `sessionView`'s per-viewer redaction that every other
+  session-reading route in this file already applies (and that redaction's own comments document
+  several prior leaks it was built to close). Reproduced live, four distinct ways: (1) a co-
+  participant's private recap, posted BEFORE they blocked the exporting user, still came back in
+  full -- `canSeePostAuthor`'s block check never ran; (2) a fellow participant's own-eyes-only
+  draft note (never posted, explicitly "yourself and nobody else" per `sessionView`'s own comment)
+  came back verbatim; (3) a stranger's free-text join-request note came back to a non-creator
+  member, who per `sessionView`'s existing rule should only ever see their OWN join request, never
+  anyone else's; (4) worst case, someone merely INVITED to a session -- never accepted, never a
+  participant -- got a co-invitee's real logged weights/reps in their own export, someone they may
+  have no relationship with at all. **Fixed**: `sessions` now maps every matched session through
+  `sessionView(s, me)` (the same, already-audited per-viewer projection `GET /api/sessions/:id`
+  and every other read route use) and drops any that resolve to `null` (a genuine stranger tier --
+  the one accepted edge case is a stray `draftNotes` entry with no other trace of membership,
+  which simply fails closed, the same way every other tier boundary in this file already does,
+  rather than exposing it). All four leak scenarios above are now permanent regression coverage in
+  `test/data-export.mjs` (reusing fresh users per scenario after discovering the first draft
+  cross-contaminated a block-state test into an unrelated invite-tier test -- a block is
+  persistent/bidirectional, not scoped to the one session it happened in).
+  The review also caught `revokedJtis` missing from the profile denylist (added, low practical risk
+  on its own -- random per-token ids, not reconstructible into a token -- but it's internal
+  bookkeeping, not anything a person recognizes as "their data") and a dead-code test assertion
+  (`|| true` that always passed regardless of the actual value being checked -- fixed to actually
+  assert ownership).
+- `crewMemberships`' `{id, name, role, createdAt}`-only mapping (deliberately never the full
+  roster) was independently confirmed correct by the same review -- it's the one place in the
+  original draft that got this "solely this person's own data" scoping right from the start, which
+  is what made the sessions oversight stand out as a miss rather than a considered design choice.
+- Full suite green after the fix: **155/155** (153 pre-existing, `age-gate.mjs`, `data-export.mjs`).
+- **Status: built, one real critical privacy bug found by independent cold-review and fixed before
+  shipping (with permanent regression coverage for all four leak scenarios), full suite green,
+  app-wrapper caveat disclosed per hard rule #8. Shipping via PR.**
+
 ## Design constants
 
 (Rewritten Aug 28, 2026 after the whole-app visual pass, v221–v240. The old text here described the light-only v140 language.)
