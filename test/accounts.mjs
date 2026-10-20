@@ -103,7 +103,7 @@ function boot(dir = DIR) {
 }
 const stop = () => new Promise(r => { if (!srv || srvDead) return r(); srv.on('exit', r); srv.kill(); });
 const post = (p, b) => fetch(B + p, { method: 'POST', headers: J, body: JSON.stringify(b) });
-const reg = (username, pin, displayName) => post('/api/register', { username, pin, displayName });
+const reg = (username, pin, displayName) => post('/api/register', { ageConfirmed: true, username, pin, displayName });
 const login = (username, pin) => post('/api/login', { username, pin });
 const nm = () => 'u' + Math.floor(Math.random() * 1e9);
 

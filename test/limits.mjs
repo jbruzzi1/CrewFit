@@ -68,8 +68,8 @@ await new Promise(res => {
   setTimeout(res, 8000);
 });
 
-const alice = await post('/api/register', { username: 'alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
-const bob   = await post('/api/register', { username: 'bob',   pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
+const alice = await post('/api/register', { ageConfirmed: true, username: 'alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
+const bob   = await post('/api/register', { ageConfirmed: true, username: 'bob',   pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
 await post('/api/follow/' + bob.user.id, {}, alice.token);
 await post('/api/follow-requests/' + alice.user.id + '/accept', {}, bob.token);
 await post('/api/follow/' + alice.user.id, {}, bob.token);
@@ -158,7 +158,7 @@ console.log('\nevery other user-controlled field is bounded too (not just the ro
 {
   const huge = 'q'.repeat(100000);
 
-  const dave = await post('/api/register', { username: 'dave', pin: 'pass1234', displayName: huge }).then(r => r.json());
+  const dave = await post('/api/register', { ageConfirmed: true, username: 'dave', pin: 'pass1234', displayName: huge }).then(r => r.json());
   let d = await db();
   ok(d.users[dave.user.id].displayName.length <= 80, `register displayName is capped (stored ${d.users[dave.user.id].displayName.length})`);
 
@@ -222,7 +222,7 @@ console.log('\nthe three vectors a second review caught are closed too');
   ok(offRes.status === 415, `an off-site media URL is refused (got ${offRes.status})`);
 
   // custom-exercise per-user COUNT cap (the accumulating wedge)
-  const cap = await post('/api/register', { username: 'ecap', pin: 'pass1234', displayName: 'E' }).then(r => r.json());
+  const cap = await post('/api/register', { ageConfirmed: true, username: 'ecap', pin: 'pass1234', displayName: 'E' }).then(r => r.json());
   let last;
   for (let i = 0; i < 501; i++) last = await post('/api/exercises/custom', { name: 'X' + i, muscle_groups: ['chest'] }, cap.token);
   ok(last.status === 400, `the 501st custom exercise from one account is refused (got ${last.status})`);
@@ -232,7 +232,7 @@ console.log('\nthe request-body size cap is small everywhere except the media ro
 {
   const twoMB = 'z'.repeat(2 * 1024 * 1024);
   // a 2 MB body to a normal route is refused by the 1mb global parser (413), before any handler
-  const reg = await fetch(B + '/api/register', { method: 'POST', headers: J, body: JSON.stringify({ username: 'x', pin: 'pass1234', displayName: twoMB }) });
+  const reg = await fetch(B + '/api/register', { method: 'POST', headers: J, body: JSON.stringify({ ageConfirmed: true, username: 'x', pin: 'pass1234', displayName: twoMB }) });
   ok(reg.status === 413, `a 2 MB body to /api/register is rejected by the body cap (got ${reg.status})`);
   // the same size to the avatar route (which legitimately carries images) is NOT rejected by the parser
   const av = await fetch(B + '/api/me/avatar', { method: 'POST', headers: H(alice.token), body: JSON.stringify({ data: 'data:image/png;base64,' + 'A'.repeat(2 * 1024 * 1024), type: 'image/png' }) });

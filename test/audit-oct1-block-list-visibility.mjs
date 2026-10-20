@@ -55,7 +55,7 @@ async function api(path, method, token, body) {
 }
 const post = (p, b, tok) => api(p, 'POST', tok, b).then(r => r.body);
 const get = (p, tok) => api(p, 'GET', tok).then(r => r.body);
-const reg = (u) => post('/api/register', { username: u, pin: 'pass1234', displayName: u });
+const reg = (u) => post('/api/register', { ageConfirmed: true, username: u, pin: 'pass1234', displayName: u });
 const connect = async (a, b) => { await post('/api/follow/' + b.user.id, {}, a.token); await post('/api/follow-requests/' + a.user.id + '/accept', {}, b.token); };
 
 console.log('A blocked co-follower of a third party is hidden from that third party\'s followers/following lists, both directions');

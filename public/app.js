@@ -283,6 +283,7 @@ function authScreen(){
         <div id="rxHint" class="muted" style="font-size:12px;margin:4px 0 0;min-height:14px"></div>
         <input id="rp" placeholder="password (8+ characters)" type="password" onkeydown="onEnterKey(event, doReg)">
         <input id="rn" placeholder="display name (optional)" onkeydown="onEnterKey(event, doReg)">
+        <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-size:13px"><input type="checkbox" id="rage" style="width:auto"> I am 13 years of age or older</label>
         <button id="regBtn" onclick="doReg()">Create account</button>
       </div>
     </div></div>`;
@@ -323,7 +324,8 @@ async function doReg(){ try {
   const u=($('rx').value||'').trim().toLowerCase();
   if(u){ try { const c=await H.get('/api/register/check?username='+encodeURIComponent(u)); if(c && c.available===false){ alert(c.reason||'username taken'); return; } } catch(e){} }
   if(($('rp').value||'').length < 8){ alert('Password must be at least 8 characters.'); return; }
-  const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value}); if(r.token){ setToken(r.token,r.user); home();
+  if(!$('rage').checked){ alert('Please confirm you are at least 13 years old to create an account.'); return; }
+  const r=await H.post('/api/register',{username:$('rx').value,pin:$('rp').value,displayName:$('rn').value,ageConfirmed:$('rage').checked}); if(r.token){ setToken(r.token,r.user); home();
     // Cold-review catch: this call sits inside doReg's own try/catch, but the account is
     // ALREADY registered and logged in by this point -- a throw here has no business
     // surfacing as "Network error, is CrewFit reachable?" to someone who just successfully

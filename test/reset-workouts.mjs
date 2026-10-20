@@ -63,7 +63,7 @@ process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); a
 const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const postRaw = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) });
 const get = (p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} });
-const reg = (username, pin, displayName) => post('/api/register', { username, pin, displayName });
+const reg = (username, pin, displayName) => post('/api/register', { ageConfirmed: true, username, pin, displayName });
 
 const jeff = await reg('reset_jeff', 'pass1234', 'Jeff');
 const brian = await reg('reset_brian', 'pass1234', 'Brian');

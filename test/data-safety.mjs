@@ -49,7 +49,7 @@ async function seed(dir, dbUrl) {
   if (!r.started) throw new Error('could not seed: ' + r.err);
   const h = { 'Content-Type': 'application/json' };
   const u = await fetch(B + '/api/register', { method: 'POST', headers: h,
-    body: JSON.stringify({ username: 'u' + Math.floor(Math.random() * 1e9), pin: 'pass1234', displayName: 'T' }) }).then(x => x.json());
+    body: JSON.stringify({ ageConfirmed: true, username: 'u' + Math.floor(Math.random() * 1e9), pin: 'pass1234', displayName: 'T' }) }).then(x => x.json());
   const H = { ...h, Authorization: 'Bearer ' + u.token };
   const s = await fetch(B + '/api/sessions', { method: 'POST', headers: H,
     body: JSON.stringify({ name: 'Push', visibility: 'private', scheduledAt: '2026-08-12T18:00:00Z',

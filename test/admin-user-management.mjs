@@ -87,7 +87,7 @@ const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J
 const postRaw = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) });
 const adminGet = (p, token) => fetch(B + p, { headers: { 'x-admin-token': token } });
 const adminPost = (p, token) => fetch(B + p, { method: 'POST', headers: { 'x-admin-token': token } });
-const reg = (username, pin, displayName) => post('/api/register', { username, pin, displayName });
+const reg = (username, pin, displayName) => post('/api/register', { ageConfirmed: true, username, pin, displayName });
 
 try {
 

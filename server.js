@@ -1010,8 +1010,16 @@ app.post('/api/register', async (req, res) => {
   const ip = clientIp(req);
   if (ip && overLimit('reg:' + ip, 20, 60 * 60 * 1000))
     return res.status(429).json({ error: 'Too many sign-ups from here. Please try again later.' });
-  const { username, pin, displayName } = req.body || {};
+  const { username, pin, displayName, ageConfirmed } = req.body || {};
   if (!username || !pin) return res.status(400).json({ error: 'username + pin required' });
+  // Oct 20 2026 (app-store readiness review, "13+ self-attestation" — Jeff's call: a checkbox, not
+  // a collected birthdate. Collecting a real date of birth is new PII on every account for no real
+  // gain here — someone willing to lie about their age lies just as easily on a typed birthdate as
+  // on a checkbox, so the extra field buys defensibility, not actual accuracy, at the cost of one
+  // more thing this app now has to protect and eventually let people export/delete). This is a hard
+  // gate, not a UI nicety: registration refuses outright without it, same enforcement level as the
+  // username/password checks right below.
+  if (!ageConfirmed) return res.status(400).json({ error: 'You must confirm you are at least 13 years old to create an account.' });
   const uProblem = usernameProblem(username); if (uProblem) return res.status(400).json({ error: uProblem });
   const pProblem = pinProblem(pin);           if (pProblem) return res.status(400).json({ error: pProblem });
   // Oct 12 2026 (cold-review catch, same day as the async-hashPin scaling fix): hashPin used to be
@@ -1038,6 +1046,9 @@ app.post('/api/register', async (req, res) => {
     // Settings. followers/following/followReqs are created lazily by ensureFollowArrays on first
     // use, same as ever; there is no separate "friends" concept to seed any more (see canSeeProfile).
     profileVisibility: 'public',
+    // Oct 20 2026: the fact of the attestation, nothing more — no birthdate, no re-confirmation
+    // later. Deliberately minimal, matching the checkbox itself (see the route's own comment above).
+    ageConfirmed: true,
     createdAt: new Date().toISOString() }, hashed);
   // Oct 16 2026 (users slice, decision #2): a brand-new account needs no backfill -- mark it
   // migrated before its first save() so that very first write already excludes these scalar

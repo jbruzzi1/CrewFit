@@ -43,8 +43,8 @@ process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); awa
 process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
 
 const rand = Math.floor(Math.random() * 90000) + 10000;
-const a = await post('/api/register', { username: `csa_${rand}`, pin: 'pass1234', displayName: 'Alice NoCrew' });
-const b = await post('/api/register', { username: `csb_${rand}`, pin: 'pass1234', displayName: 'Bob Buddy' });
+const a = await post('/api/register', { ageConfirmed: true, username: `csa_${rand}`, pin: 'pass1234', displayName: 'Alice NoCrew' });
+const b = await post('/api/register', { ageConfirmed: true, username: `csb_${rand}`, pin: 'pass1234', displayName: 'Bob Buddy' });
 if (a.error || b.error) throw new Error('register: ' + (a.error || b.error));
 
 const browser = await chromium.launch(LAUNCH_OPTS);

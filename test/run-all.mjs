@@ -236,6 +236,12 @@ const files = [
   // before the process exits, and that an unreachable Sentry endpoint still lets the process exit
   // within a bounded window rather than hanging.
   'test/phase3-sentry-flush-before-exit-slice2.mjs',
+  // Oct 20 2026 (app-store readiness review, "13+ self-attestation" age gate): the one file that
+  // actually exercises POST /api/register's new ageConfirmed requirement itself -- missing/falsy
+  // is refused with the real error and no account created, truthy succeeds and the attestation
+  // (not a birthdate) is what lands in the row. Every other file that registers a user was just
+  // updated to pass ageConfirmed as fixture setup; none of them test the gate.
+  'test/age-gate.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

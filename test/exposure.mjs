@@ -78,7 +78,7 @@ const stop = () => new Promise(r => { if (!srv || srvDead) return r(); srv.on('e
 async function user(name) {
   const username = name + Math.floor(Math.random() * 1e6);
   const r = await fetch(B + '/api/register', { method: 'POST', headers: J,
-    body: JSON.stringify({ username, pin: 'pass1234', displayName: name }) }).then(x => x.json());
+    body: JSON.stringify({ ageConfirmed: true, username, pin: 'pass1234', displayName: name }) }).then(x => x.json());
   return { id: r.user.id, username, name, H: { ...J, Authorization: 'Bearer ' + r.token } };
 }
 // a follows b, and b approves — a is now an approved follower who can see b's private profile

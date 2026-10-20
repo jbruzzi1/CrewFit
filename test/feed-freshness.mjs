@@ -51,8 +51,8 @@ await new Promise(res => {
   setTimeout(res, 8000);
 });
 
-const alice = await post('/api/register', { username: 'alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
-const bob   = await post('/api/register', { username: 'bob',   pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
+const alice = await post('/api/register', { ageConfirmed: true, username: 'alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
+const bob   = await post('/api/register', { ageConfirmed: true, username: 'bob',   pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
 await post('/api/follow/' + bob.user.id, {}, alice.token);
 await post('/api/follow-requests/' + alice.user.id + '/accept', {}, bob.token);
 await post('/api/follow/' + alice.user.id, {}, bob.token);
@@ -106,7 +106,7 @@ let carl;
   // Jeff, Aug 21: "every new first rep will be considered a PR" — a new user's very first session,
   // trying several exercises for the first time each, used to post one "hit a new PR" item per
   // exercise. None of them has beaten anything yet, so none of them should reach the feed.
-  carl = await post('/api/register', { username: 'carl', pin: 'pass1234', displayName: 'Carl' }).then(r => r.json());
+  carl = await post('/api/register', { ageConfirmed: true, username: 'carl', pin: 'pass1234', displayName: 'Carl' }).then(r => r.json());
   await post('/api/follow/' + carl.user.id, {}, alice.token);
   await post('/api/follow-requests/' + alice.user.id + '/accept', {}, carl.token);
   await post('/api/follow/' + alice.user.id, {}, carl.token);
@@ -235,8 +235,8 @@ console.log('\nv239 recap rows: a friend\'s posted recap shows in the feed, thum
 console.log("\nSep 11 2026: finishing a workout with NO recap shows a real 'completed a workout' row, which then disappears (superseded) once a recap is posted for that same session");
 {
   // A fresh pair, isolated from everything the earlier blocks in this file already built.
-  const gia = await post('/api/register', { username: 'gia9', pin: 'pass1234', displayName: 'Gia' }).then(r => r.json());
-  const hank = await post('/api/register', { username: 'hank9', pin: 'pass1234', displayName: 'Hank' }).then(r => r.json());
+  const gia = await post('/api/register', { ageConfirmed: true, username: 'gia9', pin: 'pass1234', displayName: 'Gia' }).then(r => r.json());
+  const hank = await post('/api/register', { ageConfirmed: true, username: 'hank9', pin: 'pass1234', displayName: 'Hank' }).then(r => r.json());
   await post('/api/follow/' + hank.user.id, {}, gia.token);
   await post('/api/follow-requests/' + gia.user.id + '/accept', {}, hank.token);
 
@@ -267,8 +267,8 @@ console.log("\nv247 (historical) fixed a 'streak' feed row that used to be stamp
   // Both brand-new accounts, friended only to each other — /api/feed now caps at 40 items, and
   // Alice's feed is already crowded with everything the earlier blocks in this file built, which
   // would make ordering harder to read even without truncation risk. A clean pair sidesteps that.
-  const faye = await post('/api/register', { username: 'faye', pin: 'pass1234', displayName: 'Faye' }).then(r => r.json());
-  const dave = await post('/api/register', { username: 'dave', pin: 'pass1234', displayName: 'Dave' }).then(r => r.json());
+  const faye = await post('/api/register', { ageConfirmed: true, username: 'faye', pin: 'pass1234', displayName: 'Faye' }).then(r => r.json());
+  const dave = await post('/api/register', { ageConfirmed: true, username: 'dave', pin: 'pass1234', displayName: 'Dave' }).then(r => r.json());
   await post('/api/follow/' + dave.user.id, {}, faye.token);
   await post('/api/follow-requests/' + faye.user.id + '/accept', {}, dave.token);
   await post('/api/follow/' + faye.user.id, {}, dave.token);
@@ -313,9 +313,9 @@ console.log("\nv247 (historical) fixed a 'streak' feed row that used to be stamp
 
 console.log('\nSep 11 2026 cold-review fix: rank/challenge_started/joined_crew are CREW-scoped -- being connected to the actor is not enough, the viewer must actually be in that crew too (otherwise a dead crewView link, and an incidental leak of the crew\'s roster/challenge changes)');
 {
-  const ivy = await post('/api/register', { username: 'ivy11', pin: 'pass1234', displayName: 'Ivy' }).then(r => r.json());
-  const jax = await post('/api/register', { username: 'jax11', pin: 'pass1234', displayName: 'Jax' }).then(r => r.json());
-  const kim = await post('/api/register', { username: 'kim11', pin: 'pass1234', displayName: 'Kim' }).then(r => r.json());
+  const ivy = await post('/api/register', { ageConfirmed: true, username: 'ivy11', pin: 'pass1234', displayName: 'Ivy' }).then(r => r.json());
+  const jax = await post('/api/register', { ageConfirmed: true, username: 'jax11', pin: 'pass1234', displayName: 'Jax' }).then(r => r.json());
+  const kim = await post('/api/register', { ageConfirmed: true, username: 'kim11', pin: 'pass1234', displayName: 'Kim' }).then(r => r.json());
   // Ivy follows Jax (connected), but is never put in Jax's crew with Kim.
   await post('/api/follow/' + jax.user.id, {}, ivy.token);
   await post('/api/follow-requests/' + ivy.user.id + '/accept', {}, jax.token);
@@ -341,8 +341,8 @@ console.log('\nSep 11 2026 cold-review fix: rank/challenge_started/joined_crew a
 
 console.log('\nSep 11 2026 cold-review fix: joined_crew fires for FOUNDING members picked at crew CREATION, not only members added later via edit');
 {
-  const nia = await post('/api/register', { username: 'nia11', pin: 'pass1234', displayName: 'Nia' }).then(r => r.json());
-  const omar = await post('/api/register', { username: 'omar11', pin: 'pass1234', displayName: 'Omar' }).then(r => r.json());
+  const nia = await post('/api/register', { ageConfirmed: true, username: 'nia11', pin: 'pass1234', displayName: 'Nia' }).then(r => r.json());
+  const omar = await post('/api/register', { ageConfirmed: true, username: 'omar11', pin: 'pass1234', displayName: 'Omar' }).then(r => r.json());
   await post('/api/follow/' + omar.user.id, {}, nia.token);
   await post('/api/follow-requests/' + nia.user.id + '/accept', {}, omar.token);
 
@@ -354,8 +354,8 @@ console.log('\nSep 11 2026 cold-review fix: joined_crew fires for FOUNDING membe
 
 console.log("\nSep 11 2026 (historical) cold-review fix made the (now-removed) streak feed event use the CLIENT's local date, not server UTC. Sep 30 2026: the streak feed event itself was removed (see the block above) -- this block now just confirms two client-local-dated consecutive finishes, which used to be exactly what triggered that event, still produce no streak row.");
 {
-  const liv = await post('/api/register', { username: 'liv11', pin: 'pass1234', displayName: 'Liv' }).then(r => r.json());
-  const moe = await post('/api/register', { username: 'moe11', pin: 'pass1234', displayName: 'Moe' }).then(r => r.json());
+  const liv = await post('/api/register', { ageConfirmed: true, username: 'liv11', pin: 'pass1234', displayName: 'Liv' }).then(r => r.json());
+  const moe = await post('/api/register', { ageConfirmed: true, username: 'moe11', pin: 'pass1234', displayName: 'Moe' }).then(r => r.json());
   await post('/api/follow/' + moe.user.id, {}, liv.token);
   await post('/api/follow-requests/' + liv.user.id + '/accept', {}, moe.token);
 
@@ -379,8 +379,8 @@ console.log("\nSep 11 2026 (historical) cold-review fix made the (now-removed) s
 
 console.log("\nSep 11 2026 cold-review fix: a completed_no_recap row is only superseded for a viewer who can actually SEE the recap that superseded it -- not for every viewer the moment ANY recap exists");
 {
-  const pia = await post('/api/register', { username: 'pia11', pin: 'pass1234', displayName: 'Pia' }).then(r => r.json());
-  const quin = await post('/api/register', { username: 'quin11', pin: 'pass1234', displayName: 'Quin' }).then(r => r.json());
+  const pia = await post('/api/register', { ageConfirmed: true, username: 'pia11', pin: 'pass1234', displayName: 'Pia' }).then(r => r.json());
+  const quin = await post('/api/register', { ageConfirmed: true, username: 'quin11', pin: 'pass1234', displayName: 'Quin' }).then(r => r.json());
   await post('/api/follow/' + quin.user.id, {}, pia.token);
   await post('/api/follow-requests/' + pia.user.id + '/accept', {}, quin.token);
 
@@ -407,8 +407,8 @@ console.log("\nSep 11 2026 cold-review fix: a completed_no_recap row is only sup
 
 console.log("\nSep 11 2026 (Jeff, \"worth changing\"): a session that earns a real PR but never gets a posted recap shows only ONCE -- the PR's own hero card -- not also a separate, redundant 'completed a workout' row for the same workout");
 {
-  const rex = await post('/api/register', { username: 'rex11', pin: 'pass1234', displayName: 'Rex' }).then(r => r.json());
-  const stu = await post('/api/register', { username: 'stu11', pin: 'pass1234', displayName: 'Stu' }).then(r => r.json());
+  const rex = await post('/api/register', { ageConfirmed: true, username: 'rex11', pin: 'pass1234', displayName: 'Rex' }).then(r => r.json());
+  const stu = await post('/api/register', { ageConfirmed: true, username: 'stu11', pin: 'pass1234', displayName: 'Stu' }).then(r => r.json());
   await post('/api/follow/' + stu.user.id, {}, rex.token);
   await post('/api/follow-requests/' + rex.user.id + '/accept', {}, stu.token);
 
@@ -435,7 +435,7 @@ console.log("\nSep 11 2026 (Jeff, \"worth changing\"): a session that earns a re
 
 console.log("\nSep 11 2026 (Jeff, \"worth changing\"): a completed_no_recap row's own timestamp is the workout's real scheduled date, not the literal moment /lock was called -- a backdated workout must not read as having JUST happened");
 {
-  const uma = await post('/api/register', { username: 'uma11', pin: 'pass1234', displayName: 'Uma' }).then(r => r.json());
+  const uma = await post('/api/register', { ageConfirmed: true, username: 'uma11', pin: 'pass1234', displayName: 'Uma' }).then(r => r.json());
   const finishesRealDate = new Date(Date.now() - 5 * 24 * 3600 * 1000).toISOString();
   const backSess = await post('/api/sessions', { name: '', visibility: 'private',
     scheduledAt: finishesRealDate, exercises: [{ name: 'Face Pull' }], inviteUsernames: [] }, uma.token).then(r => r.json());

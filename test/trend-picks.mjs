@@ -63,7 +63,7 @@ process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); a
 
 await boot();
 
-const alice = await post('/api/register', { username: 'alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
+const alice = await post('/api/register', { ageConfirmed: true, username: 'alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
 
 // Log each exercise TWICE (across two sessions) so it clears the "2+ points" trend bar.
 const LIFTS = ['Back Squat', 'Bench Press', 'Deadlift', 'Overhead Press', 'Barbell Row', 'Pull-Up'];

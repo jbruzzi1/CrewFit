@@ -55,7 +55,7 @@ async function api(path, method, token, body) {
   return { status: r.status, body: await r.json() };
 }
 const post = (p, b, tok) => api(p, 'POST', tok, b).then(r => r.body);
-const reg = (u) => post('/api/register', { username: u, pin: 'pass1234', displayName: u });
+const reg = (u) => post('/api/register', { ageConfirmed: true, username: u, pin: 'pass1234', displayName: u });
 
 console.log('Tier 2 #1 (Jeff: "if they are blocked they shouldn\'t show at all -- similar to how instagram is"): GET /api/users/search excludes blocked accounts, both directions');
 {

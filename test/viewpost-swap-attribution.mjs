@@ -55,7 +55,7 @@ process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); a
 
 const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const put = (p, b, tok) => fetch(B + p, { method: 'PUT', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
-const reg = (username) => post('/api/register', { username, pin: 'pass1234', displayName: username });
+const reg = (username) => post('/api/register', { ageConfirmed: true, username, pin: 'pass1234', displayName: username });
 
 // ---- render the REAL client against the REAL running server (same harness as message-button-removed.mjs) ----
 const SRC = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');

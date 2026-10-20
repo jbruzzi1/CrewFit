@@ -39,9 +39,9 @@ process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); awa
 process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanup(); process.exit(1); });
 
 const rand = Math.floor(Math.random() * 90000) + 10000;
-const alice = await post('/api/register', { username: `bsp_a_${rand}`, pin: 'pass1234', displayName: 'Alice' });
-const bob = await post('/api/register', { username: `bsp_b_${rand}`, pin: 'pass1234', displayName: 'Bob' });
-const carol = await post('/api/register', { username: `bsp_c_${rand}`, pin: 'pass1234', displayName: 'Carol' });
+const alice = await post('/api/register', { ageConfirmed: true, username: `bsp_a_${rand}`, pin: 'pass1234', displayName: 'Alice' });
+const bob = await post('/api/register', { ageConfirmed: true, username: `bsp_b_${rand}`, pin: 'pass1234', displayName: 'Bob' });
+const carol = await post('/api/register', { ageConfirmed: true, username: `bsp_c_${rand}`, pin: 'pass1234', displayName: 'Carol' });
 
 await post('/api/follow/' + bob.user.id, {}, alice.token);
 await post('/api/follow/' + carol.user.id, {}, alice.token);

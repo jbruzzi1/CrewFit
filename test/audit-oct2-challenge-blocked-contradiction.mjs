@@ -63,7 +63,7 @@ async function api(path, method, token, body) {
 }
 const post = (p, b, tok) => api(p, 'POST', tok, b).then(r => r.body);
 const get = (p, tok) => api(p, 'GET', tok).then(r => r.body);
-const reg = (u) => post('/api/register', { username: u, pin: 'pass1234', displayName: u[0].toUpperCase() + u.slice(1) });
+const reg = (u) => post('/api/register', { ageConfirmed: true, username: u, pin: 'pass1234', displayName: u[0].toUpperCase() + u.slice(1) });
 const connect = async (a, b) => { await post('/api/follow/' + b.user.id, {}, a.token); await post('/api/follow-requests/' + a.user.id + '/accept', {}, b.token); };
 
 const owner = await reg('oct2cc_owner');

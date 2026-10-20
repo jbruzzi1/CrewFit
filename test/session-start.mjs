@@ -31,7 +31,7 @@ if (!srv) { console.log('FAIL: server did not boot'); process.exit(1); }
 
 const H = t => ({ ...J, Authorization: 'Bearer ' + t });
 const api = (method, path, token, body) => fetch(BASE + path, { method, headers: token ? H(token) : J, body: body !== undefined ? JSON.stringify(body) : undefined }).then(async r => ({ status: r.status, json: await r.json().catch(() => null) }));
-const reg = n => api('POST', '/api/register', null, { username: n, pin: 'pass1234', displayName: n[0].toUpperCase() + n.slice(1) }).then(r => r.json);
+const reg = n => api('POST', '/api/register', null, { ageConfirmed: true, username: n, pin: 'pass1234', displayName: n[0].toUpperCase() + n.slice(1) }).then(r => r.json);
 
 try {
 

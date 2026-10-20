@@ -115,7 +115,7 @@ h = await seedAndBoot({ logs: {}, history: { bogus: true } }, 4993);
 currentHandle = h;
 ok(h.booted, 'boots with a non-array history');
 if (h.booted) {
-  const reg = await fetch('http://localhost:4993/api/register', { method: 'POST', headers: J, body: JSON.stringify({ username: 'bob', pin: 'pass1234', displayName: 'Bob' }) }).then(r => r.json());
+  const reg = await fetch('http://localhost:4993/api/register', { method: 'POST', headers: J, body: JSON.stringify({ ageConfirmed: true, username: 'bob', pin: 'pass1234', displayName: 'Bob' }) }).then(r => r.json());
   const pr = await fetch('http://localhost:4993/api/profile/me', { headers: { Authorization: 'Bearer ' + reg.token } });
   ok(pr.status === 200, `GET /api/profile/me returns ${pr.status}, not 500`);
 }
@@ -126,7 +126,7 @@ h = await seedAndBoot({ logs: {}, history: [null, { userId: 'u1', date: '2026-01
 currentHandle = h;
 ok(h.booted, 'boots with a null slot in history');
 if (h.booted) {
-  const reg = await fetch('http://localhost:4994/api/register', { method: 'POST', headers: J, body: JSON.stringify({ username: 'carol', pin: 'pass1234', displayName: 'Carol' }) }).then(r => r.json());
+  const reg = await fetch('http://localhost:4994/api/register', { method: 'POST', headers: J, body: JSON.stringify({ ageConfirmed: true, username: 'carol', pin: 'pass1234', displayName: 'Carol' }) }).then(r => r.json());
   const pr = await fetch('http://localhost:4994/api/profile/u1', { headers: { Authorization: 'Bearer ' + reg.token } });
   ok(pr.status === 200, `GET /api/profile/:id with a null history row returns ${pr.status}, not 500`);
   const hh = (await rd(h)).sessions.s1.history; ok(Array.isArray(hh) && hh.length === 1, 'null history row dropped, real one kept');

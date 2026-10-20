@@ -83,7 +83,7 @@ await page.goto(BASE + '/');
 const rand = () => Math.random().toString(36).slice(2, 8);
 const uname = 'exlr' + rand();
 const reg = await page.evaluate(async ({ BASE, uname }) => {
-  const r = await fetch(BASE + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: uname, pin: '12345678', displayName: uname }) });
+  const r = await fetch(BASE + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ageConfirmed: true, username: uname, pin: '12345678', displayName: uname }) });
   return r.json();
 }, { BASE, uname });
 await page.evaluate((tok) => localStorage.setItem('crewfit_token', tok), reg.token);

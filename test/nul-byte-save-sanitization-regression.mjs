@@ -87,7 +87,7 @@ async function reboot() { await stop(); return boot(); }
 
 async function reg(n) {
   const r = await fetch(B + '/api/register', { method: 'POST', headers: J,
-    body: JSON.stringify({ username: n, pin: 'pass1234', displayName: n }) }).then(x => x.json());
+    body: JSON.stringify({ ageConfirmed: true, username: n, pin: 'pass1234', displayName: n }) }).then(x => x.json());
   if (!r.token) throw new Error('register failed: ' + JSON.stringify(r));
   return { id: r.user.id, token: r.token, H: { ...J, Authorization: 'Bearer ' + r.token } };
 }

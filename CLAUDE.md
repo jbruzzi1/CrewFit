@@ -388,6 +388,77 @@ Both restore drills this phase (the pg_dump/R2 one and the Supabase JSON-snapsho
 - **Jeff's move**: add `SENTRY_DSN` as a GitHub repo secret (Settings → Secrets and variables → Actions) — same value already set as a Fly secret on `spotmeapp` from Phase 2. Nothing else new to set up; every other secret this workflow needs already exists from `backup.yml`'s own one-time setup.
 - **Status: built, verified (including a real pass/fail check of the verification script itself), cold-reviewed, one real bug fixed before shipping. Shipping via PR.**
 
+### Addendum (Oct 20 2026) — 13+ age gate (self-attestation), first item off the App Store readiness list
+
+Jeff, after the two rounds of honest "how do we feel about the app" feedback that produced the
+readiness-review doc: "lets do the age gate logic and the data export." This covers the first
+one. Design decisions confirmed with Jeff directly rather than assumed: **13+ minimum**, and
+**self-attestation checkbox, not a collected birthdate** — someone willing to lie about their age
+lies just as easily on a typed birthdate as on a checkbox, so a real date-of-birth field buys
+defensibility, not accuracy, at the cost of a new piece of PII every account now carries (and
+eventually has to be covered by export/delete too). Deliberately minimal: the only thing stored
+is the fact of the attestation (`ageConfirmed: true`), nothing more.
+
+- **`server.js`, `POST /api/register`** (~line 1009): destructures `ageConfirmed` from the body
+  and hard-refuses (400, "You must confirm you are at least 13 years old to create an account.")
+  if it's falsy — same enforcement level as the username/password checks right next to it, not a
+  client-only nicety. Runs after the cheap `!username||!pin` check but before the more expensive
+  `usernameProblem`/`pinProblem` validation and `hashPin()`, so a missing attestation fails fast.
+  On success the new user object stores `ageConfirmed: true` (normalized to the literal, not
+  whatever truthy value was sent) — this field has no dedicated Postgres column, it lives only in
+  the user row's jsonb `data` blob, same as several other low-traffic fields.
+- **`public/app.js`**: `authScreen()` gets a new `#rage` checkbox ("I am 13 years of age or
+  older") on the registration form, `style="width:auto"` because `index.html`'s global
+  `input,select{width:100%}` rule would otherwise stretch a checkbox full-width. `doReg()` gets a
+  client-side guard (alerts if unchecked, same pattern as the existing 8-char password check) and
+  sends the real `.checked` boolean as `ageConfirmed`.
+- **The breaking-change ripple, handled deliberately, not worked around**: making `ageConfirmed`
+  server-side-required broke all 117 existing test files that register a user purely as fixture
+  setup. Rejected a test-mode bypass as inconsistent with this codebase's own established "tests
+  drive the real server through real HTTP routes" philosophy (same precedent as the 6→8 char
+  password-floor change, which updated fixtures rather than adding a bypass). Instead, every one
+  of the 117 call sites was mechanically updated via a purpose-built script that finds the real
+  request-body object literal (the one with `username`/`pin` as its own top-level keys — not a
+  `fetch(...)` wrapper object, and not a nested nested nested substring match) and inserts
+  `ageConfirmed: true` into it. Went through two real bugs before landing clean: an early version
+  used substring matching across a whole candidate object's text, which wrongly targeted outer
+  `{ method, headers, body: JSON.stringify({...}) }` wrapper objects in several `fetch` call
+  sites — meaning the flag was computed as "sent" but never actually reached the server; fixed by
+  requiring top-level-only key extraction. A second bug: the URL-matching regex required a quote
+  immediately *before* `/api/register`, missing call sites built from a full URL or template
+  literal (`` `http://localhost:${PORT}/api/register` ``); fixed by only requiring the closing
+  quote/backtick immediately *after*. Full suite green after both fixes: **154/154** (153
+  pre-existing + the new dedicated test below).
+- **New `test/age-gate.mjs`**: the one file that actually tests the gate itself — every other
+  updated file just uses registration as fixture setup. Covers: missing `ageConfirmed` → 400 with
+  the exact error text, no token, and the account genuinely doesn't exist (a follow-up login
+  attempt also fails); every realistic falsy value (`false`, `0`, `''`, `null`) → same 400;
+  `ageConfirmed: true` → 200, real token, and the persisted row is read back by querying the jsonb
+  `data` blob directly via `pgmini.js`'s `PgConnection` (same convention as
+  `backup-roundtrip.mjs`/the migration-differential suite) to confirm `ageConfirmed === true` is
+  actually stored and that no birthdate-shaped field (`dateOfBirth`/`birthdate`/`dob`) was ever
+  introduced — a durable guard against future scope creep on this deliberately-minimal design; a
+  truthy-but-non-boolean value (`'on'`, the realistic shape some DOM APIs could hand back) still
+  succeeds, proving the gate checks truthiness, not strict `=== true`. Registered in
+  `test/run-all.mjs`'s explicit file list (not a glob — adding a new test file here always
+  requires this).
+- **Independent cold-review** (fresh agent, full diff + a sampled re-run of several of the 117
+  mechanically-updated files against a real Postgres) found the server-side logic, the mechanical
+  update, and the new test solid, and confirmed via grep that `/api/register` is the *only*
+  user-creation path anywhere in the app (no admin/seed/migration script creates a user directly,
+  so nothing else needed the gate). One real bug caught before shipping: **the `app.js?v=` cache-
+  bust in `public/index.html` wasn't bumped** despite `app.js` changing (hard rule #5) — a browser
+  with the old JS cached would keep running the old `doReg()` that never sends `ageConfirmed` at
+  all, so registration would silently start failing for anyone on a stale cache the moment the
+  server's new hard requirement shipped. **Fixed**: bumped `?v=491` → `?v=492`.
+- Rendered the new checkbox with Playwright at 390×844 before calling this done (this project's
+  own screenshot-before-shipping rule for any new visual element) — this app has no separate
+  light theme (dark background shows under both `prefers-color-scheme` settings), checkbox and
+  label render cleanly, correctly spaced, accessible (clicking the label text toggles the box).
+- **Status: built, verified (154/154), cold-reviewed, one real bug fixed before shipping.
+  Shipping via PR. Data export (the other half of Jeff's "lets do the age gate logic and the data
+  export") is the next item, not started yet.**
+
 ## Design constants
 
 (Rewritten Aug 28, 2026 after the whole-app visual pass, v221–v240. The old text here described the light-only v140 language.)

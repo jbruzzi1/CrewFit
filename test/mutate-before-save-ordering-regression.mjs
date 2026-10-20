@@ -105,8 +105,8 @@ async function cleanupAsync() {
 process.on('uncaughtException', async (e) => { console.error('UNCAUGHT', e); await cleanupAsync(); process.exit(1); });
 process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); await cleanupAsync(); process.exit(1); });
 
-const alice = await post('/api/register', { username: 'mbs_alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
-const bob = await post('/api/register', { username: 'mbs_bob', pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
+const alice = await post('/api/register', { ageConfirmed: true, username: 'mbs_alice', pin: 'pass1234', displayName: 'Alice' }).then(r => r.json());
+const bob = await post('/api/register', { ageConfirmed: true, username: 'mbs_bob', pin: 'pass1234', displayName: 'Bob' }).then(r => r.json());
 
 console.log('\nPOST/PUT/DELETE /api/exercises/custom: a failed write still just 500s cleanly -- nothing left to revert any more');
 {

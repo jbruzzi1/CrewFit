@@ -176,7 +176,7 @@ ok(/migrateExerciseRenames: moved \d+ stored reference/.test(h.out), 'the migrat
 console.log('\na stale client posting an old name after deploy');
 {
   const reg = await fetch(B + '/api/register', { method: 'POST', headers: J,
-    body: JSON.stringify({ username: 'stale' + Math.floor(Math.random() * 1e6), pin: 'pass1234', displayName: 'Stale' }) }).then(r => r.json());
+    body: JSON.stringify({ ageConfirmed: true, username: 'stale' + Math.floor(Math.random() * 1e6), pin: 'pass1234', displayName: 'Stale' }) }).then(r => r.json());
   const H = { ...J, Authorization: 'Bearer ' + reg.token };
   const s = await fetch(B + '/api/sessions', { method: 'POST', headers: H,
     body: JSON.stringify({ name: 'Old names', visibility: 'private', scheduledAt: '2026-09-10T18:00:00Z',

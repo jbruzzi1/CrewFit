@@ -83,7 +83,7 @@ ok(lib.every(e => e.defaultSets === 3), 'every exercise defaults to 3 sets');
 console.log('\nthe target survives into a real workout');
 {
   const u = await fetch(B + '/api/register', { method: 'POST', headers: J,
-    body: JSON.stringify({ username: 'tgt' + Math.floor(Math.random()*1e6), pin: 'pass1234', displayName: 'T' }) }).then(r => r.json());
+    body: JSON.stringify({ ageConfirmed: true, username: 'tgt' + Math.floor(Math.random()*1e6), pin: 'pass1234', displayName: 'T' }) }).then(r => r.json());
   const H = { ...J, Authorization: 'Bearer ' + u.token };
   const s = await fetch(B + '/api/sessions', { method: 'POST', headers: H,
     body: JSON.stringify({ name: 'Mixed', visibility: 'private', scheduledAt: '2026-08-20T18:00:00Z',
@@ -104,7 +104,7 @@ function shapeOf(e) { return e ? `${e.defaultSets} × ${e.defaultReps}${e.defaul
 console.log('\na custom exercise the library has never heard of still gets something sane');
 {
   const u = await fetch(B + '/api/register', { method: 'POST', headers: J,
-    body: JSON.stringify({ username: 'cus' + Math.floor(Math.random()*1e6), pin: 'pass1234', displayName: 'C' }) }).then(r => r.json());
+    body: JSON.stringify({ ageConfirmed: true, username: 'cus' + Math.floor(Math.random()*1e6), pin: 'pass1234', displayName: 'C' }) }).then(r => r.json());
   const H = { ...J, Authorization: 'Bearer ' + u.token };
   const s = await fetch(B + '/api/sessions', { method: 'POST', headers: H,
     body: JSON.stringify({ name: 'Custom', visibility: 'private', scheduledAt: '2026-08-20T18:00:00Z',

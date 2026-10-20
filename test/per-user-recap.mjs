@@ -64,9 +64,9 @@ console.log('two participants each post their own recap on the SAME session — 
   currentSrv = srv;
   ok(!!srv, 'server boots');
 
-  const alice = await post(B, '/api/register', { username: 'recap_alice', pin: 'pass1234', displayName: 'Alice' });
-  const bob = await post(B, '/api/register', { username: 'recap_bob', pin: 'pass1234', displayName: 'Bob' });
-  const carol = await post(B, '/api/register', { username: 'recap_carol', pin: 'pass1234', displayName: 'Carol' });
+  const alice = await post(B, '/api/register', { ageConfirmed: true, username: 'recap_alice', pin: 'pass1234', displayName: 'Alice' });
+  const bob = await post(B, '/api/register', { ageConfirmed: true, username: 'recap_bob', pin: 'pass1234', displayName: 'Bob' });
+  const carol = await post(B, '/api/register', { ageConfirmed: true, username: 'recap_carol', pin: 'pass1234', displayName: 'Carol' });
   // Sep 2026: profiles default Public now (Jeff: "let's do public as default, and private if
   // toggled") -- bob posts a visibility:'public' recap below, and this block's whole point is
   // that carol (a genuine stranger, connected to neither) still can't reach it; that's only true

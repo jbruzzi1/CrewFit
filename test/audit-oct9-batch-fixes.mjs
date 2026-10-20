@@ -48,7 +48,7 @@ process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); a
 const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: { ...J, ...(tok ? { Authorization: 'Bearer ' + tok } : {}) }, body: JSON.stringify(b || {}) }).then(r => r.json());
 const put = (p, b, tok) => fetch(B + p, { method: 'PUT', headers: { ...J, ...(tok ? { Authorization: 'Bearer ' + tok } : {}) }, body: JSON.stringify(b || {}) }).then(r => r.json());
 const get = (p, tok) => fetch(B + p, { headers: { ...(tok ? { Authorization: 'Bearer ' + tok } : {}) } }).then(r => r.json());
-const reg = async n => { const r = await post('/api/register', { username: n, pin: 'pass1234', displayName: n }); return { id: r.user.id, token: r.token }; };
+const reg = async n => { const r = await post('/api/register', { ageConfirmed: true, username: n, pin: 'pass1234', displayName: n }); return { id: r.user.id, token: r.token }; };
 const follow = (a, b) => post('/api/follow/' + b.id, {}, a.token);
 
 console.log('\n1. Notifications no longer double-lists a pending swap suggestion (actionable card + duplicate history row)');

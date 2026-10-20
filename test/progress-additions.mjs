@@ -43,7 +43,7 @@ process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); a
 const post = (p, b, tok) => fetch(BASE + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const put = (p, b, tok) => fetch(BASE + p, { method: 'PUT', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const get = (p, tok) => fetch(BASE + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
-const reg = (username, pin, displayName) => post('/api/register', { username, pin, displayName });
+const reg = (username, pin, displayName) => post('/api/register', { ageConfirmed: true, username, pin, displayName });
 
 // Same UTC-Monday-bucket math as volumeTrendFor() in server.js -- lets the test place a session in
 // exactly the "2 weeks ago", "1 week ago", or "current" bucket regardless of what real-world day

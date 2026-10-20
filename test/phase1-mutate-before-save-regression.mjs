@@ -96,8 +96,8 @@ process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); a
 
 const TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
-const alice = await post('/api/register', { username: 'p1_alice', pin: 'pass1234', displayName: 'Alice' }).then(j);
-const bob = await post('/api/register', { username: 'p1_bob', pin: 'pass1234', displayName: 'Bob' }).then(j);
+const alice = await post('/api/register', { ageConfirmed: true, username: 'p1_alice', pin: 'pass1234', displayName: 'Alice' }).then(j);
+const bob = await post('/api/register', { ageConfirmed: true, username: 'p1_bob', pin: 'pass1234', displayName: 'Bob' }).then(j);
 // mutual follow -> connected (needed for template sharing below)
 await post(`/api/follow/${bob.user.id}`, {}, alice.token);
 await post(`/api/follow-requests/${alice.user.id}/accept`, {}, bob.token);
@@ -190,10 +190,10 @@ console.log('\nPOST /api/logout: revokedJtis object REASSIGNMENT CAS revert');
 console.log('\nPOST /api/register: create-then-revert for a brand-new entity (stands in for the same shape on sessions/crews/templates below)');
 {
   await breakTable('users');
-  const r = await post('/api/register', { username: 'p1_ghost', pin: 'pass1234', displayName: 'Ghost' });
+  const r = await post('/api/register', { ageConfirmed: true, username: 'p1_ghost', pin: 'pass1234', displayName: 'Ghost' });
   ok(r.status === 500, `returns a real error while the table is broken, got ${r.status}`);
   await fixTable('users');
-  const checkTaken = await post('/api/register', { username: 'p1_ghost', pin: 'pass1234', displayName: 'Ghost' }).then(j);
+  const checkTaken = await post('/api/register', { ageConfirmed: true, username: 'p1_ghost', pin: 'pass1234', displayName: 'Ghost' }).then(j);
   ok(!!checkTaken.token, 'the SAME username is available again -- the phantom row never stuck around after the failed save');
 }
 
@@ -400,7 +400,7 @@ console.log('\nTask #10: withTemplateLock + revert across all 8 DB.templates rou
 
 console.log('\nTask #12 (independent-review finding): pgDeletePushSub is genuinely best-effort inside anonymizeAndDeleteAccount now -- a broken push_subs table does not abort the whole delete-account call, and the real anonymization still goes through');
 {
-  const pushVictim = await post('/api/register', { username: 'p1_pushvictim', pin: 'pass1234', displayName: 'PushVictim' }).then(j);
+  const pushVictim = await post('/api/register', { ageConfirmed: true, username: 'p1_pushvictim', pin: 'pass1234', displayName: 'PushVictim' }).then(j);
   await breakTable('push_subs');
   const r = await post('/api/me/delete-account', { password: 'pass1234' }, pushVictim.token);
   await fixTable('push_subs');
@@ -411,8 +411,8 @@ console.log('\nTask #12 (independent-review finding): pgDeletePushSub is genuine
 
 console.log('\nTask #12: anonymizeAndDeleteAccount -- the biggest blast radius in this sweep. A single rigged failure during the follow-severance + template + crew + anonymization phase reverts EVERY batch together: another user\'s follow/block arrays, a shared template\'s sharedTo, an owned template\'s hard delete, an owned crew\'s ownerId, a solo crew\'s hard delete, the target\'s own fields, AND the avatar file is not unlinked until save() actually succeeds.');
 {
-  const owner = await post('/api/register', { username: 'p1_owner', pin: 'pass1234', displayName: 'Owner' }).then(j);
-  const friend = await post('/api/register', { username: 'p1_friend', pin: 'pass1234', displayName: 'Friend' }).then(j);
+  const owner = await post('/api/register', { ageConfirmed: true, username: 'p1_owner', pin: 'pass1234', displayName: 'Owner' }).then(j);
+  const friend = await post('/api/register', { ageConfirmed: true, username: 'p1_friend', pin: 'pass1234', displayName: 'Friend' }).then(j);
   await post(`/api/follow/${friend.user.id}`, {}, owner.token);
   await post(`/api/follow-requests/${owner.user.id}/accept`, {}, friend.token);
   await post(`/api/follow/${owner.user.id}`, {}, friend.token);
@@ -481,7 +481,7 @@ console.log('\nTask #12: anonymizeAndDeleteAccount -- the biggest blast radius i
 
 console.log('\na completely different, healthy user\'s own save right after a poisoned one still succeeds -- every rigged failure above was scoped to its own window, not a global jam');
 {
-  const r = await post('/api/register', { username: 'p1_fresh', pin: 'pass1234', displayName: 'Fresh' });
+  const r = await post('/api/register', { ageConfirmed: true, username: 'p1_fresh', pin: 'pass1234', displayName: 'Fresh' });
   ok(r.status === 200, `a brand-new, unrelated registration succeeds cleanly right after everything above, got ${r.status}`);
 }
 

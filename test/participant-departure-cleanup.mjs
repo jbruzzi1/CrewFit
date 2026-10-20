@@ -66,7 +66,7 @@ process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); a
 const post = (p, b, tok) => fetch(B + p, { method: 'POST', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const put = (p, b, tok) => fetch(B + p, { method: 'PUT', headers: tok ? { ...J, Authorization: 'Bearer ' + tok } : J, body: JSON.stringify(b) }).then(r => r.json());
 const get = (p, tok) => fetch(B + p, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} }).then(r => r.json());
-const reg = async (username) => { const r = await post('/api/register', { username, pin: 'pass1234', displayName: username }); return { token: r.token, id: r.user.id, user: r.user }; };
+const reg = async (username) => { const r = await post('/api/register', { ageConfirmed: true, username, pin: 'pass1234', displayName: username }); return { token: r.token, id: r.user.id, user: r.user }; };
 
 console.log('\nFix #1: creator taps "Remove from my profile" -- the workout survives for any other CURRENT participant, not just one who has already logged something (Sep 27 2026 ownerless redesign: ownership now clears rather than handing off -- see server.js\'s "Ownerless Workout Flow" comments)');
 {

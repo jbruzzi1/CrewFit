@@ -72,7 +72,7 @@ process.on('unhandledRejection', async (e) => { console.error('UNHANDLED', e); a
 // only assertion.
 const rand = () => Math.random().toString(36).slice(2, 8);
 const uname = 'dbltap_' + rand();
-const reg = await api('/api/register', 'POST', null, { username: uname, pin: 'pass1234', displayName: 'DblTap' });
+const reg = await api('/api/register', 'POST', null, { ageConfirmed: true, username: uname, pin: 'pass1234', displayName: 'DblTap' });
 const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
 const errors = [];
 page.on('pageerror', e => errors.push(String(e)));

@@ -48,7 +48,7 @@ async function api(path, method, token, body) {
   return r.json();
 }
 async function reg(username, displayName) {
-  const r = await api('/api/register', 'POST', null, { username, pin: '12345678', displayName });
+  const r = await api('/api/register', 'POST', null, { ageConfirmed: true, username, pin: '12345678', displayName });
   return { token: r.token, id: r.user.id, username };
 }
 const jordan = await reg('preorder_jordan', 'Jordan');
