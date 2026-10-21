@@ -1576,6 +1576,100 @@ async function pgResolveReport(id, resolvedAtIso) {
   });
 }
 
+// Oct 21 2026 (moderation tooling, Slice A -- triage queue): groups reports that are all about
+// the SAME target so the admin screen can show "this one comment was reported 4 times" as one
+// row instead of 4 indistinguishable ones. `reports` is still just `(id, data jsonb)` -- no
+// schema change needed, this is a GROUP BY over jsonb field extraction.
+// `count(distinct ...)` is what the auto-hide threshold itself is built on (see
+// pgCountDistinctCommentReporters below) -- surfaced here too so the admin screen's group count
+// always matches what actually drives auto-hide, not a separate, potentially-diverging number.
+// `json_agg`/`count`/`bool_or` all come back from pgmini as plain TEXT (this client requests the
+// text wire format for everything -- see pgBool's own comment above) -- decoded here, once, so
+// nothing calling this ever has to know that.
+//
+// CORRECTED Oct 21 2026, same day (independent cold-review, MODERATE finding): the first version
+// grouped on the five identifying fields together (targetType + targetUserId/sessionId/
+// authorId/commentId), reasoning that a 'comment' report effectively groups on commentId alone
+// since commentId is globally unique. True that two DIFFERENT comments can never incorrectly
+// merge that way -- but nothing enforced that every report naming the SAME commentId actually
+// carried the SAME sessionId/authorId, so two reports about the literal same comment with
+// differing (stale, or pre-this-fix unvalidated) sessionId/authorId values could SPLIT into two
+// separate groups, each undercounting the comment's true distinct-reporter total -- defeating
+// the whole point of grouping. server.js's POST /api/report now validates a comment report's
+// sessionId/authorId/commentId actually resolve to a real comment before accepting it (see
+// resolveReportedComment's own comment there), which prevents this going forward, but the
+// grouping key itself is now also commentId-alone for 'comment' reports (not just "effectively"),
+// so a legacy mismatched pair -- or any other future way this invariant could slip -- still
+// groups correctly instead of silently splitting. 'post' reports group on sessionId+authorId
+// (their own unique identifying pair); 'user' reports group on targetUserId.
+const REPORTS_GROUPED_SQL = `
+  WITH keyed AS (
+    SELECT data,
+      data->>'targetType' AS target_type,
+      CASE
+        WHEN data->>'targetType' = 'comment' THEN data->>'commentId'
+        WHEN data->>'targetType' = 'post' THEN COALESCE(data->>'sessionId','') || '|' || COALESCE(data->>'authorId','')
+        ELSE COALESCE(data->>'targetUserId','')
+      END AS group_key
+    FROM reports
+  )
+  SELECT
+    target_type,
+    max(data->>'targetUserId') AS target_user_id,
+    max(data->>'sessionId') AS session_id,
+    max(data->>'authorId') AS author_id,
+    max(data->>'commentId') AS comment_id,
+    count(*) AS report_count,
+    count(DISTINCT data->>'reporterId') AS distinct_reporters,
+    bool_or(data->>'status' IS DISTINCT FROM 'resolved') AS has_open,
+    max(data->>'at') AS newest_at,
+    json_agg(data ORDER BY data->>'at' DESC) AS reports
+  FROM keyed
+  GROUP BY target_type, group_key
+  ORDER BY distinct_reporters DESC, newest_at DESC`;
+async function pgListReportsGrouped() {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(REPORTS_GROUPED_SQL);
+    return r.rows.map(row => ({
+      targetType: row.target_type,
+      targetUserId: row.target_user_id,
+      sessionId: row.session_id,
+      authorId: row.author_id,
+      commentId: row.comment_id,
+      reportCount: parseInt(row.report_count, 10),
+      distinctReporters: parseInt(row.distinct_reporters, 10),
+      hasOpen: pgBool(row.has_open),
+      // json_agg(data ...) aggregates the already-jsonb `data` values into one JSON array --
+      // the whole thing comes back from pgmini as ONE text blob (per its text-wire-format
+      // policy), but each element inside it is already a real nested JSON object, not a
+      // double-encoded string -- a single JSON.parse unwraps the whole array correctly.
+      reports: JSON.parse(row.reports)
+    }));
+  });
+}
+
+// Oct 21 2026 (moderation tooling, Slice B -- auto-hide): the one query the auto-hide threshold
+// decision is actually built on. Counts DISTINCT reporters who have already reported this exact
+// commentId, excluding `excludeReporterId` -- POST /api/report calls this BEFORE inserting the
+// reporter's own new row, so "is this report about to make it the Nth" is just "was the count
+// already >= N-1", with no risk of counting the same report twice and no need for the insert and
+// the count to be one atomic statement (unlike the custom-exercises cap, this isn't a hard
+// capacity ceiling that can be raced past -- auto-hiding a comment one report later than the
+// exact Nth, under a genuine simultaneous-insert race, is a harmless, bounded difference, not a
+// correctness bug the way exceeding a 500-row cap would be).
+const COUNT_DISTINCT_COMMENT_REPORTERS_SQL = `
+  SELECT count(DISTINCT data->>'reporterId') AS n
+  FROM reports
+  WHERE data->>'commentId' = $1 AND data->>'reporterId' != $2`;
+async function pgCountDistinctCommentReporters(commentId, excludeReporterId) {
+  return enqueue(async () => {
+    const c = getConn();
+    const r = await c.query(COUNT_DISTINCT_COMMENT_REPORTERS_SQL, [commentId, excludeReporterId]);
+    return parseInt(r.rows[0].n, 10);
+  });
+}
+
 const CUSTOM_EXERCISE_ROWS_UPSERT_SQL = 'INSERT INTO custom_exercise_rows (id, owner_id, data) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO UPDATE SET owner_id = EXCLUDED.owner_id, data = EXCLUDED.data';
 // One function for both create and edit, same as pgInsertNotification/pgUpsertCustomExerciseRow
 // elsewhere in this file being reused for both — the caller (server.js) always hands over the
@@ -1956,7 +2050,7 @@ module.exports = {
   pgNotificationHistoryForUser, pgAllNotificationsForUser, pgInsertNotification, pgDeleteNotification, pgMergedNotificationWrite, pgPruneOldNotifications,
   pgInsertFeedEvent, pgDeleteFeedEvent, pgGetFeedEvent, pgFeedEventsSince, pgToggleFeedEventReaction, pgPruneOldFeedEvents,
   pgGetPushSub, pgSetPushSub, pgDeletePushSubIfEndpointMatches, pgDeletePushSub,
-  pgInsertReport, pgListReports, pgListReportsByReporter, pgResolveReport,
+  pgInsertReport, pgListReports, pgListReportsByReporter, pgResolveReport, pgListReportsGrouped, pgCountDistinctCommentReporters,
   pgUpsertCustomExerciseRow, pgInsertCustomExerciseRowIfUnderCap, pgGetCustomExerciseRow, pgListCustomExerciseRowsByOwner, pgListAllCustomExerciseRows, pgDeleteCustomExerciseRow, pgFindCustomExerciseRowByName,
   pgInsertCrewMessage, pgListCrewMessagesByCrew, pgUpdateCrewMessageText, pgDeleteCrewMessage, pgInsertSystemCrewMessage, pgDeleteCrewMessagesByCrew,
   pgLastCrewChallenge, pgListCrewChallengesByCrew, pgUpsertCrewChallenge, pgInsertCrewChallengeIfNoneRunning, pgUpdateCrewChallengeFields, pgCompleteCrewChallengeIfNotAlready, pgDeleteCrewChallenge, pgDeleteCrewChallengesByCrew,

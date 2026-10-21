@@ -1901,7 +1901,11 @@ function profileOf(id, viewerId, localToday) {
           // full comment text/authors stay behind the existing per-comment endpoint + its own
           // canSeePostAuthor visibility check -- a count is not the content).
           reactionCount: Array.isArray(post.reactions) ? post.reactions.length : 0,
-          commentCount: Array.isArray(post.comments) ? post.comments.length : 0
+          // Oct 21 2026 (moderation tooling, Slice B -- cold-review finding, LOW): a comment
+          // auto-hidden by moderation shouldn't count here either -- "a count is not the
+          // content" above still holds, but the count itself was off by however many hidden
+          // comments a post had, same filter the dedicated comments route applies.
+          commentCount: Array.isArray(post.comments) ? post.comments.filter(c => !c.hiddenByModeration).length : 0
         } : null
       };
     });
@@ -2601,12 +2605,110 @@ app.get('/api/blocked', auth, async (req, res) => {
 // ---- Report content / a user (Sep 2026, app-store readiness: Apple guideline 1.2) ----
 // Deliberately simple: this is a single-operator app with no moderation team, so a report is
 // stored durably and reviewed by Jeff (or whoever holds ADMIN_TOKEN) through GET /api/admin/
-// reports below -- there is no automated action taken against the reported account, and reporting
-// something does not by itself hide it from anyone. What DOES take immediate effect is the
-// reporter's own view: alsoBlock (below) runs the exact same blockUser() the Block button uses,
-// so "report and block" is one tap, matching what every mainstream app offers from a report sheet.
+// reports below. What DOES take immediate effect is the reporter's own view: alsoBlock (below)
+// runs the exact same blockUser() the Block button uses, so "report and block" is one tap,
+// matching what every mainstream app offers from a report sheet.
+// Oct 21 2026 (moderation tooling, Slice B -- UPDATE to the paragraph above): a COMMENT report
+// specifically is no longer purely passive. Once 3 DISTINCT people have reported the same
+// comment, maybeAutoHideComment() below hides it from everyone except an admin (reversible via
+// POST /api/admin/comments/unhide) -- still no action against the ACCOUNT (no suspension, no
+// rate-limit change), just the one piece of reported content. Jeff picked auto-hide over a
+// flag-only/no-mutation alternative, and 3 over 5 as the threshold, after being shown the
+// disclosed, not-fully-preventable brigading risk (a handful of colluding/fake accounts could
+// trigger a wrongful hide) -- accepted given the hide is reversible and this app's current scale.
+// 'user' and 'post' reports are unaffected -- v1 is deliberately comments-only (see the plan's
+// own reasoning: highest volume, lowest stakes, smallest/best-isolated set of touch points).
 const REPORT_REASONS = ['spam', 'harassment', 'inappropriate', 'impersonation', 'other'];
 const REPORT_TARGET_TYPES = ['user', 'post', 'comment'];
+// Oct 21 2026 (moderation tooling, Slice B -- shared by POST /api/report's new validation step,
+// maybeAutoHideComment, unhideComment, and GET /api/admin/reports/grouped's `hidden` computation,
+// so all four agree on exactly one way to find "the comment a report/group is about"). Locates
+// the reported comment (chat if `authorId` is absent, the recap post's own thread if present --
+// the same authorId-presence convention the client already uses to distinguish the two report
+// shapes, see app.js's own comment near openSessionChat/viewPost). Returns null if the session,
+// post, or comment itself can't be found -- never throws, since a stale/fabricated id (or a
+// deleted comment/session) is an expected, ordinary case for every caller here, not an error.
+//
+// Added Oct 21 2026, same day (independent cold-review, SEVERE finding): before this existed,
+// maybeAutoHideComment/unhideComment each re-derived the comment's location straight from
+// whichever report's sessionId/authorId happened to trigger them, with no check that those
+// fields actually resolve to a real comment matching the claimed commentId. POST /api/report's
+// own long-standing comment used to say sessionId/authorId/commentId were "opaque labels...
+// never dereferenced... a stale or fabricated id here can't do anything but show up oddly" --
+// true before Slice B, false the moment Slice B started mutating based on them: a 3rd report
+// carrying a missing/wrong sessionId (an honest client bug, or someone deliberately gaming it)
+// would make maybeAutoHideComment silently no-op on a comment that genuinely had 3 real distinct
+// reporters, leaving it un-hidden with no retry. Fixed at the root, not patched around: POST
+// /api/report now calls this function BEFORE accepting a comment report at all (see its own call
+// site below) -- a report whose sessionId/authorId/commentId doesn't resolve to a real comment is
+// rejected (400) rather than stored "opaque." That makes every comment report that ever reaches
+// pgInsertReport provably resolvable, which in turn means any two reports naming the same
+// commentId are guaranteed to resolve to the SAME session/post (comment ids are globally unique
+// uid()s -- there is only one real location a valid commentId can ever resolve to), closing the
+// group-splitting bug this same review pass found in pgListReportsGrouped's old grouping key.
+function resolveReportedComment(sessionId, authorId, commentId) {
+  const s = sessionId && DB.sessions[sessionId];
+  if (!s || !commentId) return null;
+  if (authorId) {
+    const p = s.posts && s.posts[authorId];
+    const c = p && objArray(p.comments).find(x => x.id === commentId);
+    return c ? { session: s, post: p, comment: c } : null;
+  }
+  const c = Array.isArray(s.comments) && s.comments.find(x => x.id === commentId);
+  return c ? { session: s, post: null, comment: c } : null;
+}
+// Marks the reported comment hidden -- additive fields only (hiddenByModeration/hiddenAt), never
+// touching userId/text/at/editedAt. Runs inside withSessionLock (same lock every other comment
+// mutation on this session already uses) so this can never interleave with a concurrent edit/
+// delete of the same comment. Re-resolves the comment's CURRENT location fresh, inside the lock
+// (rather than trusting a location resolved earlier, outside it) -- a comment that can no longer
+// be found there (already deleted by its author in the meantime, or the session itself is gone)
+// is a silent no-op, not an error -- the report itself was already durably recorded by the caller
+// before this ever runs, so there's nothing left to roll back.
+async function maybeAutoHideComment(sessionId, authorId, commentId) {
+  const s = sessionId && DB.sessions[sessionId];
+  if (!s) return;
+  await withSessionLock(s.id, async () => {
+    const list = authorId ? (s.posts && s.posts[authorId] && objArray(s.posts[authorId].comments)) : s.comments;
+    const c = Array.isArray(list) && list.find(x => x.id === commentId);
+    if (!c || c.hiddenByModeration) return;   // not found, or a concurrent report already hid it
+    const before = snapshotMutableFields([c], ['hiddenByModeration', 'hiddenAt']);
+    c.hiddenByModeration = true;
+    c.hiddenAt = new Date().toISOString();
+    const after = snapshotMutableFields([c], ['hiddenByModeration', 'hiddenAt']);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, ['hiddenByModeration', 'hiddenAt']);
+      throw e;
+    }
+  });
+}
+// The reverse of the above -- POST /api/admin/comments/unhide (below) is the only caller.
+// Deliberately does NOT re-check the report count (an admin override is exactly that: an
+// override, not "undo my own auto-hide logic's math"). Locates the same way maybeAutoHideComment
+// does, same lock, same CAS-safe save-failure handling, same silent no-op if the comment can no
+// longer be found.
+async function unhideComment(sessionId, authorId, commentId) {
+  const s = sessionId && DB.sessions[sessionId];
+  if (!s) return false;
+  return withSessionLock(s.id, async () => {
+    const list = authorId ? (s.posts && s.posts[authorId] && objArray(s.posts[authorId].comments)) : s.comments;
+    const c = Array.isArray(list) && list.find(x => x.id === commentId);
+    if (!c || !c.hiddenByModeration) return false;
+    const before = snapshotMutableFields([c], ['hiddenByModeration', 'hiddenAt']);
+    c.hiddenByModeration = false;
+    c.hiddenAt = undefined;
+    const after = snapshotMutableFields([c], ['hiddenByModeration', 'hiddenAt']);
+    try {
+      await save(DB);
+    } catch (e) {
+      revertFieldsIfUnchanged(before, after, ['hiddenByModeration', 'hiddenAt']);
+      throw e;
+    }
+    return true;
+  });
+}
 app.post('/api/report', auth, async (req, res) => {
   // Sep 8 2026 (cold-review finding): unlike /api/register and /api/login, this had no cap at
   // all -- one account could flood DB.reports without limit, burying real reports on the one
@@ -2625,16 +2727,46 @@ app.post('/api/report', auth, async (req, res) => {
   // the point) but in practice always carry one too since every post/comment has an author.
   if (b.targetType === 'user' && !targetUserId) return res.status(400).json({ error: 'invalid report' });
   const id = 'rep_' + uid();
-  // sessionId/authorId/commentId are optional context for post/comment reports, capped and
+  // sessionId/authorId/commentId are optional context for 'user'/'post' reports, capped and
   // stored as opaque labels only -- never dereferenced or trusted as anything but text an admin
   // reads on the review screen, so a stale or fabricated id here can't do anything but show up
   // oddly on that screen.
+  // Oct 21 2026 (moderation tooling, Slice B -- UPDATE to the paragraph above, independent
+  // cold-review SEVERE finding): no longer true for a 'comment' report specifically, the one type
+  // Slice B actually dereferences and mutates based on. See the validation block right below.
   const row = {
     id, reporterId: req.userId, targetType: b.targetType, targetUserId,
     sessionId: capStr(b.sessionId, 60), authorId: capStr(b.authorId, 60), commentId: capStr(b.commentId, 60),
     reason: b.reason, details: capStr(b.details, 1000),
     at: new Date().toISOString(), status: 'open',
   };
+  // Oct 21 2026 (moderation tooling, Slice B -- independent cold-review, SEVERE findings): a
+  // comment report is now validated before it's ever stored, for two reasons neither of which
+  // applied before Slice B existed. (1) resolveReportedComment proves the claimed sessionId/
+  // authorId/commentId actually name a real comment -- a report that doesn't resolve used to
+  // silently defeat maybeAutoHideComment's threshold check later (a genuinely-3rd-distinct-
+  // reporter report with a wrong/missing sessionId just no-opped, leaving a comment with 3 real
+  // reporters un-hidden); rejecting it here instead means every comment report that ever reaches
+  // pgInsertReport is provably resolvable, which also closes a related grouping bug (see
+  // REPORTS_GROUPED_SQL's own updated comment in db.js). (2) the SAME visibility check every READ
+  // route for this content already requires (sessionTier member/invited for the chat shape,
+  // canSeePostAuthor for the recap shape) is required here too -- before this, nothing stopped
+  // someone who can no longer even see a comment from reporting it, which is a materially
+  // broader brigading surface than "colluding accounts that can currently see the content," the
+  // risk actually disclosed to Jeff before this threshold was approved. Fail closed, before
+  // anything is touched: this entire block runs BEFORE pgInsertReport, so a rejected report
+  // leaves nothing stored and nothing mutated, same discipline as every other check above it.
+  // 'user' and 'post' reports are unaffected -- still exactly the pre-existing "opaque label"
+  // behavior, since Slice B doesn't act on those types.
+  if (b.targetType === 'comment') {
+    if (!row.commentId) return res.status(400).json({ error: 'invalid report' });
+    const resolved = resolveReportedComment(row.sessionId, row.authorId, row.commentId);
+    if (!resolved) return res.status(400).json({ error: 'That comment could not be found.' });
+    const visible = row.authorId
+      ? canSeePostAuthor(resolved.post, row.authorId, req.userId, resolved.session)
+      : (() => { const t = sessionTier(resolved.session, req.userId); return t === 'member' || t === 'invited'; })();
+    if (!visible) return res.status(403).json({ error: 'forbidden' });
+  }
   // Oct 14 2026 (push subs/custom exercises/reports slice, task #258+): reports was already one
   // row per id in Postgres, written via the generic save(DB) sync -- same reasoning as the push
   // subs cutover just above for why this needs no dual-write window (identical shape, not a
@@ -2647,6 +2779,26 @@ app.post('/api/report', auth, async (req, res) => {
   // stranded unsaved -- the exact hazard the emitFeedEvent finding from the last slice flagged
   // (see that slice's report to Jeff), applied here proactively instead of rediscovering it.
   await db.pgInsertReport(row);
+  // Oct 21 2026 (moderation tooling, Slice B): comment-report-specific auto-hide check. Counts
+  // how many OTHER distinct people have already reported this exact comment (excluding the
+  // reporter who just filed THIS report, so the same person can't push the count up by reporting
+  // twice) -- if that's already 2 or more, this new report is the 3rd distinct reporter, so hide
+  // it now. Deliberately best-effort/non-fatal (caught, logged, never thrown): a transient
+  // failure here must not turn an otherwise-successful report into a 500 for the reporter -- this
+  // is a secondary side effect of filing a report, not "the primary thing this request is for"
+  // the way the pgInsertReport call just above is (see that line's own comment) -- same posture
+  // notify()/emitFeedEvent already take toward their own best-effort side effects elsewhere in
+  // this file. maybeAutoHideComment() itself still reverts cleanly on its own internal save
+  // failure (see its own comment above) -- this catch only stops that failure from reaching the
+  // reporter as an unrelated 500.
+  if (b.targetType === 'comment' && row.commentId) {
+    try {
+      const otherReporters = await db.pgCountDistinctCommentReporters(row.commentId, req.userId);
+      if (otherReporters >= 2) await maybeAutoHideComment(row.sessionId, row.authorId, row.commentId);
+    } catch (e) {
+      reportNonFatal('report:autoHideComment', e);
+    }
+  }
   // Oct 14 2026 (Jeff: "resolve the issue you flagged but are not fixing" -- the smaller echo of
   // the same pre-existing hazard, fixed the same way as the custom-exercise routes above: capture
   // what blockUser() is about to touch, so a failed save(DB) below can be undone instead of
@@ -2720,6 +2872,51 @@ app.post('/api/admin/reports/:id/resolve', adminAuth, async (req, res) => {
   const r = await db.pgResolveReport(req.params.id, new Date().toISOString());
   if (!r) return res.status(404).json({ error: 'not found' });
   res.json({ ok: true });
+});
+// ---- Admin: grouped/triage report view (moderation tooling, Slice A, Oct 21 2026) ----
+// Jeff picked "grouped by target" over "flat list + filters" when asked how admin.html should
+// show this. The flat GET /api/admin/reports above is UNCHANGED -- nothing that already reads it
+// is broken -- this is a new, additive view alongside it: one row per reported target (comment/
+// post/user), with a distinct-reporter count and the individual reports nested underneath, so 4
+// reports about the same comment read as one group instead of 4 indistinguishable rows. Same
+// name-resolution treatment as the flat list, applied to the target and to each nested report's
+// own reporter, for the same "no second round trip per row" reason that route's own comment
+// gives. Also tells admin.html whether the target is a currently-auto-hidden comment, so it can
+// offer the Unhide action right there without a separate lookup.
+app.get('/api/admin/reports/grouped', adminAuth, async (req, res) => {
+  const nameOf = id => { const u = DB.users[id]; return u ? (u.displayName || u.username) : (id ? '(deleted account)' : ''); };
+  const groups = await db.pgListReportsGrouped();
+  const list = groups.map(g => {
+    // Oct 21 2026: reuses the same resolveReportedComment POST /api/report now validates every
+    // comment report through, instead of a separate, parallel lookup -- one way to answer
+    // "what comment does this group's sessionId/authorId/commentId actually point at," not two.
+    let hidden = false;
+    if (g.targetType === 'comment') {
+      const resolved = resolveReportedComment(g.sessionId, g.authorId, g.commentId);
+      hidden = !!(resolved && resolved.comment.hiddenByModeration);
+    }
+    return {
+      targetType: g.targetType, targetUserId: g.targetUserId, sessionId: g.sessionId,
+      authorId: g.authorId, commentId: g.commentId,
+      reportCount: g.reportCount, distinctReporters: g.distinctReporters, hasOpen: g.hasOpen,
+      hidden,
+      targetName: nameOf(g.targetUserId),
+      reports: g.reports.map(r => ({ ...r, reporterName: nameOf(r.reporterId) })),
+    };
+  });
+  res.json(list);
+});
+// ---- Admin: unhide an auto-hidden comment (moderation tooling, Slice B, Oct 21 2026) ----
+// The reversibility half of "reversible soft-hide" -- surfaced in admin.html's grouped view as an
+// Unhide action on any group whose target is currently hidden. Deliberately does NOT re-check or
+// re-run the report-count math (see unhideComment's own comment in the moderation-tooling
+// section above) -- an admin override is exactly that, not a recomputation.
+app.post('/api/admin/comments/unhide', adminAuth, async (req, res) => {
+  const b = req.body || {};
+  if (typeof b.commentId !== 'string' || !b.commentId) return res.status(400).json({ error: 'commentId required' });
+  if (typeof b.sessionId !== 'string' || !b.sessionId) return res.status(400).json({ error: 'sessionId required' });
+  const changed = await unhideComment(b.sessionId, typeof b.authorId === 'string' ? b.authorId : null, b.commentId);
+  res.json({ ok: true, changed });
 });
 
 // ---- Connections ----
@@ -5086,7 +5283,12 @@ app.get('/api/sessions/:id/posts/:authorId/comments', auth, async (req, res) => 
   if (!s) return res.status(404).json({ error: 'not found' });
   const p = s.posts && s.posts[req.params.authorId];
   if (!canSeePostAuthor(p, req.params.authorId, req.userId, s)) return res.status(403).json({ error: 'forbidden' });
-  res.json(objArray(p.comments));
+  // Oct 21 2026 (moderation tooling, Slice B): strips a comment auto-hidden by moderation (see
+  // maybeAutoHideComment) the same way visibleComments() does for the live-chat thread -- this
+  // route doesn't go through visibleComments itself (it has no isBlocked filtering today, a
+  // separate, pre-existing, disclosed gap -- not introduced or fixed here), so the moderation-hide
+  // check is applied directly rather than conflating the two.
+  res.json(objArray(p.comments).filter(c => !c.hiddenByModeration));
 });
 app.post('/api/sessions/:id/posts/:authorId/comments', auth, async (req, res) => {
   const s = DB.sessions[req.params.id];
@@ -6054,8 +6256,29 @@ function anyVisiblePost(s, viewerId) {
 // other, regardless of who blocked whom"). Same instinct as canSeePostAuthor's isBlocked check on
 // recaps, just applied per-message instead of per-post since this is one shared array, not a
 // per-author map.
+// Oct 21 2026 (moderation tooling, Slice B): added the `!c.hiddenByModeration` half of this
+// filter. Covers every existing call site of visibleComments() for free (the live-chat GET route,
+// and the member/invited branches of sessionView below) -- see maybeAutoHideComment's own comment
+// for what sets this field. Deliberately NOT applied to the comment's own author (hidden means
+// hidden from everyone, including the person who wrote it, for v1 -- see the plan's own
+// disclosure on this) -- same blanket treatment for every viewer, no special-casing here.
 function visibleComments(list, viewerId) {
-  return (list || []).filter(c => !isBlocked(c.userId, viewerId));
+  return (list || []).filter(c => !isBlocked(c.userId, viewerId) && !c.hiddenByModeration);
+}
+
+// Oct 21 2026 (moderation tooling, Slice B -- fix from independent cold-review, CRITICAL finding):
+// sessionView()'s posts loops (below, both the member-tier `posts[authorId]` and the non-member
+// `view.posts[authorId]`) used to hand back the raw `s.posts[authorId]` object by reference --
+// including its full, unfiltered `.comments` array -- to every viewer the post's OWN visibility
+// (canSeePostAuthor) admits. That meant an auto-hidden comment's full text stayed readable
+// through GET /api/sessions/:id (and, since POST /api/me/export-data builds its `sessions` field
+// via this same sessionView, through a self-export too) even though the dedicated GET .../
+// comments route and the live-chat path (visibleComments) both correctly strip it -- defeating
+// the whole point of hiding it. Returns the SAME object reference when nothing needs stripping
+// (the common case), so this adds no behavior change for a post with no hidden comments.
+function postViewSafe(p) {
+  if (!p || !Array.isArray(p.comments) || !p.comments.some(c => c && c.hiddenByModeration)) return p;
+  return { ...p, comments: p.comments.filter(c => !c.hiddenByModeration) };
 }
 
 // Only the viewer's own entry survives from a per-user map.
@@ -6079,7 +6302,7 @@ function sessionView(s, viewerId) {
     // so a still-hidden/legacy post shape fails closed instead of open.
     const posts = {};
     for (const [authorId, p] of Object.entries(s.posts || {}))
-      posts[authorId] = canSeePostAuthor(p, authorId, viewerId, s) ? p : { hidden: true, visibility: p.visibility };
+      posts[authorId] = canSeePostAuthor(p, authorId, viewerId, s) ? postViewSafe(p) : { hidden: true, visibility: p.visibility };
     // v242: logs survive a keep-leave now, so a member view must decide which entries are
     // shown. Your own always; a CURRENT member's always (that's the shared log sheet); a
     // departed person's only when their published recap admits this viewer — a recap IS its
@@ -6248,7 +6471,7 @@ function sessionView(s, viewerId) {
   // so the client never has to special-case which one it got.
   for (const [authorId, p] of Object.entries(s.posts || {})) {
     if (canSeePostAuthor(p, authorId, viewerId, s)) {
-      view.posts[authorId] = p;
+      view.posts[authorId] = postViewSafe(p);
       // v242: every tier this loop reaches, not just 'reader'. A friend-tier viewer admitted by
       // the very same recap visibility was still handed logs:{} and rendered "No sets logged" —
       // a false claim about someone who logged plenty. The recap's own visibility is the gate;
@@ -12190,6 +12413,10 @@ app.post('/api/sessions/:id/posts/:authorId/comments/:commentId/react', auth, as
   if (!canSeePostAuthor(p, req.params.authorId, req.userId, s)) return res.status(403).json({ error: 'forbidden' });
   const c = objArray(p.comments).find(x => x.id === req.params.commentId);
   if (!c) return res.status(404).json({ error: 'not found' });
+  // Oct 21 2026 (moderation tooling, Slice B): a comment auto-hidden by moderation can't collect
+  // new engagement while hidden -- same "not found" shape as the line above, so a hidden
+  // comment's id behaves indistinguishably from a deleted one to anyone trying to react to it.
+  if (c.hiddenByModeration) return res.status(404).json({ error: 'not found' });
   // Sep 8 2026 (cold-review finding): canSeePostAuthor above only checks the block relationship
   // between the VIEWER and the POST's author -- it says nothing about the individual COMMENTER,
   // who may be a third party neither the viewer nor the post author has any block relationship

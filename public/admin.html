@@ -32,7 +32,22 @@
   .filters { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
   .filters button { background:#fff; border:1px solid #d7dbe2; border-radius:999px; padding:7px 14px; font-size:13px; font-weight:600; color:#4b5563; cursor:pointer; }
   .filters button.on { background:#2563eb; border-color:#2563eb; color:#fff; }
+  .filters.viewToggle { margin-bottom:8px; }
   .count { font-size:13px; color:#6b7280; margin-bottom:10px; }
+
+  /* ---- grouped report cards (moderation tooling, Oct 21 2026) ---- */
+  .gCard { background:#fff; border-radius:14px; padding:14px 16px; margin-bottom:10px; box-shadow:0 1px 2px rgba(20,24,31,.04), 0 8px 20px -10px rgba(20,24,31,.14); }
+  .gCard.allResolved { opacity:.6; }
+  .gRow1 { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .gLeft { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .gCount { font-weight:700; font-size:14.5px; }
+  .gHiddenBadge { display:inline-block; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; padding:3px 8px; border-radius:6px; background:#fef2f2; color:#b91c1c; }
+  .gExpandBtn { background:none; border:none; color:#2563eb; font-size:13px; font-weight:600; cursor:pointer; padding:0; }
+  .gActions { display:flex; gap:8px; margin-top:10px; }
+  .unhideBtn { background:#fff; border:1px solid #bbf7d0; border-radius:8px; padding:7px 13px; font-size:13px; font-weight:600; color:#047857; cursor:pointer; }
+  .unhideBtn:active { opacity:.8; }
+  .gNested { margin-top:10px; border-top:1px solid #eef0f3; padding-top:10px; }
+  .gNested .card { box-shadow:none; border:1px solid #eef0f3; margin-bottom:8px; }
 
   /* ---- users ---- */
   .searchRow { margin-bottom:14px; }
@@ -102,6 +117,10 @@
     <div id="errBox"></div>
 
     <div id="reportsView">
+      <div class="filters viewToggle">
+        <button id="vGrouped" class="on" onclick="setViewMode('grouped')">Grouped</button>
+        <button id="vFlat" onclick="setViewMode('flat')">Flat list</button>
+      </div>
       <div class="filters">
         <button id="fOpen" class="on" onclick="setFilter('open')">Open</button>
         <button id="fResolved" onclick="setFilter('resolved')">Resolved</button>
@@ -128,6 +147,11 @@ let FILTER = 'open';
 let USERS = [];
 let SECTION = 'reports';
 let CONFIRMING_ID = null;   // id of the user row currently showing "really delete?" -- only one at a time
+
+// ---- Moderation tooling (Oct 21 2026): grouped/triage view, Jeff's pick over flat-list+filters ----
+let VIEW_MODE = 'grouped';   // 'grouped' | 'flat' -- Jeff picked grouped as the default
+let GROUPED = [];
+let EXPANDED = new Set();    // group keys currently showing their nested individual reports
 
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function fmtWhen(iso){
@@ -172,7 +196,142 @@ function setFilter(f){
   FILTER = f;
   ['fOpen','fResolved','fAll'].forEach(id => document.getElementById(id).classList.remove('on'));
   document.getElementById('f' + f[0].toUpperCase() + f.slice(1)).classList.add('on');
-  render();
+  renderActive();
+}
+
+function setViewMode(m){
+  VIEW_MODE = m;
+  document.getElementById('vGrouped').classList.toggle('on', m === 'grouped');
+  document.getElementById('vFlat').classList.toggle('on', m === 'flat');
+  if (m === 'grouped' && !GROUPED.length) { loadGrouped(); return; }
+  if (m === 'flat' && !REPORTS.length) { loadReports(); return; }
+  renderActive();
+}
+
+function renderActive(){
+  if (VIEW_MODE === 'grouped') renderGrouped(); else render();
+}
+
+// A group's own identity, matching how the server grouped it (targetType + whichever of
+// targetUserId/sessionId+authorId/commentId actually applies to that type) -- used only as a
+// DOM/Set key for the expand-toggle, never sent back to the server.
+function groupKey(g){
+  return [g.targetType, g.targetUserId||'', g.sessionId||'', g.authorId||'', g.commentId||''].join('|');
+}
+
+async function loadGrouped(){
+  try {
+    GROUPED = await api('/api/admin/reports/grouped');
+    renderActive();
+  } catch (e) {
+    if (e.message !== 'unauthorized') document.getElementById('errBox').innerHTML = '<div class="err">Could not load grouped reports: ' + esc(e.message) + '</div>';
+  }
+}
+
+function toggleExpand(key){
+  if (EXPANDED.has(key)) EXPANDED.delete(key); else EXPANDED.add(key);
+  renderGrouped();
+}
+
+function targetLabel(g){
+  if (g.targetType === 'user') return 'about <b>' + esc(g.targetName || g.targetUserId) + '</b>';
+  if (g.targetType === 'comment') return 'a comment' + (g.authorId ? ' on a posted recap' : ' in a workout chat');
+  return 'a posted workout';
+}
+
+function renderGrouped(){
+  const errBox = document.getElementById('errBox');
+  errBox.innerHTML = '';
+  const visible = GROUPED.filter(g => FILTER === 'all' ? true : (FILTER === 'open' ? g.hasOpen : !g.hasOpen));
+  const openGroups = GROUPED.filter(g => g.hasOpen).length;
+  document.getElementById('subline').textContent = openGroups + ' open group' + (openGroups===1?'':'s') + ' · ' + GROUPED.length + ' total';
+  document.getElementById('countLine').textContent = visible.length + (visible.length === 1 ? ' group' : ' groups');
+  const list = document.getElementById('list');
+  if (!visible.length) { list.innerHTML = '<div class="empty">Nothing here.</div>'; return; }
+  // Worst offenders first -- the server already sorts by distinctReporters desc, newest next.
+  list.innerHTML = visible.map(g => {
+    const key = groupKey(g);
+    const expanded = EXPANDED.has(key);
+    const hiddenBadge = g.hidden ? '<span class="gHiddenBadge">Auto-hidden</span>' : '';
+    const unhideBtn = g.hidden
+      ? '<button class="unhideBtn" onclick="unhideGroup(\'' + esc(g.sessionId||'') + '\',\'' + esc(g.authorId||'') + '\',\'' + esc(g.commentId||'') + '\')">Unhide</button>'
+      : '';
+    const resolveBtn = g.hasOpen
+      ? '<button class="resolveBtn" onclick="resolveGroup(\'' + key + '\')">Mark all resolved</button>'
+      : '';
+    const nested = expanded
+      ? '<div class="gNested">' + g.reports.map(r => reportCardHtml(r)).join('') + '</div>'
+      : '';
+    return '<div class="gCard' + (g.hasOpen ? '' : ' allResolved') + '">'
+      + '<div class="gRow1">'
+        + '<div class="gLeft">'
+          + '<span class="badge ' + esc(g.targetType) + '">' + esc(g.targetType) + '</span>'
+          + '<span class="gCount">' + g.distinctReporters + ' ' + (g.distinctReporters===1?'report':'reports') + (g.reportCount !== g.distinctReporters ? ' (' + g.reportCount + ' filed)' : '') + '</span>'
+          + hiddenBadge
+        + '</div>'
+        + '<button class="gExpandBtn" onclick="toggleExpand(\'' + key + '\')">' + (expanded ? 'Hide details' : 'Show details') + '</button>'
+      + '</div>'
+      + '<div class="who">Reported ' + targetLabel(g) + '</div>'
+      + '<div class="gActions">' + resolveBtn + unhideBtn + '</div>'
+      + nested
+    + '</div>';
+  }).join('');
+}
+
+// Shared card markup -- also used standalone by the flat-list render() below, so a nested report
+// inside the grouped view and a top-level one in the flat list render identically.
+function reportCardHtml(r){
+  const ctxParts = [];
+  if (r.sessionId) ctxParts.push('session ' + esc(r.sessionId));
+  if (r.authorId) ctxParts.push('author ' + esc(r.authorId));
+  if (r.commentId) ctxParts.push('comment ' + esc(r.commentId));
+  const ctx = ctxParts.length ? '<div class="ctx">' + ctxParts.join(' · ') + '</div>' : '';
+  const details = r.details ? '<div class="details">' + esc(r.details) + '</div>' : '';
+  const resolveBtn = r.status === 'resolved'
+    ? ''
+    : '<button class="resolveBtn" onclick="resolve(\'' + r.id + '\')">Mark resolved</button>';
+  return '<div class="card' + (r.status === 'resolved' ? ' resolved' : '') + '">'
+    + '<div class="row1">'
+      + '<span><span class="badge ' + esc(r.targetType) + '">' + esc(r.targetType) + '</span> <span class="reason">' + esc(REASON_LABELS[r.reason] || r.reason) + '</span></span>'
+      + '<span class="when">' + fmtWhen(r.at) + '</span>'
+    + '</div>'
+    + '<div class="who">Reported by <b>' + esc(r.reporterName || r.reporterId) + '</b>' + (r.targetName ? ' · about <b>' + esc(r.targetName) + '</b>' : '') + '</div>'
+    + details
+    + ctx
+    + '<div class="row2">'
+      + '<span class="status ' + (r.status === 'resolved' ? 'resolved' : 'open') + '">' + (r.status === 'resolved' ? ('Resolved ' + fmtWhen(r.resolvedAt)) : 'Open') + '</span>'
+      + resolveBtn
+    + '</div>'
+  + '</div>';
+}
+
+async function resolveGroup(key){
+  const g = GROUPED.find(x => groupKey(x) === key);
+  if (!g) return;
+  try {
+    // No bulk-resolve endpoint -- resolving a group is resolving each of its still-open reports
+    // through the existing per-report route, same as the flat list's own resolve() already does.
+    await Promise.all(g.reports.filter(r => r.status !== 'resolved').map(r =>
+      api('/api/admin/reports/' + encodeURIComponent(r.id) + '/resolve', { method: 'POST' })));
+    const now = new Date().toISOString();
+    g.reports.forEach(r => { if (r.status !== 'resolved') { r.status = 'resolved'; r.resolvedAt = now; } });
+    g.hasOpen = false;
+    REPORTS = [];   // stale now (these reports' status changed) -- reloaded next switch to Flat list
+    renderGrouped();
+  } catch (e) {
+    document.getElementById('errBox').innerHTML = '<div class="err">Could not resolve that group: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function unhideGroup(sessionId, authorId, commentId){
+  try {
+    await api('/api/admin/comments/unhide', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, authorId: authorId || undefined, commentId }) });
+    const g = GROUPED.find(x => x.sessionId === sessionId && (x.authorId||'') === authorId && x.commentId === commentId);
+    if (g) g.hidden = false;
+    renderGrouped();
+  } catch (e) {
+    document.getElementById('errBox').innerHTML = '<div class="err">Could not unhide that comment: ' + esc(e.message) + '</div>';
+  }
 }
 
 function render(){
@@ -187,30 +346,10 @@ function render(){
     list.innerHTML = '<div class="empty">Nothing here.</div>';
     return;
   }
-  list.innerHTML = visible.map(r => {
-    const ctxParts = [];
-    if (r.sessionId) ctxParts.push('session ' + esc(r.sessionId));
-    if (r.authorId) ctxParts.push('author ' + esc(r.authorId));
-    if (r.commentId) ctxParts.push('comment ' + esc(r.commentId));
-    const ctx = ctxParts.length ? '<div class="ctx">' + ctxParts.join(' · ') + '</div>' : '';
-    const details = r.details ? '<div class="details">' + esc(r.details) + '</div>' : '';
-    const resolveBtn = r.status === 'resolved'
-      ? ''
-      : '<button class="resolveBtn" onclick="resolve(\'' + r.id + '\')">Mark resolved</button>';
-    return '<div class="card' + (r.status === 'resolved' ? ' resolved' : '') + '">'
-      + '<div class="row1">'
-        + '<span><span class="badge ' + esc(r.targetType) + '">' + esc(r.targetType) + '</span> <span class="reason">' + esc(REASON_LABELS[r.reason] || r.reason) + '</span></span>'
-        + '<span class="when">' + fmtWhen(r.at) + '</span>'
-      + '</div>'
-      + '<div class="who">Reported by <b>' + esc(r.reporterName || r.reporterId) + '</b>' + (r.targetName ? ' · about <b>' + esc(r.targetName) + '</b>' : '') + '</div>'
-      + details
-      + ctx
-      + '<div class="row2">'
-        + '<span class="status ' + (r.status === 'resolved' ? 'resolved' : 'open') + '">' + (r.status === 'resolved' ? ('Resolved ' + fmtWhen(r.resolvedAt)) : 'Open') + '</span>'
-        + resolveBtn
-      + '</div>'
-    + '</div>';
-  }).join('');
+  // Oct 21 2026 (moderation tooling): this card markup now lives in the shared reportCardHtml()
+  // helper (also used by the grouped view's nested reports), so the two views can never render a
+  // report differently by accident.
+  list.innerHTML = visible.map(reportCardHtml).join('');
 }
 
 async function resolve(id){
@@ -218,6 +357,7 @@ async function resolve(id){
     await api('/api/admin/reports/' + encodeURIComponent(id) + '/resolve', { method: 'POST' });
     const r = REPORTS.find(x => x.id === id);
     if (r) { r.status = 'resolved'; r.resolvedAt = new Date().toISOString(); }
+    GROUPED = [];   // stale now (this report may belong to a group) -- reloaded next switch to Grouped
     render();
   } catch (e) {
     document.getElementById('errBox').innerHTML = '<div class="err">Could not resolve that report: ' + esc(e.message) + '</div>';
@@ -243,7 +383,7 @@ function setSection(s){
   document.getElementById('pageTitle').textContent = s === 'reports' ? 'Report Review' : 'Users';
   document.getElementById('errBox').innerHTML = '';
   if (s === 'reports') {
-    render();   // recomputes the "N open · N total" subline, stale otherwise after a tab switch
+    renderActive();   // recomputes the "N open · N total" subline, stale otherwise after a tab switch
   } else {
     document.getElementById('subline').innerHTML = '&nbsp;';
     if (!USERS.length) loadUsers();
@@ -314,7 +454,10 @@ async function loadUsers(){
 async function boot(){
   document.getElementById('gate').style.display = 'none';
   document.getElementById('appUI').style.display = 'block';
-  await loadReports();
+  // Grouped is the default view (Jeff's pick) -- load that; the flat list loads lazily the first
+  // time someone actually switches to it (setViewMode above), same lazy-load treatment loadUsers
+  // already gets for the Users tab.
+  await loadGrouped();
 }
 
 if (localStorage.getItem(TOKEN_KEY)) boot();
