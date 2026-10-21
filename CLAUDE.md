@@ -927,6 +927,73 @@ set of existing touch points.
 - **Status: built, tested, independently cold-reviewed with all 6 findings fixed and disclosed to
   Jeff in chat before anything else. Shipping via PR.**
 
+### Addendum (Oct 21 2026) — the induced-failure drill Slice 2 deliberately deferred, finally run for real, and a real gap it found
+
+Jeff asked to work on "the rearchitecture" (the Architecture & scale item on the readiness-review
+doc). Scoped with him first: no concrete trigger yet, proactive prep — and specifically "drill
+first, then scope the bigger one." This is that drill — the exact one Slice 2 above explicitly
+deferred ("that's a separate, bigger ask requiring its own explicit go-ahead, not bundled into
+this").
+
+- **First, a real, currently-live risk found before the drill even started**: checking `fly
+  machine list --app spotmeapp` to plan the drill showed **2 machines running**, not 1 — the same
+  "Fly did this on its own, not investigated further" loose end Slice 2 flagged and left alone.
+  In the context of a single-writer, in-memory, no-cross-process-sync app, this isn't cosmetic —
+  it's the exact "running two machines today would silently diverge" risk this whole Phase 3
+  effort exists to close, already live in production. Checked both machines directly (via Fly's
+  `Fly-Force-Instance-Id` header, bypassing the load balancer) — both reported identical counts
+  (53 users, 80 sessions) at the time, so no divergence was detected, but that's reassuring, not a
+  guarantee. **Fixed immediately, before anything else, with Jeff's go**: `fly scale count 1`,
+  confirmed back to exactly 1 machine with `/healthz` unchanged.
+- **Root cause of the phantom second machine, found and confirmed against Fly's own docs, not
+  guessed**: [Fly's app-availability docs](https://docs.fly.io/apps/app-availability) confirm
+  `fly deploy` creates 2 machines by default (its `--ha` flag, on by default) specifically when
+  deploying into a process group with zero existing machines — a true first deploy, or a redeploy
+  right after scaling to zero. The two machines' creation timestamps (12 seconds apart) line up
+  exactly with the one `fly deploy` run from the zero-machines state Slice 2's own troubleshooting
+  saga reached, not several separate leftover attempts. **This reproduced again, live, during the
+  drill itself** (see below) — not theoretical, confirmed twice now.
+- **The actual drill**: destroyed the single running machine (`fly machine destroy --force`) and
+  watched `/healthz` continuously (both from Jeff's own terminal and independently from this
+  session) for up to 3 minutes to see whether Fly brings it back on its own.
+  - **Real result: it did not.** `/healthz` returned nothing at all (connection failures, not even
+    an error response — no machine existed to answer) for the full 3-minute window. This directly
+    corrects an assumption Slice 2 made but never tested: that removing the volume was "what makes
+    it actually replaceable on a host failure." Having no volume means a *redeploy* can land
+    cleanly on a fresh host (confirmed, twice) — it does **not** mean Fly notices an unexpectedly-
+    gone machine and replaces it automatically. There is currently no automatic recovery at all for
+    this app if the one running machine disappears unexpectedly, for any reason (crash, host
+    failure, this drill). [Fly's own "troubleshoot when a host is unavailable" docs](https://docs.fly.io/apps/trouble-host-unavailable)
+    confirm this directly — they describe manual recovery (`fly deploy`, or scale to 0 then back
+    up), not an automatic one, for exactly this situation.
+  - **Real, measured downtime: 4 minutes 43 seconds**, machine destroyed at 04:18:15 UTC, `/healthz`
+    confirmed healthy again at 04:22:58 UTC (checked independently from this session, not just
+    trusting Jeff's own terminal). Stated honestly: this number includes human reaction time (Jeff
+    reading what to do next and running it), not just `fly deploy`'s own mechanical runtime — which
+    is actually the more realistic number for "how long would this really take," since in a genuine
+    unplanned outage there's no guarantee anyone notices immediately, let alone within 3 minutes.
+  - **The recovery step itself reopened the first finding**: `fly deploy` from the zero-machine
+    state printed, in its own output, "This will: create 2 'app' machines" / "Creating a second
+    machine for high availability" — confirming the root-cause theory above a second time, live,
+    and showing that **the only known recovery path for this app currently puts it right back into
+    the 2-machine divergence risk**, every single time, unless whoever runs it remembers to
+    immediately follow with `fly scale count 1`. Fixed the same way again; confirmed back to 1
+    machine, `/healthz` healthy, no data lost throughout (53 users, 80 sessions unchanged start to
+    finish).
+- **What this means, stated plainly rather than left implicit (per hard rule #13)**: this is NOT
+  fixed by anything shipped so far in Phase 3. Slices 1 and most of Slice 2 closed the
+  volume-dependency piece (confirmed real and working — a redeploy with no volume lands cleanly).
+  But the "disposable machine" story was never actually complete: there's no automatic healing,
+  and there's no monitoring today that would even notice if the one production machine went down
+  for real — Sentry (Phase 2) only reports from *inside* a running process, so it cannot alert on
+  the process not existing at all. A real unplanned outage today could plausibly run far longer
+  than 4m43s before anyone human noticed. This is real, new input for scoping the bigger
+  single-writer/in-memory rearchitecture Jeff asked to scope next, not a solved problem.
+- **Not yet done, and deliberately not bundled into this same action**: setting up external
+  uptime/alerting (something outside this app's own process checking `/healthz` and paging on
+  failure) and the actual architecture scoping itself — both flagged to Jeff as the natural next
+  steps coming out of this drill, not assumed or started without his go.
+
 ## Design constants
 
 (Rewritten Aug 28, 2026 after the whole-app visual pass, v221–v240. The old text here described the light-only v140 language.)
