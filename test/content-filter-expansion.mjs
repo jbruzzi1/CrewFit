@@ -30,10 +30,22 @@
 // All four are checked below too, confirming they still accept the same word the filtered routes
 // reject -- proving the exclusion is a deliberate, verified design choice, not an oversight.
 //
+// Oct 21 2026 (Jeff: "I think we should be allowed to swear... only derogatory words should be
+// blocked or racial slurs. fuck, shit, kick ass, etc should not be blocked."). server.js's
+// profanityFilter.remove() call now takes casual swearing (fuck/shit/ass plus, per Jeff's explicit
+// follow-up answer, the borderline tier too: dick/piss/bastard/bitch, and their direct forms) OFF
+// the blocklist, while leaving every slur and every explicit-sexual/exploitative term on it --
+// this app has 13+ users (see the age-gate feature), and none of that was what "fuck yeah!" was
+// about. BAD below was changed from the original 'fuck this' (now allowed) to a phrase that's
+// still blocked and isn't a slur, so every pre-existing assertion in this file keeps meaning the
+// same thing: "a profane value is rejected". A separate section near the end proves the newly-
+// allowed words specifically pass, and that the scope stayed narrow (explicit content and a
+// couple of ableist/gendered compound terms are still caught) -- without putting any actual slur
+// literal in this file; the exact removed-word list in server.js is itself the proof slurs were
+// never touched, not something re-derived here.
+//
 // Real server + real Postgres, same shape as test/age-gate.mjs / test/data-export.mjs. One
-// reusable BAD phrase (the exact one test/audit-sep30-fixes.mjs already uses for the custom-
-// exercise-name check, so this suite stays consistent with what the maintained word list already
-// proved it catches) run through every covered field; each assertion also proves an ordinary,
+// reusable BAD phrase run through every covered field; each assertion also proves an ordinary,
 // clean value of the same field still succeeds, so this isn't just "everything 400s now."
 import { spawn } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
@@ -46,7 +58,7 @@ const ok = (c, m) => { console.log((c ? '  PASS ' : '  FAIL ') + m); if (!c) fai
 const J = { 'Content-Type': 'application/json' };
 const CWD = new URL('..', import.meta.url).pathname;
 const testDb = await freshTestDb('contentfilter');
-const BAD = 'fuck this';
+const BAD = 'literal porn content';   // still blocked post-Oct-21; see the header comment above
 const rand = () => Math.random().toString(36).slice(2, 8);
 
 function boot(port, dir) {
@@ -85,22 +97,27 @@ const EX_LIB = await get('/api/exercises');
 const EX_NAME = EX_LIB[0].name;
 const MUSCLE = EX_LIB[0].muscle_groups[0];
 
-console.log('username: registration and the dedicated change route both reject it, and a clean value still works');
+console.log('username: registration and the dedicated change route both reject it (including the _/- separator evasion gap), and a clean value still works');
 {
-  const bad = await post('/api/register', { ageConfirmed: true, username: 'cf_fuck_bad', pin: 'pass1234', displayName: 'X' });
-  rejects(bad, 'a profane username is rejected at registration');
+  // 'fuck' is now an allowed word (Oct 21 2026, see the swear-word section below), so this uses
+  // 'porn' instead -- still blocked, and 'cf_porn_bad' still exercises the exact evasion gap this
+  // test was written to prove closed: leo-profanity's check() doesn't tokenize on '_'/'-', so the
+  // RAW check on this whole string would miss it; profanityProblem()'s own '_'/'-'-to-space
+  // normalization is what catches it.
+  const bad = await post('/api/register', { ageConfirmed: true, username: 'cf_porn_bad', pin: 'pass1234', displayName: 'X' });
+  rejects(bad, 'a profane username (via the _/- separator evasion gap) is rejected at registration');
   // Not "still available" -- GET /api/register/check already runs usernameProblem() too (same
   // function, now with the same profanity check), so it correctly flags this live, as the user
   // types, with the real reason rather than falling through to "already taken." The actual point
   // here -- no account exists under this name -- is proven by the login attempt below instead.
-  const check = await fetch(B + '/api/register/check?username=cf_fuck_bad').then(r => r.json());
+  const check = await fetch(B + '/api/register/check?username=cf_porn_bad').then(r => r.json());
   ok(check.available === false && /allowed/i.test(check.reason || ''),
     `and the live availability check flags the same problem, not "already taken" (got ${JSON.stringify(check)})`);
-  const loginAttempt = await post('/api/login', { username: 'cf_fuck_bad', pin: 'pass1234' });
+  const loginAttempt = await post('/api/login', { username: 'cf_porn_bad', pin: 'pass1234' });
   ok(!!(loginAttempt.json && loginAttempt.json.error), `and no account was actually created -- a login attempt for it fails (got ${JSON.stringify(loginAttempt.json)})`);
 
   const u = await reg('cf_user_' + rand());
-  const badChange = await post('/api/me/username', { username: 'cf_fuck_rename', password: 'pass1234' }, u.token);
+  const badChange = await post('/api/me/username', { username: 'cf_porn_rename', password: 'pass1234' }, u.token);
   rejects(badChange, 'changing to a profane username is rejected the same way');
   const okChange = await post('/api/me/username', { username: 'cf_cl_' + rand(), password: 'pass1234' }, u.token);
   allows(okChange, 'an ordinary username change still succeeds');
@@ -299,7 +316,10 @@ console.log('\njoin-request note');
 console.log('\ncustom exercise name: the _/- separator evasion gap (migrated to the shared helper) is now closed here too');
 {
   const u = await reg('cf_exmig_' + rand());
-  const badUnderscore = await post('/api/exercises/custom', { name: 'cf_fuck_bad', muscle_groups: [MUSCLE] }, u.token);
+  // 'fuck' is now an allowed word (see the Oct 21 swear-word section below), so the gap is
+  // reproduced here with 'porn' instead -- still blocked, and the same underscore-tokenization
+  // gap applies regardless of which word is in the dictionary.
+  const badUnderscore = await post('/api/exercises/custom', { name: 'cf_porn_bad', muscle_groups: [MUSCLE] }, u.token);
   rejects(badUnderscore, 'an underscore-separated profane custom exercise name is now rejected (slipped through the pre-migration raw check)');
   const okName = await post('/api/exercises/custom', { name: 'My Custom Lift ' + rand(), muscle_groups: [MUSCLE] }, u.token);
   allows(okName, 'an ordinary custom exercise name still succeeds');
@@ -387,6 +407,33 @@ console.log('\nsuggest route (ownerless session): "add" and the already-joined g
   // for the same own-eyes-only reason as draftNotes below.
   const preJoin = await post(`/api/sessions/${sid}/suggest`, { type: 'swap', exerciseId: existingExId, swapTo: BAD }, b.token);
   allows(preJoin, 'a still-invited pre-join private swap accepts the same phrase -- own-eyes-only, deliberately excluded like draftNotes');
+}
+
+console.log('\nOct 21 2026 (Jeff: casual swearing should be allowed): the removed words pass everywhere, and the scope stayed narrow -- slurs, explicit content, and a couple of still-blocked compound terms are untouched');
+{
+  const u = await reg('cf_swear_' + rand());
+  // A representative spread of fields, not just one -- proves the policy change actually reached
+  // the shared helper every route calls, not just the one spot it was eyeballed in.
+  const okBio = await post('/api/me/bio', { bio: "fuck yeah, that was a hell of a session" }, u.token);
+  allows(okBio, '"fuck yeah" is allowed in bio');
+  const okDisplay = await post('/api/me/display-name', { displayName: 'Shit Kicker' }, u.token);
+  allows(okDisplay, '"shit" is allowed in displayName');
+  const crew = await post('/api/crews', { name: 'Kick-Ass Crew' }, u.token);
+  allows(crew, '"kick-ass" (hyphenated) is allowed in a crew name -- the exact phrase Jeff asked about');
+  const okMsg = await post(`/api/crews/${crew.json.id}/messages`, { text: 'bitch we crushed that pr, fuck yeah' }, u.token);
+  allows(okMsg, '"bitch" and "fuck" together are allowed in crew chat');
+  const okSession = await post('/api/sessions', { name: "Dick's bastard piss-off leg day", exercises: [{ name: EX_NAME }], visibility: 'private' }, u.token);
+  allows(okSession, 'dick/bastard/piss (the borderline tier Jeff explicitly asked to include) are allowed in a session name');
+
+  // Scope check: explicit sexual content was never part of "allowed to swear" -- still blocked,
+  // same field, proving this wasn't a blanket loosening of the whole filter.
+  const stillBlocked = await post('/api/me/bio', { bio: BAD }, u.token);
+  rejects(stillBlocked, 'explicit sexual content is still rejected in the same field the swear words above just passed in');
+  // And a compound word that embeds an ableist slur root ('tard') stays blocked even though its
+  // own prefix ('fuck') is now allowed on its own -- leo-profanity matches whole dictionary
+  // entries, not substrings, so removing 'fuck' never silently removed 'fucktards' too.
+  const stillBlockedCompound = await post('/api/me/bio', { bio: 'fucktards' }, u.token);
+  rejects(stillBlockedCompound, 'a compound word embedding a slur root stays blocked even though it contains an now-allowed word as a substring');
 }
 
 console.log('\ndeliberately NOT filtered, verified rather than just asserted in a comment: draftNotes, POST /variation, and a filed report\'s "details" -- all own-eyes-only or needed verbatim to report abuse');

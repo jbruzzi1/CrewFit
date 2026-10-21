@@ -784,6 +784,57 @@ the name/email decisions) when asked.
   that pass found and closed (the exercise-name blind spot, and the un-migrated custom-exercise-name
   call site), full suite green. Shipping via PR.**
 
+### Addendum (Oct 21 2026) — casual swearing is now explicitly allowed; only slurs and explicit content stay blocked
+
+Jeff, right after seeing the above: "I think we should be allowed to swear... only derogatory words
+should be blocked or racial slurs. fuck, shit, kick ass, etc should not be blocked. as people will
+say 'fuck yeah!'" A real narrowing of the content-safety policy, not a bug fix.
+
+- **What shipped**: `server.js` now calls `profanityFilter.remove([...])` once, right after
+  `require('leo-profanity')`, taking a specific, named set of words off the blocklist before any
+  route ever calls `profanityFilter.check()`/`profanityProblem()`. leo-profanity's own list doesn't
+  separate "casual swearing" from "slurs/derogatory terms" — it blocks both the same way — so rather
+  than hand-roll a replacement list (defeating the whole point of using a maintained one), this
+  subtracts a narrow, explicit set from it.
+- **Asked Jeff where the line should sit, rather than guessing**: he named fuck/shit/kick-ass
+  explicitly; there's a borderline tier (dick, piss, bastard, bitch) that's also general swearing but
+  sometimes used to insult a specific person. Put to him as three explicit options — **Jeff picked
+  the broadest: allow all four borderline words too.**
+- **Removed (now allowed everywhere `profanityProblem()` is called)**: `fuck`, `fucked`, `fuckin`,
+  `fucking`, `motherfucker`, `clusterfuck`, `bullshit`, `shit`, `shitty`, `ass`, `asshole`, `dick`,
+  `piss`, `pissing`, `bastard`, `bitch`, `bitches`. Because the `_`/`-` → space normalization
+  `profanityProblem()` already does (see the Oct 20 addendum above) runs on these too, "kick-ass"
+  and "bad-ass" are also no longer blocked — the exact phrasing Jeff asked about.
+- **Deliberately untouched, scope kept narrow**: every racial/ethnic/national-origin slur, every
+  homophobic/transphobic slur, hate symbols, a couple of gendered insults more often used to target a
+  specific person than as a general exclamation (`cunt`, `twat`, `slut`), a compound word that embeds
+  an ableist slur root (`fucktards` — stays blocked even though it contains the now-allowed `fuck` as
+  a substring, since leo-profanity matches whole dictionary entries, not substrings), a body-shaming
+  term (`shitblimp`), and the entire explicit-sexual-content/exploitation category (porn, anal, cum,
+  pedophile, etc.) — none of that is what "fuck yeah!" was about, and this app has 13+ users (see the
+  age-gate feature), so it stays blocked regardless of not being a slur either.
+- **Jeff asked for the full remaining blocklist** (237 words) to review; sent as a categorized file
+  rather than a flat 400-word dump — grouped into racial/ethnic slurs, hate symbols, homophobic/
+  transphobic slurs, gendered insults, the two compound/body-shaming terms, and explicit sexual
+  content — so he could actually review it rather than just see a wall of text.
+- **Test updates, not just additions**: the pre-existing `BAD` constant in
+  `test/content-filter-expansion.mjs` was `'fuck this'`, now allowed — changed to `'literal porn
+  content'` (still blocked, not a slur), and every place that string tested the `_`/`-` separator-
+  evasion fix specifically (which originally used `cf_fuck_bad`-style usernames/exercise names) was
+  changed to use `cf_porn_bad` instead, reproducing the same tokenization gap with a word that's
+  still in the dictionary. `test/audit-sep30-fixes.mjs`'s own profane-custom-exercise-name example
+  (`'fuck this exercise'`) was updated the same way. New test section proves the swear words pass in
+  a representative spread of fields (bio, displayName, crew name/chat, session name) in one pass, and
+  that explicit content plus the ableist compound term stay blocked in the same field right after —
+  proving this wasn't a blanket loosening of the whole filter, just the named set.
+- **No real slur literals were added to the codebase** to prove slurs stay blocked — the removed-word
+  array in `server.js` is itself the proof (it's short, explicit, and auditable), and the test's
+  negative checks use still-blocked non-slur words (`literal porn content`, `fucktards`) instead.
+- Full suite: **158/158** test files green.
+- **Status: built, confirmed with Jeff on the one genuinely ambiguous scope question (how far the
+  borderline tier goes), full remaining blocklist handed to him for review, full suite green.
+  Shipping via PR.**
+
 ## Design constants
 
 (Rewritten Aug 28, 2026 after the whole-app visual pass, v221–v240. The old text here described the light-only v140 language.)

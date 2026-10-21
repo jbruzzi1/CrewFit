@@ -136,6 +136,27 @@ const crypto = require('crypto');
 // content-safety gate on exercise names, never as a naming-uniqueness rule (see the comment on
 // POST /api/exercises/custom below -- duplicate real names are explicitly fine).
 const profanityFilter = require('leo-profanity');
+// Oct 21 2026 (Jeff: "I think we should be allowed to swear... only derogatory words should be
+// blocked or racial slurs. fuck, shit, kick ass, etc should not be blocked. as people will say
+// 'fuck yeah!'"). leo-profanity's default list doesn't separate casual swearing from slurs/
+// derogatory terms -- it blocks both the same way. Rather than hand-roll a replacement list (the
+// whole reason this uses a maintained one in the first place), removing just the specific,
+// narrow set of general-cursing words Jeff named, confirmed with him: fuck/shit/ass plus the
+// borderline tier (dick, piss, bastard, bitch) he explicitly asked to include too, and their
+// direct forms. Everything else stays blocked by default -- every slur, and every explicit-
+// sexual/exploitative term (this app has 13+ users, see the age-gate feature; none of that is
+// what "fuck yeah!" is about, so it's deliberately untouched even though it isn't a slur either).
+// `remove()` mutates leo-profanity's own in-memory word list for this process, so this must run
+// once, here, before any route ever calls profanityFilter.check()/profanityProblem() below.
+profanityFilter.remove([
+  'fuck', 'fucked', 'fuckin', 'fucking', 'motherfucker', 'clusterfuck',
+  'bullshit', 'shit', 'shitty',
+  'ass', 'asshole',
+  'dick',
+  'piss', 'pissing',
+  'bastard',
+  'bitch', 'bitches',
+]);
 
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const LIB_FILE = path.join(__dirname, 'exercise-library.json');

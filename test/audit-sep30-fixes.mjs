@@ -91,7 +91,11 @@ console.log('\nTier 2 #4 (Jeff: friendlier reason instead of a bare available:fa
 console.log('\nTier 3 #7 (Jeff: "Build now") + #9 (leo-profanity gate) + #8 (real Pattern field): POST /api/exercises/custom');
 {
   const dana = await reg('sep30dana');
-  const bad = await api('/api/exercises/custom', 'POST', dana.token, { name: 'fuck this exercise', muscle_groups: ['chest'] });
+  // Oct 21 2026 (Jeff: casual swearing like "fuck"/"shit" is now explicitly allowed -- see
+  // server.js's profanityFilter.remove() call and test/content-filter-expansion.mjs -- so this
+  // no longer uses "fuck" as its example profane name. "porn" is still blocked (explicit sexual
+  // content was never part of what Jeff asked to allow) and proves this route's gate is still live.
+  const bad = await api('/api/exercises/custom', 'POST', dana.token, { name: 'literal porn exercise', muscle_groups: ['chest'] });
   ok(bad.status === 400 && /allowed/i.test(bad.body.error || ''), `a profane name is rejected with a real message, not created (got ${bad.status} ${JSON.stringify(bad.body)})`);
 
   const good = await api('/api/exercises/custom', 'POST', dana.token, { name: 'Dana Curl', muscle_groups: ['biceps'], pattern: 'pull' });
