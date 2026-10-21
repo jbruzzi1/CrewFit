@@ -136,6 +136,27 @@ const crypto = require('crypto');
 // content-safety gate on exercise names, never as a naming-uniqueness rule (see the comment on
 // POST /api/exercises/custom below -- duplicate real names are explicitly fine).
 const profanityFilter = require('leo-profanity');
+// Oct 21 2026 (Jeff: "I think we should be allowed to swear... only derogatory words should be
+// blocked or racial slurs. fuck, shit, kick ass, etc should not be blocked. as people will say
+// 'fuck yeah!'"). leo-profanity's default list doesn't separate casual swearing from slurs/
+// derogatory terms -- it blocks both the same way. Rather than hand-roll a replacement list (the
+// whole reason this uses a maintained one in the first place), removing just the specific,
+// narrow set of general-cursing words Jeff named, confirmed with him: fuck/shit/ass plus the
+// borderline tier (dick, piss, bastard, bitch) he explicitly asked to include too, and their
+// direct forms. Everything else stays blocked by default -- every slur, and every explicit-
+// sexual/exploitative term (this app has 13+ users, see the age-gate feature; none of that is
+// what "fuck yeah!" is about, so it's deliberately untouched even though it isn't a slur either).
+// `remove()` mutates leo-profanity's own in-memory word list for this process, so this must run
+// once, here, before any route ever calls profanityFilter.check()/profanityProblem() below.
+profanityFilter.remove([
+  'fuck', 'fucked', 'fuckin', 'fucking', 'motherfucker', 'clusterfuck',
+  'bullshit', 'shit', 'shitty',
+  'ass', 'asshole',
+  'dick',
+  'piss', 'pissing',
+  'bastard',
+  'bitch', 'bitches',
+]);
 
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const LIB_FILE = path.join(__dirname, 'exercise-library.json');
@@ -474,6 +495,37 @@ function findUserByName(username) {
 const USERNAME_RE = /^[a-zA-Z0-9._-]{3,20}$/;
 const RESERVED_USERNAMES = new Set(['admin','administrator','root','me','you','all','none','null',
   'undefined','crewfit','spotme','support','help','system','api','settings','profile']);
+// Oct 20 2026 (content-filter expansion, readiness-review item: "Expand content filtering beyond
+// custom exercise names to display names, captions, crew/session names, and other free text").
+// Same hard content-safety line already drawn for custom exercise names (see the Sep 30 2026
+// comment above POST /api/exercises/custom): "barring racial slurs and such," checked against a
+// maintained word list (leo-profanity, already required above for that route) rather than a
+// hand-rolled one -- consistent behavior, and the library's word list (not this file) is what
+// has to be kept current. This is a shared one-liner so every call site below rejects (400) the
+// same way, with the same message, and so there's one place to update if that ever needs to
+// change -- not twenty copies of the same check.
+// Deliberately applied BEFORE any mutation at every call site (see each one's own comment) --
+// never after a field has already been written in memory -- so a rejection never has to be
+// reverted, it just never gets applied, the same "fail closed, before anything is touched"
+// discipline this file already uses for every other validation-before-mutation check.
+function profanityProblem(text) {
+  if (!text) return null;
+  const s = String(text);
+  // Oct 20 2026 (found while testing this expansion): leo-profanity's check() tokenizes on
+  // whitespace and a couple of punctuation marks (., ,) but NOT on underscore or hyphen --
+  // confirmed directly: 'cf_fuck_bad' and 'cf-fuck-bad' both passed uncaught, while
+  // 'cf.fuck.bad' (the same name, dot-separated) was already caught. That gap matters most for
+  // usernames specifically -- USERNAME_RE allows '.', '_', and '-' as the only non-alphanumeric
+  // characters, so a username is exactly the shape of text most likely to spell out a blocked
+  // word using '_'/'-' as the separator. Also checking the text with those two normalized to
+  // spaces closes it everywhere this helper runs, not just for usernames, with no real downside
+  // (nothing legitimate depends on a word reading as clean only because it's hyphenated/
+  // underscored into one token).
+  if (profanityFilter.check(s) || profanityFilter.check(s.replace(/[_-]+/g, ' '))) {
+    return 'That text isn’t allowed. Please choose something else.';
+  }
+  return null;
+}
 function usernameProblem(username) {
   const raw = String(username == null ? '' : username).trim();
   if (!USERNAME_RE.test(raw)) return 'Username must be 3-20 characters, letters, numbers, . _ or - only';
@@ -483,6 +535,13 @@ function usernameProblem(username) {
   // nothing else in this file has to null-check a vanished DB.users[id]. Blocking this prefix on
   // the way IN means nobody can ever pick a real username that later reads as a deleted account.
   if (normUser(raw).startsWith('deleted_')) return 'That username is reserved';
+  // Oct 20 2026 (content-filter expansion): a username is the single most exposed piece of free
+  // text in this app -- permanent, public, shown everywhere (every profile, every feed row, every
+  // notification) -- yet it had no content check at all before this, unlike the custom-exercise
+  // name this same file already drew the line on weeks earlier. Covers both call sites that reach
+  // this function (registration and POST /api/me/username) with one check.
+  const pp = profanityProblem(raw);
+  if (pp) return pp;
   return null;
 }
 // Sep 29 2026 (Jeff: "make it whatever they want as long as its longer than 6 characters... a
@@ -1074,6 +1133,14 @@ app.post('/api/register', async (req, res) => {
   if (!ageConfirmed) return res.status(400).json({ error: 'You must confirm you are at least 13 years old to create an account.' });
   const uProblem = usernameProblem(username); if (uProblem) return res.status(400).json({ error: uProblem });
   const pProblem = pinProblem(pin);           if (pProblem) return res.status(400).json({ error: pProblem });
+  // Oct 20 2026 (content-filter expansion): computed once here (the exact value that gets
+  // stored below) and validated before hashPin -- the one remaining expensive, deliberately-slow
+  // step -- same "fail on the cheap checks first" ordering this route already uses for
+  // Turnstile/ageConfirmed/username/pin above. Reused at the actual write further down so this
+  // isn't computed twice.
+  const dn = capStr(displayName || username, 80).trim();
+  const dnProblem = profanityProblem(dn);
+  if (dnProblem) return res.status(400).json({ error: dnProblem });
   // Oct 12 2026 (cold-review catch, same day as the async-hashPin scaling fix): hashPin used to be
   // scryptSync, so there was no await anywhere between the uniqueness check just below and the
   // actual DB.users[id]=... write -- the whole handler ran as one atomic turn, so two concurrent
@@ -1129,7 +1196,7 @@ app.post('/api/register', async (req, res) => {
   if (findUserByName(username)) { releaseReservation('reg:global', regGlobalReset); return res.status(409).json({ error: 'username taken' }); }
   const id = uid();
   DB.users[id] = Object.assign({ id, username: String(username).trim(),
-    displayName: capStr(displayName || username, 80).trim(), units: 'lb',
+    displayName: dn, units: 'lb',
     // Jeff, Sep 2026: profiles default Public -- discoverable out of the box, same as the app's
     // general "discoverability beats minimalism" stance. Private is an opt-in you reach through
     // Settings. followers/following/followReqs are created lazily by ensureFollowArrays on first
@@ -1381,7 +1448,15 @@ app.post('/api/exercises/custom', auth, async (req, res) => {
   const { name, muscle_groups, equipment, level, is_compound, pattern } = req.body || {};
   if (!name || !Array.isArray(muscle_groups) || !muscle_groups.length) return res.status(400).json({ error: 'name + muscle_groups required' });
   const cleanName = capStr(name, 80);
-  if (profanityFilter.check(cleanName)) return res.status(400).json({ error: 'That name isn’t allowed. Please pick something else.' });
+  // Oct 21 2026 (content-filter expansion, cold-review finding): this was the ONE call site the new
+  // profanityProblem() helper (added for the content-filter expansion) was modeled on, yet it was
+  // left calling the raw profanityFilter.check() directly instead of being migrated to the helper --
+  // so this route kept the exact _/- separator evasion gap the helper exists to close (custom
+  // exercise names have no charset restriction, so e.g. "cf_fuck_bad" slipped through here
+  // untouched even after the fix shipped everywhere else). Migrated for consistency and to actually
+  // close the gap here too.
+  const exNameProblem = profanityProblem(cleanName);
+  if (exNameProblem) return res.status(400).json({ error: exNameProblem });
   // Oct 1 2026 (audit finding, round-2 Tier 1 #2): this didn't used to check the new name against
   // the BUILT-IN library at all -- only GET /api/exercises did, by silently filtering any custom
   // row whose name exactly matches a library one out of every response it returns (its own comment,
@@ -2076,10 +2151,15 @@ app.post('/api/me/bio', auth, async (req, res) => {
   // this response's own echo of it) would still show a NUL byte/lone surrogate even though
   // pgmini.js already strips it before it reaches Postgres, a visible mismatch between "what you
   // just got told was saved" and "what's actually in the row" until the next restart reloads it.
+  // Oct 20 2026 (content-filter expansion): computed before any mutation, same as every other
+  // call site, so a rejected bio is never applied and never needs reverting.
+  const cleanBio = sanitizePgText(sanitizePgText(String(bio || '')).slice(0, 280));
+  const bioProblem = profanityProblem(cleanBio);
+  if (bioProblem) return res.status(400).json({ error: bioProblem });
   const bioUser = DB.users[req.userId];
   // Oct 18 2026 (full-app hazard sweep): field-level CAS revert, same shape as /api/me/avatar above.
   const bioBefore = snapshotMutableFields([bioUser], ['bio']);
-  bioUser.bio = sanitizePgText(sanitizePgText(String(bio || '')).slice(0, 280));
+  bioUser.bio = cleanBio;
   const bioAfter = snapshotMutableFields([bioUser], ['bio']);
   try {
     await save(DB);
@@ -2155,6 +2235,9 @@ app.post('/api/me/display-name', auth, async (req, res) => {
   const { displayName } = req.body || {};
   const v = capStr(displayName, 80).trim();
   if (!v) return res.status(400).json({ error: 'Display name cannot be empty' });
+  // Oct 20 2026 (content-filter expansion): before any mutation, same as every other call site.
+  const dnProblem = profanityProblem(v);
+  if (dnProblem) return res.status(400).json({ error: dnProblem });
   const u = DB.users[req.userId];
   const before = snapshotMutableFields([u], ['displayName']);
   u.displayName = v;
@@ -3213,6 +3296,10 @@ app.get('/api/crews', auth, async (req, res) => {
 app.post('/api/crews', auth, async (req, res) => {
   const name = capStr((req.body || {}).name, CREW_NAME_MAX).trim();
   if (!name) return res.status(400).json({ error: 'name required' });
+  // Oct 20 2026 (content-filter expansion, readiness-review item -- explicitly names "crew/session
+  // names"). Before any mutation, same as every other call site.
+  const nameProblem = profanityProblem(name);
+  if (nameProblem) return res.status(400).json({ error: nameProblem });
   const memberIds = validCrewMemberIds(req.userId, (req.body || {}).memberIds);
   // Sep 24 2026 audit round 4: see the comment on validCrewMemberIds above -- was a silent
   // truncation, now a real error before the crew is ever created.
@@ -3284,6 +3371,11 @@ async function crewPutCritical(c, req, res) {
   if (body.name !== undefined) {
     const name = capStr(body.name, CREW_NAME_MAX).trim();
     if (!name) return res.status(400).json({ error: 'name required' });
+    // Oct 20 2026 (content-filter expansion): before anything below -- the feed-event emit,
+    // every notify() call, and the actual c.name assignment -- so a rejected rename never fires
+    // a notification for text that was never actually applied.
+    const nameProblem = profanityProblem(name);
+    if (nameProblem) return res.status(400).json({ error: nameProblem });
     // Sep 12 2026 (Jeff, three new Activity events): guarded on an ACTUAL change -- the edit sheet
     // always resubmits the current name alongside any membership change (see the comment above the
     // newly-added-members notify loop just below), so an unguarded emit here would fire a spurious
@@ -3461,6 +3553,9 @@ app.post('/api/crews/:id/messages', auth, async (req, res) => {
   if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
   const text = capStr((req.body || {}).text, CREW_MSG_MAX);
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
+  // Oct 20 2026 (content-filter expansion): before the insert.
+  const textProblem = profanityProblem(text);
+  if (textProblem) return res.status(400).json({ error: textProblem });
   const m = { id: 'cm_' + uid(), crewId: c.id, userId: req.userId, text, at: new Date().toISOString() };
   // Oct 16 2026 (crews deep-dive, decision #1 -- messages/challenges moved to their own tables):
   // this used to be wrapped in withCrewLock, pushing into c.messages before an awaited save(DB)
@@ -3516,6 +3611,9 @@ app.put('/api/crews/:id/messages/:messageId', auth, async (req, res) => {
   if (!isCrewMember(c, req.userId)) return res.status(403).json({ error: 'forbidden' });
   const text = capStr((req.body || {}).text, CREW_MSG_MAX);
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
+  // Oct 20 2026 (content-filter expansion): before the update.
+  const textProblem = profanityProblem(text);
+  if (textProblem) return res.status(400).json({ error: textProblem });
   // Oct 16 2026 (crews deep-dive, decision #1): used to find the live message object in c.messages
   // and mutate its text/editedAt in place before an awaited save(DB), with a revert-to-captured-
   // previous-text on failure (see the git history for that fix's own writeup). pgUpdateCrewMessageText
@@ -3935,6 +4033,9 @@ app.post('/api/crews/:id/challenge', auth, async (req, res) => {
   if (type === 'custom') {
     const title = capStr(body.title, CHALLENGE_CUSTOM_TITLE_MAX).trim();
     if (!title) return res.status(400).json({ error: 'describe the challenge' });
+    // Oct 20 2026 (content-filter expansion): before the atomic insert just below.
+    const titleProblem = profanityProblem(title);
+    if (titleProblem) return res.status(400).json({ error: titleProblem });
     ch = { ...base, title };
     notifyBody = `${DB.users[req.userId].displayName} started a challenge: ${title}`;
   } else {
@@ -4592,6 +4693,15 @@ app.post('/api/templates', auth, async (req, res) => {
   // v253 (audit finding, see isPlainExercise above) -- a non-object element would have thrown
   // inside withDefaults below, returning a generic 500 instead of a clean 400.
   if (!exercises.every(isPlainExercise)) return res.status(400).json({ error: 'invalid exercise' });
+  // Oct 20 2026 (content-filter expansion): before the row is ever created.
+  const tplNameProblem = profanityProblem(capStr(name, 80));
+  if (tplNameProblem) return res.status(400).json({ error: tplNameProblem });
+  // Oct 21 2026 (content-filter expansion, cold-review finding): exercise names were missed by the
+  // first pass -- same gap as POST /api/sessions. Checked here too, before the row is created.
+  for (const e of exercises) {
+    const p = profanityProblem(capStr(e && e.name, 80));
+    if (p) return res.status(400).json({ error: p });
+  }
   const id = 't_' + uid();
   const t = { id, ownerId: req.userId, name: capStr(name, 80), exercises: exercises.map(withDefaults) };
   if (!DB.templates) DB.templates = {};
@@ -4621,6 +4731,20 @@ app.put('/api/templates/:id', auth, async (req, res) => {
   // own memberIds-cap check above.
   if (Array.isArray(exercises) && exercises.length && !exercises.every(isPlainExercise))
     return res.status(400).json({ error: 'invalid exercise' });
+  // Oct 20 2026 (content-filter expansion): same "fail closed, before anything is touched"
+  // ordering as the exercises check just above -- before the lock, before t.name is mutated.
+  if (name) {
+    const tplNameProblem = profanityProblem(capStr(name, 80));
+    if (tplNameProblem) return res.status(400).json({ error: tplNameProblem });
+  }
+  // Oct 21 2026 (content-filter expansion, cold-review finding): exercise names were missed by the
+  // first pass. Same ordering as the checks above -- before the lock, before t.exercises is touched.
+  if (Array.isArray(exercises) && exercises.length) {
+    for (const e of exercises) {
+      const p = profanityProblem(capStr(e && e.name, 80));
+      if (p) return res.status(400).json({ error: p });
+    }
+  }
   await withTemplateLock(t.id, async () => {
     const originalName = t.name;
     const originalExercises = t.exercises;
@@ -4830,6 +4954,9 @@ app.post('/api/sessions/:id/comments', auth, async (req, res) => {
   if (tier !== 'member' && tier !== 'invited') return res.status(403).json({ error: 'forbidden' });
   const text = capStr((req.body || {}).text, 2000);   // coerce + cap: an object here used to 500 on .trim()
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
+  // Oct 20 2026 (content-filter expansion): before the push.
+  const textProblem = profanityProblem(text);
+  if (textProblem) return res.status(400).json({ error: textProblem });
   const c = { id: 'c_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
   if (!s.comments) s.comments = [];
   // Oct 17 2026 (sessions & logs slice, decision #1 -- mutate-before-maybe-failing-save hazard,
@@ -4897,6 +5024,9 @@ app.put('/api/sessions/:id/comments/:commentId', auth, async (req, res) => {
   if (c.userId !== req.userId) return res.status(403).json({ error: 'forbidden' });
   const text = capStr((req.body || {}).text, 2000);
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
+  // Oct 20 2026 (content-filter expansion): before the edit is applied.
+  const textProblem = profanityProblem(text);
+  if (textProblem) return res.status(400).json({ error: textProblem });
   // Oct 17 2026 (sessions & logs slice, decision #1): same mutate-before-maybe-failing-save hazard
   // as the comment-post route above, applied to an edit of an existing comment object instead of a
   // new push -- snapshotMutableFields/revertFieldsIfUnchanged work on any object+field list, not
@@ -4971,6 +5101,9 @@ app.post('/api/sessions/:id/posts/:authorId/comments', auth, async (req, res) =>
   if (isBlocked(req.params.authorId, req.userId)) return res.status(403).json({ error: 'forbidden' });
   const text = capStr((req.body || {}).text, 2000);
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
+  // Oct 20 2026 (content-filter expansion): before the push.
+  const textProblem = profanityProblem(text);
+  if (textProblem) return res.status(400).json({ error: textProblem });
   const c = { id: 'c_' + uid(), userId: req.userId, text, at: new Date().toISOString() };
   p.comments = objArray(p.comments);
   // Oct 17 2026 (sessions & logs slice, decision #1): same reassign-then-snapshot/revert fix as
@@ -5039,6 +5172,9 @@ app.put('/api/sessions/:id/posts/:authorId/comments/:commentId', auth, async (re
   if (isBlocked(req.params.authorId, req.userId)) return res.status(403).json({ error: 'forbidden' });
   const text = capStr((req.body || {}).text, 2000);
   if (!text.trim()) return res.status(400).json({ error: 'empty' });
+  // Oct 20 2026 (content-filter expansion): before the edit is applied.
+  const textProblem = profanityProblem(text);
+  if (textProblem) return res.status(400).json({ error: textProblem });
   // Oct 17 2026 (sessions & logs slice, decision #1): same snapshot/revert fix as the live-chat
   // comment-edit route above, applied to this nested comment object `c`.
   // Oct 17 2026, same day (review audit finding): locked for the same reason as the POST route
@@ -5434,6 +5570,25 @@ app.post('/api/sessions', auth, async (req, res) => {
   // v253 (audit finding, see isPlainExercise above) -- a non-object element would have thrown
   // inside withDefaults below, returning a generic 500 instead of a clean 400.
   if (!exercises.every(isPlainExercise)) return res.status(400).json({ error: 'invalid exercise' });
+  // Oct 20 2026 (content-filter expansion, readiness-review item -- explicitly names "crew/session
+  // names" plus "other free text"). Computed once, here, before the session id/object is ever
+  // created, and reused below in the object literal -- a rejection here leaves nothing to undo.
+  const cleanName = capStr(name, 80).trim() || 'New workout';
+  const cleanLocation = capStr(location, 120);
+  const cleanCreatorNote = capStr(creatorNote, 2000);
+  for (const t of [cleanName, cleanLocation, cleanCreatorNote]) {
+    const p = profanityProblem(t);
+    if (p) return res.status(400).json({ error: p });
+  }
+  // Oct 21 2026 (content-filter expansion, cold-review finding): exercise names were missed by the
+  // first pass entirely -- withDefaults' own comment a few lines up ("another user's exercise name
+  // renders in your app") is exactly the risk this whole feature exists to close, and this route's
+  // exercises array went straight through withDefaults with no check at all. Checked here, before
+  // the session id is minted, same "before anything is touched" ordering as the fields just above.
+  for (const e of exercises) {
+    const p = profanityProblem(capStr(e && e.name, 80));
+    if (p) return res.status(400).json({ error: p });
+  }
   const id = newSessionId();
   const ex = exercises.map((e, i) => Object.assign({ id: 'e_' + uid(), order: i }, withDefaults(e)));
   const invites = [];
@@ -5457,9 +5612,9 @@ app.post('/api/sessions', auth, async (req, res) => {
     // whoever can see the creator's profile (canSeeProfile), 'private' = invite-only.
     visibility: visibility === 'public' ? 'public' : 'private',
     equipment: Array.isArray(equipment) ? equipment.filter(x => typeof x === 'string').slice(0, 20).map(x => capStr(x, 40)) : [],
-    location: capStr(location, 120),
+    location: cleanLocation,
     lengthMin: numIn(lengthMin, 1440) || null,
-    creatorNote: capStr(creatorNote, 2000),
+    creatorNote: cleanCreatorNote,
     // trimmed: a name of "   " is truthy, so it would title the workout with a blank heading.
     // Sep 10 2026 (Jeff, real bug report): the "New workout" flow (unlike Quick Workout, which
     // already defaults client-side to 'Quick Workout' -- see createQuickWorkout in app.js) let a
@@ -5468,7 +5623,7 @@ app.post('/api/sessions', auth, async (req, res) => {
     // real (this whole object, with a real id) but then invisible everywhere on Home, reading as
     // "no workout appears" even though it existed. Fixed here, once, server-side, so it holds
     // regardless of client version: "if someone doesn't label it lets default to 'New workout'".
-    name: capStr(name, 80).trim() || 'New workout',
+    name: cleanName,
     exercises: ex,
     participants: [req.userId],
     invited: invites,
@@ -6926,6 +7081,25 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   ensureSessionShape(s);
   if (s.creatorId !== req.userId) return res.status(403).json({ error: 'not yours' });
   const b = req.body || {};
+  // Oct 20 2026 (content-filter expansion): validated BEFORE entering the lock/mutating anything
+  // below -- this route's own failure-path restore (sSnapshot) only runs once save() itself has
+  // been attempted, so returning mid-function after a partial mutation (name set, then rejected
+  // on location) would leave that partial edit live in memory with nothing to revert it. Checking
+  // every touched free-text field up front, before any assignment, avoids that entirely.
+  if (typeof b.name === 'string') { const p = profanityProblem(capStr(b.name, 80)); if (p) return res.status(400).json({ error: p }); }
+  if (typeof b.location === 'string') { const p = profanityProblem(capStr(b.location, 120)); if (p) return res.status(400).json({ error: p }); }
+  if (typeof b.creatorNote === 'string') { const p = profanityProblem(capStr(b.creatorNote, 2000)); if (p) return res.status(400).json({ error: p }); }
+  // Oct 21 2026 (content-filter expansion, cold-review finding): exercise names were missed by the
+  // first pass. Checked here too, before the lock -- even earlier than this route's own shape
+  // check on b.exercises (isPlainExercise, inside the lock below), so a profane name can never
+  // reach the point where s.name/s.location/etc. have already been reassigned.
+  if (Array.isArray(b.exercises)) {
+    for (const e of b.exercises) {
+      if (!isPlainExercise(e)) continue;   // the shape check inside the lock below handles this case
+      const p = profanityProblem(capStr(e.name, 80));
+      if (p) return res.status(400).json({ error: p });
+    }
+  }
   // Oct 17 2026 (sessions & logs slice, decision #1): this route rewrites more session-wide shared
   // fields than any other (name/scheduledAt/location/lengthMin/creatorNote/visibility, plus
   // pendingRemovals/exercises/suggestedEdits/invited/invitedBy/invitedAt) across a long,
@@ -7298,6 +7472,14 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   // inviter too, not just a live s.creatorId.
   const inviterId = (s.invitedBy && s.invitedBy[req.userId]) || s.creatorId;
   const declinerBlocked = isBlocked(inviterId, req.userId);
+  // Oct 20 2026 (content-filter expansion): computed and validated here, BEFORE the lock below --
+  // the original code computed `reason` well after s.invited/suggestedEdits/joinRequests had
+  // already been mutated in memory (this route has no partial-mutation revert for a mid-function
+  // return, only a save()-failure restore), so rejecting there would have left those real
+  // mutations applied with nothing to undo them.
+  const reason = typeof (req.body && req.body.reason) === 'string' ? sanitizePgText(sanitizePgText(req.body.reason.trim()).slice(0, 300)) : '';
+  const reasonProblem = profanityProblem(reason);
+  if (reasonProblem) return res.status(400).json({ error: reasonProblem });
   // Oct 17 2026 (sessions & logs slice, decision #1): same shared s.invited/s.suggestedEdits/
   // s.joinRequests fields as /leave, /remove-mine, and /accept -- same whole-object snapshot/
   // restore fix under withSessionLock.
@@ -7342,8 +7524,8 @@ app.post('/api/sessions/:id/decline', auth, async (req, res) => {
   // Sep 27 2026 (Jeff): "along with this - we should add a 'reason for declining message' and the
   // owner will get this message." Optional, capped well short of anything that'd blow up a
   // notification body (this is a quick reason, not a chat message -- the reinvite-request flow
-  // below is where an actual back-and-forth belongs).
-  const reason = typeof (req.body && req.body.reason) === 'string' ? sanitizePgText(sanitizePgText(req.body.reason.trim()).slice(0, 300)) : '';
+  // below is where an actual back-and-forth belongs). `reason` itself is now computed and
+  // validated above, before this lock (Oct 20 2026, content-filter expansion) -- reused here.
   try {
     await save(DB);
   } catch (e) {
@@ -7385,6 +7567,10 @@ app.post('/api/sessions/:id/reinvite-request', auth, async (req, res) => {
   }
   if (isBlocked(req.userId, s.creatorId)) return res.status(403).json({ error: 'not found' });
   const message = typeof (req.body && req.body.message) === 'string' ? sanitizePgText(sanitizePgText(req.body.message.trim()).slice(0, 300)) : '';
+  // Oct 20 2026 (content-filter expansion): before the lock below (this is already, deliberately,
+  // computed before any mutation).
+  const messageProblem = profanityProblem(message);
+  if (messageProblem) return res.status(400).json({ error: messageProblem });
   // Oct 2 2026 (deep audit finding): every other "ask again" flow in this app (join requests
   // re-flipping an existing row to pending instead of duplicating, ownerless swap re-proposals,
   // template-share) reuses one row per requester instead of piling up duplicates -- this route was
@@ -7558,6 +7744,11 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
   if (type === 'add') {
     const name = currentExerciseName(capStr((req.body || {}).name, 80).trim());   // stale client -- see EXERCISE_RENAMES
     if (!name) return { status: 400, body: { error: 'needs a name' } };
+    // Oct 21 2026 (content-filter expansion, cold-review finding): a suggested exercise name/swap
+    // is exactly the "another user's exercise name renders in your app" risk withDefaults' own
+    // comment calls out -- approving this renames the shared exercise for every participant.
+    // Checked here, before `edit` is even built, well before the s.suggestedEdits.push below.
+    { const p = profanityProblem(name); if (p) return { status: 400, body: { error: p } }; }
     // Oct 9 2026 (audit finding, Jeff's pick among options): `at` lets GET /api/notifications sort
     // its "Suggested changes" section newest-first -- see joinRequests' own `at` above.
     edit = { id: 'se_' + uid(), type: 'add', exerciseId: null, proposedBy: req.userId, swapTo: name, status: 'pending', at: new Date().toISOString() };
@@ -7567,6 +7758,7 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
     // Sep 6 (cold-review catch): approving now renames the shared exercise to swapTo, so a blank
     // one -- which used to yield a harmless empty variation -- would blank the exercise for everyone.
     if (!swapTo) return { status: 400, body: { error: 'needs a name' } };
+    { const p = profanityProblem(swapTo); if (p) return { status: 400, body: { error: p } }; }
     const fromEx = s.exercises.find(e => e.id === exerciseId);
     if (!fromEx) return { status: 404, body: { error: 'exercise not found' } };
     // Sep 24 2026 (audit finding): no dedup at all -- two participants proposing different swaps
@@ -7683,6 +7875,11 @@ async function suggestOwnerless(req, res, s, type, isParticipant, approvedJoin, 
   if (type === 'add') {
     const name = currentExerciseName(capStr((req.body || {}).name, 80).trim());
     if (!name) return res.status(400).json({ error: 'needs a name' });
+    // Oct 21 2026 (content-filter expansion, cold-review finding): unlike the privatePreJoin branch
+    // above, this exercise is real and shared immediately (just hidden-for-others pending votes),
+    // so it's exactly the risk withDefaults' own comment calls out -- checked before s.exercises is
+    // ever touched below.
+    { const p = profanityProblem(name); if (p) return res.status(400).json({ error: p }); }
     // Doc tab 05: "Adding an exercise ... now applies to the proposer's own card first" -- the
     // exercise is real and shared immediately, exactly like an owned add always was, just hidden
     // by default from everyone but the proposer (the existing hide-for-me mechanism, s.hiddenFor)
@@ -7695,6 +7892,9 @@ async function suggestOwnerless(req, res, s, type, isParticipant, approvedJoin, 
     const exerciseId = capStr((req.body || {}).exerciseId, 64);
     const swapTo = currentExerciseName(capStr((req.body || {}).swapTo, 80).trim());
     if (!swapTo) return res.status(400).json({ error: 'needs a name' });
+    // Oct 21 2026 (content-filter expansion, cold-review finding): a group swap proposal, visible
+    // to every other current participant for their own vote -- checked before any mutation below.
+    { const p = profanityProblem(swapTo); if (p) return res.status(400).json({ error: p }); }
     const fromEx = s.exercises.find(e => e.id === exerciseId);
     if (!fromEx) return res.status(404).json({ error: 'exercise not found' });
     // Cold-review catch (finding #4, Jeff: "yes fix it"): re-proposing a DIFFERENT swap on the same
@@ -8215,6 +8415,9 @@ app.post('/api/sessions/:id/join', auth, async (req, res) => {
   let jr = s.joinRequests.find(j => j.userId === req.userId);
   if (jr && jr.status === 'pending') return res.status(400).json({ error: 'already requested' });
   const note = capStr((req.body||{}).note, 500);
+  // Oct 20 2026 (content-filter expansion): before the lock below.
+  const noteProblem = profanityProblem(note);
+  if (noteProblem) return res.status(400).json({ error: noteProblem });
   // Oct 17 2026 (sessions & logs slice, decision #1): own row only (found by jr.userId ===
   // req.userId), so revert-only -- no genuine cross-user collision on this particular row, just
   // the usual mutate-before-maybe-failing-save hazard on it/its push.
@@ -11708,6 +11911,13 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   ensureSessionShape(s);
   if (!canFinishOrPost(s, req.userId)) return res.status(403).json({ error: 'not in this workout' });
   const { notes, media, visibility } = req.body || {};
+  // Oct 20 2026 (content-filter expansion, readiness-review item -- explicitly names "captions").
+  // This IS the recap caption. Computed and validated here, up front, before any of the
+  // media-processing work below (disk/object-storage writes) -- a rejected caption should never
+  // cost a photo upload first. Reused at the actual assignment further down.
+  const cleanNotes = sanitizePgText(sanitizePgText(String(notes || '')).slice(0, 2000));
+  const notesProblem = profanityProblem(cleanNotes);
+  if (notesProblem) return res.status(400).json({ error: notesProblem });
   // v190 (Sep 2026): binary -- 'private' (default) or 'public'. See canSeePostAuthor for what
   // each now means.
   const vis = visibility === 'public' ? 'public' : 'private';
@@ -11807,7 +12017,7 @@ app.post('/api/sessions/:id/post', auth, async (req, res) => {
   const draftBefore = snapshotMutableFields([s.draftNotes], [req.userId]);
   s.posts[req.userId] = {
     at: existingAt || new Date().toISOString(),
-    notes: sanitizePgText(sanitizePgText(String(notes || '')).slice(0, 2000)),
+    notes: cleanNotes,
     media: cleanMedia,
     visibility: vis,
     comments: existingComments,
