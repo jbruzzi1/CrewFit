@@ -1427,7 +1427,15 @@ app.post('/api/exercises/custom', auth, async (req, res) => {
   const { name, muscle_groups, equipment, level, is_compound, pattern } = req.body || {};
   if (!name || !Array.isArray(muscle_groups) || !muscle_groups.length) return res.status(400).json({ error: 'name + muscle_groups required' });
   const cleanName = capStr(name, 80);
-  if (profanityFilter.check(cleanName)) return res.status(400).json({ error: 'That name isn’t allowed. Please pick something else.' });
+  // Oct 21 2026 (content-filter expansion, cold-review finding): this was the ONE call site the new
+  // profanityProblem() helper (added for the content-filter expansion) was modeled on, yet it was
+  // left calling the raw profanityFilter.check() directly instead of being migrated to the helper --
+  // so this route kept the exact _/- separator evasion gap the helper exists to close (custom
+  // exercise names have no charset restriction, so e.g. "cf_fuck_bad" slipped through here
+  // untouched even after the fix shipped everywhere else). Migrated for consistency and to actually
+  // close the gap here too.
+  const exNameProblem = profanityProblem(cleanName);
+  if (exNameProblem) return res.status(400).json({ error: exNameProblem });
   // Oct 1 2026 (audit finding, round-2 Tier 1 #2): this didn't used to check the new name against
   // the BUILT-IN library at all -- only GET /api/exercises did, by silently filtering any custom
   // row whose name exactly matches a library one out of every response it returns (its own comment,
@@ -4667,6 +4675,12 @@ app.post('/api/templates', auth, async (req, res) => {
   // Oct 20 2026 (content-filter expansion): before the row is ever created.
   const tplNameProblem = profanityProblem(capStr(name, 80));
   if (tplNameProblem) return res.status(400).json({ error: tplNameProblem });
+  // Oct 21 2026 (content-filter expansion, cold-review finding): exercise names were missed by the
+  // first pass -- same gap as POST /api/sessions. Checked here too, before the row is created.
+  for (const e of exercises) {
+    const p = profanityProblem(capStr(e && e.name, 80));
+    if (p) return res.status(400).json({ error: p });
+  }
   const id = 't_' + uid();
   const t = { id, ownerId: req.userId, name: capStr(name, 80), exercises: exercises.map(withDefaults) };
   if (!DB.templates) DB.templates = {};
@@ -4701,6 +4715,14 @@ app.put('/api/templates/:id', auth, async (req, res) => {
   if (name) {
     const tplNameProblem = profanityProblem(capStr(name, 80));
     if (tplNameProblem) return res.status(400).json({ error: tplNameProblem });
+  }
+  // Oct 21 2026 (content-filter expansion, cold-review finding): exercise names were missed by the
+  // first pass. Same ordering as the checks above -- before the lock, before t.exercises is touched.
+  if (Array.isArray(exercises) && exercises.length) {
+    for (const e of exercises) {
+      const p = profanityProblem(capStr(e && e.name, 80));
+      if (p) return res.status(400).json({ error: p });
+    }
   }
   await withTemplateLock(t.id, async () => {
     const originalName = t.name;
@@ -5535,6 +5557,15 @@ app.post('/api/sessions', auth, async (req, res) => {
   const cleanCreatorNote = capStr(creatorNote, 2000);
   for (const t of [cleanName, cleanLocation, cleanCreatorNote]) {
     const p = profanityProblem(t);
+    if (p) return res.status(400).json({ error: p });
+  }
+  // Oct 21 2026 (content-filter expansion, cold-review finding): exercise names were missed by the
+  // first pass entirely -- withDefaults' own comment a few lines up ("another user's exercise name
+  // renders in your app") is exactly the risk this whole feature exists to close, and this route's
+  // exercises array went straight through withDefaults with no check at all. Checked here, before
+  // the session id is minted, same "before anything is touched" ordering as the fields just above.
+  for (const e of exercises) {
+    const p = profanityProblem(capStr(e && e.name, 80));
     if (p) return res.status(400).json({ error: p });
   }
   const id = newSessionId();
@@ -7037,6 +7068,17 @@ app.put('/api/sessions/:id', auth, async (req, res) => {
   if (typeof b.name === 'string') { const p = profanityProblem(capStr(b.name, 80)); if (p) return res.status(400).json({ error: p }); }
   if (typeof b.location === 'string') { const p = profanityProblem(capStr(b.location, 120)); if (p) return res.status(400).json({ error: p }); }
   if (typeof b.creatorNote === 'string') { const p = profanityProblem(capStr(b.creatorNote, 2000)); if (p) return res.status(400).json({ error: p }); }
+  // Oct 21 2026 (content-filter expansion, cold-review finding): exercise names were missed by the
+  // first pass. Checked here too, before the lock -- even earlier than this route's own shape
+  // check on b.exercises (isPlainExercise, inside the lock below), so a profane name can never
+  // reach the point where s.name/s.location/etc. have already been reassigned.
+  if (Array.isArray(b.exercises)) {
+    for (const e of b.exercises) {
+      if (!isPlainExercise(e)) continue;   // the shape check inside the lock below handles this case
+      const p = profanityProblem(capStr(e.name, 80));
+      if (p) return res.status(400).json({ error: p });
+    }
+  }
   // Oct 17 2026 (sessions & logs slice, decision #1): this route rewrites more session-wide shared
   // fields than any other (name/scheduledAt/location/lengthMin/creatorNote/visibility, plus
   // pendingRemovals/exercises/suggestedEdits/invited/invitedBy/invitedAt) across a long,
@@ -7681,6 +7723,11 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
   if (type === 'add') {
     const name = currentExerciseName(capStr((req.body || {}).name, 80).trim());   // stale client -- see EXERCISE_RENAMES
     if (!name) return { status: 400, body: { error: 'needs a name' } };
+    // Oct 21 2026 (content-filter expansion, cold-review finding): a suggested exercise name/swap
+    // is exactly the "another user's exercise name renders in your app" risk withDefaults' own
+    // comment calls out -- approving this renames the shared exercise for every participant.
+    // Checked here, before `edit` is even built, well before the s.suggestedEdits.push below.
+    { const p = profanityProblem(name); if (p) return { status: 400, body: { error: p } }; }
     // Oct 9 2026 (audit finding, Jeff's pick among options): `at` lets GET /api/notifications sort
     // its "Suggested changes" section newest-first -- see joinRequests' own `at` above.
     edit = { id: 'se_' + uid(), type: 'add', exerciseId: null, proposedBy: req.userId, swapTo: name, status: 'pending', at: new Date().toISOString() };
@@ -7690,6 +7737,7 @@ app.post('/api/sessions/:id/suggest', auth, async (req, res) => {
     // Sep 6 (cold-review catch): approving now renames the shared exercise to swapTo, so a blank
     // one -- which used to yield a harmless empty variation -- would blank the exercise for everyone.
     if (!swapTo) return { status: 400, body: { error: 'needs a name' } };
+    { const p = profanityProblem(swapTo); if (p) return { status: 400, body: { error: p } }; }
     const fromEx = s.exercises.find(e => e.id === exerciseId);
     if (!fromEx) return { status: 404, body: { error: 'exercise not found' } };
     // Sep 24 2026 (audit finding): no dedup at all -- two participants proposing different swaps
@@ -7806,6 +7854,11 @@ async function suggestOwnerless(req, res, s, type, isParticipant, approvedJoin, 
   if (type === 'add') {
     const name = currentExerciseName(capStr((req.body || {}).name, 80).trim());
     if (!name) return res.status(400).json({ error: 'needs a name' });
+    // Oct 21 2026 (content-filter expansion, cold-review finding): unlike the privatePreJoin branch
+    // above, this exercise is real and shared immediately (just hidden-for-others pending votes),
+    // so it's exactly the risk withDefaults' own comment calls out -- checked before s.exercises is
+    // ever touched below.
+    { const p = profanityProblem(name); if (p) return res.status(400).json({ error: p }); }
     // Doc tab 05: "Adding an exercise ... now applies to the proposer's own card first" -- the
     // exercise is real and shared immediately, exactly like an owned add always was, just hidden
     // by default from everyone but the proposer (the existing hide-for-me mechanism, s.hiddenFor)
@@ -7818,6 +7871,9 @@ async function suggestOwnerless(req, res, s, type, isParticipant, approvedJoin, 
     const exerciseId = capStr((req.body || {}).exerciseId, 64);
     const swapTo = currentExerciseName(capStr((req.body || {}).swapTo, 80).trim());
     if (!swapTo) return res.status(400).json({ error: 'needs a name' });
+    // Oct 21 2026 (content-filter expansion, cold-review finding): a group swap proposal, visible
+    // to every other current participant for their own vote -- checked before any mutation below.
+    { const p = profanityProblem(swapTo); if (p) return res.status(400).json({ error: p }); }
     const fromEx = s.exercises.find(e => e.id === exerciseId);
     if (!fromEx) return res.status(404).json({ error: 'exercise not found' });
     // Cold-review catch (finding #4, Jeff: "yes fix it"): re-proposing a DIFFERENT swap on the same

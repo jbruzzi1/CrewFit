@@ -8,17 +8,26 @@
 // crew name (create + rename), crew chat messages (create + edit), a crew's custom-challenge
 // title, routine/template name (create + edit), session name/location/creator-note (create +
 // edit), the live in-workout chat (create + edit), a posted recap's caption ("notes") and its
-// comments (create + edit), a decline reason, a reinvite-request message, and a join-request
-// note.
+// comments (create + edit), a decline reason, a reinvite-request message, a join-request note,
+// and -- added Oct 21 2026 after a cold-review pass caught the first version missed this --
+// exercise names everywhere they're shared text: the pre-existing custom-exercise-name check
+// (migrated onto the shared helper, closing the same _/- gap there), session create/edit,
+// template create/edit, and the owned + ownerless /suggest routes (both "add" and swap).
 //
 // Deliberately NOT filtered, disclosed here rather than silently left as an unexplained gap:
 //   - draftNotes (POST /api/sessions/:id/draft-notes) -- explicitly own-eyes-only scratch, never
 //     shown to anyone else (see sessionView's own "yourself and nobody else" comment); nothing to
 //     moderate if nobody but the author ever sees it.
+//   - POST /api/sessions/:id/variation -- a personal, view-only exercise rename; sessionView only
+//     ever returns the viewer's OWN variation (pickMine), never another participant's, same own-
+//     eyes-only shape as draftNotes.
+//   - suggestOwnerless's still-invited "private pre-join swap" -- applied only to that one
+//     person's own card once they join, never a group proposal, never shown to anyone else (see
+//     that branch's own comment and sessionView's suggestedEdits filter).
 //   - a filed report's "details" field (POST /api/report) -- a reporter describing abusive
 //     behavior often has to quote the offending language; blocking that would make it harder,
 //     not easier, to report exactly the content this whole feature exists to catch.
-// Both are checked below too, confirming they still accept the same word the filtered routes
+// All four are checked below too, confirming they still accept the same word the filtered routes
 // reject -- proving the exclusion is a deliberate, verified design choice, not an oversight.
 //
 // Real server + real Postgres, same shape as test/age-gate.mjs / test/data-export.mjs. One
@@ -278,12 +287,121 @@ console.log('\njoin-request note');
   allows(okJoin, 'an ordinary join-request note still succeeds');
 }
 
-console.log('\ndeliberately NOT filtered, verified rather than just asserted in a comment: draftNotes (own-eyes-only) and a filed report\'s "details"');
+// Oct 21 2026 (cold-review finding, follow-up): the first pass of this feature missed exercise
+// names entirely -- withDefaults' own comment ("another user's exercise name renders in your
+// app") is exactly the risk this feature exists to close, and every one of these call sites went
+// straight through withDefaults/the custom-exercise route with no check. Covers: the pre-existing
+// custom-exercise-name check (now migrated to the shared helper, closing the same _/- gap there
+// too), session create/edit, template create/edit, and both the owned and ownerless /suggest
+// routes (add + swap) -- while confirming the two genuinely own-eyes-only exceptions (a still-
+// invited pre-join private swap, and POST /variation's personal view-only swap) are deliberately
+// left unfiltered, same reasoning as draftNotes below.
+console.log('\ncustom exercise name: the _/- separator evasion gap (migrated to the shared helper) is now closed here too');
+{
+  const u = await reg('cf_exmig_' + rand());
+  const badUnderscore = await post('/api/exercises/custom', { name: 'cf_fuck_bad', muscle_groups: [MUSCLE] }, u.token);
+  rejects(badUnderscore, 'an underscore-separated profane custom exercise name is now rejected (slipped through the pre-migration raw check)');
+  const okName = await post('/api/exercises/custom', { name: 'My Custom Lift ' + rand(), muscle_groups: [MUSCLE] }, u.token);
+  allows(okName, 'an ordinary custom exercise name still succeeds');
+}
+
+console.log('\nsession create/edit: exercise names inside the exercises array are filtered too (not just name/location/creatorNote)');
+{
+  const u = await reg('cf_exsess_' + rand());
+  const bad = await post('/api/sessions', { name: 'Clean Name', exercises: [{ name: BAD }], visibility: 'private' }, u.token);
+  rejects(bad, 'creating a session with a profane exercise name is rejected');
+  const okS = await post('/api/sessions', { name: 'Clean Name', exercises: [{ name: EX_NAME }], visibility: 'private' }, u.token);
+  allows(okS, 'a session with an ordinary exercise name still succeeds');
+  const sid = okS.json.id;
+
+  const badEdit = await put(`/api/sessions/${sid}`, { exercises: [{ name: BAD }] }, u.token);
+  rejects(badEdit, 'editing a session to add a profane exercise name is rejected');
+  const unchanged = await get('/api/sessions/' + sid, u.token);
+  ok(unchanged.exercises.length === 1 && unchanged.exercises[0].name === EX_NAME, `the rejected exercise edit left the exercise list untouched (got ${JSON.stringify(unchanged.exercises)})`);
+  const okEdit = await put(`/api/sessions/${sid}`, { exercises: [{ name: EX_NAME }, { name: 'Lunges' }] }, u.token);
+  allows(okEdit, 'an ordinary exercise-name edit still succeeds');
+}
+
+console.log('\ntemplate create/edit: exercise names inside the exercises array are filtered too');
+{
+  const u = await reg('cf_extpl_' + rand());
+  const bad = await post('/api/templates', { name: 'Clean Template', exercises: [{ name: BAD }] }, u.token);
+  rejects(bad, 'creating a routine with a profane exercise name is rejected');
+  const okT = await post('/api/templates', { name: 'Clean Template', exercises: [{ name: EX_NAME }] }, u.token);
+  allows(okT, 'a routine with an ordinary exercise name still succeeds');
+  const tid = okT.json.id;
+  const badEdit = await put('/api/templates/' + tid, { exercises: [{ name: BAD }] }, u.token);
+  rejects(badEdit, 'editing a routine to a profane exercise name is rejected');
+  const okTplEdit = await put('/api/templates/' + tid, { exercises: [{ name: 'Lunges' }] }, u.token);
+  allows(okTplEdit, 'an ordinary routine exercise-name edit still succeeds');
+}
+
+console.log('\nsuggest route (owned session): a new-exercise "add" name and a swap\'s swapTo are both filtered, before the shared plan is ever touched');
+{
+  const host = await reg('cf_sughost_' + rand());
+  const participant = await reg('cf_sugpart_' + rand());
+  await post('/api/follow/' + participant.user.id, {}, host.token);
+  const s = await post('/api/sessions', { name: 'Suggest Session', exercises: [{ name: EX_NAME }], visibility: 'private', inviteUsernames: [participant.user.username] }, host.token);
+  const sid = s.json.id;
+  await post(`/api/sessions/${sid}/accept`, {}, participant.token);
+
+  const badAdd = await post(`/api/sessions/${sid}/suggest`, { type: 'add', name: BAD }, participant.token);
+  rejects(badAdd, 'a profane "suggest add" exercise name is rejected');
+  const okAdd = await post(`/api/sessions/${sid}/suggest`, { type: 'add', name: 'Lunges' }, participant.token);
+  allows(okAdd, 'an ordinary "suggest add" exercise name still succeeds');
+
+  const existingExId = s.json.exercises[0].id;
+  const badSwap = await post(`/api/sessions/${sid}/suggest`, { type: 'swap', exerciseId: existingExId, swapTo: BAD }, participant.token);
+  rejects(badSwap, 'a profane swap suggestion is rejected');
+  const okSwap = await post(`/api/sessions/${sid}/suggest`, { type: 'swap', exerciseId: existingExId, swapTo: 'Lunges Variant' }, participant.token);
+  allows(okSwap, 'an ordinary swap suggestion still succeeds');
+}
+
+console.log('\nsuggest route (ownerless session): "add" and the already-joined group swap are filtered; the still-invited private pre-join swap stays deliberately unfiltered (own-eyes-only, same reasoning as draftNotes)');
+{
+  const host = await reg('cf_ownhost_' + rand());
+  const a = await reg('cf_owna_' + rand());
+  const b = await reg('cf_ownb_' + rand());
+  await post('/api/follow/' + a.user.id, {}, host.token);
+  await post('/api/follow/' + b.user.id, {}, host.token);
+  const s = await post('/api/sessions', { name: 'Ownerless Suggest Session', exercises: [{ name: EX_NAME }], visibility: 'private', inviteUsernames: [a.user.username, b.user.username] }, host.token);
+  const sid = s.json.id;
+  await post(`/api/sessions/${sid}/accept`, {}, a.token);
+  // b deliberately stays invited, never accepts -- the still-invited, private-pre-join case below.
+  await post(`/api/sessions/${sid}/leave`, { keep: true }, host.token);   // now ownerless; a is the sole current participant
+
+  const badAdd = await post(`/api/sessions/${sid}/suggest`, { type: 'add', name: BAD }, a.token);
+  rejects(badAdd, 'a profane ownerless "add" exercise name is rejected');
+  const okAdd = await post(`/api/sessions/${sid}/suggest`, { type: 'add', name: 'Lunges' }, a.token);
+  allows(okAdd, 'an ordinary ownerless "add" exercise name still succeeds');
+
+  const existingExId = s.json.exercises[0].id;
+  const badSwap = await post(`/api/sessions/${sid}/suggest`, { type: 'swap', exerciseId: existingExId, swapTo: BAD }, a.token);
+  rejects(badSwap, 'a profane ownerless group-swap proposal is rejected');
+  const okSwap = await post(`/api/sessions/${sid}/suggest`, { type: 'swap', exerciseId: existingExId, swapTo: 'Lunges Variant' }, a.token);
+  allows(okSwap, 'an ordinary ownerless group-swap proposal still succeeds');
+
+  // b is still-invited -- hits suggestOwnerless's privatePreJoin branch, which never shows this
+  // text to anyone but b (see sessionView's suggestedEdits filter and this branch's own comment),
+  // applied as b's own personal variation only once they actually join -- deliberately unfiltered
+  // for the same own-eyes-only reason as draftNotes below.
+  const preJoin = await post(`/api/sessions/${sid}/suggest`, { type: 'swap', exerciseId: existingExId, swapTo: BAD }, b.token);
+  allows(preJoin, 'a still-invited pre-join private swap accepts the same phrase -- own-eyes-only, deliberately excluded like draftNotes');
+}
+
+console.log('\ndeliberately NOT filtered, verified rather than just asserted in a comment: draftNotes, POST /variation, and a filed report\'s "details" -- all own-eyes-only or needed verbatim to report abuse');
 {
   const owner = await reg('cf_draft_' + rand());
   const s = await post('/api/sessions', { name: 'Draft Session', exercises: [{ name: EX_NAME }], visibility: 'private' }, owner.token);
   const draft = await post(`/api/sessions/${s.json.id}/draft-notes`, { notes: BAD }, owner.token);
   allows(draft, 'draftNotes accepts the same phrase every filtered route rejects -- own-eyes-only, deliberately excluded');
+
+  // POST /variation is a personal, view-only exercise rename -- sessionView only ever returns the
+  // viewer's OWN variation to them (pickMine), never another participant's, so it's the same own-
+  // eyes-only shape as draftNotes, not the shared-plan rename /suggest's swap performs.
+  const varExId = s.json.exercises[0].id;
+  const variation = await post(`/api/sessions/${s.json.id}/variation`, { exerciseId: varExId, swapTo: BAD }, owner.token);
+  allows(variation, 'a personal (own-eyes-only) exercise variation accepts the same phrase too -- never shown to anyone else, see sessionView\'s pickMine');
 
   const reporter = await reg('cf_reporter_' + rand());
   const target = await reg('cf_target_' + rand());
