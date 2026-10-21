@@ -1052,6 +1052,68 @@ nothing" path for real, safely.
 on GitHub's side as soon as it's on `main`. No `fly deploy` will be needed to "activate" it once
 merged, since it doesn't change the running app itself.
 
+### Addendum (Oct 21 2026) — standby-copy rearchitecture: scoped per Jeff's request, NOT built
+
+Jeff asked ("Standby copy (Recommended for now)") to have this bigger direction scoped next,
+explicitly not built yet — this records that scoping, with real sources, per hard rule #14
+(never guess a checkable fact). Full plain-language version is in the "CrewFit — Readiness
+Review & Public Launch Prep" Claude Doc, under Architecture; this is the same content with
+citations and more technical detail, for traceability.
+
+- **What it would be**: a second Fly Machine, normally stopped, paired to the production
+  machine, that can be started and promoted to take live traffic if the primary disappears —
+  instead of relying on the watchdog's `fly deploy --ha=false` recreating the primary from
+  scratch.
+- **Fly's own native "standby Machine" feature likely doesn't apply as configured, unverified
+  either way**: Fly's docs describe a standby Machine as "a stopped Machine that's essentially
+  paired to and watching a running Machine," created via `fly launch`/`fly deploy` or
+  `fly machines update --standby-for`, which "starts only if the paired Machine becomes
+  unavailable" — but the same page says this applies to process groups **without services**.
+  `spotmeapp`'s `app` process group has an `[http_service]` block in `fly.toml`, so the native
+  primitive may not apply as-is; Fly's docs don't say what happens for a process group WITH a
+  service, and this hasn't been tested live.
+  (https://docs.fly.io/apps/app-availability.md)
+- **No native leader-election for generic app Machines, confirmed**: Fly's HA/leader-election
+  documentation covers only their own managed Postgres product
+  (https://docs.fly.io/postgres/advanced-guides/high-availability-and-global-replication/), not
+  generic app Machines. Promotion/failover mechanics for a standby app Machine (keeping the same
+  identity, how traffic reattaches) are undocumented. This confirms the real risk flagged in the
+  Claude Doc: two Machines could each believe they're primary and accept conflicting writes —
+  the exact divergence this engagement already hit once by accident (the phantom-second-machine
+  finding in the induced-failure-drill addendum above). Avoiding this needs a safeguard we'd
+  build ourselves, not something Fly provides: e.g., a lease/heartbeat row in Postgres (already
+  the single source of truth for persistence per `pgmini.js`/`db.js`) that only one Machine can
+  hold at a time, checked before serving any write — real code in `db.js`/`server.js`, not a
+  config change.
+- **Recovery-time numbers, as documented, with the gap flagged**: a stopped Fly Machine
+  restarting takes "about 2 seconds or more for common apps" per Fly's own docs (a lower bound,
+  not a guarantee); a *suspended* (not stopped) Machine resumes in "a few hundred milliseconds"
+  since it resumes from memory rather than booting
+  (https://docs.fly.io/launch/autostop-autostart.md). Neither figure includes this app's own
+  startup cost — `doLoad()`'s full read of the Postgres-backed in-memory `DB` at boot — which is
+  separate and has never actually been measured. Fly's docs also give no comparable number for a
+  true cold deploy from zero Machines (building/pushing the image, scheduling), so the "4m43s"
+  drill number and a standby's real promotion time aren't yet an apples-to-apples comparison.
+- **Cost, as documented**: a stopped Machine with no attached volume is billed only for its root
+  filesystem storage (no compute charge at all) — "$0.15/GB-month of rootfs" per Fly's pricing
+  page; exact dollars depend on the app image's size, not given a fixed number there. A running
+  shared-cpu-1x/512MB Machine (today's spec) runs "$0.00000123/second ≈ $0.0044/hour ≈
+  $3.19/month" on the same page (https://docs.fly.io/about/pricing/) — so running a second
+  Machine as a true hot standby, rather than stopped, would roughly double current hosting cost.
+- **Out of scope for this piece, same as the Claude Doc states**: true concurrent multi-copy
+  scaling (the separately-declined "Full rebuild" direction) — a standby copy only speeds up
+  recovery from the one Machine disappearing, it doesn't let the app run on two Machines serving
+  real traffic at once.
+- **Before writing any code**, in order: (1) test directly whether Fly's standby-Machine
+  primitive works at all with an `[http_service]`-bearing process group, since the docs leave
+  this ambiguous; (2) time `doLoad()`'s actual real-world duration against the live Postgres
+  data, so the promotion-time estimate is measured, not assumed; (3) design and test the
+  Postgres-lease safeguard above, since an unsafe standby is worse than no standby at all (it
+  would reintroduce exactly the write-divergence risk this engagement has already disclosed
+  twice).
+- **Status**: scoping only, shown to Jeff in the readiness-review Claude Doc, not approved for
+  build. No code written, no infrastructure changed.
+
 ## Design constants
 
 (Rewritten Aug 28, 2026 after the whole-app visual pass, v221–v240. The old text here described the light-only v140 language.)
