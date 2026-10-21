@@ -780,9 +780,11 @@ the name/email decisions) when asked.
   `back-after-start-now.mjs`, was confirmed — by running it directly against `main` with none of
   this branch's changes applied — to fail identically there too; not something this PR caused or
   should be expected to fix).
-- **Status: built, one independent cold-review pass run before Jeff saw any of it, two real gaps
-  that pass found and closed (the exercise-name blind spot, and the un-migrated custom-exercise-name
-  call site), full suite green. Shipping via PR.**
+- **Status: MERGED and DEPLOYED** as PR #298 (`content-filter-expansion-oct20`), Oct 21 2026
+  (includes the swearing-policy addendum right below, same PR/branch); one independent cold-review
+  pass run before Jeff saw any of it, two real gaps that pass found and closed (the exercise-name
+  blind spot, and the un-migrated custom-exercise-name call site), full suite green. `/healthz`
+  confirmed live and healthy right after (53 users, 80 sessions).
 
 ### Addendum (Oct 21 2026) — casual swearing is now explicitly allowed; only slurs and explicit content stay blocked
 
@@ -831,9 +833,10 @@ say 'fuck yeah!'" A real narrowing of the content-safety policy, not a bug fix.
   array in `server.js` is itself the proof (it's short, explicit, and auditable), and the test's
   negative checks use still-blocked non-slur words (`literal porn content`, `fucktards`) instead.
 - Full suite: **158/158** test files green.
-- **Status: built, confirmed with Jeff on the one genuinely ambiguous scope question (how far the
+- **Status: MERGED and DEPLOYED** as PR #298 (same branch/PR as the content-filter expansion above),
+  Oct 21 2026; confirmed with Jeff on the one genuinely ambiguous scope question (how far the
   borderline tier goes), full remaining blocklist handed to him for review, full suite green.
-  Shipping via PR.**
+  `/healthz` confirmed live and healthy right after (53 users, 80 sessions).
 
 ## Design constants
 
