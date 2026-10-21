@@ -265,6 +265,11 @@ const files = [
   // Covers every free-text field across the app plus the two deliberate exclusions (draftNotes,
   // report "details"), and the leo-profanity _/- separator gap found and fixed while building this.
   'test/content-filter-expansion.mjs',
+  // Oct 21 2026: moderation tooling (readiness-review item "moderation tooling"). Slice A --
+  // GET /api/admin/reports/grouped groups reports about the same target for admin.html's new
+  // triage view. Slice B -- comments auto-hide (reversible) after 3 distinct reporters.
+  'test/moderation-triage-queue.mjs',
+  'test/moderation-auto-hide-comments.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

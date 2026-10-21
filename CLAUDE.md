@@ -838,6 +838,95 @@ say 'fuck yeah!'" A real narrowing of the content-safety policy, not a bug fix.
   borderline tier goes), full remaining blocklist handed to him for review, full suite green.
   `/healthz` confirmed live and healthy right after (53 users, 80 sessions).
 
+### Addendum (Oct 21 2026) — moderation tooling: admin triage grouping + reversible auto-hide for reported comments
+
+Closes the readiness-review item "Moderation tooling," picked next after content filtering.
+Today, reporting existed but the admin review screen was a flat, unpaginated list (a comment
+reported 20 times showed as 20 indistinguishable rows) and nothing was ever hidden
+automatically — a reported comment stayed visible to everyone until Jeff personally noticed and
+acted. Three open design calls were put to Jeff rather than guessed, all three answered with the
+recommended option: **auto-hide after N reports** (vs. flag-only/manual-hide-always, accepting
+the disclosed brigading risk below), **N = 3 distinct reporters**, **grouped-by-target** admin
+view (vs. a flat list with filters). Scope is deliberately **comments only** for v1 — not
+posts/users — the highest-volume, lowest-stakes content type, with the smallest, best-isolated
+set of existing touch points.
+
+- **Slice A (triage queue)**: new `db.js` function `pgListReportsGrouped()` — one aggregate query
+  against the `reports` table (still `id text, data jsonb`, no schema change) that groups reports
+  by target and returns, per group, a distinct-reporter count, the nested individual reports, and
+  whether any are still open. New route `GET /api/admin/reports/grouped` (`adminAuth`-gated, same
+  as every other admin route). The pre-existing flat `GET /api/admin/reports` is untouched.
+  `admin.html` gets a Grouped/Flat-list toggle (defaults to Grouped) — one card per target with an
+  expand-to-see-individual-reports control, a resolve-all-in-group action, and (once Slice B
+  shipped) an auto-hidden badge + unhide action per group.
+- **Slice B (auto-hide)**: new `db.js` function `pgCountDistinctCommentReporters(commentId,
+  excludeReporterId)` (self-excluding, so `POST /api/report` can check "is this the 3rd distinct
+  reporter" at insert time). A new `maybeAutoHideComment(sessionId, authorId, commentId)` runs
+  inside the same per-session lock (`withSessionLock`) every other comment mutation already uses,
+  sets new `hiddenByModeration`/`hiddenAt` fields on the comment (additive, CAS-safe via the
+  existing `snapshotMutableFields`/`revertFieldsIfUnchanged` pattern — a failed save can't leave a
+  half-applied hide). `visibleComments()` — the one shared filter already used at every comment
+  read site — now also excludes `hiddenByModeration`, so this covers the live chat thread and
+  recap posts for free. Reacting to a hidden comment is rejected (404). New admin route `POST
+  /api/admin/comments/unhide` reverses it the same CAS-safe way — this is a reversible soft-hide,
+  not a delete, same precedent as this app's existing `hiddenFor`/block-placeholder hiding.
+- **Independent cold-review (fresh agent, adversarial brief) found 6 real issues before this
+  shipped — all fixed and disclosed to Jeff in chat per hard rule #11, not folded in quietly:**
+  1. **CRITICAL** — a hidden comment's full text still leaked through `GET /api/sessions/:id`
+     (and, via the same `sessionView()` call, through self data-export too) — the hide only
+     applied at the dedicated comment-list read sites, not the two places `sessionView()` embeds a
+     post's raw, unfiltered `comments` array for any viewer who can see the post at all. Fixed
+     with a new `postViewSafe(p)` helper that strips hidden comments from a post's `comments`
+     before it's handed back, applied at both call sites inside `sessionView()`.
+  2. **SEVERE** — `maybeAutoHideComment` trusted the current report's own client-supplied
+     `sessionId`/`authorId` with no validation to locate the comment; a malformed/mismatched 3rd
+     report would silently no-op, leaving a genuinely-3-times-reported comment un-hidden with no
+     retry.
+  3. **MODERATE** — the grouped query's `GROUP BY` on the raw 5-field tuple could split one real
+     comment into multiple admin triage groups if two reports for it carried mismatched
+     `sessionId`/`authorId`.
+  4. **SEVERE, and a real, disclosed behavior change — `POST /api/report` had zero check that the
+     reporter can actually see the reported content.** Harmless before (the fields were never
+     dereferenced), but load-bearing now that a report can trigger an auto-hide: a former
+     member/blocked user could still "report" something they can no longer see and count toward
+     the hide threshold — a bigger brigading surface than originally disclosed. **Fixed, and
+     findings #2–#4 closed together with one shared helper**, `resolveReportedComment()`: `POST
+     /api/report` now rejects a comment report with 400 if it doesn't resolve to a real comment,
+     and 403 if the reporter currently lacks visibility access to it — the same tier/visibility
+     check every read route for that content already applies. `'user'`/`'post'` report types are
+     unaffected (Slice B doesn't act on them). This also makes finding #3's exact scenario
+     unreachable through the live API going forward (though the grouping query was still fixed
+     defensively — see its own regression test below).
+  5. **LOW** — a profile stat ("Your Workouts" comment count) counted the raw, unfiltered comments
+     array, overcounting when a post had a hidden comment. Fixed to filter it out.
+  6. **LOW (test coverage)** — neither original test file covered the mismatched-field scenario or
+     the `GROUP BY` split. Closed below.
+- **Every fix above was manually proven to actually catch its bug**, not just read as correct:
+  each fix was reverted, the relevant regression assertion was confirmed to fail with the exact
+  predicted failure mode, then the fix was restored and the assertion re-confirmed passing — same
+  discipline used throughout this engagement's rearchitecture safeguards.
+- **New test files**: `test/moderation-triage-queue.mjs` (grouped-vs-flat counts, per-group
+  resolve, the finding #3 regression — written as a direct raw-Postgres insert, the same
+  `putSessionRaw`-style pattern `test/exposure.mjs` uses for legacy/malformed data, since the
+  finding #4 fix makes this exact scenario unreachable via the live HTTP API) and
+  `test/moderation-auto-hide-comments.mjs` (3-distinct-reporter auto-hide for both chat and recap
+  comments, self-exclusion, unhide, the finding #1 sessionView/export-leak regression, and the
+  finding #2/#4 report-validation regression). Both registered in `test/run-all.mjs`.
+- **Disclosed, accepted risk, as discussed with Jeff when he picked auto-hide**: brigading — a
+  small number of colluding/fake accounts reporting one real comment 3 times — is not fully
+  preventable by any purely automated threshold. Mitigated by the hide being reversible, the
+  existing 30/hour-per-reporter rate limit on `/api/report`, and the new grouped admin view making
+  an auto-hidden comment immediately visible for a human second look. Not newly introduced by any
+  of the fixes above — the same tradeoff already accepted when the feature was scoped.
+- **Deliberately NOT fixed, disclosed as out of scope rather than silently skipped**: recap-post
+  comments (`GET /api/sessions/:id/posts/:authorId/comments`) have zero `isBlocked` filtering at
+  all, unlike the live chat thread — a pre-existing gap noticed while building this, unrelated to
+  moderation, left untouched to keep this diff narrowly scoped to comments-only moderation as
+  planned.
+- Full suite: **160/160** test files green.
+- **Status: built, tested, independently cold-reviewed with all 6 findings fixed and disclosed to
+  Jeff in chat before anything else. Shipping via PR.**
+
 ## Design constants
 
 (Rewritten Aug 28, 2026 after the whole-app visual pass, v221–v240. The old text here described the light-only v140 language.)
