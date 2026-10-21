@@ -1,0 +1,149 @@
+# Oct 21 2026 (Phase 3, Architecture & scale item -- Jeff: "build it now" after the induced-
+# failure drill proved there's no automatic recovery today if the one production machine
+# disappears unexpectedly; real measured downtime in that drill was 4m43s, entirely dependent on
+# a human noticing and typing a command). This closes exactly that gap: something that notices an
+# outage and fixes it even if nobody is watching, every 5 minutes, forever.
+#
+# Deliberately narrow, matching the drill's own two findings precisely:
+#   1. "Destroying the one machine doesn't bring it back on its own" -> this runs `fly deploy`,
+#      the exact documented recovery (https://docs.fly.io/apps/trouble-host-unavailable) this
+#      engagement already proved works by hand during the drill.
+#   2. "That recovery itself re-creates a second machine, reopening the single-writer divergence
+#      risk" (confirmed twice now, once during Phase 3 Slice 2's volume-removal saga, once again
+#      live during this drill) -> `--ha=false` on the deploy call stops this at the source
+#      (confirmed against Fly's own deploy reference: https://docs.fly.io/flyctl/cmd/fly_deploy.md
+#      -- "Create spare machines that increases app availability (default true)"). Deliberately
+#      NOT a separate `fly scale count 1` call after the deploy: that would need confirming the
+#      deploy-scoped FLY_API_TOKEN this workflow reuses is actually permitted to run `fly scale`
+#      (Fly's own token docs do not say either way), where `--ha=false` only needs the SAME
+#      deploy permission this token already proves it has via deploy.yml's own daily use -- one
+#      well-understood, already-proven operation instead of two, one of them unverified.
+#
+# What this deliberately does NOT do, disclosed rather than silently scoped out:
+#   - Does not run a dedicated standby machine (the bigger "Standby copy" rearchitecture Jeff
+#     asked to have scoped separately, not yet built) -- this is the narrow, fast mitigation,
+#     not the real fix for true redundancy.
+#   - Does not guarantee sub-minute detection -- GitHub Actions' own schedule trigger is
+#     best-effort, not a hard real-time guarantee (it can run a little late under GitHub's own
+#     load), disclosed to Jeff plainly rather than oversold as a hard SLA.
+#   - Only ever runs `fly deploy --ha=false`, never a destructive command (no `machine destroy`,
+#     no `volumes destroy`, nothing irreversible) -- the blast radius of this running
+#     unsupervised, on a schedule, with no human in the loop, is bounded to "redeploys the
+#     already-running, already-tested production image," the same action a human already took
+#     by hand during the drill this exists to automate.
+#
+# One-time setup: needs ZERO new secrets. Reuses FLY_API_TOKEN (deploy.yml's own setup, see
+# DEPLOY.md) and SENTRY_DSN (restore-drill.yml's own setup) exactly as they already exist.
+
+name: uptime watchdog
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}   # lets Jeff (or anyone) run a check on demand from the Actions tab
+
+concurrency:
+  # Same group deploy.yml's own deploy job uses -- never let an automatic recovery deploy race
+  # a human-triggered one (a push to main), in either direction. cancel-in-progress stays false
+  # for the same reason deploy.yml's does: a deploy that's already running should finish, not be
+  # cut off mid-way by a differently-triggered one.
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Job-level, not per-step: GitHub's own docs don't commit to whether a step's `if:` can see
+    # that SAME step's own `env:` block (asked directly, confirmed ambiguous -- "a condition that
+    # expects a step-level value may silently evaluate to false"). Defining both here instead
+    # means every step's `if:`/`run:` sees the exact same value, no ordering question at all.
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Needed up front (not only inside the failure branch) so the Sentry report step always has
+      # it available -- same ordering lesson restore-drill.yml's own comment on this documents:
+      # conditionally skipping `npm ci` and only installing it inside a later `if:` branch is what
+      # caused that workflow's reporting step to itself fail with a confusing missing-module error.
+      - run: npm ci
+
+      - name: Check /healthz, with retries so one transient blip isn't mistaken for a real outage
+        id: check
+        run: |
+          healthy=false
+          for i in 1 2 3; do
+            body="$(curl -fsS --max-time 8 https://spotmeapp.fly.dev/healthz || true)"
+            echo "attempt $i: ${body:-<no response>}"
+            case "$body" in
+              *'"ok":true'*) healthy=true; break ;;
+            esac
+            if [ "$i" -lt 3 ]; then sleep 20; fi
+          done
+          echo "healthy=$healthy" >> "$GITHUB_OUTPUT"
+
+      - name: Fly not configured -- cannot auto-recover
+        if: steps.check.outputs.healthy == 'false' && env.FLY_API_TOKEN == ''
+        run: |
+          echo "::error::App appears down and FLY_API_TOKEN is not set, so this workflow cannot attempt a recovery. See DEPLOY.md / deploy.yml's own setup comment."
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.check.outputs.healthy == 'false' && env.FLY_API_TOKEN != ''
+
+      - name: Outage detected -- running the documented recovery (fly deploy --ha=false)
+        id: recover
+        if: steps.check.outputs.healthy == 'false' && env.FLY_API_TOKEN != ''
+        run: flyctl deploy --remote-only --app spotmeapp --ha=false
+
+      - name: Re-check after the recovery attempt
+        id: recheck
+        if: steps.check.outputs.healthy == 'false'
+        run: |
+          recovered=false
+          for i in 1 2 3 4 5 6; do
+            body="$(curl -fsS --max-time 8 https://spotmeapp.fly.dev/healthz || true)"
+            echo "post-recovery attempt $i: ${body:-<no response>}"
+            case "$body" in
+              *'"ok":true'*) recovered=true; break ;;
+            esac
+            if [ "$i" -lt 6 ]; then sleep 15; fi
+          done
+          echo "recovered=$recovered" >> "$GITHUB_OUTPUT"
+
+      # Always report when an outage was seen at all -- whether the automatic recovery fixed it
+      # or not -- so Jeff finds out either way, not only when something stays broken. A clean
+      # 5-minute check that never saw a problem reports nothing, same low-noise posture as
+      # restore-drill.yml's own `if: failure()` convention.
+      - name: Report the outage to Sentry
+        if: steps.check.outputs.healthy == 'false'
+        run: |
+          if [ -z "${SENTRY_DSN:-}" ]; then
+            echo "::warning::SENTRY_DSN not set -- cannot report this outage to Sentry. See restore-drill.yml's own setup comment."
+            exit 0
+          fi
+          node -e "
+            const Sentry = require('@sentry/node');
+            Sentry.init({ dsn: process.env.SENTRY_DSN });
+            const recovered = '${{ steps.recheck.outputs.recovered }}' === 'true';
+            const runUrl = '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}';
+            Sentry.captureMessage(
+              (recovered
+                ? 'Uptime watchdog: outage detected and automatically recovered via fly deploy --ha=false. '
+                : 'Uptime watchdog: outage detected, automatic recovery did NOT bring it back -- needs a human now. '
+              ) + runUrl,
+              recovered ? 'warning' : 'error'
+            );
+            Sentry.close(2000).then(() => process.exit(0));
+          "
+
+      - name: Fail this run's own status if recovery did not succeed
+        if: steps.check.outputs.healthy == 'false' && steps.recheck.outputs.recovered != 'true'
+        run: |
+          echo "::error::App was down and the automatic recovery did not bring it back. See the Sentry report above and check Fly directly."
+          exit 1

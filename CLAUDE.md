@@ -994,6 +994,64 @@ this").
   failure) and the actual architecture scoping itself — both flagged to Jeff as the natural next
   steps coming out of this drill, not assumed or started without his go.
 
+### Addendum (Oct 21 2026) — uptime watchdog: automatic detect-and-recover for the gap the drill found
+
+The induced-failure drill above (same day) found two real things: (1) if the one production
+machine disappears, nothing brings it back automatically — the only known recovery is a human
+running `fly deploy` by hand, and real measured downtime was 4m43s, almost all of it human
+reaction time; (2) that same recovery, run plainly, puts the app right back into the 2-machine
+divergence risk every time, because `fly deploy`'s `--ha` flag defaults to creating a spare
+machine whenever deploying from zero. Jeff ("Yes, build it now") asked for a small, narrow fix
+for exactly this gap, separate from (and before) the bigger standby-copy/rearchitecture scoping
+he also asked for next.
+
+**What shipped**: `.github/workflows/uptime-watchdog.yml` — a new GitHub Actions workflow, on a
+5-minute schedule plus manual `workflow_dispatch`, that:
+- Checks `/healthz` with 3 retries (20s apart) before concluding the app is actually down, so one
+  transient blip isn't mistaken for a real outage.
+- If down: runs the exact same documented recovery already proven by hand during the drill —
+  `flyctl deploy --remote-only --app spotmeapp --ha=false`. The `--ha=false` flag is the fix for
+  finding (2) above — it's the same deploy operation `deploy.yml` already runs successfully every
+  day with this same token, just with the one flag that stops it from creating a second machine.
+  Deliberately not a separate `fly scale count 1` call after deploying — Fly's own token-scope
+  docs don't confirm whether a deploy-scoped token can run `fly scale`, so this avoids relying on
+  an unverified permission for an unsupervised, scheduled action.
+- Re-checks `/healthz` after attempting recovery (6 retries, 15s apart) and reports to Sentry
+  either way — "recovered automatically" or "recovery did not work, needs a human now" — reusing
+  the existing `SENTRY_DSN` secret from the restore-drill workflow. Fails its own run status (so
+  it shows red in the Actions tab) only if the recovery did not actually bring the app back.
+- Needs zero new secrets — reuses `FLY_API_TOKEN` (deploy.yml) and `SENTRY_DSN` (restore-drill.yml)
+  exactly as they already exist.
+- Uses the same `concurrency: group: deploy-production` as `deploy.yml`, so an automatic recovery
+  deploy can never race a human-triggered push-to-main deploy in either direction.
+
+**Validated before merge, without touching production again**: YAML syntax checked (parses
+cleanly; the one `yamllint` warning — missing a `---` document-start marker — is stylistic and
+matches `deploy.yml`/`restore-drill.yml`'s own convention, so left as-is). The retry/branching
+shell logic was dry-run locally against a deliberately unreachable test URL (confirmed it
+correctly reaches `healthy=false` after 3 tries) and against a local test server returning
+`{"ok":true}` (confirmed it correctly reaches `healthy=true` on the first attempt, breaking out
+of the loop early) — proving the detection logic without risking a 4th real outage. Confirmed
+`https://spotmeapp.fly.dev/healthz` is healthy right now, so this workflow's very first live run
+(whether on schedule or via manual `workflow_dispatch`) will exercise the "already healthy, do
+nothing" path for real, safely.
+
+**What this deliberately does NOT do, disclosed rather than silently scoped out**:
+- Does not run a dedicated standby machine — that's the bigger "Standby copy" rearchitecture Jeff
+  asked to have scoped next, not built yet. This is the narrow, fast mitigation for the specific
+  gap the drill found, not the real fix for true redundancy.
+- Does not guarantee sub-minute (or even sub-5-minute) detection — GitHub Actions' own `schedule`
+  trigger is best-effort, not a hard real-time guarantee; it can run a little late under GitHub's
+  own load. Told to Jeff plainly rather than oversold as a hard SLA.
+- Only ever runs `fly deploy --ha=false` — never a destructive command (no `machine destroy`, no
+  `volumes destroy`). The blast radius of this running unsupervised, on a schedule, with no human
+  in the loop, is bounded to "redeploys the already-running, already-tested production image" —
+  the same action a human already took by hand during the drill this exists to automate.
+
+**Status**: no app-code change — this is a GitHub Actions workflow file only, which takes effect
+on GitHub's side as soon as it's on `main`. No `fly deploy` will be needed to "activate" it once
+merged, since it doesn't change the running app itself.
+
 ## Design constants
 
 (Rewritten Aug 28, 2026 after the whole-app visual pass, v221–v240. The old text here described the light-only v140 language.)
