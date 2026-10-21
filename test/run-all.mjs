@@ -270,6 +270,13 @@ const files = [
   // triage view. Slice B -- comments auto-hide (reversible) after 3 distinct reporters.
   'test/moderation-triage-queue.mjs',
   'test/moderation-auto-hide-comments.mjs',
+  // Oct 21 2026: milestone callouts (Jeff: "workout counts + time anniversaries," private only --
+  // push + the user's own profile; see CLAUDE.md's addendum). Live threshold-crossing via real
+  // /lock calls, idempotency, anniversary milestones, and the backfill-no-spam guarantee
+  // (migrateMilestonesBackfillV1) -- the one-time boot catch-up must silently seed already-crossed
+  // milestones for existing users with zero retroactive notifications, while a brand-new crossing
+  // on an already-backfilled server still notifies normally.
+  'test/milestone-callouts.mjs',
 ];
 
 // Sep 12 2026, cold-review catch: two real gaps in the first version of this runner.

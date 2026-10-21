@@ -721,7 +721,7 @@ async function doLoad() {
 // migrateFollowApproval() already called out for followApprovalV1, just not extended to its
 // siblings. Any future boot-migration flag added to server.js on this same pattern must be added
 // here too, or it will silently never persist.
-const SINGLETON_FIELDS = ['followApprovalV1', 'friendsRetiredV1', 'binaryVisibilityV1', 'userFollowsTableV1'];
+const SINGLETON_FIELDS = ['followApprovalV1', 'friendsRetiredV1', 'binaryVisibilityV1', 'userFollowsTableV1', 'milestonesBackfillV1'];
 
 // Upserts every row of every collection inside one transaction. At this app's scale this was
 // trivial for Postgres either way and this keeps save()'s ~70 call sites in server.js completely

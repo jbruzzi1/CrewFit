@@ -4583,6 +4583,142 @@ app.get('/api/me/streak-status', auth, async (req, res) => {
 function usersAtRiskOfLosingStreak() {
   return Object.keys(DB.users).filter(uid => streakStatusFor(uid).atRisk);
 }
+
+// Oct 21 2026 (Jeff: milestone callouts -- "workout counts + time anniversaries," private only --
+// a push plus a marker on the user's own profile; the profile marker is a separate, later piece
+// that needs a screenshot shown to Jeff first per hard rule #9, same as every other new visual
+// element — this is just the notification half). Two independent milestone types, both derived
+// from data that already exists, never a stored counter — same rule currentStreak/totalWorkoutsFor
+// below follow, so there's nothing here that can drift from the real history.
+//
+// u.milestonesSeen: array of milestone keys already fired for this user, EVER (not per-day like
+// the streak/workout reminder stamps above — each of these fires exactly once in a user's
+// lifetime). Lazy-initialized like ensureFollowArrays.
+function ensureMilestonesSeen(u) { if (!Array.isArray(u.milestonesSeen)) u.milestonesSeen = []; }
+// Shared with snapshotMutableFields/revertFieldsIfUnchanged (the FOLLOW_FIELDS CAS pattern,
+// defined further up) at every call site below that can fail a save after mutating this field.
+const MILESTONE_FIELDS = ['milestonesSeen'];
+
+const WORKOUT_COUNT_MILESTONES = [10, 50, 100, 250, 500];
+// months, not a fixed day count (90/182/365) — calendar-correct across real month lengths, so the
+// gap between consecutive milestones never drifts depending on which months it happens to cross.
+const ANNIVERSARY_MILESTONES = [
+  { key: 'anniv_3mo', months: 3, label: '3 months' },
+  { key: 'anniv_6mo', months: 6, label: '6 months' },
+  { key: 'anniv_1yr', months: 12, label: '1 year' },
+];
+
+// Derived, not stored — one history row per (session, user) is already the canonical "did this
+// person complete this workout" fact (creditFinish is idempotent per user per session, see its own
+// comment), so the count is just how many sessions have a row for this user. Same completed-
+// session scan idiom used elsewhere in this file (e.g. the `completed` set a few hundred lines up).
+function totalWorkoutsFor(userId) {
+  let n = 0;
+  for (const s of Object.values(DB.sessions)) {
+    if ((s.history || []).some(h => h.userId === userId)) n++;
+  }
+  return n;
+}
+// Whole months between `createdAt` and now, UTC calendar months (no per-user timezone exists on
+// this app today — see STREAK_REMINDER_HOUR_UTC's own comment below for why that's a known,
+// already-accepted limitation, not new to this feature). A malformed/missing createdAt (a very
+// old legacy row) returns 0 rather than throwing or guessing — same "fall back, never crash on one
+// bad row" rule hard rule #7 exists for.
+function monthsSinceCreated(createdAtIso) {
+  const created = new Date(createdAtIso);
+  if (isNaN(created.getTime())) return 0;
+  const now = new Date();
+  let months = (now.getUTCFullYear() - created.getUTCFullYear()) * 12 + (now.getUTCMonth() - created.getUTCMonth());
+  if (now.getUTCDate() < created.getUTCDate()) months--;
+  return Math.max(0, months);
+}
+// Mutates u.milestonesSeen IN MEMORY ONLY and returns the newly-crossed list — deliberately never
+// calls notify() itself. Oct 18 2026's own lesson (see the streak-reminder timer's comment above):
+// notifying before the mark-as-seen mutation is actually persisted risks a duplicate push if
+// save() then fails and a restart drops the in-memory mark. Every caller MUST save(DB) — folding
+// this mutation into whatever save(DB) call the caller already has to make anyway, since this never
+// needs a save of its own — and only notify once that save has actually succeeded; this function
+// can't get that ordering wrong for you because it deliberately can't do that part at all.
+//
+// Cold-review catch (Oct 21 2026, before this ever shipped): this used to mutate via
+// u.milestonesSeen.push(key) IN PLACE. withSessionLock only serializes requests against the SAME
+// session id, not per-user — so a /lock on one session and a /leave on a different one for the
+// same user (or either one racing the daily timer below) are NOT mutually excluded, and a
+// same-object in-place push defeats the CAS-safe revert pattern every OTHER DB.users field already
+// uses for exactly this reason (snapshotMutableFields/revertFieldsIfUnchanged, see FOLLOW_FIELDS'
+// own comment above: "this is why every follow-graph mutation reassigns... an in-place mutation
+// leaves the reference unchanged and would defeat this check"). A blind revert on push-based state
+// could silently discard a DIFFERENT, already-saved-and-notified crossing that happened to land in
+// between this call's own snapshot and its own save failing — which doesn't just lose a record,
+// it un-persists an already-sent notification, so the same milestone can fire and notify a SECOND
+// time later. Reassigning here (spread, never push) makes the array reference itself change on
+// every crossing, which is what lets every call site below use the shared CAS helper instead of a
+// bespoke, unsafe "always overwrite" revert.
+function markNewlyCrossedMilestones(userId) {
+  const u = DB.users[userId];
+  if (!u) return [];
+  ensureMilestonesSeen(u);
+  const newlyCrossed = [];
+  const count = totalWorkoutsFor(userId);
+  for (const n of WORKOUT_COUNT_MILESTONES) {
+    const key = `workouts_${n}`;
+    if (count >= n && !u.milestonesSeen.includes(key)) {
+      u.milestonesSeen = [...u.milestonesSeen, key];
+      newlyCrossed.push({ key, kind: 'workouts', n });
+    }
+  }
+  const months = monthsSinceCreated(u.createdAt);
+  for (const m of ANNIVERSARY_MILESTONES) {
+    if (months >= m.months && !u.milestonesSeen.includes(m.key)) {
+      u.milestonesSeen = [...u.milestonesSeen, m.key];
+      newlyCrossed.push({ key: m.key, kind: 'anniversary', label: m.label });
+    }
+  }
+  return newlyCrossed;
+}
+// Only ever called AFTER the save that persisted the mutation above has actually succeeded —
+// never pass this a list straight off markNewlyCrossedMilestones without a save in between.
+function notifyMilestones(userId, crossed) {
+  for (const ms of crossed) {
+    const body = ms.kind === 'workouts'
+      ? `You've logged ${ms.n} workouts on CrewFit. Nice work.`
+      : `You've been training with CrewFit for ${ms.label}.`;
+    notify(userId, { title: 'Milestone reached', body });
+  }
+}
+// One-time boot backfill: every milestone an EXISTING user has already crossed as of this
+// feature's launch gets marked seen SILENTLY (never calls notifyMilestones) — so only milestones
+// crossed AFTER this ships ever produce a real push. Without this, the very first poll after
+// deploy would fire 3-5 lifetime notifications at once for every user who already has 50+ workouts
+// or has been on the app over a year — exactly the retroactive-spam failure mode this guards
+// against. Idempotent via the DB flag, same shape as migrateFollowApproval above; runs before
+// app.listen, and its caller is responsible for the one save(DB) that persists every user touched
+// here (see the boot sequence below — it already saves once right after every migration runs).
+async function migrateMilestonesBackfillV1() {
+  if (DB.milestonesBackfillV1) return 0;
+  let seeded = 0;
+  for (const existingUserId of Object.keys(DB.users)) {
+    if (markNewlyCrossedMilestones(existingUserId).length) seeded++;
+  }
+  DB.milestonesBackfillV1 = true;
+  return seeded;
+}
+// Self-only, same privacy posture as /api/me/streak-status above — no other user's milestone
+// progress is exposed. Two purposes: makes this feature testable over real HTTP instead of only
+// through the /leave and /lock side effects, and gives the deferred profile-marker UI (not built
+// yet — needs its own screenshot-first check-in with Jeff per hard rule #9) something to read from
+// once that's built. Deliberately read-only — this never mutates milestonesSeen itself; only
+// markNewlyCrossedMilestones (called from the two creditFinish sites and the daily timer below)
+// does that, so hitting this endpoint repeatedly can never itself cause a duplicate notification.
+app.get('/api/me/milestones', auth, async (req, res) => {
+  const u = DB.users[req.userId];
+  ensureMilestonesSeen(u);
+  res.json({
+    totalWorkouts: totalWorkoutsFor(req.userId),
+    monthsSinceCreated: monthsSinceCreated(u.createdAt),
+    milestonesSeen: u.milestonesSeen,
+  });
+});
 // Aug 31: "workout scheduled today" push reminder — Jeff floated this alongside the Live/Upcoming
 // work ("maybe scheduled notifications letting you know you have a workout upcoming today"),
 // deliberately deferred at the time, now built. Same two-layer shape as streakStatusFor/
@@ -7003,14 +7139,34 @@ app.post('/api/sessions/:id/leave', auth, async (req, res) => {
   // departed person as a permanent, unresolvable required approver on a pending exercise removal.
   const resolvedRemovals = dropRequiredApprover(s, me);
   rebuildAllPrs();
+  // Oct 21 2026 (milestone callouts): a keep-leave credits a finish exactly like /lock does (see
+  // creditFinish's own comment above), so it can just as easily be the moment someone crosses a
+  // workout-count milestone. Folded into the SAME save(DB) call just below rather than a save of
+  // its own — markNewlyCrossedMilestones only mutates u in memory, never notifies (see its own
+  // comment on why notifying must wait for a successful save).
+  // Cold-review catch (Oct 21 2026, before this ever shipped): a save failure here used to revert
+  // by blindly reassigning milestonesSeen back to its pre-mutation snapshot regardless of what
+  // else had touched it meanwhile. withSessionLock only serializes against THIS session's id, not
+  // per-user, so this same user finishing a DIFFERENT session concurrently (a /lock racing this
+  // /leave) is not excluded -- a blind revert here could discard that other, already-saved-and-
+  // notified crossing, which doesn't just lose a record, it un-persists an already-sent
+  // notification and lets the same milestone fire (and notify) a second time later. Uses the same
+  // CAS-safe snapshotMutableFields/revertFieldsIfUnchanged pattern every other DB.users field
+  // already uses for exactly this reason (see FOLLOW_FIELDS' own comment) -- a revert only applies
+  // if milestonesSeen is still the exact array reference this call's own mutation produced.
+  const milestonesBefore = DB.users[me] ? snapshotMutableFields([DB.users[me]], MILESTONE_FIELDS) : null;
+  const crossedMilestones = markNewlyCrossedMilestones(me);
+  const milestonesAfter = DB.users[me] ? snapshotMutableFields([DB.users[me]], MILESTONE_FIELDS) : null;
   try {
     await save(DB);
   } catch (e) {
     for (const k of Object.keys(s)) delete s[k];
     Object.assign(s, sSnapshot);
     rebuildAllPrs();   // put the derived cache back in sync with the restored session
+    if (milestonesBefore) revertFieldsIfUnchanged(milestonesBefore, milestonesAfter, MILESTONE_FIELDS);
     throw e;
   }
+  if (crossedMilestones.length) notifyMilestones(me, crossedMilestones);
   // Sep 23 2026: resolvedRemovals notified s.creatorId specifically -- with ownership never
   // handed off anymore, an ownerless session has no creatorId to notify, so this now only ever
   // fires for a still-owned session (unchanged for that case).
@@ -12065,13 +12221,34 @@ app.post('/api/sessions/:id/lock', auth, async (req, res) => {
       // just stops it from scanning every OTHER session of every OTHER user in the app too.
       const logKeys = Object.keys(s.logs || {});
       rebuildPrsFor(logKeys);
+      // Oct 21 2026 (milestone callouts): /lock is the primary "just finished a workout" moment,
+      // so it's the main place a workout-count milestone gets crossed. Folded into the SAME
+      // save(DB) just below rather than a save of its own — markNewlyCrossedMilestones only
+      // mutates u in memory, never notifies (see its own comment on why notifying must wait for a
+      // successful save).
+      // Cold-review catch (Oct 21 2026, before this ever shipped): a save failure here used to
+      // revert by blindly reassigning milestonesSeen back to its pre-mutation snapshot regardless
+      // of what else had touched it meanwhile. withSessionLock only serializes against THIS
+      // session's id, not per-user, so this same user finishing a DIFFERENT session concurrently
+      // (a /leave keep-credit racing this /lock) is not excluded -- a blind revert here could
+      // discard that other, already-saved-and-notified crossing, which doesn't just lose a
+      // record, it un-persists an already-sent notification and lets the same milestone fire (and
+      // notify) a second time later. Uses the same CAS-safe snapshotMutableFields/
+      // revertFieldsIfUnchanged pattern every other DB.users field already uses for exactly this
+      // reason (see FOLLOW_FIELDS' own comment) -- a revert only applies if milestonesSeen is
+      // still the exact array reference this call's own mutation produced.
+      const milestonesBefore = DB.users[req.userId] ? snapshotMutableFields([DB.users[req.userId]], MILESTONE_FIELDS) : null;
+      const crossedMilestones = markNewlyCrossedMilestones(req.userId);
+      const milestonesAfter = DB.users[req.userId] ? snapshotMutableFields([DB.users[req.userId]], MILESTONE_FIELDS) : null;
       try {
         await save(DB);
       } catch (e) {
         s.history = prevHistory; s.startedAt = prevStartedAt; s.scheduledAt = prevScheduledAt;
         rebuildPrsFor(logKeys);   // put the derived cache back in sync with the reverted history
+        if (milestonesBefore) revertFieldsIfUnchanged(milestonesBefore, milestonesAfter, MILESTONE_FIELDS);
         throw e;
       }
+      if (crossedMilestones.length) notifyMilestones(req.userId, crossedMilestones);
     }
   });
   res.json(sessionView(s, req.userId));
@@ -12520,6 +12697,7 @@ app.use((err, req, res, next) => {
   await migrateCrewRowColumnsIntoPostgres();   // Oct 16 2026 (crews deep-dive, decision #2) -- backfills crews.name/owner_id/created_at + crew_members from the old data blob; see its own comment and db.js's comment on the crews table
   await migrateUserFollowsIntoPostgres();   // Oct 16 2026 (users slice, decision #1) -- flattens followers/following/followReqs into user_follows; see its own comment and db.js's comment on the user_follows table
   await migrateUserScalarColumnsIntoPostgres();   // Oct 16 2026 (users slice, decision #2) -- backfills users.username/display_name/bio/... real columns from the old data blob; see its own comment and db.js's comment on the users table
+  await migrateMilestonesBackfillV1();   // Oct 21 2026 (milestone callouts) -- silently marks every milestone existing users already crossed as seen, so this ship doesn't retroactively blast long-time users with 3-5 lifetime notifications at once; see its own comment
   await save(DB);
   server = app.listen(PORT, () => console.log('CrewFit on', PORT));
   module.exports.server = server;
@@ -12594,6 +12772,58 @@ app.use((err, req, res, next) => {
         }
       }
     } catch (e) { console.error('workout reminder check failed:', e && e.message); reportNonFatal('workout reminder check', e); }
+  }, 30 * 60 * 1000);
+
+  // Oct 21 2026 (milestone callouts): daily safety-net poll, same two-layer shape as the reminder
+  // timers above. The /lock and /leave(keep-credit) call sites already check for a NEW
+  // workout-count milestone the instant it happens — this poll exists mainly for anniversary
+  // milestones, which are pure calendar facts with no action that naturally triggers them, plus a
+  // backstop for any workout-count crossing that slipped through if those routes' checks ever
+  // get bypassed by a future code path. A fixed, distinct UTC hour (not the same minute as the
+  // other two reminder timers, so pushes don't all land in the same moment) — same
+  // "no per-user timezone yet" caveat as STREAK_REMINDER_HOUR_UTC above.
+  const MILESTONE_CHECK_HOUR_UTC = 15;
+  setInterval(async () => {
+    // Cold-review catch (Oct 21 2026, before this ever shipped): unlike the two reminder timers
+    // above (whose own per-day stamp is harmlessly re-checked every day regardless), a milestone
+    // fires exactly once in a user's LIFETIME -- this used to have no revert at all if save(DB)
+    // failed after the loop below had already mutated potentially many users' milestonesSeen in
+    // memory. notifyMilestones was correctly still skipped on a failed save (no premature push),
+    // but every touched user's milestonesSeen stayed advanced in memory regardless -- the very
+    // next UNRELATED successful save(DB) anywhere in the app would then persist that stale
+    // mutation, silently marking the milestone "seen" forever despite nobody ever having been
+    // notified. snapshotMutableFields/revertFieldsIfUnchanged (the same CAS-safe pattern /lock and
+    // /leave's own cold-review fix just above now use) reverts every touched user's milestonesSeen
+    // if the save fails, but ONLY if nothing else (another /lock, /leave, or a second overlapping
+    // tick of this very timer) has touched that SAME user's field since this tick's own mutation.
+    let before = null, after = null;
+    try {
+      if (new Date().getUTCHours() !== MILESTONE_CHECK_HOUR_UTC) return;
+      const crossedByUser = [];
+      const touchedUsers = [];
+      for (const uid of Object.keys(DB.users)) {
+        const crossed = markNewlyCrossedMilestones(uid);
+        if (crossed.length) { crossedByUser.push([uid, crossed]); touchedUsers.push(DB.users[uid]); }
+      }
+      if (!crossedByUser.length) return;
+      // "before" here is really "right after this tick's own mutations" (there's no earlier point
+      // to snapshot from -- the loop above both finds and mutates in the same pass), and "after"
+      // is the same state read again immediately -- identical right now, but revertFieldsIfUnchanged
+      // only compares by reference, so this pair is exactly what lets it tell "untouched since"
+      // apart from "something else (another /lock, /leave, or overlapping tick) wrote a NEWER
+      // array in between this point and the catch block below."
+      before = snapshotMutableFields(touchedUsers, MILESTONE_FIELDS);
+      after = snapshotMutableFields(touchedUsers, MILESTONE_FIELDS);
+      // Oct 18 2026 (Phase 1 hazard sweep) lesson, same as the two reminder timers above --
+      // persist first, only notify for users whose updated milestonesSeen actually made it to
+      // disk. markNewlyCrossedMilestones only ever mutates in memory and never notifies itself
+      // (see its own comment), which is exactly what makes this safe to batch into one save.
+      await save(DB);
+      for (const [uid, crossed] of crossedByUser) notifyMilestones(uid, crossed);
+    } catch (e) {
+      if (before) revertFieldsIfUnchanged(before, after, MILESTONE_FIELDS);
+      console.error('milestone check failed:', e && e.message); reportNonFatal('milestone check', e);
+    }
   }, 30 * 60 * 1000);
 
   // Sep 5 2026: notification-history storage hygiene (see pruneOldNotifications, and the boot-
