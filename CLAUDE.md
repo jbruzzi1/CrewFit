@@ -23,6 +23,7 @@ This file is the short version — the rules that must never be missed.
 12. **Any time Jeff asks for a change or update, check it against whatever rearchitecture slice is currently in flight (see "Rearchitecture status" below) and flag it before starting, if it touches that slice's area.** (Jeff, Oct 12 2026, right after agreeing to the data-ownership rearchitecture and its slice-by-slice plan: "Please remind anytime I request a change or an update to something that may be having a migration going on.") The agreed shape of this (same conversation): only the ONE data domain actively mid-migration is off-limits to new work at any given time, not the whole app — and sessions/logs, when its turn comes, is the one slice big/central enough to warrant a longer heads-up. In practice: before starting any requested change while a slice is in flight, check "Rearchitecture status" below for what's currently being moved, and if the request touches that area, say so plainly and ask whether he wants to wait for that slice to finish, have it done against the new path directly, or proceed anyway knowing it adds risk — don't just silently proceed OR silently refuse. Keep "Rearchitecture status" itself up to date (which slice is active, which are done) every time a slice starts or finishes, so this check is actually answerable in a future session.
 13. **Whenever you flag a risk, a potential bug, or a "this could go wrong" — in a pre-mortem or anywhere else — say right there whether the planned work already fixes it, unless it's obvious.** (Jeff, Oct 13 2026, after a pre-mortem flagged a race-condition risk and the fix for it was mentioned, but only in a separate paragraph further down, not attached to the risk itself: "when you write this, is this being fixed by this? Rule: when you write things like this always include after - 'This will be corrected with this fix' if it is not obvious.") Don't make Jeff connect a flagged risk to its fix himself by reading further down or into a different section — state it immediately after the risk, in the same breath: either "this gets fixed by [specific mechanism] as part of this work" or "this is NOT fixed by this change — it's a known, separate, still-open risk." Silence on this point reads as ambiguous, which is exactly what this rule exists to remove.
 14. **NEVER guess at a fact — a date, a history, a file's contents, anything checkable — state it as if verified.** (Jeff, Oct 20 2026, after being told the app was "15 months" old with no basis — the real, correct number, confirmed by `git log --reverse`, was ~2.5 months from the actual first commit on Aug 5, 2026. Jeff had already corrected this exact kind of error once before: "where are you getting your dates from? I've already corrected you on that before... NO GUESSING THAT IS A RULE WE HAVE.") This generalizes the "reproduced live, not guessed" standard already applied to bug root causes (see the crews-slice and backup-validation entries below) to EVERY factual claim, not just root-cause analysis: before stating a date, a count, a duration, "X years/months old," what a file contains, or any other checkable fact, actually check it (`git log`, read the file, run the command) — do not produce a plausible-sounding number from pattern-matching and state it as if it were known. If something genuinely can't be checked in the moment, say "I don't know, let me check" or "I'm estimating, not certain" — never state an unverified guess in the same confident voice as a verified fact.
+15. **Remind Jeff about the standby-copy rearchitecture the moment CrewFit crosses 100 users.** (Jeff, Oct 21 2026, after picking the uptime watchdog as "enough for now" over building the standby-copy direction immediately: "if we start seeing users come in (i will update you) then you will remind me of these steps. harcore rule for you to remind me lets say if we see more than 100 users come in.") The standby-copy scoping itself (what it would take, the two real open risks — Fly's native standby feature possibly not applying to this app's `[http_service]` setup, and the split-brain risk needing a Postgres-lease safeguard that doesn't exist yet) is written up in full in the Oct 21 2026 "standby-copy rearchitecture" addendum below and in the CrewFit readiness-review Claude Doc — don't redo that work, just resurface it. This is backed by a daily scheduled check (`crewfit-100-user-watch`, created Oct 21 2026) that reads `/healthz`'s `users` field and messages Jeff once it's ≥100, rather than relying on anyone remembering to look — but the rule itself does not depend on that mechanism existing or firing correctly: if Jeff mentions real user growth in conversation, or `/healthz`/any other check happens to show 100+ users first, say so and surface this reminder immediately, don't wait on the scheduled check.
 
 ## Rearchitecture status (data-ownership migration)
 
@@ -1051,6 +1052,77 @@ nothing" path for real, safely.
 **Status**: no app-code change — this is a GitHub Actions workflow file only, which takes effect
 on GitHub's side as soon as it's on `main`. No `fly deploy` will be needed to "activate" it once
 merged, since it doesn't change the running app itself.
+
+### Addendum (Oct 21 2026) — standby-copy rearchitecture: scoped per Jeff's request, NOT built
+
+Jeff asked ("Standby copy (Recommended for now)") to have this bigger direction scoped next,
+explicitly not built yet — this records that scoping, with real sources, per hard rule #14
+(never guess a checkable fact). Full plain-language version is in the "CrewFit — Readiness
+Review & Public Launch Prep" Claude Doc, under Architecture; this is the same content with
+citations and more technical detail, for traceability.
+
+- **What it would be**: a second Fly Machine, normally stopped, paired to the production
+  machine, that can be started and promoted to take live traffic if the primary disappears —
+  instead of relying on the watchdog's `fly deploy --ha=false` recreating the primary from
+  scratch.
+- **Fly's own native "standby Machine" feature likely doesn't apply as configured, unverified
+  either way**: Fly's docs describe a standby Machine as "a stopped Machine that's essentially
+  paired to and watching a running Machine," created via `fly launch`/`fly deploy` or
+  `fly machines update --standby-for`, which "starts only if the paired Machine becomes
+  unavailable" — but the same page says this applies to process groups **without services**.
+  `spotmeapp`'s `app` process group has an `[http_service]` block in `fly.toml`, so the native
+  primitive may not apply as-is; Fly's docs don't say what happens for a process group WITH a
+  service, and this hasn't been tested live.
+  (https://docs.fly.io/apps/app-availability.md)
+- **No native leader-election for generic app Machines, confirmed**: Fly's HA/leader-election
+  documentation covers only their own managed Postgres product
+  (https://docs.fly.io/postgres/advanced-guides/high-availability-and-global-replication/), not
+  generic app Machines. Promotion/failover mechanics for a standby app Machine (keeping the same
+  identity, how traffic reattaches) are undocumented. This confirms the real risk flagged in the
+  Claude Doc: two Machines could each believe they're primary and accept conflicting writes —
+  the exact divergence this engagement already hit once by accident (the phantom-second-machine
+  finding in the induced-failure-drill addendum above). Avoiding this needs a safeguard we'd
+  build ourselves, not something Fly provides: e.g., a lease/heartbeat row in Postgres (already
+  the single source of truth for persistence per `pgmini.js`/`db.js`) that only one Machine can
+  hold at a time, checked before serving any write — real code in `db.js`/`server.js`, not a
+  config change.
+- **Recovery-time numbers, as documented, with the gap flagged**: a stopped Fly Machine
+  restarting takes "about 2 seconds or more for common apps" per Fly's own docs (a lower bound,
+  not a guarantee); a *suspended* (not stopped) Machine resumes in "a few hundred milliseconds"
+  since it resumes from memory rather than booting
+  (https://docs.fly.io/launch/autostop-autostart.md). Neither figure includes this app's own
+  startup cost — `doLoad()`'s full read of the Postgres-backed in-memory `DB` at boot — which is
+  separate and has never actually been measured. Fly's docs also give no comparable number for a
+  true cold deploy from zero Machines (building/pushing the image, scheduling), so the "4m43s"
+  drill number and a standby's real promotion time aren't yet an apples-to-apples comparison.
+- **Cost, as documented**: a stopped Machine with no attached volume is billed only for its root
+  filesystem storage (no compute charge at all) — "$0.15/GB-month of rootfs" per Fly's pricing
+  page; exact dollars depend on the app image's size, not given a fixed number there. A running
+  shared-cpu-1x/512MB Machine (today's spec) runs "$0.00000123/second ≈ $0.0044/hour ≈
+  $3.19/month" on the same page (https://docs.fly.io/about/pricing/) — so running a second
+  Machine as a true hot standby, rather than stopped, would roughly double current hosting cost.
+- **Out of scope for this piece, same as the Claude Doc states**: true concurrent multi-copy
+  scaling (the separately-declined "Full rebuild" direction) — a standby copy only speeds up
+  recovery from the one Machine disappearing, it doesn't let the app run on two Machines serving
+  real traffic at once.
+- **Before writing any code**, in order: (1) test directly whether Fly's standby-Machine
+  primitive works at all with an `[http_service]`-bearing process group, since the docs leave
+  this ambiguous; (2) time `doLoad()`'s actual real-world duration against the live Postgres
+  data, so the promotion-time estimate is measured, not assumed; (3) design and test the
+  Postgres-lease safeguard above, since an unsafe standby is worse than no standby at all (it
+  would reintroduce exactly the write-divergence risk this engagement has already disclosed
+  twice).
+- **Status**: scoping only, shown to Jeff in the readiness-review Claude Doc, not approved for
+  build. No code written, no infrastructure changed.
+- **Decision (Jeff, Oct 21 2026)**: "I say watchdog is enough for now - if we start seeing users
+  come in (i will update you) then you will remind me of these steps. harcore rule for you to
+  remind me lets say if we see more than 100 users come in." The watchdog shipped earlier the
+  same day is the accepted mitigation for now; this standby-copy work stays shelved, not started,
+  until CrewFit crosses 100 users — see hard rule #15 above. Backed by a daily automated check
+  (scheduled task `crewfit-100-user-watch`, created Oct 21 2026), which reads `/healthz`'s `users`
+  field and messages Jeff once it crosses 100, then disables itself — a backstop, not a
+  replacement for hard rule #15 itself, which applies regardless of whether that automated check
+  is the thing that actually notices first.
 
 ## Design constants
 
