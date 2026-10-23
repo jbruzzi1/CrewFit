@@ -1125,6 +1125,53 @@ citations and more technical detail, for traceability.
   replacement for hard rule #15 itself, which applies regardless of whether that automated check
   is the thing that actually notices first.
 
+### Addendum (Oct 21 2026) — milestone callouts: a one-time push + profile marker for workout-count and anniversary milestones
+
+Jeff, after approving UX work to fill the gap while the standby-copy/legal items stay shelved:
+"lets do all of the above except progress photos and the nthe full app audits" (the three items
+chosen were weekly recap, Discover, and this one), then scoped milestones via AskUserQuestion:
+milestone types = workout counts (10/50/100/250/500) + time anniversaries (3mo/6mo/1yr);
+visibility = **private only** — a push notification plus a marker on the user's own profile, never
+shown to anyone else. Only the push half is built and shipped here; the profile-marker visual
+piece is a deliberate, separate follow-up (needs a screenshot shown to Jeff first per hard rule
+#9/#3, same as every other new visual element) — not built yet.
+
+- **Derived, never stored**: `totalWorkoutsFor(userId)` scans `s.history` across every session
+  (the same "never store a derivable counter" rule `currentStreak` already follows) — there is no
+  separate workout-count column anywhere to drift out of sync.
+- **Fires exactly once per user, ever**, tracked in a new `u.milestonesSeen` array of fired
+  milestone keys, checked at the two natural "just finished a workout" moments (`/lock`, and
+  `/leave`'s keep-credit path) plus a daily safety-net poll (`MILESTONE_CHECK_HOUR_UTC = 15`,
+  mainly for anniversaries, which are a pure calendar fact with no action that naturally triggers
+  them).
+- **One-time boot backfill (`migrateMilestonesBackfillV1`)**: without this, shipping would have
+  instantly fired 3-5 lifetime notifications at once for every existing user who already has 50+
+  workouts or has been on the app over a year — it silently seeds already-crossed milestones for
+  existing users at boot, with zero notifications, so only a milestone crossed AFTER this shipped
+  ever produces a real push. Registered in `db.js`'s `SINGLETON_FIELDS` (the boot-migration-flag
+  gotcha that once silently broke `friendsRetiredV1` if a flag like this is left out of that list).
+- **Independent cold-review before this shipped found two real pre-ship bugs, both fixed at the
+  source, not just disclosed**: (1) a `save(DB)` failure during `/lock` used to leave
+  `milestonesSeen` silently advanced in memory with nothing reverting it — not just skipping the
+  notification, the record itself stayed mutated, ready to be persisted for real by some later,
+  unrelated successful save; (2) the revert itself used to blindly reassign the whole array back to
+  a pre-mutation snapshot regardless of what else had touched it meanwhile — `withSessionLock`
+  only serializes per-session, not per-user, so a `/lock` and a `/leave` keep-credit for the same
+  user are never mutually excluded, and a blind revert could discard a different, already-saved-
+  and-notified crossing, letting the same milestone fire and notify a second time later. Fixed by
+  switching `markNewlyCrossedMilestones` to reassign (not push) and using this codebase's own
+  already-reviewed CAS pattern (`snapshotMutableFields`/`revertFieldsIfUnchanged`, the same one
+  `FOLLOW_FIELDS` uses) at all three call sites, including the daily timer, which previously had no
+  revert logic of any kind. The `/lock` fix is proven against a REAL Postgres failure in
+  `test/milestone-callouts.mjs` (the same `breakTable`/`fixTable` technique
+  `test/phase1-mutate-before-save-regression.mjs` uses) — the concurrent-crossing half of the fix
+  rests on reusing the same already-trusted mechanism every other `DB.users` field relies on for
+  the identical hazard, not a dedicated race test (this codebase has no established way to force a
+  deterministic two-requests-one-fails timing window, only to break/fix a whole table).
+- **Status**: shipped, tested (24 assertions, including the real-save-failure regression above),
+  full 161-file suite green. Weekly recap and Discover (the other two approved pieces) are
+  separate, not-yet-started work.
+
 ## Design constants
 
 (Rewritten Aug 28, 2026 after the whole-app visual pass, v221–v240. The old text here described the light-only v140 language.)
